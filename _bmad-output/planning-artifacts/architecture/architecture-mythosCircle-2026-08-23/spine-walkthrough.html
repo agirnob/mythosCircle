@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mythosCircle — Architecture Spine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300;1,9..144,400&family=Spectral:ital,wght@0,300;0,400;0,500;1,300&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0e0c09;
+  --ink-2:#14110c;
+  --ink-3:#1a150e;
+  --line:rgba(217,164,65,.14);
+  --line-strong:rgba(217,164,65,.32);
+  --gold:#d9a441;
+  --gold-bright:#f0c46a;
+  --parchment:#e9dfc9;
+  --parchment-dim:#a89d85;
+  --parchment-faint:#6f6753;
+  --rust:#c96a45;
+  --slate:#8fa7b0;
+  --moss:#7ba184;
+  --serif:'Fraunces',Georgia,serif;
+  --body:'Spectral',Georgia,serif;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:2rem}
+body{
+  background:var(--ink);color:var(--parchment);
+  font-family:var(--body);font-weight:300;font-size:16px;line-height:1.65;
+  -webkit-font-smoothing:antialiased;overflow-x:hidden;
+}
+::selection{background:rgba(217,164,65,.28);color:#fff}
+code{font-family:var(--mono);font-size:.8em;color:var(--gold-bright);
+  background:rgba(217,164,65,.07);padding:.08em .35em;border-radius:2px;white-space:nowrap}
+
+/* ── atmosphere ─────────────────────────────────────────── */
+.bg-constellation{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.055;
+  animation:drift 46s ease-in-out infinite alternate}
+@keyframes drift{from{transform:translate(-14px,8px) scale(1.02)}to{transform:translate(18px,-10px) scale(1.04)}}
+.bg-vignette{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(120% 90% at 50% 0%,transparent 40%,rgba(0,0,0,.5) 100%)}
+.bg-grain{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.05;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+#progress{position:fixed;top:0;left:0;height:2px;width:0;background:linear-gradient(90deg,var(--gold),var(--gold-bright));z-index:60}
+
+/* ── layout ─────────────────────────────────────────────── */
+.shell{position:relative;z-index:2;display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh}
+.rail{position:sticky;top:0;height:100vh;overflow-y:auto;padding:2.4rem 1.6rem 2rem 2rem;
+  border-right:1px solid var(--line);background:rgba(14,12,9,.72);backdrop-filter:blur(6px)}
+.rail .mark{font-family:var(--serif);font-size:1.3rem;font-weight:400;letter-spacing:.01em}
+.rail .mark em{font-style:italic;color:var(--gold)}
+.rail .mark-sub{font-size:.62rem;letter-spacing:.22em;text-transform:uppercase;color:var(--parchment-faint);margin:.35rem 0 1.8rem}
+#search{width:100%;background:var(--ink-2);border:1px solid var(--line);color:var(--parchment);
+  font-family:var(--mono);font-size:.72rem;padding:.55rem .7rem;border-radius:3px;outline:none;margin-bottom:.9rem;transition:border-color .2s}
+#search:focus{border-color:var(--line-strong)}
+#search::placeholder{color:var(--parchment-faint)}
+.filters{display:flex;gap:.45rem;margin-bottom:1.4rem;flex-wrap:wrap}
+.chip{font-family:var(--mono);font-size:.58rem;letter-spacing:.14em;text-transform:uppercase;
+  padding:.32rem .6rem;border:1px solid var(--line);border-radius:3px;color:var(--parchment-dim);
+  cursor:pointer;user-select:none;transition:.2s;background:transparent}
+.chip:hover{border-color:var(--line-strong);color:var(--parchment)}
+.chip.on{border-color:var(--gold);color:var(--gold-bright);background:rgba(217,164,65,.08)}
+nav.toc a{display:flex;gap:.6rem;align-items:baseline;text-decoration:none;color:var(--parchment-dim);
+  font-size:.78rem;padding:.34rem .5rem;border-left:2px solid transparent;transition:.15s}
+nav.toc a .n{font-family:var(--mono);font-size:.58rem;color:var(--parchment-faint);min-width:1.4rem}
+nav.toc a:hover{color:var(--parchment);border-left-color:var(--line-strong)}
+nav.toc a.active{color:var(--gold-bright);border-left-color:var(--gold);background:linear-gradient(90deg,rgba(217,164,65,.07),transparent)}
+nav.toc a.active .n{color:var(--gold)}
+.rail .foot{margin-top:2.2rem;padding-top:1.2rem;border-top:1px solid var(--line);
+  font-size:.68rem;color:var(--parchment-faint);line-height:1.8}
+.rail .foot code{font-family:var(--mono);font-size:.62rem;color:var(--parchment-dim);background:none;padding:0}
+main{padding:0 3.2rem 6rem 3.2rem;max-width:1080px}
+
+/* ── hero ───────────────────────────────────────────────── */
+.hero{padding:4.5rem 0 2.6rem;position:relative}
+.hero .kicker{font-family:var(--mono);font-size:.64rem;letter-spacing:.3em;text-transform:uppercase;color:var(--gold);margin-bottom:1.4rem}
+.hero h1{font-family:var(--serif);font-weight:300;font-size:clamp(2.6rem,5.2vw,4.3rem);line-height:1.04;letter-spacing:-.01em}
+.hero h1 em{font-style:italic;font-weight:400;color:var(--gold-bright)}
+.hero .paradigm{margin-top:1.9rem;max-width:62ch;font-size:1.02rem;color:var(--parchment-dim);border-left:2px solid var(--gold);padding-left:1.2rem}
+.hero .paradigm strong{color:var(--parchment);font-weight:500}
+.hero .meta{display:flex;gap:2.6rem;flex-wrap:wrap;margin-top:2.4rem}
+.hero .meta .cell .k{font-family:var(--mono);font-size:.56rem;letter-spacing:.2em;text-transform:uppercase;color:var(--parchment-faint)}
+.hero .meta .cell .v{font-family:var(--serif);font-size:1.5rem;font-weight:400;color:var(--parchment);margin-top:.25rem;line-height:1.2}
+.hero .meta .cell .v small{font-family:var(--body);font-size:.7rem;color:var(--parchment-faint);display:block;font-weight:300;letter-spacing:0}
+.stamp{position:absolute;top:3.4rem;right:0;transform:rotate(3deg);text-align:center;
+  border:2px solid var(--gold);outline:1px solid var(--line-strong);outline-offset:4px;
+  padding:.85rem 1.25rem;font-family:var(--mono);color:var(--gold-bright);letter-spacing:.28em;
+  font-size:.66rem;text-transform:uppercase;border-radius:2px;background:rgba(217,164,65,.05)}
+.stamp .big{font-size:1rem;letter-spacing:.42em;margin-top:.35rem}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.js .hero .kicker,.js .hero h1,.js .hero .paradigm,.js .hero .meta{animation:rise .8s cubic-bezier(.2,.7,.3,1) both}
+.js .hero h1{animation-delay:.12s}.js .hero .paradigm{animation-delay:.3s}.js .hero .meta{animation-delay:.45s}
+
+/* ── sections ───────────────────────────────────────────── */
+section{margin-top:4.2rem}
+.sec-head{display:flex;align-items:baseline;gap:1rem;margin-bottom:1.6rem;padding-bottom:.9rem;border-bottom:1px solid var(--line)}
+.sec-head .no{font-family:var(--mono);font-size:.66rem;color:var(--gold);letter-spacing:.2em}
+.sec-head h2{font-family:var(--serif);font-weight:400;font-size:1.7rem;letter-spacing:.01em}
+.sec-head .sub{margin-left:auto;font-size:.78rem;color:var(--parchment-faint);font-style:italic}
+.lead{color:var(--parchment-dim);max-width:68ch;margin-bottom:1.6rem;font-size:.95rem}
+
+/* ── tables ─────────────────────────────────────────────── */
+table{width:100%;border-collapse:collapse;font-size:.88rem}
+th{font-family:var(--mono);font-size:.58rem;letter-spacing:.18em;text-transform:uppercase;color:var(--parchment-faint);
+  text-align:left;font-weight:500;padding:.6rem .8rem;border-bottom:1px solid var(--line-strong)}
+td{padding:.65rem .8rem;border-bottom:1px solid var(--line);vertical-align:top;color:var(--parchment-dim)}
+td:first-child{color:var(--parchment)}
+tbody tr:hover td,table:not(.adhoc) tr:hover td{background:rgba(217,164,65,.03)}
+
+/* ── AD groups & cards ──────────────────────────────────── */
+.group{margin-top:3.4rem}
+.group>h3{font-family:var(--serif);font-weight:400;font-size:1.3rem;display:flex;align-items:baseline;gap:.9rem}
+.group>h3 .rn{font-family:var(--mono);font-size:.64rem;color:var(--gold);letter-spacing:.15em}
+.group>h3 .count{margin-left:auto;font-family:var(--mono);font-size:.6rem;color:var(--parchment-faint);letter-spacing:.1em}
+.group .gdesc{font-size:.84rem;color:var(--parchment-faint);font-style:italic;margin:.3rem 0 1.3rem}
+.ad{display:grid;grid-template-columns:64px 1fr;gap:1.4rem;padding:1.5rem 1.4rem;margin-bottom:1rem;
+  background:var(--ink-2);border:1px solid var(--line);border-radius:3px;
+  transition:opacity .35s,transform .25s,background .25s,border-color .25s,box-shadow .25s}
+.ad:hover{border-color:var(--line-strong);background:var(--ink-3);transform:translateY(-2px);
+  box-shadow:0 10px 30px -18px rgba(0,0,0,.9)}
+.ad .num{font-family:var(--serif);font-style:italic;font-weight:300;font-size:2.1rem;color:var(--gold);line-height:1}
+.ad .num::after{content:"";display:block;width:22px;height:1px;background:var(--line-strong);margin-top:.55rem}
+.ad h4{font-family:var(--serif);font-weight:400;font-size:1.08rem;line-height:1.35}
+.ad .tags{display:inline-flex;gap:.4rem;margin-left:.6rem;vertical-align:middle;flex-wrap:wrap}
+.tag{font-family:var(--mono);font-size:.52rem;letter-spacing:.16em;text-transform:uppercase;
+  padding:.2rem .45rem;border-radius:2px;border:1px solid}
+.tag.assumption{color:var(--rust);border-color:rgba(201,106,69,.5);background:rgba(201,106,69,.07)}
+.tag.adopted{color:var(--moss);border-color:rgba(123,161,132,.5);background:rgba(123,161,132,.07)}
+.ad dl{margin-top:.9rem;display:grid;gap:.7rem}
+.ad dl>div{display:grid;grid-template-columns:86px 1fr;gap:.9rem}
+.ad dt{font-family:var(--mono);font-size:.56rem;letter-spacing:.2em;text-transform:uppercase;padding-top:.3rem}
+.ad dt.b{color:var(--slate)}
+.ad dt.p{color:var(--rust)}
+.ad dt.r{color:var(--gold)}
+.ad dd{font-size:.9rem;color:var(--parchment-dim)}
+.ad .rule dd{color:var(--parchment);font-size:.93rem}
+.ad.dim{opacity:.14;filter:grayscale(.7)}
+.ad a.xref{color:var(--gold-bright);text-decoration:none;border-bottom:1px dotted rgba(217,164,65,.5)}
+.ad a.xref:hover{color:#fff}
+
+/* ── diagrams ───────────────────────────────────────────── */
+.diagram{background:var(--ink-2);border:1px solid var(--line);border-radius:3px;padding:1.8rem 1.4rem;margin-bottom:1.4rem;overflow-x:auto}
+.diagram .mm{display:flex;justify-content:center;min-height:120px;align-items:center}
+.diagram .mm svg{max-width:100%}
+.mm-fallback{font-family:var(--mono);font-size:.72rem;line-height:1.7;color:var(--parchment-dim);white-space:pre;overflow-x:auto}
+details.src{margin-top:.4rem}
+details.src summary{font-family:var(--mono);font-size:.58rem;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--parchment-faint);cursor:pointer;list-style:none;padding:.2rem 0}
+details.src[open] summary::before{content:"▾ "}
+details.src:not([open]) summary::before{content:"▸ "}
+details.src pre{margin-top:.7rem;font-family:var(--mono);font-size:.72rem;line-height:1.65;color:var(--parchment-dim);
+  background:var(--ink);border-left:2px solid var(--line-strong);padding:1rem;overflow-x:auto}
+.tree{font-family:var(--mono);font-size:.78rem;line-height:1.8;color:var(--parchment-dim);
+  background:var(--ink-2);border:1px solid var(--line);border-left:2px solid var(--gold);
+  border-radius:3px;padding:1.4rem 1.6rem;overflow-x:auto;margin-bottom:1.6rem}
+.tree .f{color:var(--gold-bright)}
+.tree .c{color:var(--parchment-faint)}
+
+/* ── footer ─────────────────────────────────────────────── */
+footer{margin-top:5rem;padding-top:1.6rem;border-top:1px solid var(--line);
+  font-size:.74rem;color:var(--parchment-faint);line-height:1.9}
+footer code{font-family:var(--mono);font-size:.68rem;color:var(--parchment-dim);background:none;padding:0}
+
+/* ── responsive ─────────────────────────────────────────── */
+@media (max-width:980px){
+  .shell{grid-template-columns:1fr}
+  .rail{position:static;height:auto;border-right:none;border-bottom:1px solid var(--line);padding:1.6rem}
+  nav.toc{display:flex;flex-wrap:wrap;gap:.2rem}
+  nav.toc a{border-left:none;padding:.3rem .5rem}
+  nav.toc a.active{background:none;border-bottom:2px solid var(--gold)}
+  main{padding:0 1.4rem 4rem}
+  .stamp{position:static;display:inline-block;margin-top:1.6rem;transform:rotate(-2deg)}
+  .ad{grid-template-columns:1fr;gap:.5rem}
+  .ad .num{font-size:1.5rem}
+  .ad dl>div{grid-template-columns:74px 1fr;gap:.6rem}
+  code{white-space:normal;word-break:break-word}
+  main{min-width:0}
+}
+
+/* ── print ──────────────────────────────────────────────── */
+@media print{
+  :root{--ink:#fff;--ink-2:#fff;--ink-3:#fff;--parchment:#1a1a1a;--parchment-dim:#333;--parchment-faint:#666;
+        --gold:#8a6414;--gold-bright:#5f450a;--line:rgba(0,0,0,.15);--line-strong:rgba(0,0,0,.35);
+        --rust:#8a3c1e;--slate:#3a5661;--moss:#2f5c3e}
+  body{background:#fff;color:#1a1a1a;font-size:11pt}
+  .bg-constellation,.bg-vignette,.bg-grain,#progress{display:none}
+  .shell{grid-template-columns:1fr}
+  .rail{display:none}
+  main{max-width:none;padding:0}
+  .stamp{position:static;transform:none;display:inline-block;margin-top:1rem;border-color:#8a6414;color:#8a6414;background:none}
+  .ad,.diagram,.tree,section{break-inside:avoid}
+  section{margin-top:1.4rem}
+  .group{margin-top:1.2rem}
+  .ad{border-color:rgba(0,0,0,.25);box-shadow:none;background:#fff}
+  a.xref{border-bottom-color:rgba(0,0,0,.4)}
+  code{background:none;color:#5f450a}
+}
+</style>
+</head>
+<body>
+
+<div id="progress"></div>
+
+<!-- constellation: the world as a graph -->
+<svg class="bg-constellation" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+  <g stroke="#d9a441" stroke-width="1" fill="none">
+    <line x1="120" y1="140" x2="320" y2="90"/>
+    <line x1="320" y1="90" x2="540" y2="180"/>
+    <line x1="540" y1="180" x2="760" y2="120"/>
+    <line x1="760" y1="120" x2="980" y2="220"/>
+    <line x1="980" y1="220" x2="870" y2="380"/>
+    <line x1="870" y1="380" x2="640" y2="430"/>
+    <line x1="640" y1="430" x2="210" y2="380"/>
+    <line x1="210" y1="380" x2="80" y2="360"/>
+    <line x1="80" y1="360" x2="120" y2="140"/>
+    <line x1="640" y1="430" x2="700" y2="640"/>
+    <line x1="700" y1="640" x2="940" y2="700"/>
+    <line x1="940" y1="700" x2="860" y2="820"/>
+    <line x1="700" y1="640" x2="860" y2="820"/>
+    <line x1="700" y1="640" x2="480" y2="700"/>
+    <line x1="480" y1="700" x2="300" y2="620"/>
+    <line x1="300" y1="620" x2="240" y2="820"/>
+    <line x1="480" y1="700" x2="240" y2="820"/>
+    <line x1="300" y1="620" x2="210" y2="380"/>
+    <line x1="940" y1="700" x2="1120" y2="560"/>
+    <line x1="1120" y1="560" x2="1300" y2="620"/>
+    <line x1="1300" y1="620" x2="1280" y2="420"/>
+    <line x1="1280" y1="420" x2="1040" y2="340"/>
+    <line x1="1040" y1="340" x2="1120" y2="560"/>
+    <line x1="1040" y1="340" x2="870" y2="380"/>
+    <line x1="1040" y1="340" x2="980" y2="220"/>
+    <line x1="1280" y1="420" x2="1360" y2="240"/>
+    <line x1="1360" y1="240" x2="980" y2="220"/>
+  </g>
+  <g fill="#d9a441">
+    <circle cx="120" cy="140" r="3"/><circle cx="320" cy="90" r="2.4"/><circle cx="540" cy="180" r="3.4"/>
+    <circle cx="210" cy="380" r="3"/><circle cx="760" cy="120" r="2.2"/><circle cx="980" cy="220" r="3.2"/>
+    <circle cx="870" cy="380" r="2.6"/><circle cx="640" cy="430" r="3.6"/><circle cx="700" cy="640" r="3"/>
+    <circle cx="480" cy="700" r="2.6"/><circle cx="300" cy="620" r="2.4"/><circle cx="940" cy="700" r="3.2"/>
+    <circle cx="1120" cy="560" r="2.8"/><circle cx="1040" cy="340" r="3"/><circle cx="1300" cy="620" r="2.4"/>
+    <circle cx="1280" cy="420" r="2.8"/><circle cx="1360" cy="240" r="2.2"/><circle cx="80" cy="360" r="2"/>
+    <circle cx="860" cy="820" r="2.6"/><circle cx="240" cy="820" r="2.4"/>
+  </g>
+</svg>
+<div class="bg-vignette"></div>
+<div class="bg-grain"></div>
+
+<div class="shell">
+
+  <!-- ══ RAIL ══ -->
+  <aside class="rail">
+    <div class="mark">mythos<em>Circle</em></div>
+    <div class="mark-sub">Architecture Spine</div>
+    <input id="search" type="text" placeholder="search 25 ADs…  ( / )" autocomplete="off" spellcheck="false">
+    <div class="filters">
+      <span class="chip on" data-filter="all">all 25</span>
+      <span class="chip" data-filter="assumption">assumption 7</span>
+      <span class="chip" data-filter="adopted">adopted 1</span>
+    </div>
+    <nav class="toc" id="toc">
+      <a href="#paradigm"><span class="n">00</span> The Paradigm</a>
+      <a href="#invariants"><span class="n">01</span> Invariants &amp; Rules</a>
+      <a href="#seed"><span class="n">07</span> Structural Seed</a>
+      <a href="#deploy"><span class="n">08</span> Deployment</a>
+      <a href="#entities"><span class="n">09</span> Core Entities</a>
+      <a href="#conventions"><span class="n">10</span> Conventions</a>
+      <a href="#stack"><span class="n">11</span> Stack</a>
+      <a href="#caps"><span class="n">12</span> Capability Map</a>
+      <a href="#deferred"><span class="n">13</span> Deferred</a>
+    </nav>
+    <div class="foot">
+      source&nbsp; <code>ARCHITECTURE-SPINE.md</code><br>
+      binds&nbsp; PRD §3 A–G · NFR 1–12<br>
+      lint&nbsp; clean (2 known false-positives)
+    </div>
+  </aside>
+
+  <!-- ══ MAIN ══ -->
+  <main>
+
+    <!-- HERO -->
+    <header class="hero" id="top">
+      <div class="kicker">initiative altitude · build substrate</div>
+      <h1>mythosCircle<br><em>Architecture Spine</em></h1>
+      <div class="paradigm">
+        <strong>Event-sourced graph-of-record + FIFO generation pipeline.</strong> The world is a versioned graph
+        stored as an append-only event log with a materialized latest revision. Everything that changes the world —
+        guided build-in, generation, DM edits, future imports — stages its change and lands through one transactional
+        commit path that produces a new revision. Generation itself is a single serial worker queue: LLM output never
+        writes to the graph directly; it produces <em>candidates</em> that only exist until the DM accepts one.
+      </div>
+      <div class="meta">
+        <div class="cell"><div class="k">Invariants</div><div class="v">25<small>binding decisions, AD-1…AD-25</small></div></div>
+        <div class="cell"><div class="k">Open</div><div class="v">7<small>[ASSUMPTION] · deferred, non-blocking</small></div></div>
+        <div class="cell"><div class="k">Verified</div><div class="v">1<small>AD-14 · live llama-server deployment</small></div></div>
+        <div class="cell"><div class="k">Footprint</div><div class="v">1 machine<small>owner's RTX-3090 server, Phase 1</small></div></div>
+      </div>
+      <div class="stamp">status<br><span class="big">final</span><br>2026-08-23</div>
+    </header>
+
+    <!-- 00 PARADIGM -->
+    <section id="paradigm">
+      <div class="sec-head"><span class="no">00</span><h2>Where things live</h2><span class="sub">layers → namespaces</span></div>
+      <p class="lead">One rule underlies the layout: <code>store/</code> is the only writer of world state,
+      <code>pipeline/</code> only proposes, and <code>api/</code> only orchestrates. Every namespace below is the
+      physical address of a layer, so a builder never has to guess where a concern belongs.</p>
+      <table>
+        <tr><th>Layer</th><th>Lives in</th></tr>
+        <tr><td>Web client (Vue SPA)</td><td><code>frontend/</code></td></tr>
+        <tr><td>API service (FastAPI)</td><td><code>backend/app/api/</code></td></tr>
+        <tr><td>World-state store (revisions, event log, queue, media manifest)</td><td><code>backend/app/store/</code></td></tr>
+        <tr><td>Provider adapters (LLM, image, video)</td><td><code>backend/app/providers/</code></td></tr>
+        <tr><td>Media service</td><td><code>backend/app/media/</code></td></tr>
+        <tr><td>Ops (Caddy TLS, backup/restore, systemd)</td><td><code>deploy/</code></td></tr>
+      </table>
+    </section>
+
+    <!-- INVARIANTS -->
+    <section id="invariants">
+      <div class="sec-head"><span class="no">01–06</span><h2>Invariants &amp; Rules</h2><span class="sub">the 25 ADs, grouped</span></div>
+      <p class="lead"><strong style="color:var(--slate)">Binds</strong> — what the decision locks to (PRD clause or other AD).
+      <strong style="color:var(--rust)">Prevents</strong> — the drift that would break it if a builder went off-spine.
+      <strong style="color:var(--gold)">Rule</strong> — the binding text. Gold cross-references are clickable.</p>
+
+      <!-- GROUP I -->
+      <div class="group" id="g-state">
+        <h3><span class="rn">I</span> World State &amp; Revision <span class="count">7 decisions</span></h3>
+        <div class="gdesc">One versioned graph. One commit path. Nothing else writes.</div>
+
+        <article class="ad" id="ad-1" data-tags="">
+          <div class="num">01</div>
+          <div>
+            <h4>One graph-of-record, one commit path</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §3 A, §4 NFR 2</dd></div>
+              <div><dt class="p">prevents</dt><dd>two builders picking different world-state shapes (graph vs. per-entity documents) or letting DM edits and generation write by separate mechanisms.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>the world is one versioned graph (entities + typed edges) per campaign. Every world-state change — guided build-in, generation accept, DM edit, cascade delete, future import — lands through the store's commit path, which appends events and produces exactly one new revision. No component outside <code>store/</code> writes world state.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-2" data-tags="">
+          <div class="num">02</div>
+          <div>
+            <h4>Atomic subgraph commits; per-transaction undo</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §4 NFR 3</dd></div>
+              <div><dt class="p">prevents</dt><dd>partial generations (3 of 5 entities committed) and an undo that crosses a generation boundary.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>a candidate's full subgraph commits in one transaction against the latest revision. Every commit produces exactly one revision; the revision owns its events (each event carries <code>revision_id</code>) and undo = one compensating commit that reverts that revision's state deltas. A DM edit made while a candidate is being evaluated forces a visible choice: rebase the candidate against the new revision or reject it — never silent overwrite. Accepting a regeneration of an existing entity replaces its content in place, preserving the entity's ULID — inbound edges, media, and references survive; edge re-targeting is forbidden.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-5" data-tags="">
+          <div class="num">05</div>
+          <div>
+            <h4>Closed, directional edge vocabulary; zero dangling edges</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §3 A</dd></div>
+              <div><dt class="p">prevents</dt><dd>free-form labels that the Phase-3 rule engine cannot consume, and orphaned edges that compute wrong consequences.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>edge types come from a fixed vocabulary defined in Phase 1 (<code>relationship, debt, grudge, loyalty, member_of, located_in, rival_of, kin_of, ally_of, enemy_of</code> — starter set, extensible by adding a type, never by free text); edges are directed and carry a per-type counter (semantics in AD-23). Deleting an entity with live edges requires explicit cascade confirmation listing affected entities; referential integrity (zero dangling edges) holds after every commit.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-7" data-tags="">
+          <div class="num">07</div>
+          <div>
+            <h4>Deterministic state, narrating LLM</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §3 G</dd></div>
+              <div><dt class="p">prevents</dt><dd>the LLM drifting into state-mutation, which compounds hallucinations and breaks determinism.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>LLM output may <em>propose</em> state (candidates) but only the DM-accepted commit mutates the graph. Session actions are typed events (<code>action_type</code>, actors, targets, <code>campaign_time</code> in the campaign's AD-18 unit, note) appended to the same event store, where actor/target references are ULIDs and <code>action_type</code> is a closed set (Phase 1: <code>session_action</code>, <code>advance_time</code>); campaign time advances only via <code>advance_time</code>. A Phase-3 rule engine will consume events to compute deltas; the LLM only narrates those deltas.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-13" data-tags="assumption">
+          <div class="num">13</div>
+          <div>
+            <h4>SQLite is the single state store <span class="tags"><span class="tag assumption">assumption</span></span></h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>all</dd></div>
+              <div><dt class="p">prevents</dt><dd>two builders splitting state (Postgres for state + JSON for events + in-memory queue).</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>one SQLite database holds world state (current revision tables), the append-only event log, job queue, media manifest, and accounts. WAL mode; single writer (the API process). All access through <code>store/</code> — no raw SQL elsewhere.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-23" data-tags="">
+          <div class="num">23</div>
+          <div>
+            <h4>Hard-truth entity model; relationships carry counters</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §3 A, G</dd></div>
+              <div><dt class="p">prevents</dt><dd>world state becoming a bag of free-text lore the simulation cannot touch, and two builders modeling goals/lifespan/economy differently.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>every entity carries structured hard truths — character: goals, life span, stat block; faction and place (city/country subtypes): goals, abstract economy (level + growth + key resources), member/located relations. Every relationship is a typed directed edge with a counter whose semantics are defined per type (debt = amount, grudge/loyalty = score, ally/enemy = intensity). Counters change only via commits (session events, time progression). The Phase-3 simulation reads and writes counters deterministically; the LLM only narrates the outcome.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-25" data-tags="">
+          <div class="num">25</div>
+          <div>
+            <h4>Whole-campaign deletion is total</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §4 NFR 10</dd></div>
+              <div><dt class="p">prevents</dt><dd>campaign delete implemented as soft-hide or partial cleanup, orphaning state, event history, and media.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>deleting a campaign is a hard delete through the store, with explicit confirmation: revision tables, event log, queue entries, media-manifest rows, and the campaign's media directory are all removed.</dd></div>
+            </dl>
+          </div>
+        </article>
+      </div>
+
+      <!-- GROUP II -->
+      <div class="group" id="g-gen">
+        <h3><span class="rn">II</span> Generation &amp; Retrieval <span class="count">6 decisions</span></h3>
+        <div class="gdesc">A serial queue over a bounded neighborhood; candidates stay staged until the DM accepts.</div>
+
+        <article class="ad" id="ad-3" data-tags="">
+          <div class="num">03</div>
+          <div>
+            <h4>Single FIFO queue, persisted, position visible</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §4 NFR 4</dd></div>
+              <div><dt class="p">prevents</dt><dd>two builders choosing concurrent inference (VRAM OOM on one GPU) or an in-memory queue that dies on restart.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>all generation jobs (text, image, video, simulate) enter one persistent FIFO queue; exactly one job runs at a time on the 3090; clients see their job's queue position (REST + WebSocket). No bypass path around the queue. Each job kind has one runner: text/build-in jobs run in the pipeline, image/video jobs run in the media service — both dispatch only through the queue worker.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-4" data-tags="">
+          <div class="num">04</div>
+          <div>
+            <h4>Retrieval over the graph, never whole-world context</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §4 NFR 2, 11</dd></div>
+              <div><dt class="p">prevents</dt><dd>context-bloat and two builders inventing different relevance rules.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>generation prompts are built from a bounded neighborhood of entities selected by strict graph traversal (AD-16); the full world never enters a prompt.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-15" data-tags="assumption">
+          <div class="num">15</div>
+          <div>
+            <h4>Candidates are staged, not live <span class="tags"><span class="tag assumption">assumption</span></span></h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §3 B</dd></div>
+              <div><dt class="p">prevents</dt><dd>rejected candidates leaking into the graph (a graveyard of unaccepted barkeeps).</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>generated candidates exist as <em>proposed</em> subgraphs in a staging area (DB rows, flag <code>proposed</code>), invisible to retrieval and export. Each proposal carries a <code>kind</code> — <code>build_in</code> | <code>entity</code> | <code>field</code> — and validation is per-kind (AD-24's shape applies to <code>entity</code> only; <code>build_in</code> proposals have no stat blocks; <code>field</code> proposals are scoped to one field of one entity). Accept = one transactional commit (AD-2). Reject/timeout = GC of the proposal. A proposal is all-or-nothing: a partial generation failure rolls back the whole candidate.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-16" data-tags="">
+          <div class="num">16</div>
+          <div>
+            <h4>Deterministic graph retrieval, no RAG</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>AD-4, PRD §4 NFR 2, 11</dd></div>
+              <div><dt class="p">prevents</dt><dd>embeddings, similarity, and "relevance" nobody can audit — a world state that drifts from what generation actually saw.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>retrieval is a bounded graph traversal from the target entity over typed edges (depth cap, entity cap — seed: 24 entities) against the latest revision. The prompt receives hard truths only: the full structured record of each reached entity (attributes, counters, goals, economy) plus its generated text, plus the request. No embeddings, no similarity, no full-text search. Same state + same request ⇒ same prompt.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-19" data-tags="assumption">
+          <div class="num">19</div>
+          <div>
+            <h4>All entry paths share staging → commit <span class="tags"><span class="tag assumption">assumption</span></span></h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §3 A, §7 Later</dd></div>
+              <div><dt class="p">prevents</dt><dd>the Phase-1 guided build-in and the Later import connectors (Obsidian/World Anvil/Kanka) each inventing their own writers.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>guided build-in is a job kind that digests notes into a proposed subgraph (AD-15); Later import connectors produce proposed subgraphs through the same pipeline. There is exactly one writer to world state: the commit path (AD-1).</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-24" data-tags="">
+          <div class="num">24</div>
+          <div>
+            <h4>Candidate shape contract</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §3 B (acceptance B)</dd></div>
+              <div><dt class="p">prevents</dt><dd>builders modeling candidates without the secret/rumor/hook triple or the existing-world edge — silently dropping the product's core promise ("the barkeep's secret pays off in act three").</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>each generation ask returns 2–3 candidates; every candidate carries a name, role, personality, the secret / rumor / party-hook triple, a 5e stat block (AD-23), and at least one typed edge into existing world state. Acceptance validates the ≥1 existing-world edge before the AD-2 commit.</dd></div>
+            </dl>
+          </div>
+        </article>
+      </div>
+
+      <!-- GROUP III -->
+      <div class="group" id="g-media">
+        <h3><span class="rn">III</span> Media, Export &amp; Backup <span class="count">3 decisions</span></h3>
+        <div class="gdesc">Media lives with its entity. Export never writes. Snapshots are real backups.</div>
+
+        <article class="ad" id="ad-10" data-tags="">
+          <div class="num">10</div>
+          <div>
+            <h4>Media owned by entities</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §3 C</dd></div>
+              <div><dt class="p">prevents</dt><dd>orphaned 24GB of portraits, and exports referencing dead files.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>media files live in <code>media/{campaign_id}/{entity_id}/</code>, are tracked in the DB media manifest, are written only by the media service, are reclaimed when their entity is deleted, and are reference-validated on export.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-11" data-tags="">
+          <div class="num">11</div>
+          <div>
+            <h4>Export is read-only, latest revision, validated</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §3 E</dd></div>
+              <div><dt class="p">prevents</dt><dd>exports mutating state or shipping unvalidated artifacts that break the "table-ready" promise.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>export reads the latest revision, produces a format-validated artifact (Markdown / Owlbear / RPGToken / Fantasy Grounds) with the stat block and portrait embedded, and counts validation failures as export-failure events. Stat blocks follow the SRD 5.1 field set (level for NPCs, CR for monsters). Owlbear export = media-service image URL + stat-block text (it has no documented token-JSON import); the full world state (all entities + typed edges + counters of the latest revision) is always exportable as JSON + Markdown, independent of VTT targets. Export never writes.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-12" data-tags="">
+          <div class="num">12</div>
+          <div>
+            <h4>Nightly snapshot + tested restore</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §4 NFR 5</dd></div>
+              <div><dt class="p">prevents</dt><dd>"exportable" being treated as a backup.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>a scheduled job snapshots the world-state DB (via the SQLite backup API — <code>VACUUM INTO</code> or <code>wal_checkpoint</code> + copy, never a raw file copy of a WAL-mode database) + media manifest to a second location on the machine; a restore script is exercised before beta launch and must restore from that exact snapshot path. Export is ownership, not backup.</dd></div>
+            </dl>
+          </div>
+        </article>
+      </div>
+
+      <!-- GROUP IV -->
+      <div class="group" id="g-platform">
+        <h3><span class="rn">IV</span> Platform &amp; Deployment <span class="count">5 decisions</span></h3>
+        <div class="gdesc">One machine, one process, OpenAI-compatible endpoints, Caddy in front.</div>
+
+        <article class="ad" id="ad-6" data-tags="">
+          <div class="num">06</div>
+          <div>
+            <h4>Provider abstraction via OpenAI-compatible endpoints</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §4 NFR 8</dd></div>
+              <div><dt class="p">prevents</dt><dd>vendor lock-in and a rewrite at OpenRouter migration.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>all LLM / image / video generation goes through provider adapters speaking OpenAI-compatible HTTP; moving from local to OpenRouter (or another vendor) is a config change, not a rewrite.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-8" data-tags="">
+          <div class="num">08</div>
+          <div>
+            <h4>Single-machine deployment</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §4 NFR 1</dd></div>
+              <div><dt class="p">prevents</dt><dd>distributed-component decisions (message brokers, object stores, k8s) that a one-server beta cannot run.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>the whole Phase-1 system runs on the owner's machine: one FastAPI process, one SQLite file, one media directory, local model servers, Caddy in front. Scaling, multi-node, and hosted tiers are out of scope until proven otherwise.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-14" data-tags="adopted">
+          <div class="num">14</div>
+          <div>
+            <h4>Local LLM served as an OpenAI-compatible server <span class="tags"><span class="tag adopted">adopted · user-verified</span></span></h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>AD-6</dd></div>
+              <div><dt class="p">prevents</dt><dd>the pipeline binding to one server's internals (llama-cpp-python vs. vLLM vs. REST) — which also decides how the abliterated model loads.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>the abliterated 14–20B model runs in a local OpenAI-compatible server process (llama.cpp <code>llama-server</code> is the seed choice: serial queue, Q4/Q5 on 24GB); the pipeline talks HTTP only. Model path + server command live in deploy config (owner picks the model at build).</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-21" data-tags="assumption">
+          <div class="num">21</div>
+          <div>
+            <h4>Caddy TLS front <span class="tags"><span class="tag assumption">assumption</span></span></h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>AD-9, PRD §4 NFR 6</dd></div>
+              <div><dt class="p">prevents</dt><dd>hand-rolled TLS/cert management on a personal server.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>Caddy terminates TLS in front of uvicorn; FastAPI binds localhost only.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-22" data-tags="assumption">
+          <div class="num">22</div>
+          <div>
+            <h4>Config: one TOML + env secrets <span class="tags"><span class="tag assumption">assumption</span></span></h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>all</dd></div>
+              <div><dt class="p">prevents</dt><dd>config scattered across dotenvs, YAMLs, and code defaults that drift per-environment.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>one <code>deploy/config.toml</code> (model paths, queue caps, retrieval k, provider URLs) + environment variables for secrets (tokens, OpenRouter keys later). No config in the client build.</dd></div>
+            </dl>
+          </div>
+        </article>
+      </div>
+
+      <!-- GROUP V -->
+      <div class="group" id="g-client">
+        <h3><span class="rn">V</span> Client &amp; Contracts <span class="count">3 decisions</span></h3>
+        <div class="gdesc">The wire contract is owned by the backend; the SPA derives everything from OpenAPI.</div>
+
+        <article class="ad" id="ad-17" data-tags="assumption">
+          <div class="num">17</div>
+          <div>
+            <h4>API + client contract <span class="tags"><span class="tag assumption">assumption</span></span></h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>all</dd></div>
+              <div><dt class="p">prevents</dt><dd>drifting ID formats, error shapes, and progress channels between backend and Vue builders.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>REST for CRUD + job submission; WebSocket for job progress/queue position, messages shaped <code>{type: job_progress|job_done|job_failed|queue_changed, job_id, state, queue_position?, progress?}</code>. The wire contract is owned by the backend: Pydantic schemas are the single source of truth, and the frontend derives its types from the generated OpenAPI. IDs are ULID strings, prefixed in logs only (<code>entity:</code>, <code>edge:</code>, <code>job:</code>, <code>event:</code>); timestamps UTC ISO-8601; error envelope <code>{code, message, details?}</code>; 4xx = user error (never a state change), 5xx = server error.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-18" data-tags="">
+          <div class="num">18</div>
+          <div>
+            <h4>Campaign time is a campaign timescale, not wall clock</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §3 F, G</dd></div>
+              <div><dt class="p">prevents</dt><dd>Simulate History depending on real time (a deterministic simulation can't run twice on different dates), and a day-counter that can't run century-long campaigns.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>each campaign declares a time granularity (day / month / year / century) and calendar label. Session events advance campaign time; action events and simulation input reference campaign time units; no wall-clock value enters simulation input.</dd></div>
+            </dl>
+          </div>
+        </article>
+
+        <article class="ad" id="ad-20" data-tags="assumption">
+          <div class="num">20</div>
+          <div>
+            <h4>Vue 3 SPA, TypeScript, Pinia <span class="tags"><span class="tag assumption">assumption</span></span></h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §4 NFR 12</dd></div>
+              <div><dt class="p">prevents</dt><dd>framework re-architecture when the Phase-2 graph UI lands.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>Vue 3 + Vite + TypeScript + Pinia; the Phase-2 graph visualizer (Cytoscape.js vs. Vue Flow) is a contained view dependency — it reads world state from the Pinia stores and never fetches or owns state (no direct API calls, no private caches).</dd></div>
+            </dl>
+          </div>
+        </article>
+      </div>
+
+      <!-- GROUP VI -->
+      <div class="group" id="g-security">
+        <h3><span class="rn">VI</span> Security &amp; Access <span class="count">1 decision</span></h3>
+        <div class="gdesc">Invited accounts, per-campaign ownership, private by construction.</div>
+
+        <article class="ad" id="ad-9" data-tags="">
+          <div class="num">09</div>
+          <div>
+            <h4>Invited accounts, per-campaign ownership, private</h4>
+            <dl>
+              <div><dt class="b">binds</dt><dd>PRD §4 NFR 6</dd></div>
+              <div><dt class="p">prevents</dt><dd>two builders assuming public registries or party-shared campaigns in Phase 1.</dd></div>
+              <div class="rule"><dt class="r">rule</dt><dd>Phase 1 auth = local email + password, carried in an httpOnly session cookie (Secure, SameSite=Lax, path <code>/api</code>); every campaign belongs to one invited user and is private. Sharing (cards/gallery, party-shared) is post-beta and must re-enter through AD-1's commit path, not around it.</dd></div>
+            </dl>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- 07 SEED -->
+    <section id="seed">
+      <div class="sec-head"><span class="no">07</span><h2>Structural Seed</h2><span class="sub">dependency direction + minimal tree</span></div>
+      <p class="lead">Rule the diagram encodes: <code>api/</code> orchestrates; <code>pipeline/</code> proposes;
+      <code>store/</code> commits; <code>providers/</code> are leaves (no inbound deps except from pipeline/media);
+      nothing except <code>store/</code> writes world state.</p>
+      <div class="diagram">
+        <div class="mm" data-mm="dep">graph TD
+  UI[Vue SPA frontend/] --> API[API layer app/api/]
+  API --> STORE[World-state store app/store/]
+  API --> MEDIA[Media service app/media/]
+  API --> PIPE[Generation pipeline app/pipeline/]
+  PIPE --> STORE
+  PIPE --> PROV[Provider adapters app/providers/]
+  MEDIA --> PROV
+  MEDIA --> STORE
+  OPS[Ops deploy/ Caddy + backup] -.-> API
+  OPS -.-> STORE</div>
+        <details class="src"><summary>mermaid source</summary><pre>graph TD
+  UI[Vue SPA frontend/] --&gt; API[API layer app/api/]
+  API --&gt; STORE[World-state store app/store/]
+  API --&gt; MEDIA[Media service app/media/]
+  API --&gt; PIPE[Generation pipeline app/pipeline/]
+  PIPE --&gt; STORE
+  PIPE --&gt; PROV[Provider adapters app/providers/]
+  MEDIA --&gt; PROV
+  MEDIA --&gt; STORE
+  OPS[Ops deploy/ Caddy + backup] -.-&gt; API
+  OPS -.-&gt; STORE</pre></details>
+      </div>
+      <div class="tree">mythosCircle/
+  <span class="f">backend/</span>
+    <span class="f">app/</span>
+      <span class="f">api/</span>        <span class="c"># routes: campaigns, entities, edges, jobs, media, exports, auth</span>
+      <span class="f">core/</span>       <span class="c"># config, auth, errors, events</span>
+      <span class="f">store/</span>      <span class="c"># revisions, event log, commit path, queue, media manifest</span>
+      <span class="f">pipeline/</span>   <span class="c"># job runner, retrieval, generators (character/faction/place/simulate)</span>
+      <span class="f">providers/</span>  <span class="c"># llm, image, video — OpenAI-compatible adapters</span>
+      <span class="f">media/</span>      <span class="c"># media service (write/reclaim/validate)</span>
+    <span class="f">tests/</span>        <span class="c"># store + pipeline unit tests</span>
+  <span class="f">frontend/</span>
+    <span class="f">src/</span>          <span class="c"># Vue SPA: views per capability, Pinia world-state stores</span>
+  <span class="f">deploy/</span>         <span class="c"># config.toml, caddy, systemd units, backup cron + restore script</span></div>
+    </section>
+
+    <!-- 08 DEPLOYMENT -->
+    <section id="deploy">
+      <div class="sec-head"><span class="no">08</span><h2>Deployment</h2><span class="sub">single machine — AD-8</span></div>
+      <div class="diagram">
+        <div class="mm" data-mm="deploy">graph LR
+  DM[Invited DM browser] -->|TLS| CADDY[Caddy]
+  CADDY --> UV[uvicorn FastAPI, localhost]
+  UV --> DB[(SQLite world-state + events + queue + media manifest)]
+  UV --> MEDDIR[media/ directory]
+  UV -->|OpenAI-compatible HTTP| LLM[llama-server, RTX 3090, abliterated 14-20B]
+  UV -->|HTTP| IMG[local image server]
+  CRON[nightly backup cron] --> DB
+  CRON --> MEDDIR</div>
+        <details class="src"><summary>mermaid source</summary><pre>graph LR
+  DM[Invited DM browser] --&gt;|TLS| CADDY[Caddy]
+  CADDY --&gt; UV[uvicorn FastAPI, localhost]
+  UV --&gt; DB[(SQLite world-state + events + queue + media manifest)]
+  UV --&gt; MEDDIR[media/ directory]
+  UV --&gt;|OpenAI-compatible HTTP| LLM[llama-server, RTX 3090, abliterated 14-20B]
+  UV --&gt;|HTTP| IMG[local image server]
+  CRON[nightly backup cron] --&gt; DB
+  CRON --&gt; MEDDIR</pre></details>
+      </div>
+    </section>
+
+    <!-- 09 ENTITIES -->
+    <section id="entities">
+      <div class="sec-head"><span class="no">09</span><h2>Core Entities</h2><span class="sub">names + relationships only</span></div>
+      <div class="diagram">
+        <div class="mm" data-mm="erd">erDiagram
+  USER ||--o{ CAMPAIGN : owns
+  CAMPAIGN ||--o{ ENTITY : contains
+  CAMPAIGN ||--o{ REVISION : versions
+  REVISION ||--o{ EVENT : owns
+  ENTITY }o--o{ ENTITY : "typed directed edge (counter)"
+  ENTITY ||--o{ MEDIA : has
+  JOB }o--|| CAMPAIGN : runs_on
+  JOB |o--o{ ENTITY : proposes</div>
+        <details class="src"><summary>mermaid source</summary><pre>erDiagram
+  USER ||--o{ CAMPAIGN : owns
+  CAMPAIGN ||--o{ ENTITY : contains
+  CAMPAIGN ||--o{ REVISION : versions
+  REVISION ||--o{ EVENT : owns
+  ENTITY }o--o{ ENTITY : "typed directed edge (counter)"
+  ENTITY ||--o{ MEDIA : has
+  JOB }o--|| CAMPAIGN : runs_on
+  JOB |o--o{ ENTITY : proposes</pre></details>
+      </div>
+    </section>
+
+    <!-- 10 CONVENTIONS -->
+    <section id="conventions">
+      <div class="sec-head"><span class="no">10</span><h2>Consistency Conventions</h2><span class="sub">cross-cutting, applies everywhere</span></div>
+      <table>
+        <tr><th>Concern</th><th>Convention</th></tr>
+        <tr><td>Naming</td><td><code>snake_case</code> Python, <code>kebab-case</code> API routes, <code>camelCase</code> TS/Vue; entity/edge/job/event IDs are ULIDs</td></tr>
+        <tr><td>Data &amp; formats</td><td>UTC ISO-8601 timestamps; error envelope <code>{code, message, details?}</code>; cursor pagination</td></tr>
+        <tr><td>State &amp; cross-cutting</td><td>mutation only via store commit; structured JSON-lines logs to file; generation failures never mutate state; all jobs idempotent by job-id; each job declares a max LLM/media call budget from config — exceeding it fails the job</td></tr>
+        <tr><td>Testing</td><td>store + pipeline carry unit tests for commit/undo/retrieval (deterministic fixtures); no UI e2e in beta (owner dogfoods)</td></tr>
+      </table>
+    </section>
+
+    <!-- 11 STACK -->
+    <section id="stack">
+      <div class="sec-head"><span class="no">11</span><h2>Stack</h2><span class="sub">seed — verified at Finalize; the code owns this once it exists</span></div>
+      <table>
+        <tr><th>Name</th><th>Version</th></tr>
+        <tr><td>Python</td><td>3.12</td></tr>
+        <tr><td>FastAPI</td><td>latest stable (0.14x as of 2026-08)</td></tr>
+        <tr><td>SQLAlchemy 2 + SQLite (WAL)</td><td>2.x</td></tr>
+        <tr><td>Pydantic</td><td>v2</td></tr>
+        <tr><td>Vue</td><td>3.5</td></tr>
+        <tr><td>Vite + TypeScript</td><td>8.x / 7.x</td></tr>
+        <tr><td>Pinia</td><td>4.x</td></tr>
+        <tr><td>llama.cpp (<code>llama-server</code>)</td><td>latest stable</td></tr>
+        <tr><td>Caddy</td><td>2.x</td></tr>
+        <tr><td>Image/video model</td><td>owner picks at build (adapter interface already bound, AD-6)</td></tr>
+      </table>
+    </section>
+
+    <!-- 12 CAPS -->
+    <section id="caps">
+      <div class="sec-head"><span class="no">12</span><h2>Capability → Architecture Map</h2><span class="sub">where each PRD capability lands</span></div>
+      <table>
+        <tr><th>Capability / Area</th><th>Lives in</th><th>Governed by</th></tr>
+        <tr><td>A. World state</td><td><code>store/</code></td><td>AD-1, 2, 5, 13, 23</td></tr>
+        <tr><td>B. Entity generation</td><td><code>pipeline/</code> → <code>store/</code></td><td>AD-2, 3, 4, 15, 16, 19</td></tr>
+        <tr><td>C. Media generation</td><td><code>media/</code> + <code>pipeline/</code></td><td>AD-3, 6, 10</td></tr>
+        <tr><td>D. Relationship graph <em>(P2)</em></td><td><code>frontend/</code> (view only)</td><td>AD-20</td></tr>
+        <tr><td>E. Export &amp; VTT</td><td><code>api/</code> (read-only)</td><td>AD-10, 11</td></tr>
+        <tr><td>F. Session logger <em>(P3)</em></td><td><code>api/</code> + <code>store/</code> events</td><td>AD-7, 18, 23</td></tr>
+        <tr><td>G. Simulate History <em>(P3)</em></td><td><code>store/</code> events → rule engine (future)</td><td>AD-7, 18, 23</td></tr>
+      </table>
+    </section>
+
+    <!-- 13 DEFERRED -->
+    <section id="deferred">
+      <div class="sec-head"><span class="no">13</span><h2>Deferred</h2><span class="sub">decisions parked with revisit conditions</span></div>
+      <table>
+        <tr><th>Decision</th><th>Revisit when</th></tr>
+        <tr><td>Image/video model + server choice (interface already bound)</td><td>at build, owner's call</td></tr>
+        <tr><td>Graph traversal performance (neighborhood materialization/caching)</td><td>graph outgrows per-commit traversal</td></tr>
+        <tr><td>Graph visualizer library (Cytoscape.js vs. Vue Flow)</td><td>Phase-2 build</td></tr>
+        <tr><td>OpenRouter endpoints + credit multipliers</td><td>post-beta migration (PRD §5)</td></tr>
+        <tr><td>Session-recording transcription</td><td>Phase 3</td></tr>
+        <tr><td>Simulate History rule engine (rule authoring, delta correctness)</td><td>Phase 3 spec</td></tr>
+        <tr><td>i18n (Turkish)</td><td>if beta DMs are non-English</td></tr>
+        <tr><td>Scaling beyond one machine / hosted tier</td><td>after beta proof</td></tr>
+        <tr><td>OAuth / third-party auth</td><td>with the sharing experiment (post-beta)</td></tr>
+      </table>
+    </section>
+
+    <footer>
+      Distilled from <code>_bmad-output/planning-artifacts/architecture/architecture-mythosCircle-2026-08-23/ARCHITECTURE-SPINE.md</code>
+      (status: final, 2026-08-23) · bound to <code>prd-mythosCircle-2026-08-23/prd.md</code> §3 A–G, §4 NFR 1–12
+      · decision log: <code>.memlog.md</code> (34 entries) · gate: rubric-walker · versions · adversarial — all findings applied
+    </footer>
+
+  </main>
+</div>
+
+<script>
+document.documentElement.classList.add('js');
+</script>
+<script type="module">
+// render mermaid diagrams with a graceful fallback
+const els = [...document.querySelectorAll('.mm')];
+try {
+  const mermaid = (await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')).default;
+  mermaid.initialize({
+    startOnLoad: false, theme: 'base',
+    themeVariables: {
+      darkMode: true, background: 'transparent',
+      primaryColor: '#241c11', primaryTextColor: '#e9dfc9', primaryBorderColor: '#d9a441',
+      lineColor: '#a8873f', secondaryColor: '#1c1710', tertiaryColor: '#151109',
+      nodeBkg: '#1c1710', clusterBkg: '#14110c', titleColor: '#e9dfc9',
+      edgeLabelBackground: '#0e0c09', fontFamily: 'Spectral, Georgia, serif', fontSize: '15px'
+    }
+  });
+  for (const [i, el] of els.entries()) {
+    const { svg } = await mermaid.render('mm-svg-' + i, el.textContent.trim());
+    el.innerHTML = svg;
+  }
+} catch (e) {
+  // offline: show the source as preformatted text
+  for (const el of els) {
+    el.innerHTML = '<div class="mm-fallback">' + el.textContent.replace(/</g, '&lt;') + '</div>';
+  }
+}
+</script>
+<script>
+// scroll progress
+const bar = document.getElementById('progress');
+addEventListener('scroll', () => {
+  const h = document.documentElement;
+  bar.style.width = (h.scrollTop / (h.scrollHeight - h.clientHeight)) * 100 + '%';
+}, { passive: true });
+
+// scrollspy
+const links = [...document.querySelectorAll('#toc a')];
+const targets = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+const spy = new IntersectionObserver(entries => {
+  entries.forEach(en => {
+    if (en.isIntersecting) {
+      links.forEach(l => l.classList.toggle('active', l.getAttribute('href') === '#' + en.target.id));
+    }
+  });
+}, { rootMargin: '-15% 0px -75% 0px' });
+targets.forEach(t => spy.observe(t));
+
+// cross-references: AD-n mentions become clickable
+for (const ad of document.querySelectorAll('.ad')) {
+  const dds = ad.querySelectorAll('dd');
+  for (const dd of dds) {
+    const walker = document.createTreeWalker(dd, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const n of nodes) {
+      if (!/\bAD-\d{1,2}\b/.test(n.nodeValue)) continue;
+      const frag = document.createDocumentFragment();
+      let last = 0;
+      for (const m of n.nodeValue.matchAll(/\b(AD-\d{1,2})\b/g)) {
+        frag.appendChild(document.createTextNode(n.nodeValue.slice(last, m.index)));
+        const a = document.createElement('a');
+        a.className = 'xref';
+        a.href = '#' + m[1].toLowerCase();
+        a.textContent = m[1];
+        frag.appendChild(a);
+        last = m.index + m[1].length;
+      }
+      frag.appendChild(document.createTextNode(n.nodeValue.slice(last)));
+      n.parentNode.replaceChild(frag, n);
+    }
+  }
+}
+
+// search + tag filters
+const cards = [...document.querySelectorAll('.ad')];
+const search = document.getElementById('search');
+const chips = [...document.querySelectorAll('.chip')];
+let filter = 'all';
+function apply() {
+  const q = search.value.trim().toLowerCase();
+  for (const c of cards) {
+    const tagOk = filter === 'all' || c.dataset.tags === filter;
+    const qOk = !q || c.textContent.toLowerCase().includes(q);
+    c.classList.toggle('dim', !(tagOk && qOk));
+  }
+}
+search.addEventListener('input', apply);
+for (const ch of chips) {
+  ch.addEventListener('click', () => {
+    filter = ch.dataset.filter;
+    chips.forEach(c => c.classList.toggle('on', c === ch));
+    apply();
+  });
+}
+addEventListener('keydown', e => {
+  if (e.key === '/' && document.activeElement !== search) { e.preventDefault(); search.focus(); }
+  if (e.key === 'Escape') { search.value = ''; apply(); search.blur(); }
+});
+</script>
+</body>
+</html>

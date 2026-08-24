@@ -1,0 +1,5 @@
+# BMAD installed skill suite (reinstallable tooling, not project content)
+.agents/
+
+# Scratch
+result
