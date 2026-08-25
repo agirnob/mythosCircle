@@ -1,0 +1,36 @@
+# mythosCircle runtime configuration — installed at /etc/mythoscircle/config.toml.
+#
+# NO SECRETS HERE (AD-22): secrets are environment variables only
+# (see the systemd unit's EnvironmentFile). Everything below is
+# non-sensitive operator configuration.
+
+[server]
+host = "127.0.0.1"
+port = 8000
+# Public origin (matches the Caddyfile).
+base_url = "https://world.example.tld"
+
+[world]
+data_dir = "/var/lib/mythoscircle"
+sqlite_path = "/var/lib/mythoscircle/mythoscircle.db"
+media_dir = "/var/lib/mythoscircle/media"
+# Structured JSON-lines log (conventions.md).
+log_file = "/var/log/mythoscircle/app.jsonl"
+
+[llm]
+# OpenAI-compatible endpoint (AD-14): local llama-server at MVP.
+# Switching to any OpenAI-compatible server (e.g. OpenRouter) is a
+# config change; the key, if any, is an environment variable.
+endpoint = "http://127.0.0.1:8080/v1"
+model = "mythos-14b-q5"
+# Per-job LLM/media call budgets are declared per job and capped here.
+max_llm_calls_per_job = 64
+max_media_calls_per_job = 8
+
+[queue]
+# One persistent FIFO; exactly one job at a time (AD-12).
+max_in_flight_per_campaign = 1
+
+[campaigns]
+# Seed theme list (AD-24); operators can extend per campaign.
+themes = ["High Fantasy", "Grimdark", "Steampunk", "Planar"]

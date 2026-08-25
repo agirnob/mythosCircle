@@ -1,0 +1,3 @@
+# Nightly world-state backup at 01:30 UTC.
+# Install as /etc/cron.d/mythoscircle-backup (root-owned, 0644) or via crontab -e.
+30 1 * * * mythoscircle MYTHOSCIRCLE_DATA_DIR=/var/lib/mythoscircle /opt/mythoscircle/deploy/backup.sh >> /var/log/mythoscircle/backup.log 2>&1

@@ -1,0 +1,93 @@
+"""Error envelope ``{code, message, details?}`` and FastAPI handlers.
+
+Conventions (conventions.md, AD-17):
+- 4xx = user error (never a state change); 5xx = server error.
+- ``code`` is machine-readable, ``message`` human-readable, ``details`` optional.
+- 5xx responses are generic: no stack traces, no SQL, no internal paths.
+"""
+
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+#: Machine-readable codes for the common 4xx statuses.
+_HTTP_CODES: dict[int, str] = {
+    400: "bad_request",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    429: "rate_limited",
+}
+
+#: Default human-readable messages when the exception carries none.
+_DEFAULT_MESSAGES: dict[int, str] = {
+    400: "Bad request.",
+    401: "Authentication required.",
+    403: "Access denied.",
+    404: "The requested resource was not found.",
+    405: "Method not allowed.",
+    409: "Conflict with current state.",
+    429: "Too many requests.",
+}
+
+INTERNAL_ERROR_CODE = "internal_error"
+VALIDATION_ERROR_CODE = "validation_error"
+INTERNAL_ERROR_MESSAGE = "Internal server error."
+
+
+class ErrorEnvelope(BaseModel):
+    """The error envelope for every non-2xx JSON response."""
+
+    code: str  # machine-readable, e.g. "not_found"
+    message: str  # human-readable
+    details: dict[str, Any] | None = None
+
+
+def _envelope(
+    status_code: int,
+    code: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+) -> JSONResponse:
+    payload = ErrorEnvelope(code=code, message=message, details=details)
+    return JSONResponse(status_code=status_code, content=payload.model_dump())
+
+
+def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422: request failed validation (user error, no state change)."""
+    details = {"errors": jsonable_encoder(exc.errors())}
+    return _envelope(422, VALIDATION_ERROR_CODE, "Request validation failed.", details)
+
+
+def handle_http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """4xx: user error in the envelope; 5xx: generic, nothing internal leaked."""
+    status_code = exc.status_code
+    if status_code >= 500:
+        return _envelope(500, INTERNAL_ERROR_CODE, INTERNAL_ERROR_MESSAGE)
+    detail = exc.detail if isinstance(exc.detail, str) else None
+    code = _HTTP_CODES.get(status_code, "error")
+    message = detail if detail else _DEFAULT_MESSAGES.get(status_code, "Request failed.")
+    return _envelope(status_code, code, message)
+
+
+def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all: 500 in the envelope. Never echoes the exception back."""
+    return _envelope(500, INTERNAL_ERROR_CODE, INTERNAL_ERROR_MESSAGE)
+
+
+def register_error_handlers(application: FastAPI) -> None:
+    """Attach the convention error handlers to the app.
+
+    Starlette's declared handler type is contravariant in the exception type,
+    so the narrow per-type signatures need a targeted ignore at registration.
+    """
+    application.add_exception_handler(RequestValidationError, handle_validation_error)  # type: ignore[arg-type]
+    application.add_exception_handler(StarletteHTTPException, handle_http_error)  # type: ignore[arg-type]
+    application.add_exception_handler(Exception, handle_unexpected_error)

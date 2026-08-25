@@ -1,0 +1,16 @@
+# Caddy 2 site config — installed at /etc/caddy/Caddyfile (Story 1.7).
+#
+# Serves the frontend build and proxies the API (and its WebSockets)
+# to the single loopback FastAPI process. TLS is automatic.
+
+https://world.example.tld {
+	# Frontend: the Vite build output.
+	root * /var/www/mythoscircle/dist
+	encode gzip zstd
+	@notApi not path /api/* /ws/*
+	file_server @notApi
+
+	# API + WebSockets: Caddy upgrades WebSocket requests automatically.
+	reverse_proxy /api/* 127.0.0.1:8000
+	reverse_proxy /ws/* 127.0.0.1:8000
+}

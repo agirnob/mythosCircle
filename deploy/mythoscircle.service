@@ -1,0 +1,20 @@
+# mythosCircle backend unit — installed at /etc/systemd/system/mythoscircle.service
+# (Story 1.7). One FastAPI process bound to loopback behind Caddy (AD-10).
+
+[Unit]
+Description=mythosCircle backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=mythoscircle
+Group=mythoscircle
+WorkingDirectory=/opt/mythoscircle/backend
+ExecStart=/opt/mythoscircle/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=2
+# Secrets live in this file, not in config.toml (AD-22).
+EnvironmentFile=/etc/mythoscircle/mythoscircle.env
+
+[Install]
+WantedBy=multi-user.target
