@@ -8,7 +8,9 @@ https://world.example.tld {
 	root * /var/www/mythoscircle/dist
 	encode gzip zstd
 	@notApi not path /api/* /ws/*
-	file_server @notApi
+	file_server @notApi {
+		try_files {path} /index.html
+	}
 
 	# API + WebSockets: Caddy upgrades WebSocket requests automatically.
 	reverse_proxy /api/* 127.0.0.1:8000

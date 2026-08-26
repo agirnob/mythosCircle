@@ -81,7 +81,7 @@ def test_validation_error_422_envelope() -> None:
     assert isinstance(body["details"], dict)
 
 
-@pytest.mark.parametrize("status", [401, 403, 405])
+@pytest.mark.parametrize("status", [401, 403, 405, 408, 409, 418, 429])
 def test_http_4xx_envelope(status: int) -> None:
     from starlette.exceptions import HTTPException
 

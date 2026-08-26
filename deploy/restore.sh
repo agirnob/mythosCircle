@@ -17,7 +17,7 @@ echo "Stopping mythoscircle..."
 systemctl stop mythoscircle.service
 
 mkdir -p "$DATA_DIR"
-rm -f "$DB"
+rm -f "$DB" "$DB-wal" "$DB-shm"
 sqlite3 "file:$SNAP/mythoscircle.db?mode=ro" ".backup '$DB'"
 
 if [ -f "$SNAP/media.tar.gz" ]; then

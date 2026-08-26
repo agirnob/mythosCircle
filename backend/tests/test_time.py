@@ -15,10 +15,10 @@ def test_now_is_utc_iso8601() -> None:
     assert parsed.utcoffset() == timedelta(0)
 
 
-def test_now_is_monotonic_instant() -> None:
-    first = app_time.now()
-    second = app_time.now()
-    assert datetime.fromisoformat(second) >= datetime.fromisoformat(first)
+def test_now_is_current_instant() -> None:
+    parsed = datetime.fromisoformat(app_time.now())
+    drift = abs((datetime.now(UTC) - parsed).total_seconds())
+    assert drift < 5
 
 
 def test_to_utc_iso_renders_fixed_instant() -> None:

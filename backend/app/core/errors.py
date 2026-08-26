@@ -22,8 +22,11 @@ _HTTP_CODES: dict[int, str] = {
     403: "forbidden",
     404: "not_found",
     405: "method_not_allowed",
+    408: "request_timeout",
     409: "conflict",
+    418: "im_a_teapot",
     429: "rate_limited",
+    451: "unavailable_for_legal_reasons",
 }
 
 #: Default human-readable messages when the exception carries none.
@@ -33,8 +36,11 @@ _DEFAULT_MESSAGES: dict[int, str] = {
     403: "Access denied.",
     404: "The requested resource was not found.",
     405: "Method not allowed.",
+    408: "The request timed out.",
     409: "Conflict with current state.",
+    418: "I'm a teapot.",
     429: "Too many requests.",
+    451: "Unavailable for legal reasons.",
 }
 
 INTERNAL_ERROR_CODE = "internal_error"

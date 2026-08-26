@@ -10,6 +10,12 @@ DB="$DATA_DIR/mythoscircle.db"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DEST="$DATA_DIR/backups/$STAMP"
 
+# Nothing to back up until the app has created the database.
+if [ ! -f "$DB" ]; then
+	echo "no database at $DB yet -- skipping"
+	exit 0
+fi
+
 mkdir -p "$DEST"
 sqlite3 "file:$DB?mode=ro" ".backup '$DEST/mythoscircle.db'"
 if [ -d "$DATA_DIR/media" ]; then
