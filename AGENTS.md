@@ -31,3 +31,7 @@ Living-world NPC & world generator for TTRPG DMs — a tool for the DM, not an A
 - `snake_case` Python, `kebab-case` API routes, `camelCase` TS/Vue; entity/edge/job/event IDs are ULIDs, not UUIDs.
 - UTC ISO-8601 timestamps; error envelope `{code, message, details?}`; cursor pagination.
 <!-- /bmad:context -->
+
+## Agent rules (owner)
+
+- Never run subagents in parallel while building this project — always spawn one, wait for it to finish, then spawn the next. The local `llama.cpp` backend drops concurrent completion streams (verified 2026-08-25: parallel review subagents failed; sequential/inline worked).
