@@ -2,7 +2,7 @@
 title: 'Repo scaffold with conventions and green test harness (Epic 1, Story 1.1)'
 type: 'feature'
 created: '2026-08-25'
-status: 'in-review'
+status: 'done'
 baseline_commit: '0e45156aaa1f9399c640598c17bbc0d1859c809b'
 review_loop_iteration: 1
 context: []
@@ -118,3 +118,81 @@ context: []
 - `make lint && make typecheck` -- expected: zero errors from ruff, mypy, eslint, prettier --check, vue-tsc
 - Fresh-clone proof: `TMP=$(mktemp -d) && git archive HEAD | tar -x -C $TMP && make -C $TMP setup && make -C $TMP test` -- expected: pass (proves no untracked local state is required)
 - `uv run --directory backend pytest -q` -- expected: all backend tests pass directly
+
+## Suggested Review Order
+
+**Application substrate**
+
+- Entry point: app factory wiring error handlers + health router in one place.
+  [`main.py:13`](../../backend/app/main.py#L13)
+
+- First runnable HTTP surface; kebab-case route convention proven on day one.
+  [`health.py:5`](../../backend/app/api/health.py#L5)
+
+- Sole-writer invariant declared as an empty seam.
+  [`__init__.py:1`](../../backend/app/store/__init__.py#L1)
+
+- Proposes-never-writes seam (AD-1).
+  [`__init__.py:1`](../../backend/app/pipeline/__init__.py#L1)
+
+**Convention primitives**
+
+- Machine-readable 4xx code map; loop 1 closed the implicit 408/418/451 branches.
+  [`errors.py:19`](../../backend/app/core/errors.py#L19)
+
+- 4xx envelope vs 5xx generic split; no internals leak.
+  [`errors.py:75`](../../backend/app/core/errors.py#L75)
+
+- ULID factory: 26-char Crockford, time-ordered.
+  [`ids.py:13`](../../backend/app/core/ids.py#L13)
+
+- UTC ISO-8601 rendering with the Z designator.
+  [`time.py:10`](../../backend/app/core/time.py#L10)
+
+- Opaque cursor encode/decode; ULID payload validated on decode.
+  [`pagination.py:20`](../../backend/app/core/pagination.py#L20)
+
+**Deploy starting points (wired in 1.7)**
+
+- Single loopback FastAPI process behind Caddy (AD-10).
+  [`mythoscircle.service:13`](../../deploy/mythoscircle.service#L13)
+
+- SPA fallback + API/WebSocket reverse proxy.
+  [`Caddyfile:11`](../../deploy/Caddyfile#L11)
+
+- WAL-safe online snapshot; clean skip when the DB does not exist yet.
+  [`backup.sh:14`](../../deploy/backup.sh#L14)
+
+- Stale WAL/SHM sidecars removed before restore (loop 1 major fix).
+  [`restore.sh:20`](../../deploy/restore.sh#L20)
+
+- AD-22: no secrets — environment variables only.
+  [`config.toml:1`](../../deploy/config.toml#L1)
+
+**Standard entry points**
+
+- setup/test/lint/format/typecheck fanning out to both toolchains.
+  [`Makefile:20`](../../Makefile#L20)
+
+- Setup instructions + the standard command table.
+  [`README.md:21`](../../README.md#L21)
+
+**Harness & supporting**
+
+- I/O matrix: health, 404 envelope, forced 500 with no internals leaked.
+  [`test_api.py:32`](../../backend/tests/test_api.py#L32)
+
+- 4xx envelope parametrize extended by loop 1 (408/409/418/429).
+  [`test_api.py:84`](../../backend/tests/test_api.py#L84)
+
+- Loop 1: wall-clock monotonic test replaced with flake-proof freshness check.
+  [`test_time.py:18`](../../backend/tests/test_time.py#L18)
+
+- Frontend toolchain scripts; TS 6.0.3 as the effective pin.
+  [`package.json:6`](../../frontend/package.json#L6)
+
+- One trivial Pinia store proving vitest is green.
+  [`counter.test.ts:5`](../../frontend/src/stores/counter.test.ts#L5)
+
+- venv/node_modules/dist/caches/data never enter git.
+  [`.gitignore:5`](../../.gitignore#L5)
