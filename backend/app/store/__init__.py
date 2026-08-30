@@ -25,6 +25,16 @@ from app.store.auth import (
     revoke_session,
     verify_login,
 )
+from app.store.campaigns import (
+    SEED_THEMES,
+    InvalidThemeError,
+    create_campaign,
+    delete_campaign,
+    get_campaign,
+    list_campaigns,
+    normalize_theme,
+    update_campaign,
+)
 from app.store.commit import (
     EDGE_TYPES,
     CorruptEventError,
@@ -40,7 +50,6 @@ from app.store.commit import (
     StoreError,
     UnknownCampaignError,
     commit_subgraph,
-    create_campaign,
 )
 from app.store.db import (
     DB_ENV_VAR,
@@ -153,9 +162,16 @@ __all__ = [
     "cancel_job",
     "claim_next_job",
     "commit_subgraph",
+    "SEED_THEMES",
     "complete_job",
     "create_campaign",
+    "delete_campaign",
     "enqueue_job",
+    "get_campaign",
+    "InvalidThemeError",
+    "list_campaigns",
+    "normalize_theme",
+    "update_campaign",
     "fail_job",
     "get_engine",
     "init_app_db",

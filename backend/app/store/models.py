@@ -34,12 +34,22 @@ class Base(DeclarativeBase):
 
 
 class Campaign(Base):
-    """A private world: one invited DM in Phase 1 (AD-9)."""
+    """A private world: one invited DM in Phase 1 (AD-9, AR27).
+
+    The world-seed fields (owner, title, description, theme, custom_lore)
+    are the campaign's identity and config — they flow into the Epic 2
+    build-in and generation prompts. Creating a campaign does NOT write a
+    revision/event: the seed is not a graph delta (spec-1.6 Design Notes).
+    """
 
     __tablename__ = "campaign"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True)
-    name: Mapped[str] = mapped_column(String(500))
+    owner_id: Mapped[str] = mapped_column(ForeignKey("account.id"), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text)
+    theme: Mapped[str] = mapped_column(String(100))
+    custom_lore: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(String(40))
 
 

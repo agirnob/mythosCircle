@@ -36,6 +36,15 @@ from app.store import (
     set_change_listener,
 )
 
+
+def _owner_id() -> str:
+    """One owner account per scratch DB for campaign creation (spec-1.6)."""
+    from app.core.ids import new_id
+    from app.store import register_account
+
+    return register_account(f"owner-worker-{new_id()}@example.com", "password123").id
+
+
 SETTINGS = LLMSettings(endpoint="http://test/v1", model="test-model")
 
 
@@ -45,7 +54,13 @@ def world(tmp_path: Path) -> Iterator[str]:
     previous = app_db_url()
     init_db(f"sqlite:///{tmp_path / 'worker.db'}")
     try:
-        yield create_campaign("Worker Test World").id
+        yield create_campaign(
+            _owner_id(),
+            title="Worker Test World",
+            description="",
+            theme="High Fantasy",
+            custom_lore="",
+        ).id
     finally:
         init_db(previous)
 
@@ -203,7 +218,9 @@ def test_worker_loop_drains_then_idles_and_stops(tmp_path: Path) -> None:
     previous = app_db_url()
     init_db(f"sqlite:///{tmp_path / 'loop.db'}")
     try:
-        campaign = create_campaign("Loop World").id
+        campaign = create_campaign(
+            _owner_id(), title="Loop World", description="", theme="High Fantasy", custom_lore=""
+        ).id
         job_id = enqueue_job(campaign, "text", {"prompt": "loop"}).id
         _ = job_id
 
@@ -315,8 +332,15 @@ def test_migration_adds_result_column_to_old_db(tmp_path: Path) -> None:
         from app.store import get_engine
 
         with get_engine().connect() as connection:
-            columns = {row[1] for row in connection.execute(text("PRAGMA table_info(job)"))}
-        assert "result" in columns
+            job_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(job)"))}
+            campaign_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(campaign)"))
+            }
+        assert "result" in job_columns
+        # The AR27 seed migration added the world-seed columns and dropped
+        # the legacy empty `name` (review round 1 — a real pinned test).
+        assert {"owner_id", "title", "description", "theme", "custom_lore"} <= campaign_columns
+        assert "name" not in campaign_columns
         init_db(f"sqlite:///{db}")  # idempotent — no error on the second init
     finally:
         init_db(previous)

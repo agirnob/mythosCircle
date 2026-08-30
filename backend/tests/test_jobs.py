@@ -46,6 +46,15 @@ from app.store import (
     set_change_listener,
 )
 
+
+def _owner_id() -> str:
+    """One owner account per scratch DB for campaign creation (spec-1.6)."""
+    from app.core.ids import new_id
+    from app.store import register_account
+
+    return register_account(f"owner-jobs-{new_id()}@example.com", "password123").id
+
+
 ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 
@@ -59,7 +68,9 @@ def world(tmp_path: Path) -> Iterator[str]:
     previous = app_db_url()
     init_db(f"sqlite:///{tmp_path / 'world.db'}")
     try:
-        yield create_campaign("Test World").id
+        yield create_campaign(
+            _owner_id(), title="Test World", description="", theme="High Fantasy", custom_lore=""
+        ).id
     finally:
         init_db(previous)
 
@@ -172,7 +183,9 @@ def test_enqueue_cap_rejected_zero_rows(world: str, monkeypatch: pytest.MonkeyPa
         enqueue_job(world, "text", {"x": 2})
     assert _count_jobs() == 2
     # The cap is per campaign: a second campaign is unaffected.
-    other = create_campaign("Other World").id
+    other = create_campaign(
+        _owner_id(), title="Other World", description="", theme="High Fantasy", custom_lore=""
+    ).id
     assert enqueue_job(other, "text", {"x": 1}).state == "queued"
 
 
@@ -462,7 +475,9 @@ def test_restart_restores_queue_no_loss(tmp_path: Path) -> None:
     previous = app_db_url()
     init_db(url)
     try:
-        campaign = create_campaign("Restart").id
+        campaign = create_campaign(
+            _owner_id(), title="Restart", description="", theme="High Fantasy", custom_lore=""
+        ).id
         first = _enqueued(campaign)
         second = _enqueued(campaign)
         claimed = claim_next_job()
@@ -490,7 +505,9 @@ def test_restart_restores_queue_no_loss(tmp_path: Path) -> None:
 def test_cross_campaign_lists_and_positions_isolated(world: str) -> None:
     """A's list/positions never show B's jobs (AD-9); the global FIFO claims
     across campaigns in rowid order (AD-3)."""
-    other = create_campaign("Other World").id
+    other = create_campaign(
+        _owner_id(), title="Other World", description="", theme="High Fantasy", custom_lore=""
+    ).id
     a1 = _enqueued(world)
     b1 = _enqueued(other)
     a2 = _enqueued(world)
@@ -600,7 +617,9 @@ def test_recover_stale_running_requeues(tmp_path: Path) -> None:
     on a stale ``running`` row."""
     url = f"sqlite:///{tmp_path / 'recover.db'}"
     init_db(url)
-    campaign = create_campaign("Recover World").id
+    campaign = create_campaign(
+        _owner_id(), title="Recover World", description="", theme="High Fantasy", custom_lore=""
+    ).id
     first = _enqueued(campaign)
     _second = _enqueued(campaign)
     claimed = claim_next_job()
@@ -628,7 +647,9 @@ def test_recover_stale_running_ignores_queued_and_terminal(tmp_path: Path) -> No
     untouched by startup recovery."""
     url = f"sqlite:///{tmp_path / 'recover2.db'}"
     init_db(url)
-    campaign = create_campaign("Recover World 2").id
+    campaign = create_campaign(
+        _owner_id(), title="Recover World 2", description="", theme="High Fantasy", custom_lore=""
+    ).id
     queued_id = _enqueued(campaign)
     running_id = _enqueued(campaign)
     done_id = _enqueued(campaign)
@@ -703,7 +724,9 @@ def test_enqueue_cap_race_exactly_one_wins(world: str, monkeypatch: pytest.Monke
 def test_cross_campaign_cursor_rejected(world: str) -> None:
     """A cursor naming another campaign's job is a user error (422), never a
     silent page skip (review round 1 pagination scoping)."""
-    other = create_campaign("Other World").id
+    other = create_campaign(
+        _owner_id(), title="Other World", description="", theme="High Fantasy", custom_lore=""
+    ).id
     other_job = _enqueued(other)
     with pytest.raises(InvalidJobInputError):
         list_jobs(world, cursor=other_job)
@@ -720,7 +743,9 @@ def test_job_id_globally_unique(world: str) -> None:
     """A caller-supplied ``job_id`` is unique across the whole store (the
     job id is the primary key) — reusing one idempotency key in a second
     campaign is a structured rejection, never a raw IntegrityError."""
-    other = create_campaign("Other World").id
+    other = create_campaign(
+        _owner_id(), title="Other World", description="", theme="High Fantasy", custom_lore=""
+    ).id
     job_id = ids.new_id()
     enqueue_job(world, "text", {"x": 1}, job_id=job_id)
     with pytest.raises(DuplicateJobError):

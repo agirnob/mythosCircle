@@ -149,14 +149,6 @@ class CorruptEventError(StoreError):
 # ---------------------------------------------------------------------------
 
 
-def create_campaign(name: str) -> models.Campaign:
-    """Create an empty private world; returns the campaign row."""
-    with session_scope() as session:
-        campaign = models.Campaign(id=ids.new_id(), name=name, created_at=time.now())
-        session.add(campaign)
-        return campaign
-
-
 # ---------------------------------------------------------------------------
 # Commit path
 # ---------------------------------------------------------------------------

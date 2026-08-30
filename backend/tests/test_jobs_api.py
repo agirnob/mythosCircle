@@ -30,6 +30,15 @@ from app.store import (
     report_progress,
 )
 
+
+def _owner_id() -> str:
+    """One owner account per scratch DB for campaign creation (spec-1.6)."""
+    from app.core.ids import new_id
+    from app.store import register_account
+
+    return register_account(f"owner-jobsapi-{new_id()}@example.com", "password123").id
+
+
 ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 
@@ -46,7 +55,13 @@ def job_api(tmp_path: Path, client: TestClient) -> Iterator[Callable[[], str]]:
     init_db(f"sqlite:///{tmp_path / 'job-api.db'}")
 
     def make() -> str:
-        return create_campaign("API Test World").id
+        return create_campaign(
+            _owner_id(),
+            title="API Test World",
+            description="",
+            theme="High Fantasy",
+            custom_lore="",
+        ).id
 
     try:
         yield make

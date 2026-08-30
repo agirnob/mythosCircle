@@ -48,3 +48,13 @@ def test_api_binds_loopback_only() -> None:
     caddy = (DEPLOY_DIR / "Caddyfile").read_text()
     assert "tls" in caddy.lower()
     assert "reverse_proxy" in caddy.lower()
+
+
+def test_theme_seed_matches_config_toml() -> None:
+    """AR27: the code's seed theme list and the operator config agree —
+    extending the themes is a 1.7 config change, not a code change."""
+    from app.store.campaigns import SEED_THEMES
+
+    config = tomllib.loads((DEPLOY_DIR / "config.toml").read_text())
+    config_themes = config["campaigns"]["themes"]
+    assert set(config_themes) == set(SEED_THEMES)

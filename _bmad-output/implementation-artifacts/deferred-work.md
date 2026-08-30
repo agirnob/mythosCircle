@@ -45,3 +45,12 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `spec-1-5-dm-authentication.md`
   summary: Login CSRF is accepted — a cross-site top-level form POST could set a session cookie for an attacker-chosen account.
   evidence: SameSite=Lax mitigates most browsers' cross-site POSTs; the single-tenant owner tool accepts the residual risk — revisit with an Origin/Host check or CSRF token if the deployment expands (deferred-work note).
+
+## Deferred from: code review of spec-1-6-private-world-creation-campaign-crud-with-seed (2026-08-30)
+
+- source_spec: `spec-1-6-private-world-creation-campaign-crud-with-seed.md`
+  summary: The additive seed migration produces nullable columns while the model declares NOT NULL — legacy rows (none in greenfield) would need backfill before they are owner-visible.
+  evidence: ALTER TABLE ADD COLUMN cannot declare NOT NULL without a default; the migration is greenfield-safe (no legacy rows), a backfill story is a 1.7 deploy-concern if a pre-1.6 DB exists.
+- source_spec: `spec-1-6-private-world-creation-campaign-crud-with-seed.md`
+  summary: The generic-401 pre-auth body-validation ordering — an unauthenticated request with an invalid body gets 422 before the auth dependency rejects it.
+  evidence: FastAPI validates the body before dependencies resolve; a strict auth-first gate would need middleware — accepted for the beta owner tool (no sensitive body fields), revisit if the deployment expands.

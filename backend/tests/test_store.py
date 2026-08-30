@@ -43,6 +43,15 @@ from app.store import (
 )
 from app.store.read import latest_revision, revision_chain, revision_events, world_state
 
+
+def _owner_id() -> str:
+    """One owner account per scratch DB for campaign creation (spec-1.6)."""
+    from app.core.ids import new_id
+    from app.store import register_account
+
+    return register_account(f"owner-store-{new_id()}@example.com", "password123").id
+
+
 ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 
@@ -61,7 +70,9 @@ def world(tmp_path: Path) -> Iterator[str]:
     previous = app_db_url()
     init_db(f"sqlite:///{tmp_path / 'world.db'}")
     try:
-        yield create_campaign("Test World").id
+        yield create_campaign(
+            _owner_id(), title="Test World", description="", theme="High Fantasy", custom_lore=""
+        ).id
     finally:
         init_db(previous)
 
@@ -595,7 +606,9 @@ def test_cross_campaign_edge_id_rejected(world: str) -> None:
     """An explicit edge ULID owned by another campaign is a structured
     rejection (not a raw IntegrityError) and nothing is written."""
     bar_id, mira_id = _seed_world(world)
-    other_id = create_campaign("Other World").id
+    other_id = create_campaign(
+        _owner_id(), title="Other World", description="", theme="High Fantasy", custom_lore=""
+    ).id
     _seed_world(other_id)
     other_debt_id = _edge_id(other_id, *_seed_edge_tuple(other_id))
 
@@ -965,7 +978,9 @@ def test_cross_campaign_entity_id_rejected(world: str) -> None:
     """An explicit entity ULID owned by another campaign is a structured
     rejection (cross-campaign guard), not an accidental uptake or a raw
     IntegrityError — mirrors the edge-side guard."""
-    other_id = create_campaign("Other World").id
+    other_id = create_campaign(
+        _owner_id(), title="Other World", description="", theme="High Fantasy", custom_lore=""
+    ).id
     _other_bar_id, other_entity_id = _seed_world(other_id)
     head = _head(world)
     state_before = _state(world)

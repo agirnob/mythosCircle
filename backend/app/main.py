@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import auth, health, jobs, ws
+from app.api import auth, campaigns, health, jobs, ws
 from app.core.errors import register_error_handlers
 from app.pipeline.worker import worker_loop
 from app.store import init_app_db
@@ -55,6 +55,7 @@ def create_app() -> FastAPI:
     init_app_db()  # world store: schema + WAL, idempotent
     recover_stale_running()  # AR11: re-queue a crashed worker's running job
     application.include_router(auth.router)
+    application.include_router(campaigns.router)
     application.include_router(health.router)
     application.include_router(jobs.router)
     application.include_router(ws.router)

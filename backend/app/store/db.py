@@ -88,6 +88,7 @@ def init_db(url: str = DEFAULT_DB_URL) -> Engine:
     event.listens_for(_engine, "begin")(_begin_immediate)
     models.Base.metadata.create_all(_engine)
     _migrate_job_result(_engine)
+    _migrate_campaign_seed(_engine)
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 
@@ -110,6 +111,40 @@ def _migrate_job_result(engine: Engine) -> None:
         return
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE job ADD COLUMN result JSON"))
+
+
+def _migrate_campaign_seed(engine: Engine) -> None:
+    """Add the AR27 world-seed columns to a pre-1.6 database.
+
+    ``create_all`` never ALTERs an existing table, so a 1.5-era database
+    (bare ``name`` campaign table) would fail on any Campaign SELECT after
+    the model gains owner/title/description/theme/custom_lore. This runs
+    per-column (idempotent — a half-migrated DB finishes on the next
+    init), and the legacy ``name`` column is dropped only when the table
+    holds no rows, so a naming collision never silently truncates data.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "campaign" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("campaign")}
+    additions = {
+        "owner_id": "VARCHAR(26)",
+        "title": "VARCHAR(300)",
+        "description": "TEXT",
+        "theme": "VARCHAR(100)",
+        "custom_lore": "TEXT",
+    }
+    with engine.begin() as connection:
+        for column, ddl in additions.items():
+            if column not in columns:
+                connection.execute(text(f"ALTER TABLE campaign ADD COLUMN {column} {ddl}"))
+    if "name" in columns:
+        with engine.begin() as connection:
+            count = connection.execute(text("SELECT COUNT(*) FROM campaign")).scalar_one()
+            if count == 0:
+                connection.execute(text("ALTER TABLE campaign DROP COLUMN name"))
 
 
 def get_engine() -> Engine:
