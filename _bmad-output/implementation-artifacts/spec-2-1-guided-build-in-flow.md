@@ -94,6 +94,35 @@ context:
 
 <!-- Append-only. Populated by step-04 during review loops. Do not modify or delete existing entries. -->
 
+### Post-implementation (2026-08-30, owner smoke)
+
+**Smoke findings (implemented + pinned):**
+- **Secure cookie over plain-http dev:** the session cookie was hard-coded
+  `Secure=True`, so a browser refused it over the Vite dev proxy and the
+  dogfood flow could not authenticate. `_set_session_cookie` now derives
+  Secure from the request scheme (TLS via Caddy => Secure; plain-http dev
+  => not). Tests pin Secure over the https TestClient.
+- **Register = sign-in:** `POST /api/auth/register` set no session cookie,
+  so a freshly-registered DM was bounced to login. Register now creates a
+  session and sets the cookie (standard sign-up-is-sign-in UX).
+- **WebSocket library missing:** uvicorn had no `websockets`/`wsproto`,
+  so every `/api/ws/jobs` upgrade was rejected (`Unsupported upgrade
+  request`) and the live job panel could never update. Added
+  `websockets` to `backend/pyproject.toml`; the smoke captured the full
+  AD-17 lifecycle live (`queue_changed(queued,1) -> running(1) ->
+  job_failed -> queue_changed(failed)`).
+- **Vite proxy WS:** `frontend/vite.config.ts` proxied `/ws` (a nonexistent
+  path) instead of upgrading `/api`; the socket is now `/api` with
+  `ws: true`, matching the real route `/api/ws/jobs`.
+- **`frontend/.npmrc`:** `openapitypescript` peers `typescript@^5` but the
+  project runs typescript 6; the dep is a build-time codegen CLI, so the
+  peer conflict is accepted via `legacy-peer-deps=true` (plain `npm ci`
+  in deploy otherwise fails).
+
+**KEEP (survive re-derivation):** the build-in wire + lifecycle flow;
+auth-gated build-in screen; read-only seed prefill; fail-not-wedge worker
+behavior until 2.3; the shared ULID predicate + campaigns->StoreError.
+
 ## Design Notes
 
 **Why 2.1 owns the frontend foundation.** The 1-2 review deferred "frontend wire-contract foundation" into 1.6, but 1.6's final scope was backend-only (campaign CRUD + seed). The deferral is therefore still open and unowned; Epic 2's first two frontend stories (2.1, 2.7) both depend on it. Per the owner's gate decision (2026-08-30), 2.1 absorbs the foundation explicitly: router, OpenAPI-derived client, envelope, auth wiring, WS client, Pinia stores. This is recorded here so later reviews stop re-flagging the deferral as unowned.

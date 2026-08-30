@@ -98,14 +98,20 @@ def _session_max_age() -> int | None:
     return ttl_days * 24 * 60 * 60
 
 
-def _set_session_cookie(response: Response, token: str) -> None:
-    """Attach the httpOnly, Secure, SameSite=Lax session cookie (AR14)."""
+def _set_session_cookie(response: Response, token: str, *, secure: bool) -> None:
+    """Attach the httpOnly, SameSite=Lax session cookie (AR14).
+
+    ``secure`` is derived from the request scheme: over TLS (Caddy front,
+    uvicorn trusts the loopback proxy's X-Forwarded-Proto) the cookie is
+    marked Secure; over plain-http dev (the Vite proxy) it is not, so the
+    owner's dogfood flow works without a cert (spec-2.1 smoke find).
+    """
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
         max_age=_session_max_age(),
         httponly=True,
-        secure=True,
+        secure=secure,
         samesite="lax",
         path=COOKIE_PATH,
     )
@@ -127,7 +133,7 @@ def get_current_account(
 
 
 @router.post("/api/auth/register", status_code=201)
-def register(payload: RegisterRequest, request: Request) -> AccountResponse:
+def register(payload: RegisterRequest, response: Response, request: Request) -> AccountResponse:
     """Create an account; the password is argon2id-hashed, never stored."""
     if not _register_limiter.allowed(_client_ip(request)):
         raise HTTPException(status_code=429, detail="Too many registration attempts.")
@@ -136,6 +142,9 @@ def register(payload: RegisterRequest, request: Request) -> AccountResponse:
     except EmailTakenError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     _register_limiter.record(_client_ip(request))  # count successful registrations
+    # Sign-up is sign-in: the DM lands authenticated (spec-2.1 dogfood flow).
+    token, _session = create_session(account.id)
+    _set_session_cookie(response, token, secure=request.url.scheme == "https")
     return _account_response(account)
 
 
@@ -161,7 +170,7 @@ def login(payload: LoginRequest, response: Response, request: Request) -> Accoun
         _login_limiter.record(key)  # failures-only (review round 1)
         raise _UNAUTHORIZED
     token, _session = create_session(account.id)
-    _set_session_cookie(response, token)
+    _set_session_cookie(response, token, secure=request.url.scheme == "https")
     return _account_response(account)
 
 

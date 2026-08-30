@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2.13,<3",
     "sqlalchemy>=2.0,<3",
     "uvicorn>=0.52,<1",
+    "websockets>=15,<16",  # uvicorn WebSocket support for /api/ws/jobs (AD-17)
     "python-ulid>=4,<5",
     "httpx>=0.28,<1",  # the OpenAI-compatible provider's HTTP client (AR9)
     "argon2-cffi>=25,<26",  # AR29: argon2id password hashing
