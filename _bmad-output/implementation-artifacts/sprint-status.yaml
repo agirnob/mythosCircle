@@ -39,7 +39,7 @@ development_status:
   epic-1: in-progress
   1-1-repo-scaffold-with-conventions-and-green-test-harness: done
   1-2-versioned-world-store: done
-  1-3-persistent-generation-queue: backlog
+  1-3-persistent-generation-queue: review
   1-4-openai-compatible-inference-adapter: backlog
   1-5-dm-authentication: backlog
   1-6-private-world-creation-campaign-crud-with-seed: backlog

@@ -4,11 +4,17 @@ Every mutation of the world graph flows through a store commit: atomic
 subgraph transactions, one revision per commit, per-transaction undo.
 Nothing else in the codebase writes world state.
 
+The persistent generation queue (AD-3) lives in the same database: job
+rows and transitions never touch the event log or revisions (AD-13).
+
 Public API:
     init_db / init_app_db / session_scope   -- engine & transactions (db)
     create_campaign / commit_subgraph       -- the commit path (commit)
     undo                                    -- compensating commit (undo)
     latest_revision / revision_chain / revision_events / world_state (read)
+    enqueue_job / claim_next_job / complete_job / fail_job /
+        report_progress / cancel_job / job_status / list_jobs /
+        set_change_listener                 -- generation queue (jobs)
 """
 
 from app.store.commit import (
@@ -37,6 +43,33 @@ from app.store.db import (
     init_db,
     session_scope,
 )
+from app.store.jobs import (
+    DEFAULT_LIST_LIMIT,
+    EVENT_JOB_CANCELLED,
+    EVENT_JOB_DONE,
+    EVENT_JOB_FAILED,
+    EVENT_JOB_PROGRESS,
+    EVENT_QUEUE_CHANGED,
+    JOB_KINDS,
+    JOB_STATES,
+    PENDING_STATES,
+    TERMINAL_STATES,
+    DuplicateJobError,
+    InvalidJobInputError,
+    JobNotFoundError,
+    JobStateConflictError,
+    QueueFullError,
+    cancel_job,
+    claim_next_job,
+    complete_job,
+    enqueue_job,
+    fail_job,
+    job_status,
+    list_jobs,
+    recover_stale_running,
+    report_progress,
+    set_change_listener,
+)
 from app.store.models import (
     Base,
     Campaign,
@@ -45,6 +78,7 @@ from app.store.models import (
     Entity,
     EntityInput,
     Event,
+    Job,
     Media,
     Revision,
 )
@@ -60,13 +94,20 @@ __all__ = [
     "Base",
     "Campaign",
     "DEFAULT_DB_URL",
+    "DEFAULT_LIST_LIMIT",
     "DB_ENV_VAR",
     "EDGE_TYPES",
+    "EVENT_JOB_CANCELLED",
+    "EVENT_JOB_DONE",
+    "EVENT_JOB_FAILED",
+    "EVENT_JOB_PROGRESS",
+    "EVENT_QUEUE_CHANGED",
     "CorruptEventError",
     "CrossCampaignConflictError",
     "DanglingEdgeError",
     "DuplicateEdgeError",
     "DuplicateEntityError",
+    "DuplicateJobError",
     "Edge",
     "EdgeInput",
     "EdgeRetargetError",
@@ -75,22 +116,41 @@ __all__ = [
     "EntityInput",
     "Event",
     "InvalidEdgeTypeError",
+    "InvalidJobInputError",
     "InvalidUlidError",
+    "JOB_KINDS",
+    "JOB_STATES",
+    "Job",
+    "JobNotFoundError",
+    "JobStateConflictError",
     "Media",
+    "PENDING_STATES",
+    "QueueFullError",
     "Revision",
     "StaleRevisionError",
     "StoreError",
+    "TERMINAL_STATES",
     "UnknownCampaignError",
     "app_db_url",
+    "cancel_job",
+    "claim_next_job",
     "commit_subgraph",
+    "complete_job",
     "create_campaign",
+    "enqueue_job",
+    "fail_job",
     "get_engine",
     "init_app_db",
     "init_db",
+    "job_status",
     "latest_revision",
+    "list_jobs",
+    "recover_stale_running",
+    "report_progress",
     "revision_chain",
     "revision_events",
     "session_scope",
+    "set_change_listener",
     "undo",
     "world_state",
 ]

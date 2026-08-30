@@ -25,6 +25,7 @@ _HTTP_CODES: dict[int, str] = {
     408: "request_timeout",
     409: "conflict",
     418: "im_a_teapot",
+    422: "validation_error",
     429: "rate_limited",
     451: "unavailable_for_legal_reasons",
 }
@@ -39,6 +40,7 @@ _DEFAULT_MESSAGES: dict[int, str] = {
     408: "The request timed out.",
     409: "Conflict with current state.",
     418: "I'm a teapot.",
+    422: "Request validation failed.",
     429: "Too many requests.",
     451: "Unavailable for legal reasons.",
 }

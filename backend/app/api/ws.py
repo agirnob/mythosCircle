@@ -1,0 +1,172 @@
+"""WebSocket hub for job state broadcasts (AD-17).
+
+One FastAPI process == single writer (AD-8, AD-13): the hub is an
+in-process registry of campaign_id -> connected sockets. The store's
+change-listener (registered at app-lifespan start) pushes every job
+transition to the campaign's subscribers; the store never knows
+websockets exist.
+
+The listener may fire from any thread (REST handlers run in the
+threadpool, 1.4's worker runs its own), so transitions cross threads
+through a thread-safe queue drained by the event loop. The store passes
+the queue_position already computed at transition time, so the drain
+loop performs NO database work — it cannot block on the write lock,
+tear down mid-broadcast, or deadlock against a transitioning writer.
+The drain loop also never dies: a failed broadcast is logged and the
+affected socket dropped, but the loop keeps delivering subsequent
+events.
+"""
+
+import asyncio
+import contextlib
+import logging
+import queue
+from collections import defaultdict
+from typing import Any
+
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+
+from app.store import models
+from app.store.jobs import (
+    EVENT_JOB_PROGRESS,
+    EVENT_QUEUE_CHANGED,
+    set_change_listener,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+def _build_message(event: str, job: models.Job, queue_position: int | None) -> dict[str, Any]:
+    """The AD-17 wire shape: {type, job_id, state, queue_position?, progress?}.
+
+    ``queue_position`` was snapshotted at transition time by the store.
+    """
+    message: dict[str, Any] = {"type": event, "job_id": job.id, "state": job.state}
+    if event == EVENT_JOB_PROGRESS:
+        message["progress"] = job.progress
+    if event in (EVENT_JOB_PROGRESS, EVENT_QUEUE_CHANGED) and queue_position is not None:
+        message["queue_position"] = queue_position
+    return message
+
+
+class JobHub:
+    """In-process broadcast hub keyed by campaign_id."""
+
+    def __init__(self) -> None:
+        self._subscribers: dict[str, set[WebSocket]] = defaultdict(set)
+        self._pending: queue.SimpleQueue[tuple[str, models.Job, int | None]] = queue.SimpleQueue()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._wakeup: asyncio.Event | None = None
+        self._drain_task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        """Lifespan startup: register the store listener and start the drain task."""
+        if self._drain_task is not None:
+            return
+        self._loop = asyncio.get_running_loop()
+        wakeup = asyncio.Event()
+        self._wakeup = wakeup
+        self._drain_task = asyncio.create_task(self._drain(wakeup), name="jobs-ws-hub")
+        set_change_listener(self._on_store_event)
+
+    async def stop(self) -> None:
+        """Lifespan shutdown: unregister the listener, drain remaining events,
+        stop the drain task, and close any remaining sockets so clients see a
+        clean disconnect."""
+        set_change_listener(None)
+        task = self._drain_task
+        self._drain_task = None
+        if task is not None:
+            # The drain loop runs forever; cancel it and await its exit.
+            # (wait_for against a never-ending task always times out.)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._loop = None
+        self._wakeup = None
+        self._pending = queue.SimpleQueue()
+        for sockets in list(self._subscribers.values()):
+            for socket in list(sockets):
+                with contextlib.suppress(RuntimeError):
+                    await socket.close()
+        self._subscribers.clear()
+
+    def _on_store_event(self, event: str, job: models.Job, queue_position: int | None) -> None:
+        self._pending.put((event, job, queue_position))
+        loop, wakeup = self._loop, self._wakeup
+        if loop is not None and wakeup is not None:
+            loop.call_soon_threadsafe(wakeup.set)
+
+    async def _drain(self, wakeup: asyncio.Event) -> None:
+        while True:
+            await wakeup.wait()
+            wakeup.clear()
+            while True:
+                try:
+                    event, job, position = self._pending.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    await self._broadcast(event, job, position)
+                except Exception:
+                    # A failed broadcast must never kill the drain task —
+                    # one bad socket would silence every subscriber for
+                    # the rest of the process.
+                    logger.exception("job broadcast failed for job %s", job.id)
+
+    async def _broadcast(self, event: str, job: models.Job, queue_position: int | None) -> None:
+        sockets = list(self._subscribers.get(job.campaign_id, ()))
+        if not sockets:
+            return
+        message = _build_message(event, job, queue_position)
+
+        async def _send(socket: WebSocket) -> None:
+            # A subscriber that stops reading must not wedge the drain (and
+            # through it the store caller, which fires the listener
+            # synchronously inside its commit).
+            await asyncio.wait_for(socket.send_json(message), timeout=10.0)
+
+        results = await asyncio.gather(
+            *(_send(socket) for socket in sockets),
+            return_exceptions=True,
+        )
+        for socket, result in zip(sockets, results, strict=True):
+            if isinstance(result, Exception):
+                logger.warning("dropping unresponsive socket for campaign %s", job.campaign_id)
+                self.unregister(socket, job.campaign_id)
+                with contextlib.suppress(RuntimeError):
+                    await socket.close()
+
+    def register(self, socket: WebSocket, campaign_id: str) -> None:
+        self._subscribers[campaign_id].add(socket)
+
+    def unregister(self, socket: WebSocket, campaign_id: str) -> None:
+        sockets = self._subscribers.get(campaign_id)
+        if sockets is None:
+            return
+        sockets.discard(socket)
+        if not sockets:
+            del self._subscribers[campaign_id]
+
+
+hub = JobHub()
+
+
+@router.websocket("/api/ws/jobs")
+async def jobs_ws(websocket: WebSocket, campaign_id: str = Query(...)) -> None:
+    """Subscribe to a campaign's job broadcasts (AD-17).
+
+    The server only broadcasts; inbound frames are drained so clients can
+    keep the connection alive with pings. Disconnects are tolerated and
+    the socket is removed from the hub (and closed if it failed a send).
+    """
+    await websocket.accept()
+    hub.register(websocket, campaign_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        hub.unregister(websocket, campaign_id)

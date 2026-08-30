@@ -1,19 +1,31 @@
 """SQLAlchemy 2.0 models for the versioned world store (AD-13).
 
 One SQLite database holds world state, the append-only event log, the
-job queue, the media manifest, and accounts. The tables this story owns:
-``campaign``, ``revision``, ``entity``, ``edge``, ``event``, ``media``.
+job queue, the media manifest, and accounts. The tables the store owns:
+``campaign``, ``revision``, ``entity``, ``edge``, ``event``, ``media``,
+and ``job`` — the persistent generation queue (AD-3).
 
 The ``entity``/``edge`` rows are a materialized view of the latest
 revision; the ``event`` log is the graph of record. World state is written
 only through the commit path in this package — nothing outside
-``app/store`` writes these tables (AD-1, AD-13).
+``app/store`` writes these tables (AD-1, AD-13). Jobs are **not** world
+graph: their rows and transitions never touch the event log or revisions.
 """
 
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -120,6 +132,45 @@ class Event(Base):
     created_at: Mapped[str] = mapped_column(String(40))
 
     revision: Mapped["Revision"] = relationship(back_populates="events")
+
+
+class Job(Base):
+    """One persistent generation-queue entry (AD-3, AD-13).
+
+    One FIFO across all campaigns; issuance order is SQLite ``rowid`` —
+    the same monotonic clock as revisions and events (never ULID string
+    order: ties on the random suffix). Jobs are NOT world graph: rows and
+    transitions never touch the event log or revisions (AD-1 governs the
+    graph only). Queue behavior lives in ``app.store.jobs``.
+    """
+
+    __tablename__ = "job"
+    __table_args__ = (
+        # DB-level enforcement of the closed state/kind sets and the
+        # progress range — the store's pending/terminal logic assumes them.
+        CheckConstraint(
+            "state IN ('queued','running','succeeded','failed','cancelled')",
+            name="ck_job_state",
+        ),
+        CheckConstraint(
+            "kind IN ('text','image','video')",
+            name="ck_job_kind",
+        ),
+        CheckConstraint("progress >= 0.0 AND progress <= 1.0", name="ck_job_progress"),
+    )
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaign.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    state: Mapped[str] = mapped_column(String(32), index=True)
+    progress: Mapped[float] = mapped_column(Float)
+    max_llm_calls: Mapped[int] = mapped_column(Integer)
+    max_media_calls: Mapped[int] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40))
+    started_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class Media(Base):
