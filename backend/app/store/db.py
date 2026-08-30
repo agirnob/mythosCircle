@@ -87,8 +87,29 @@ def init_db(url: str = DEFAULT_DB_URL) -> Engine:
     event.listens_for(_engine, "connect")(_configure_connection)
     event.listens_for(_engine, "begin")(_begin_immediate)
     models.Base.metadata.create_all(_engine)
+    _migrate_job_result(_engine)
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
+
+
+def _migrate_job_result(engine: Engine) -> None:
+    """Add ``job.result`` to a database created before story 1.4.
+
+    ``create_all`` never ALTERs an existing table, so a 1.3 database would
+    fail with ``no such column: job.result`` on any Job SELECT. The store
+    owns the schema (AD-13); one idempotent additive column keeps existing
+    worlds working. Run after ``create_all`` in ``init_db``.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "job" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("job")}
+    if "result" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE job ADD COLUMN result JSON"))
 
 
 def get_engine() -> Engine:

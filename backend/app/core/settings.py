@@ -1,9 +1,9 @@
-"""Environment-backed queue settings (AD-22).
+"""Environment-backed settings (AD-22).
 
-The per-campaign pending cap and the per-job call budgets come from
-environment variables with fixed defaults (spec-1.3 Always list);
-``deploy/config.toml`` consumption is deferred to Story 1.7, so the
-queue limits are env-only here.
+Queue limits (spec-1.3) and the inference adapter's endpoint/model/key/
+timeout (spec-1.4) come from environment variables with fixed defaults
+mirroring ``deploy/config.toml``; ``config.toml`` consumption is deferred
+to Story 1.7, so these are env-only here.
 """
 
 import os
@@ -59,4 +59,60 @@ def _env_non_negative_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
     if value < 0:
         raise ValueError(f"{name} must be >= 0, got {value}")
+    return value
+
+
+#: Environment variables for the inference adapter (spec-1.4).
+LLM_ENDPOINT = "MYTHOSCIRCLE_LLM_ENDPOINT"
+LLM_MODEL = "MYTHOSCIRCLE_LLM_MODEL"
+LLM_API_KEY = "MYTHOSCIRCLE_LLM_API_KEY"
+LLM_TIMEOUT = "MYTHOSCIRCLE_LLM_TIMEOUT"
+
+#: Defaults mirroring ``deploy/config.toml`` ``[llm]`` (spec-1.4).
+DEFAULT_LLM_ENDPOINT = "http://127.0.0.1:8080/v1"
+DEFAULT_LLM_MODEL = "mythos-14b-q5"
+DEFAULT_LLM_TIMEOUT = 120
+
+
+@dataclass(frozen=True)
+class LLMSettings:
+    """The OpenAI-compatible endpoint the adapter talks to (AR9/AD-14)."""
+
+    endpoint: str = DEFAULT_LLM_ENDPOINT
+    model: str = DEFAULT_LLM_MODEL
+    api_key: str | None = None
+    timeout: float = DEFAULT_LLM_TIMEOUT
+
+
+def llm_settings() -> LLMSettings:
+    """Read the inference adapter's settings from the environment.
+
+    Swapping engines (llama-server → LM Studio → OpenRouter) is a config
+    change, never a code change (AR9, NFR8). The API key, when set, is an
+    environment variable — never a config file value (AD-22).
+    """
+    return LLMSettings(
+        endpoint=os.environ.get(LLM_ENDPOINT, DEFAULT_LLM_ENDPOINT).strip() or DEFAULT_LLM_ENDPOINT,
+        model=os.environ.get(LLM_MODEL, DEFAULT_LLM_MODEL).strip() or DEFAULT_LLM_MODEL,
+        api_key=os.environ.get(LLM_API_KEY) or None,
+        timeout=_env_positive_float(LLM_TIMEOUT, DEFAULT_LLM_TIMEOUT),
+    )
+
+
+def _env_positive_float(name: str, default: float) -> float:
+    """Parse a positive float env var; malformed values fail loudly.
+
+    A typo'd or zero/negative timeout would either crash obscurely inside
+    httpx at request time or disable the timeout entirely — fail at
+    start, exactly like the queue settings (review round 1).
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a float, got {raw!r}") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be > 0, got {value}")
     return value

@@ -168,6 +168,9 @@ class Job(Base):
     max_llm_calls: Mapped[int] = mapped_column(Integer)
     max_media_calls: Mapped[int] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Generation output persisted by the worker on success (spec-1.4);
+    #: jobs are not world graph, so this is NOT world state, never a revision.
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[str] = mapped_column(String(40))
     started_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     finished_at: Mapped[str | None] = mapped_column(String(40), nullable=True)

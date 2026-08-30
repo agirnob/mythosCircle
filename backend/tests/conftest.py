@@ -11,6 +11,10 @@ from fastapi.testclient import TestClient
 # data/ in the working tree. Must be set before importing app.main.
 _TEST_DB = f"sqlite:///{tempfile.mkdtemp(prefix='mythoscircle-test-')}/world.db"
 os.environ["MYTHOSCIRCLE_DB"] = _TEST_DB
+# Disable the background queue worker during contract tests: it polls
+# claim_next_job every 0.2s and would race the tests' exact-frame
+# assertions (review round 1). The worker is tested separately.
+os.environ["MYTHOSCIRCLE_TESTING"] = "1"
 
 from app.main import app  # noqa: E402
 

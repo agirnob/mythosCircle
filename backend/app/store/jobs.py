@@ -213,15 +213,19 @@ def claim_next_job() -> models.Job | None:
     return job
 
 
-def complete_job(job_id: str) -> models.Job:
+def complete_job(job_id: str, result: dict[str, Any] | None = None) -> models.Job:
     """Mark a running job succeeded; frees the slot for the next claim.
 
-    Emits ``job_done`` then ``queue_changed``. Wrong state (or unknown
-    job) -> ``JobStateConflictError``/``JobNotFoundError``, state unchanged.
+    ``result`` (spec-1.4) is the worker's generation output, persisted on
+    the job for REST reads — jobs are not world graph, so this never
+    creates a revision. Emits ``job_done`` then ``queue_changed``. Wrong
+    state (or unknown job) -> ``JobStateConflictError``/``JobNotFoundError``,
+    state unchanged.
     """
     with session_scope() as session:
         job = _require_running(session, job_id)
         job.state = "succeeded"
+        job.result = result
         job.finished_at = time.now()
         position = _queue_position(session, job)  # terminal: None
     _notify(EVENT_JOB_DONE, job, position)

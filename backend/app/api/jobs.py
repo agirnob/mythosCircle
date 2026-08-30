@@ -55,6 +55,7 @@ class JobResponse(BaseModel):
     max_llm_calls: int
     max_media_calls: int
     error: str | None
+    result: dict[str, Any] | None
     created_at: str
     started_at: str | None
     finished_at: str | None
@@ -95,6 +96,7 @@ def _to_response(job: models.Job, position: int | None) -> JobResponse:
         max_llm_calls=job.max_llm_calls,
         max_media_calls=job.max_media_calls,
         error=job.error,
+        result=job.result,
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
