@@ -34,4 +34,4 @@ Living-world NPC & world generator for TTRPG DMs — a tool for the DM, not an A
 
 ## Agent rules (owner)
 
-- Never run subagents in parallel while building this project — always spawn one, wait for it to finish, then spawn the next. The local `llama.cpp` backend drops concurrent completion streams (verified 2026-08-25: parallel review subagents failed; sequential/inline worked).
+- Subagents may run in parallel while building this project — no serialization constraint (the earlier llama.cpp concurrency restriction was lifted 2026-08-30).
