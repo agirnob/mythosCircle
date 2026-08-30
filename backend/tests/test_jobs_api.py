@@ -147,6 +147,40 @@ def test_post_job_invalid_input_422_no_state_change(
     assert listed["jobs"] == []  # zero rows written
 
 
+def test_post_build_in_job_201(client: TestClient, job_api: Callable[[], str]) -> None:
+    """A valid build-in submission returns 201 with kind build_in and a
+    queue position (spec-2.1 BUILDIN_SUBMIT)."""
+    campaign_id = job_api()
+    response = client.post(
+        "/api/jobs",
+        json={
+            "campaign_id": campaign_id,
+            "kind": "build_in",
+            "payload": {"places": ["Greymarch"], "factions": ["The Guild"], "notes": "rain"},
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["kind"] == "build_in"
+    assert body["state"] == "queued"
+    assert body["queue_position"] == 1
+
+
+def test_post_build_in_blank_422(client: TestClient, job_api: Callable[[], str]) -> None:
+    """An all-blank build-in submission is a 422 before any row is written
+    (spec-2.1 BUILDIN_ALL_BLANK)."""
+    campaign_id = job_api()
+    response = client.post(
+        "/api/jobs",
+        json={
+            "campaign_id": campaign_id,
+            "kind": "build_in",
+            "payload": {"places": [], "factions": [], "key_figures": [], "notes": ""},
+        },
+    )
+    _assert_envelope(response, 422, "validation_error")
+
+
 def test_post_job_missing_campaign_fields_422(client: TestClient) -> None:
     # Payload with neither campaign_id nor kind is rejected by validation.
     response = client.post("/api/jobs", json={"payload": {}})

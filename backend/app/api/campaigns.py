@@ -4,7 +4,9 @@ Every route requires a valid session (1.5's ``get_current_account``) and
 is owner-scoped: a foreign or unknown campaign id maps to the same 404
 (NFR6, AD-9 — no oracle). Delete requires an explicit confirmation body
 and is the AR20 total hard delete (cascades revisions/events/entities/
-edges/jobs/media rows).
+edges/jobs/media rows). Store rejections map through the shared
+``_store_error_as_http`` (epic-1 retro item 3: campaigns errors are
+``StoreError`` subclasses, so the wire codes stay consistent).
 """
 
 import json as _json
@@ -14,10 +16,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.api.auth import get_current_account
+from app.api.common import _store_error_as_http
 from app.core.pagination import InvalidCursorError, decode_cursor, encode_cursor
-from app.store import models
+from app.store import StoreError, models
 from app.store.campaigns import (
-    InvalidThemeError,
     create_campaign,
     delete_campaign,
     get_campaign,
@@ -73,10 +75,6 @@ def _to_response(campaign: models.Campaign) -> CampaignResponse:
     )
 
 
-def _theme_error(exc: InvalidThemeError) -> HTTPException:
-    return HTTPException(status_code=422, detail=str(exc))
-
-
 @router.post("/api/campaigns", status_code=201)
 def create(
     payload: CampaignCreate,
@@ -91,8 +89,8 @@ def create(
             theme=payload.theme,
             custom_lore=payload.custom_lore,
         )
-    except (InvalidThemeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except StoreError as exc:
+        _store_error_as_http(exc)
     return _to_response(campaign)
 
 
@@ -111,8 +109,8 @@ def list_own(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         campaigns, next_cursor = list_campaigns(current.id, after, limit)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except StoreError as exc:
+        _store_error_as_http(exc)
     return CampaignListResponse(
         campaigns=[_to_response(c) for c in campaigns],
         next_cursor=encode_cursor(next_cursor) if next_cursor is not None else None,
@@ -143,8 +141,8 @@ def update(
         raise HTTPException(status_code=422, detail="No campaign fields to update.")
     try:
         campaign = update_campaign(current.id, campaign_id, **fields)
-    except (InvalidThemeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except StoreError as exc:
+        _store_error_as_http(exc)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")
     return _to_response(campaign)

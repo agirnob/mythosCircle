@@ -36,16 +36,19 @@ from sqlalchemy import func, literal_column, select
 from sqlalchemy.orm import Session
 
 from app.core import ids, time
-from app.core.ids import CROCKFORD_ALPHABET
 from app.core.settings import queue_settings
 from app.store import models
 from app.store.commit import StoreError, UnknownCampaignError
 from app.store.db import session_scope
 
-#: Closed job-kind set (AD-3 runner split: text -> pipeline, image/video
-#: -> media). ``build-in`` lands as a text-kind payload variant (later
-#: stories), not as a new kind.
-JOB_KINDS: frozenset[str] = frozenset({"text", "image", "video"})
+#: Closed job-kind set (AD-3 runner split: text + build_in -> pipeline,
+#: image/video -> media). ``build_in`` is AD-19's guided build-in kind;
+#: its runner lands in Story 2.3.
+JOB_KINDS: frozenset[str] = frozenset({"text", "image", "video", "build_in"})
+
+#: Build-in payload contract (spec-2.1): free-form section caps.
+BUILD_IN_MAX_ENTRIES = 100
+BUILD_IN_MAX_ENTRY_LENGTH = 2000
 
 #: Closed job-state set; transitions are only ever driven by the store
 #: primitives below.
@@ -380,6 +383,8 @@ def _enqueue(
 ) -> models.Job:
     if kind not in JOB_KINDS:
         raise InvalidJobInputError(f"job kind must be one of {sorted(JOB_KINDS)}, got {kind!r}")
+    if kind == "build_in":
+        _validate_build_in_payload(payload)
     if not isinstance(payload, dict):
         raise InvalidJobInputError("job payload must be a JSON object")
     _check_json_serializable(payload)
@@ -439,8 +444,45 @@ def _check_ulid(ulid: str) -> None:
     """Caller-supplied job ids must be ULIDs (conventions.md) — enforced at
     the store boundary, like entity ids (commit._check_ulid).
     """
-    if len(ulid) != 26 or any(ch not in CROCKFORD_ALPHABET for ch in ulid):
+    if not ids.is_valid_ulid(ulid):
         raise InvalidJobInputError(f"job_id is not a ULID: {ulid!r}")
+
+
+def _validate_build_in_payload(payload: dict[str, Any]) -> None:
+    """Enforce the spec-2.1 build-in payload contract (422, zero rows).
+
+    The free-form sections are ``places``, ``factions``, ``key_figures``
+    (each a list of 1–2000-char trimmed strings, <= 100 entries) and
+    ``notes`` (a single string). At least one non-blank entry across all
+    four is required. Unrecognized keys are ignored (the runner in 2.3
+    owns the prompt contract); only the shape that can be validated
+    up-front is rejected here.
+    """
+    if not isinstance(payload, dict):
+        raise InvalidJobInputError("build_in payload must be a JSON object")
+    any_content = False
+    for section in ("places", "factions", "key_figures"):
+        entries = payload.get(section, [])
+        if not isinstance(entries, list):
+            raise InvalidJobInputError(f"build_in {section} must be a list")
+        if len(entries) > BUILD_IN_MAX_ENTRIES:
+            raise InvalidJobInputError(f"build_in {section} exceeds {BUILD_IN_MAX_ENTRIES} entries")
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, str):
+                raise InvalidJobInputError(f"build_in {section}[{i}] must be a string")
+            trimmed = entry.strip()
+            if len(trimmed) > BUILD_IN_MAX_ENTRY_LENGTH:
+                raise InvalidJobInputError(
+                    f"build_in {section}[{i}] exceeds {BUILD_IN_MAX_ENTRY_LENGTH} chars"
+                )
+            any_content = any_content or bool(trimmed)
+    notes = payload.get("notes")
+    if notes is not None and not isinstance(notes, str):
+        raise InvalidJobInputError("build_in notes must be a string")
+    if isinstance(notes, str) and notes.strip():
+        any_content = True
+    if not any_content:
+        raise InvalidJobInputError("build_in requires at least one non-blank section entry")
 
 
 def _check_json_serializable(payload: dict[str, Any]) -> None:

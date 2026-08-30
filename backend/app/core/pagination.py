@@ -8,9 +8,7 @@ so the cursor also defines a stable sort key.
 
 import base64
 
-from app.core.ids import CROCKFORD_ALPHABET
-
-_ULID_LENGTH = 26
+from app.core.ids import is_valid_ulid
 
 
 class InvalidCursorError(ValueError):
@@ -34,6 +32,6 @@ def decode_cursor(cursor: str) -> str:
         last_id = raw.decode("ascii")
     except (ValueError, UnicodeDecodeError) as exc:
         raise InvalidCursorError(f"Malformed cursor: {cursor!r}") from exc
-    if len(last_id) != _ULID_LENGTH or any(ch not in CROCKFORD_ALPHABET for ch in last_id):
+    if not is_valid_ulid(last_id):
         raise InvalidCursorError(f"Cursor does not encode a ULID: {cursor!r}")
     return last_id

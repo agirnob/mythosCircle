@@ -250,6 +250,54 @@ def test_enqueue_unknown_campaign_rejected(world: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# BUILD_IN (spec-2.1)
+# ---------------------------------------------------------------------------
+
+
+def test_enqueue_build_in_valid_position_one(world: str) -> None:
+    """A valid build-in submission enqueues with kind build_in, position 1."""
+    job = enqueue_job(
+        world,
+        "build_in",
+        {"places": ["Greymarch"], "factions": [], "key_figures": ["Mira"], "notes": ""},
+    )
+    assert job.kind == "build_in"
+    assert job.state == "queued"
+    assert job_status(job.id)[1] == 1
+    # Whitespace-only entries are trimmed away; other content still counts.
+    blank_trimmed = enqueue_job(world, "build_in", {"places": ["   "], "notes": "only notes count"})
+    assert blank_trimmed.state == "queued"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"places": [], "factions": [], "key_figures": [], "notes": ""},  # all blank
+        {"places": ["   "], "key_figures": [], "notes": ""},  # whitespace-only entries
+        {"places": ["x" * 2001]},  # entry too long
+        {"places": [1, 2]},  # non-string entry
+        {"places": "not a list"},  # section not a list
+        {"notes": 7},  # notes not a string
+        {"factions": list(range(101))},  # too many entries
+    ],
+)
+def test_enqueue_build_in_bad_payload_rejected_zero_rows(
+    world: str, payload: dict[str, object]
+) -> None:
+    """Malformed build-in payloads -> InvalidJobInputError, zero rows written."""
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "build_in", payload)
+    assert _count_jobs() == 0
+
+
+def test_enqueue_build_in_ignores_unknown_keys(world: str) -> None:
+    """Unrecognized payload keys are not an error up front; the section shape
+    caps validate (the runner in 2.3 owns the prompt contract)."""
+    job = enqueue_job(world, "build_in", {"places": ["Greymarch"], "custom_meta": {"k": 1}})
+    assert job.state == "queued"
+
+
+# ---------------------------------------------------------------------------
 # CLAIM_EXACTLY_ONE
 # ---------------------------------------------------------------------------
 

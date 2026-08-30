@@ -212,6 +212,21 @@ def test_unexpected_error_fails_job_not_crash(world: str) -> None:
     assert "kaboom" in (job.error or "")
 
 
+def test_build_in_job_fails_not_wedges_and_queue_flows(world: str) -> None:
+    """Before Story 2.3 the worker fails a claimed build_in job loudly and
+    the FIFO keeps flowing (the same fail-not-wedge convention as media)."""
+    build_id = enqueue_job(world, "build_in", {"places": ["Greymarch"], "notes": "a damp city"}).id
+    processed = run_next_job(provider=_ok_provider, settings=SETTINGS)
+    assert processed == build_id
+    job, _position = job_status(build_id)
+    assert job.state == "failed"
+    assert "Story 2.3" in (job.error or "")
+    # The slot is freed: a subsequent text job processes normally.
+    text_id = _enqueue_text(world)
+    assert run_next_job(provider=_ok_provider, settings=SETTINGS) == text_id
+    assert job_status(text_id)[0].state == "succeeded"
+
+
 def test_worker_loop_drains_then_idles_and_stops(tmp_path: Path) -> None:
     """The loop claims jobs (via to_thread) and exits promptly on stop —
     run with a fresh event loop so no plugin is needed (deterministic)."""

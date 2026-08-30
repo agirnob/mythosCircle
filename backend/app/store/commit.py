@@ -21,7 +21,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core import ids, time
-from app.core.ids import CROCKFORD_ALPHABET
 from app.store import models
 from app.store.db import session_scope
 from app.store.read import latest_revision
@@ -370,7 +369,7 @@ def _check_ulid(ulid: str) -> None:
     cursor pagination and sortability, so caller-supplied ids are validated
     here, never adopted verbatim.
     """
-    if len(ulid) != 26 or any(ch not in CROCKFORD_ALPHABET for ch in ulid):
+    if not ids.is_valid_ulid(ulid):
         raise InvalidUlidError(ulid)
 
 

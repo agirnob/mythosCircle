@@ -26,7 +26,7 @@ from app.store.auth import (
     verify_login,
 )
 from app.store.campaigns import (
-    SEED_THEMES,
+    CampaignInputError,
     InvalidThemeError,
     create_campaign,
     delete_campaign,
@@ -129,6 +129,7 @@ __all__ = [
     "EVENT_JOB_FAILED",
     "EVENT_JOB_PROGRESS",
     "EVENT_QUEUE_CHANGED",
+    "CampaignInputError",
     "CorruptEventError",
     "CrossCampaignConflictError",
     "DanglingEdgeError",
@@ -162,7 +163,6 @@ __all__ = [
     "cancel_job",
     "claim_next_job",
     "commit_subgraph",
-    "SEED_THEMES",
     "complete_job",
     "create_campaign",
     "delete_campaign",

@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.core import ids, time
 from app.store import (
+    CampaignInputError,
     InvalidThemeError,
     app_db_url,
     commit_subgraph,
@@ -209,8 +210,8 @@ def test_list_cursor_foreign_and_deleted_rejected(db: None) -> None:
     owner_a, owner_b = _owner("a"), _owner("b")
     a_id = _create(owner_a)
     b_id = _create(owner_b)
-    with pytest.raises(ValueError):
+    with pytest.raises(CampaignInputError):
         list_campaigns(owner_a, cursor=b_id)  # foreign owner
     delete_campaign(owner_a, a_id)
-    with pytest.raises(ValueError):
+    with pytest.raises(CampaignInputError):
         list_campaigns(owner_a, cursor=a_id)  # deleted

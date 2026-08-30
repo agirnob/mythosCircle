@@ -78,6 +78,8 @@ def run_next_job(
 
 
 def _run_job(job: models.Job, provider: Provider, settings: LLMSettings) -> None:
+    if job.kind == "build_in":
+        raise JobPayloadError("job kind 'build_in': the build-in runner lands in Story 2.3")
     if job.kind != "text":
         raise JobPayloadError(
             f"job kind {job.kind!r}: the media service lands in Epic 4 — "

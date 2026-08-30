@@ -163,7 +163,7 @@ class Job(Base):
             name="ck_job_state",
         ),
         CheckConstraint(
-            "kind IN ('text','image','video')",
+            "kind IN ('text','image','video','build_in')",
             name="ck_job_kind",
         ),
         CheckConstraint("progress >= 0.0 AND progress <= 1.0", name="ck_job_progress"),

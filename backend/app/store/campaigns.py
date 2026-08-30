@@ -19,26 +19,26 @@ from sqlalchemy import delete, select
 from app.core import ids, time
 from app.core.settings import configured_themes
 from app.store import models
+from app.store.commit import StoreError
 from app.store.db import session_scope
 
-#: The open, user-extendable theme seed list (AR27). The RUNTIME list
-#: comes from config.toml [campaigns].themes (consumed in 1.7); this
-#: constant is the code default when config is absent.
-SEED_THEMES: frozenset[str] = frozenset({"High Fantasy", "Grimdark", "Steampunk", "Planar"})
 
-
+#: The themes validated against — the config-resolved list (spec-1.7).
+#: The code fallback is ``app.core.config.DEFAULT_THEMES``; this module
+#: holds no copy (epic-1 retro item 4: one canonical code seed).
 def configured_seed_themes() -> frozenset[str]:
-    """The themes actually validated against (config > code seed)."""
-    configured = configured_themes()
-    if configured:
-        return frozenset(configured)
-    return SEED_THEMES
+    """The themes actually validated against — the config-resolved list."""
+    return frozenset(configured_themes())
 
 
 DEFAULT_LIST_LIMIT = 50
 
 
-class InvalidThemeError(ValueError):
+class CampaignInputError(StoreError):
+    """Malformed campaign input — rejected with no state change (-> 422)."""
+
+
+class InvalidThemeError(StoreError):
     """A theme outside the seed list."""
 
 
@@ -98,7 +98,7 @@ def list_campaigns(
     ``(campaigns, next_cursor_ulid_or_None)``.
     """
     if limit < 1:
-        raise ValueError("limit must be >= 1")
+        raise CampaignInputError("limit must be >= 1")
     from sqlalchemy import literal_column
 
     with session_scope() as session:
@@ -110,7 +110,7 @@ def list_campaigns(
                 select(models.Campaign.owner_id).where(models.Campaign.id == cursor)
             )
             if owner_of_cursor != owner_id:
-                raise ValueError("cursor names a campaign you do not own")
+                raise CampaignInputError("cursor names a campaign you do not own")
             anchor = session.scalar(
                 select(literal_column("rowid"))
                 .select_from(models.Campaign)
@@ -148,9 +148,9 @@ def update_campaign(owner_id: str, campaign_id: str, **seed: str) -> models.Camp
             seed["theme"] = normalize_theme(seed["theme"])
         for key, value in seed.items():
             if key not in {"title", "description", "theme", "custom_lore"}:
-                raise ValueError(f"unknown campaign field: {key}")
+                raise CampaignInputError(f"unknown campaign field: {key}")
             if value is None:
-                raise ValueError(f"campaign field {key} must not be null")
+                raise CampaignInputError(f"campaign field {key} must not be null")
             if key in {"title", "theme"}:
                 _require_non_blank(value, key)
             setattr(row, key, value.strip())

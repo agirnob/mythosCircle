@@ -6,20 +6,15 @@ contract; store rejections map to the error envelope — 4xx = user error,
 never a state change.
 """
 
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.api.common import _store_error_as_http
 from app.core.pagination import InvalidCursorError, decode_cursor, encode_cursor
 from app.store import (
-    DuplicateJobError,
-    InvalidJobInputError,
-    JobNotFoundError,
-    JobStateConflictError,
-    QueueFullError,
     StoreError,
-    UnknownCampaignError,
     cancel_job,
     enqueue_job,
     job_status,
@@ -34,7 +29,7 @@ class JobCreate(BaseModel):
     """POST /api/jobs body — the job-submission wire contract."""
 
     campaign_id: str
-    kind: Literal["text", "image", "video"]
+    kind: Literal["text", "image", "video", "build_in"]
     payload: dict[str, Any]
     # Idempotency key (conventions.md): retries reuse the same job_id; a
     # duplicate is rejected with 409, never double-enqueued.
@@ -67,22 +62,6 @@ class JobListResponse(BaseModel):
 
     jobs: list[JobResponse]
     next_cursor: str | None
-
-
-def _store_error_as_http(exc: Exception) -> NoReturn:
-    """Map a store rejection to its envelope HTTPException (4xx = user error).
-
-    The state machine rejects are 409/404; malformed input is 422 — the
-    same codes the I/O matrix pins, with machine-readable envelope codes
-    from app.core.errors.
-    """
-    if isinstance(exc, (JobNotFoundError, UnknownCampaignError)):
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if isinstance(exc, (JobStateConflictError, DuplicateJobError, QueueFullError)):
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if isinstance(exc, InvalidJobInputError):
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    raise exc
 
 
 def _to_response(job: models.Job, position: int | None) -> JobResponse:
@@ -127,7 +106,7 @@ def get_job(job_id: str) -> JobResponse:
     """One job plus its current queue position (STATUS_POSITION)."""
     try:
         job, position = job_status(job_id)
-    except JobNotFoundError as exc:
+    except StoreError as exc:
         _store_error_as_http(exc)
     return _to_response(job, position)
 
