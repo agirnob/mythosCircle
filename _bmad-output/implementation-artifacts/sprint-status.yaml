@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 08:25
-last_updated: 08-30-2026
+last_updated: 08-30-2026 23:06
 project: mythosCircle
 project_key: NOKEY
 tracking_system: file-system
@@ -39,12 +39,12 @@ development_status:
   epic-1: in-progress
   1-1-repo-scaffold-with-conventions-and-green-test-harness: done
   1-2-versioned-world-store: done
-  1-3-persistent-generation-queue: review
-  1-4-openai-compatible-inference-adapter: review
-  1-5-dm-authentication: review
-  1-6-private-world-creation-campaign-crud-with-seed: review
+  1-3-persistent-generation-queue: done
+  1-4-openai-compatible-inference-adapter: done
+  1-5-dm-authentication: done
+  1-6-private-world-creation-campaign-crud-with-seed: done
   1-7-deploy-to-the-operator-s-host: done
-  epic-1-retrospective: optional
+  epic-1-retrospective: done
 
   epic-2: backlog
   2-1-guided-build-in-flow: backlog
@@ -95,3 +95,52 @@ development_status:
   8-1-session-logger-schema-and-commit-path-phase-3-boundary-do-no: backlog
   8-2-simulate-history-a-door-with-a-spec-keyhole-phase-3-boundary: backlog
   epic-8-retrospective: optional
+action_items:
+  - id: "epic-1-retro-item-1-consolidate-the-crockford-ulid-predicate"
+    epic: 1
+    action: "Consolidate the Crockford-ULID predicate into core/ids.is_valid_ulid
+      (commit/jobs/pagination)"
+    owner: "next story dev"
+    status: open
+    ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
+  - id: "epic-1-retro-item-2-converge-cursor-pagination-scaffold-unif"
+    epic: 1
+    action: "Converge cursor pagination scaffold + unify unknown-cursor miss semantics
+      (jobs vs campaigns)"
+    owner: "pipeline story dev"
+    status: open
+    ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
+  - id: "epic-1-retro-item-3-make-campaigns-errors-subclass-storeerro"
+    epic: 1
+    action: "Make campaigns errors subclass StoreError; use the shared _store_error_as_http
+      mapper"
+    owner: "campaigns-touching story"
+    status: open
+    ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
+  - id: "epic-1-retro-item-4-drop-the-dead-seed_themes-fallback-one-c"
+    epic: 1
+    action: "Drop the dead SEED_THEMES fallback; one canonical theme seed from config
+      DEFAULT_THEMES"
+    owner: "config-touching story"
+    status: open
+    ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
+  - id: "epic-1-retro-item-5-consolidate-env-parse-helpers-constants"
+    epic: 1
+    action: "Consolidate env-parse helpers + constants between core/config.py and
+      core/settings.py"
+    owner: "refactor story"
+    status: open
+    ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
+  - id: "epic-1-retro-item-6-propose-spine-ad-1-exception-campaign-se"
+    epic: 1
+    action: "Propose spine AD-1 exception: campaign seed is identity/config, not a
+      graph delta"
+    owner: "owner (contract)"
+    status: open
+    ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
+  - id: "epic-1-retro-item-7-prefer-fixture-scoped-app-import-over-co"
+    epic: 1
+    action: "Prefer fixture-scoped app import over conftest module-level create_app"
+    owner: "test-hardening story"
+    status: open
+    ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
