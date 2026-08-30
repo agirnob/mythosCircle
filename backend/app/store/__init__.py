@@ -17,6 +17,14 @@ Public API:
         set_change_listener                 -- generation queue (jobs)
 """
 
+from app.store.auth import (
+    EmailTakenError,
+    create_session,
+    get_session_account,
+    register_account,
+    revoke_session,
+    verify_login,
+)
 from app.store.commit import (
     EDGE_TYPES,
     CorruptEventError,
@@ -71,6 +79,7 @@ from app.store.jobs import (
     set_change_listener,
 )
 from app.store.models import (
+    Account,
     Base,
     Campaign,
     Edge,
@@ -81,6 +90,7 @@ from app.store.models import (
     Job,
     Media,
     Revision,
+    Session,
 )
 from app.store.read import (
     latest_revision,
@@ -91,11 +101,19 @@ from app.store.read import (
 from app.store.undo import undo
 
 __all__ = [
+    "Account",
     "Base",
     "Campaign",
     "DEFAULT_DB_URL",
     "DEFAULT_LIST_LIMIT",
     "DB_ENV_VAR",
+    "EmailTakenError",
+    "Session",
+    "create_session",
+    "get_session_account",
+    "register_account",
+    "revoke_session",
+    "verify_login",
     "EDGE_TYPES",
     "EVENT_JOB_CANCELLED",
     "EVENT_JOB_DONE",

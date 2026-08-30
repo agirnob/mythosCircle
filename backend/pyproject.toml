@@ -10,6 +10,8 @@ dependencies = [
     "uvicorn>=0.52,<1",
     "python-ulid>=4,<5",
     "httpx>=0.28,<1",  # the OpenAI-compatible provider's HTTP client (AR9)
+    "argon2-cffi>=25,<26",  # AR29: argon2id password hashing
+    "email-validator>=2,<3",  # Pydantic EmailStr on the auth wire contract
 ]
 
 [dependency-groups]

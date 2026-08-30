@@ -116,3 +116,14 @@ def _env_positive_float(name: str, default: float) -> float:
     if value <= 0:
         raise ValueError(f"{name} must be > 0, got {value}")
     return value
+
+
+#: Environment variable for the session lifetime (spec-1.5).
+SESSION_TTL_DAYS = "MYTHOSCIRCLE_SESSION_TTL_DAYS"
+#: Default session lifetime in days (AR14/AR29).
+DEFAULT_SESSION_TTL_DAYS = 30
+
+
+def session_ttl_days() -> int:
+    """The session lifetime in days; 0 disables expiry (never expire)."""
+    return _env_non_negative_int(SESSION_TTL_DAYS, DEFAULT_SESSION_TTL_DAYS)

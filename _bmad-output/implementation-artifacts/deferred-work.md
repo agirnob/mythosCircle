@@ -31,3 +31,17 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `spec-1-4-openai-compatible-inference-adapter.md`
   summary: There is no general schema-migration mechanism — `init_db` does `create_all` plus the single `job.result` column ADD; future column additions need hand-rolled ALTERs.
   evidence: review round 1 added `_migrate_job_result`; a proper migration tool (Alembic) or a schema-versioning convention belongs in a later ops story (1.7 or Epic 6), not per-column ad-hoc ALTERs.
+## Deferred from: code review of spec-1-5-dm-authentication (2026-08-30)
+
+- source_spec: `spec-1-5-dm-authentication.md`
+  summary: Session rows accumulate without bound — every login inserts, expiry/revocation marks rather than purges, and nothing reclaims them.
+  evidence: review round 1 flagged unbounded `session` growth; a TTL sweep / purge job (or row deletion on match of a configurable retention) belongs in a later ops story (1.7 or Epic 6).
+- source_spec: `spec-1-5-dm-authentication.md`
+  summary: No rehash-on-login — future argon2 parameter bumps never upgrade existing accounts' hashes.
+  evidence: `verify_login` verifies but never calls `check_needs_rehash`; a hardening story should add lazy rehash on successful login.
+- source_spec: `spec-1-5-dm-authentication.md`
+  summary: Proxy-trust model is loopback-only — `_client_ip` honors X-Forwarded-For only from 127.0.0.1/::1 (the Caddy proxy).
+  evidence: single-tenant beta is fine behind the same-host reverse proxy; a broader trusted-proxy/header configuration is a deployment hardening (1.7).
+- source_spec: `spec-1-5-dm-authentication.md`
+  summary: Login CSRF is accepted — a cross-site top-level form POST could set a session cookie for an attacker-chosen account.
+  evidence: SameSite=Lax mitigates most browsers' cross-site POSTs; the single-tenant owner tool accepts the residual risk — revisit with an Origin/Host check or CSRF token if the deployment expands (deferred-work note).

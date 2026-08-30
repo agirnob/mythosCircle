@@ -193,6 +193,42 @@ class Media(Base):
     created_at: Mapped[str] = mapped_column(String(40))
 
 
+class Account(Base):
+    """One DM identity (AR14/AR29, spec-1.5).
+
+    Email is normalized (lowercased/trimmed) before storage; the unique
+    constraint is on the normalized value. Password is argon2id-hashed —
+    the plaintext is never stored. Accounts are NOT world graph: no
+    revisions, no events (AD-1 applies to world state only).
+    """
+
+    __tablename__ = "account"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[str] = mapped_column(String(40))
+
+
+class Session(Base):
+    """One login session (AR14/AR29, spec-1.5).
+
+    The cookie carries an opaque random token; the DB stores only its
+    SHA-256 hex (a leaked DB never yields usable tokens). ``expires_at``
+    is the TTL boundary; ``revoked_at`` non-NULL means the session was
+    logged out — revocation is immediate. Sessions are NOT world graph.
+    """
+
+    __tablename__ = "session"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    account_id: Mapped[str] = mapped_column(ForeignKey("account.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[str] = mapped_column(String(40))
+    expires_at: Mapped[str] = mapped_column(String(40))
+    revoked_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
 @dataclass(frozen=True)
 class EntityInput:
     """One staged entity for ``commit_subgraph``.

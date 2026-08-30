@@ -35,3 +35,16 @@ def test_backup_and_restore_target_the_same_db() -> None:
         text = (DEPLOY_DIR / script).read_text()
         assert f'DATA_DIR="${{MYTHOSCIRCLE_DATA_DIR:-{data_dir}}}"' in text
         assert 'DB="$DATA_DIR/mythoscircle.db"' in text
+
+
+def test_api_binds_loopback_only() -> None:
+    """AR29/AR2: the API binds loopback-only; Caddy fronts TLS. Both the
+    operator config and the systemd unit pin 127.0.0.1 — a public bind
+    would expose auth over cleartext."""
+    config = tomllib.loads((DEPLOY_DIR / "config.toml").read_text())
+    assert config["server"]["host"] == "127.0.0.1"
+    service = (DEPLOY_DIR / "mythoscircle.service").read_text()
+    assert "--host 127.0.0.1" in service
+    caddy = (DEPLOY_DIR / "Caddyfile").read_text()
+    assert "tls" in caddy.lower()
+    assert "reverse_proxy" in caddy.lower()
