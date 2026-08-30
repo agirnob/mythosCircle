@@ -50,11 +50,10 @@ def test_api_binds_loopback_only() -> None:
     assert "reverse_proxy" in caddy.lower()
 
 
-def test_theme_seed_matches_config_toml() -> None:
-    """AR27: the code's seed theme list and the operator config agree —
-    extending the themes is a 1.7 config change, not a code change."""
-    from app.store.campaigns import SEED_THEMES
-
+def test_theme_seed_in_shipped_config() -> None:
+    """AR27/spec-1.7: the shipped config carries the seed theme list; the
+    runtime consumes it (env > config > seed fallback — config sourcing is
+    pinned in test_config.py)."""
     config = tomllib.loads((DEPLOY_DIR / "config.toml").read_text())
     config_themes = config["campaigns"]["themes"]
-    assert set(config_themes) == set(SEED_THEMES)
+    assert set(config_themes) == {"High Fantasy", "Grimdark", "Steampunk", "Planar"}

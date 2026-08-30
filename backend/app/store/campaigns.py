@@ -17,13 +17,23 @@ from collections.abc import Sequence
 from sqlalchemy import delete, select
 
 from app.core import ids, time
+from app.core.settings import configured_themes
 from app.store import models
 from app.store.db import session_scope
 
-#: The open, user-extendable theme seed list (AR27). Extending it is a
-#: config change (deploy/config.toml [campaigns].themes, consumed in 1.7),
-#: mirrored here and pinned by a deploy-contract test.
+#: The open, user-extendable theme seed list (AR27). The RUNTIME list
+#: comes from config.toml [campaigns].themes (consumed in 1.7); this
+#: constant is the code default when config is absent.
 SEED_THEMES: frozenset[str] = frozenset({"High Fantasy", "Grimdark", "Steampunk", "Planar"})
+
+
+def configured_seed_themes() -> frozenset[str]:
+    """The themes actually validated against (config > code seed)."""
+    configured = configured_themes()
+    if configured:
+        return frozenset(configured)
+    return SEED_THEMES
+
 
 DEFAULT_LIST_LIMIT = 50
 
@@ -33,12 +43,14 @@ class InvalidThemeError(ValueError):
 
 
 def normalize_theme(theme: str) -> str:
-    """Canonical form of a theme (case-insensitive match on the seed)."""
+    """Canonical form of a theme (case-insensitive match, config-driven)."""
     theme = theme.strip()
-    for candidate in SEED_THEMES:
+    for candidate in configured_seed_themes():
         if candidate.lower() == theme.lower():
             return candidate
-    raise InvalidThemeError(f"theme {theme!r} is not in the seed list: {sorted(SEED_THEMES)}")
+    raise InvalidThemeError(
+        f"theme {theme!r} is not in the seed list: {sorted(configured_seed_themes())}"
+    )
 
 
 def _require_non_blank(value: str, field: str) -> str:

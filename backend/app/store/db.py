@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.settings import configured_db_url
 from app.store import models
 
 #: Environment variable overriding the database URL.
@@ -170,8 +171,13 @@ def session_scope() -> Iterator[Session]:
 
 
 def app_db_url() -> str:
-    """Database URL for the running app (env-overridable)."""
-    return os.environ.get(DB_ENV_VAR, DEFAULT_DB_URL)
+    """Database URL for the running app (env > config > default, spec-1.7)."""
+    if DB_ENV_VAR in os.environ:
+        return os.environ[DB_ENV_VAR]
+    configured = configured_db_url()
+    if configured:
+        return f"sqlite:///{configured}"
+    return DEFAULT_DB_URL
 
 
 def init_app_db() -> Engine:

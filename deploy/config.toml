@@ -28,7 +28,9 @@ max_llm_calls_per_job = 64
 max_media_calls_per_job = 8
 
 [queue]
-# One persistent FIFO; exactly one job at a time (AD-12).
+# One persistent FIFO; exactly one job at a time (AD-3). The pending cap
+# (in-flight + queued, AR28) — consumed by the runtime as
+# MYTHOSCIRCLE_MAX_PENDING_PER_CAMPAIGN's config default (spec-1.7).
 max_in_flight_per_campaign = 1
 
 [campaigns]

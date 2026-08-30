@@ -15,6 +15,10 @@ os.environ["MYTHOSCIRCLE_DB"] = _TEST_DB
 # claim_next_job every 0.2s and would race the tests' exact-frame
 # assertions (review round 1). The worker is tested separately.
 os.environ["MYTHOSCIRCLE_TESTING"] = "1"
+# Point config at a nonexistent file so tests never read the repo's or an
+# installed config.toml (spec-1.7: code defaults + explicit test fixtures
+# own the config surface; the app's setup_logging must not open /var/log).
+os.environ["MYTHOSCIRCLE_CONFIG"] = "/nonexistent/mythoscircle-test-config.toml"
 
 from app.main import app  # noqa: E402
 

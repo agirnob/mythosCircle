@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from app.api import auth, campaigns, health, jobs, ws
 from app.core.errors import register_error_handlers
+from app.core.logging_setup import setup_logging
 from app.pipeline.worker import worker_loop
 from app.store import init_app_db
 from app.store.jobs import recover_stale_running
@@ -51,6 +52,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     """Build the FastAPI application (app factory)."""
     application = FastAPI(title="mythosCircle API", version="0.1.0", lifespan=lifespan)
+    setup_logging()  # JSON-lines file logging first — every handler logs structured
     register_error_handlers(application)
     init_app_db()  # world store: schema + WAL, idempotent
     recover_stale_running()  # AR11: re-queue a crashed worker's running job

@@ -86,7 +86,20 @@ def handle_http_error(request: Request, exc: StarletteHTTPException) -> JSONResp
 
 
 def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-    """Catch-all: 500 in the envelope. Never echoes the exception back."""
+    """Catch-all: 500 in the envelope. Never echoes the exception back —
+    but it IS logged with its traceback (spec-1.7: production 500s must
+    be visible in the JSON-lines log, not swallowed)."""
+    import logging
+
+    # ``exc_info=<the exception>`` (accepted since Python 3.5) makes the
+    # formatter render its real traceback — this handler runs outside the
+    # original except block, so ``sys.exc_info()`` would be empty.
+    logging.getLogger(__name__).error(
+        "unhandled error on %s %s",
+        request.method,
+        request.url.path,
+        exc_info=exc,
+    )
     return _envelope(500, INTERNAL_ERROR_CODE, INTERNAL_ERROR_MESSAGE)
 
 

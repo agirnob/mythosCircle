@@ -54,3 +54,12 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `spec-1-6-private-world-creation-campaign-crud-with-seed.md`
   summary: The generic-401 pre-auth body-validation ordering — an unauthenticated request with an invalid body gets 422 before the auth dependency rejects it.
   evidence: FastAPI validates the body before dependencies resolve; a strict auth-first gate would need middleware — accepted for the beta owner tool (no sensitive body fields), revisit if the deployment expands.
+
+## Deferred from: code review of spec-1-7-deploy-to-the-operator-s-host (2026-08-30)
+
+- source_spec: `spec-1-7-deploy-to-the-operator-s-host.md`
+  summary: Actual Caddy TLS certificate issuance and systemd execution remain the operator host's act — the repo proves the flow via the stage dry-run; `caddy validate` and a live `systemctl start` need the host.
+  evidence: the deploy script installs and enables both, but the acceptance proof of a live https site is a host-side action (Epic 6's restore proof and the beta-launch gate exercise the running host).
+- source_spec: `spec-1-7-deploy-to-the-operator-s-host.md`
+  summary: Alembic/general schema migrations remain deferred to Epic 6 — 1.7 kept the per-column `_migrate_*` convention.
+  evidence: the ledger's 1.4 deferral stands; config consumption is complete but migration tooling is an ops-story concern.

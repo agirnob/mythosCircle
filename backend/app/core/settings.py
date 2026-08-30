@@ -1,13 +1,15 @@
-"""Environment-backed settings (AD-22).
+"""Environment + config settings (AD-22, spec-1.7).
 
-Queue limits (spec-1.3) and the inference adapter's endpoint/model/key/
-timeout (spec-1.4) come from environment variables with fixed defaults
-mirroring ``deploy/config.toml``; ``config.toml`` consumption is deferred
-to Story 1.7, so these are env-only here.
+Precedence is always env > ``deploy/config.toml`` > code default. The
+deploy config is resolved once by ``app.core.config.runtime_config``;
+these helpers read it first and apply env overrides on top.
 """
 
 import os
 from dataclasses import dataclass
+
+from app.core import config as config_mod
+from app.core.config import runtime_config
 
 #: Environment variables overriding the queue limits.
 MAX_PENDING_PER_CAMPAIGN = "MYTHOSCIRCLE_MAX_PENDING_PER_CAMPAIGN"
@@ -22,7 +24,7 @@ DEFAULT_MAX_MEDIA_CALLS_PER_JOB = 8
 
 @dataclass(frozen=True)
 class QueueSettings:
-    """Queue limits read from the environment (defaults when unset)."""
+    """Queue limits read from env + config (env > config > default)."""
 
     max_pending_per_campaign: int = DEFAULT_MAX_PENDING_PER_CAMPAIGN
     max_llm_calls_per_job: int = DEFAULT_MAX_LLM_CALLS_PER_JOB
@@ -30,16 +32,16 @@ class QueueSettings:
 
 
 def queue_settings() -> QueueSettings:
-    """Read the queue limits from the environment with the spec defaults."""
+    """Read the queue limits with env > config > default precedence."""
     return QueueSettings(
         max_pending_per_campaign=_env_non_negative_int(
-            MAX_PENDING_PER_CAMPAIGN, DEFAULT_MAX_PENDING_PER_CAMPAIGN
+            MAX_PENDING_PER_CAMPAIGN, runtime_config().queue_max_pending
         ),
         max_llm_calls_per_job=_env_non_negative_int(
-            MAX_LLM_CALLS_PER_JOB, DEFAULT_MAX_LLM_CALLS_PER_JOB
+            MAX_LLM_CALLS_PER_JOB, runtime_config().max_llm_calls_per_job
         ),
         max_media_calls_per_job=_env_non_negative_int(
-            MAX_MEDIA_CALLS_PER_JOB, DEFAULT_MAX_MEDIA_CALLS_PER_JOB
+            MAX_MEDIA_CALLS_PER_JOB, runtime_config().max_media_calls_per_job
         ),
     )
 
@@ -62,13 +64,13 @@ def _env_non_negative_int(name: str, default: int) -> int:
     return value
 
 
-#: Environment variables for the inference adapter (spec-1.4).
+#: Environment variables for the inference adapter (spec-1.4; config in 1.7).
 LLM_ENDPOINT = "MYTHOSCIRCLE_LLM_ENDPOINT"
 LLM_MODEL = "MYTHOSCIRCLE_LLM_MODEL"
 LLM_API_KEY = "MYTHOSCIRCLE_LLM_API_KEY"
 LLM_TIMEOUT = "MYTHOSCIRCLE_LLM_TIMEOUT"
 
-#: Defaults mirroring ``deploy/config.toml`` ``[llm]`` (spec-1.4).
+#: Code defaults (spec-1.4; config.toml [llm] overrides in 1.7).
 DEFAULT_LLM_ENDPOINT = "http://127.0.0.1:8080/v1"
 DEFAULT_LLM_MODEL = "mythos-14b-q5"
 DEFAULT_LLM_TIMEOUT = 120
@@ -85,17 +87,21 @@ class LLMSettings:
 
 
 def llm_settings() -> LLMSettings:
-    """Read the inference adapter's settings from the environment.
+    """Read the inference adapter's settings (env > config > default).
 
-    Swapping engines (llama-server → LM Studio → OpenRouter) is a config
-    change, never a code change (AR9, NFR8). The API key, when set, is an
-    environment variable — never a config file value (AD-22).
+    The API key stays environment-only (AD-22) — never config.toml.
     """
+    resolved = runtime_config()
+    endpoint_env = os.environ.get(LLM_ENDPOINT)
+    model_env = os.environ.get(LLM_MODEL)
     return LLMSettings(
-        endpoint=os.environ.get(LLM_ENDPOINT, DEFAULT_LLM_ENDPOINT).strip() or DEFAULT_LLM_ENDPOINT,
-        model=os.environ.get(LLM_MODEL, DEFAULT_LLM_MODEL).strip() or DEFAULT_LLM_MODEL,
+        # A set-but-empty env value is treated as unset (falls through to
+        # config) — precedence is env > config > default (spec-1.7).
+        endpoint=(endpoint_env if endpoint_env else resolved.llm_endpoint).strip()
+        or resolved.llm_endpoint,
+        model=(model_env if model_env else resolved.llm_model).strip() or resolved.llm_model,
         api_key=os.environ.get(LLM_API_KEY) or None,
-        timeout=_env_positive_float(LLM_TIMEOUT, DEFAULT_LLM_TIMEOUT),
+        timeout=_env_positive_float(LLM_TIMEOUT, resolved.llm_timeout),
     )
 
 
@@ -127,3 +133,22 @@ DEFAULT_SESSION_TTL_DAYS = 30
 def session_ttl_days() -> int:
     """The session lifetime in days; 0 disables expiry (never expire)."""
     return _env_non_negative_int(SESSION_TTL_DAYS, DEFAULT_SESSION_TTL_DAYS)
+
+
+def configured_themes() -> list[str]:
+    """The campaign theme list from config (code seed fallback, spec-1.7)."""
+    return list(runtime_config().themes)
+
+
+def configured_db_url() -> str | None:
+    """The DB url from config; env override wins when set."""
+    if config_mod.DB_ENV in os.environ:
+        return os.environ[config_mod.DB_ENV]
+    return runtime_config().db_url
+
+
+def configured_log_file() -> str | None:
+    """The JSON-lines log path from config; env override wins when set."""
+    if config_mod.LOG_FILE_ENV in os.environ:
+        return os.environ[config_mod.LOG_FILE_ENV]
+    return runtime_config().log_file
