@@ -40,7 +40,10 @@ committed lockfiles).
 
 ```sh
 # backend — http://127.0.0.1:8000/api/health
-uv run --directory backend uvicorn app.main:app --port 8000
+# The store defaults to the production path (/var/lib/mythoscircle/mythoscircle.db,
+# matching deploy/config.toml and the backup scripts); point local dev at a
+# writable location:
+MYTHOSCIRCLE_DB=sqlite:///./data/mythosCircle.db uv run --directory backend uvicorn app.main:app --port 8000
 
 # frontend — Vite dev server, proxies /api and /ws to 127.0.0.1:8000
 cd frontend && npm run dev

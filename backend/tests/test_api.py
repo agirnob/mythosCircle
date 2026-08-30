@@ -81,8 +81,27 @@ def test_validation_error_422_envelope() -> None:
     assert isinstance(body["details"], dict)
 
 
-@pytest.mark.parametrize("status", [401, 403, 405, 408, 409, 418, 429])
-def test_http_4xx_envelope(status: int) -> None:
+#: Wire contract: every HTTPException status maps to a machine-readable code.
+_HTTP_CODE_EXPECTATIONS: dict[int, str] = {
+    400: "bad_request",
+    401: "unauthorized",
+    403: "forbidden",
+    405: "method_not_allowed",
+    408: "request_timeout",
+    409: "conflict",
+    418: "im_a_teapot",
+    429: "rate_limited",
+    451: "unavailable_for_legal_reasons",
+}
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    sorted(_HTTP_CODE_EXPECTATIONS.items()),
+)
+def test_http_4xx_envelope(status: int, code: str) -> None:
+    """Every common 4xx status yields its exact machine-readable code —
+    the codes the frontend branches on are pinned, not just non-empty."""
     from starlette.exceptions import HTTPException
 
     application = FastAPI()
@@ -96,5 +115,47 @@ def test_http_4xx_envelope(status: int) -> None:
         response = test_client.get("/api/gate")
     assert response.status_code == status
     body = _envelope_body(response)
-    assert body["code"]
+    assert body["code"] == code
     assert body["message"]
+
+
+def test_http_4xx_custom_detail_echoed_as_message() -> None:
+    """A 4xx carrying a detail uses it as the envelope message while the
+    machine-readable code stays the status's own."""
+    from starlette.exceptions import HTTPException
+
+    application = FastAPI()
+    register_error_handlers(application)
+
+    @application.get("/api/gate")
+    def gate() -> None:
+        raise HTTPException(status_code=409, detail="campaign already exists")
+
+    with TestClient(application, raise_server_exceptions=False) as test_client:
+        response = test_client.get("/api/gate")
+    assert response.status_code == 409
+    body = _envelope_body(response)
+    assert body["code"] == "conflict"
+    assert body["message"] == "campaign already exists"
+
+
+def test_http_5xx_exception_generic_envelope() -> None:
+    """A 5xx HTTPException never leaks its detail: generic internal_error
+    envelope, nothing echoed in the response text."""
+    from starlette.exceptions import HTTPException
+
+    application = FastAPI()
+    register_error_handlers(application)
+
+    @application.get("/api/gate")
+    def gate() -> None:
+        raise HTTPException(status_code=500, detail="secret internals: SELECT 1")
+
+    with TestClient(application, raise_server_exceptions=False) as test_client:
+        response = test_client.get("/api/gate")
+    assert response.status_code == 500
+    body = _envelope_body(response)
+    assert body["code"] == "internal_error"
+    text = response.text
+    assert "SELECT" not in text
+    assert "secret" not in text
