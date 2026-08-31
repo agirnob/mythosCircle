@@ -24,8 +24,10 @@ from app.pipeline.statblocks import (
     build_stat_repair_prompt,
     collect_stat_issues,
     parse_stat_repair_output,
+    spells_reference_text,
     stat_block_rules_text,
     stat_failure_message,
+    strip_noncharacter_stat_blocks,
 )
 from app.pipeline.worker import JobPayloadError
 from app.store import models
@@ -155,14 +157,16 @@ def test_all_six_abilities_required() -> None:
     assert validate_stat_block({**VALID, "attributes": missing}) != []
 
 
-def test_race_vocabulary_enforced_for_npc() -> None:
+def test_race_vocabulary_enforced_for_npc_and_free_for_monster() -> None:
+    """Owner decision (spec-2.4 review): Monster identity.race is the
+    creature type/name — deliberately outside the SRD player-race set."""
     errors = validate_stat_block({**VALID, "identity": {**VALID["identity"], "race": "Kobold"}})
     assert any("identity.race" in e and "SRD" in e for e in errors)
-    # Monsters carry a type string, not an SRD player race.
-    assert (
-        validate_stat_block({**MONSTER, "identity": {**MONSTER["identity"], "race": "Goblin"}})
-        == []
-    )
+    for race in ("Goblin", "Shadow-tainted wolf", "aberration"):
+        assert (
+            validate_stat_block({**MONSTER, "identity": {**MONSTER["identity"], "race": race}})
+            == []
+        ), race
 
 
 def test_class_vocabulary_enforced() -> None:
@@ -222,12 +226,37 @@ def test_spells_require_class_and_are_role_limited() -> None:
     assert any("not in the local SRD reference" in e for e in errors)
 
 
-def test_monster_spells_not_allowed_shape() -> None:
-    mon = {**MONSTER, "identity": {**MONSTER["identity"], "class": "Fighter"}, "spells": []}
-    # Empty spell list is fine; a non-empty list on a class-but-monster is
-    # still role-checked against the class list — the monster's magic is
-    # actions/traits per the repair rules.
-    assert validate_stat_block(mon) == []
+def test_monster_spells_not_allowed() -> None:
+    """spec-2.4 (enforced, not just prompt advice): a Monster never carries
+    spells — its magic is actions/traits; an empty section stays fine."""
+    mon_empty = {**MONSTER, "identity": {**MONSTER["identity"], "class": "Fighter"}, "spells": []}
+    assert validate_stat_block(mon_empty) == []
+    wizard_monster = {**MONSTER["identity"], "class": "Wizard"}
+    mon = {**MONSTER, "identity": wizard_monster, "spells": ["Fireball"]}
+    errors = validate_stat_block(mon)
+    assert any("not allowed for role Monster" in e for e in errors)
+
+
+def test_duplicate_spells_rejected() -> None:
+    """Parity with skills/actions/traits: a repeated spell name is a violation."""
+    wizard = {**VALID, "identity": {**VALID["identity"], "class": "Wizard"}}
+    errors = validate_stat_block({**wizard, "spells": ["Fireball", " fireball "]})
+    assert any("duplicated" in e for e in errors)
+
+
+def test_class_whitespace_folding_matches_other_vocabularies() -> None:
+    """Casing and padding are presentation, not validity — class folds with
+    .strip() like role/race/alignment/skills/spells."""
+    wizard = {**VALID, "identity": {**VALID["identity"], "class": "  wizard  "}}
+    assert validate_stat_block({**wizard, "spells": ["Fireball"]}) == []
+
+
+def test_spells_without_identity_report_never_raise() -> None:
+    """A spells section with no identity section yields stable violations,
+    not a crash (role and class default to None)."""
+    errors = validate_stat_block({"spells": ["Fireball"]})
+    assert any("identity section missing" in e for e in errors)
+    assert any("spells require identity.class" in e for e in errors)
 
 
 def test_combat_caps_enforced() -> None:
@@ -281,6 +310,18 @@ def test_collect_none_when_all_valid() -> None:
     assert collect_stat_issues(entities) == []
 
 
+def test_strip_noncharacter_stat_blocks() -> None:
+    """Owner decision (spec-2.4 review): a stray block on a faction/place
+    is stripped; characters and all other data are untouched."""
+    stray = _entity("faction", data={"stat_block": VALID, "economy": "level 3"})
+    char = _entity("character", data={"stat_block": VALID})
+    plain = _entity("place", data={"terrain": "marsh"})
+    out = strip_noncharacter_stat_blocks([stray, char, plain])
+    assert out[0].data == {"economy": "level 3"}
+    assert out[0] is not stray  # replaced where stripped
+    assert out[1] is char and out[2] is plain  # same objects elsewhere
+
+
 # ---------------------------------------------------------------------------
 # Repair prompt: determinism + contract
 # ---------------------------------------------------------------------------
@@ -304,6 +345,10 @@ def test_repair_prompt_deterministic() -> None:
     assert "E0" in first and "E2" in first
     assert "MISSING" in first  # the missing block renders as MISSING
     assert "STAT BLOCK RULES" in first
+    # The repair pass embeds only the flagged classes' spell lines (the
+    # VALID-ish block is a Fighter; no missing-class fallback needed here).
+    assert "SRD SPELLS BY CLASS" in first and "- Fighter:" in first
+    assert "- Wizard:" not in first
     # The rules text is a pure function of the reference data.
     assert stat_block_rules_text() == stat_block_rules_text()
     assert "STR" in stat_block_rules_text() or "str" in stat_block_rules_text()
@@ -313,8 +358,21 @@ def test_rules_text_carries_vocabularies() -> None:
     rules = stat_block_rules_text()
     assert "role in" in rules and "NPC" in rules and "Monster" in rules
     assert "CR_MAX" not in rules  # interpolated, never a name leak
-    assert "Fireball" in rules  # spell list embedded for the model
+    assert "SRD SPELLS BY CLASS" in rules  # pointer to the embedded reference
     assert "Skill" in rules or "skill" in rules
+
+
+def test_spells_reference_text_is_deterministic_and_subsettable() -> None:
+    full = spells_reference_text()
+    assert spells_reference_text() == full
+    assert all(f"- {klass}:" in full for klass in ("Cleric", "Wizard", "Fighter"))
+    wizard_only = spells_reference_text(["Wizard"])
+    assert wizard_only != full
+    assert "- Wizard:" in wizard_only
+    assert "- Cleric:" not in wizard_only  # subset: only the named classes
+    assert "- Fighter:" not in wizard_only
+    # Junk class names are dropped (the reference stays a pure function of SRD data).
+    assert spells_reference_text(["Wizard", "NotAClass"]) == wizard_only
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +405,7 @@ def test_parse_repair_output_strips_fence() -> None:
         json.dumps({"stat_blocks": "nope"}),
         json.dumps({"stat_blocks": [{"ref": "E0"}]}),  # missing stat_block
         json.dumps({"stat_blocks": [{"ref": "X0", "stat_block": VALID}]}),
+        json.dumps({"stat_blocks": [{"ref": "E\u00b2", "stat_block": VALID}]}),  # isdigit only
         json.dumps({"stat_blocks": [{"ref": "E01", "stat_block": VALID}]}),
         json.dumps({"stat_blocks": [{"ref": "E3", "stat_block": VALID}]}),  # un-flagged ref
         json.dumps(

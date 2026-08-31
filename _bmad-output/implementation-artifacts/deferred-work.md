@@ -92,3 +92,9 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `spec-2-3-core-first-two-wave-build-in-pipeline.md`
   summary: Wave-2 anchors truncate at the AR6 retrieval cap — when wave-1 commits more than `entity_cap` (24) entities, the model can only reference core anchors C0..C23; a wave-2 edge to a committed wave-1 entity beyond the cap fails as an orphan with no diagnostic.
   evidence: `core_count = min(len(entities_1), len(context_entities))` ties the orphan rule to retrieval truncation; legal input (up to 100 key figures) can fail the build with a misleading message. Revisit cap/anchor-set in 2.7 or Epic 3. [backend/app/pipeline/build_in.py, pipeline/retrieval.py]
+
+## Deferred from: code review of spec-2-4-key-figures-carry-a-minimal-5e-stat-block (2026-08-31)
+
+- source_spec: `spec-2-4-key-figures-carry-a-minimal-5e-stat-block.md`
+  summary: An invalid `identity.role` suppresses all level/cr violation reporting — the repair round only sees the role error, so a double violation (bad role + level 99) survives the single bounded pass and fails the job the model could have fixed in one round.
+  evidence: knowledge.py:485-501 skips the whole level/cr branch when `canonical_role` is None; which semantics apply is genuinely ambiguous with the role unknown, so a "report all at once" fix needs a design call. Revisit when repair-prompt quality gets measured (dogfood/2.7). [backend/app/pipeline/knowledge.py]

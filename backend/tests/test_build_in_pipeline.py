@@ -1,10 +1,13 @@
-"""Build-in pipeline (spec-2.3): the core-first two-wave runner.
+"""Build-in pipeline (spec-2.3 + spec-2.4): the core-first two-wave runner.
 
-Covers the I/O matrix rows WAVE1_ONLY, TWO_WAVES, MALFORMED_OUTPUT,
-BAD_VOCAB, ORPHAN, BUDGET_EXCEEDED, DETERMINISM, CANCEL_MIDRUN,
-STALE_BASE, RETRIEVAL_CAP and UNKNOWN_CURSOR with fake providers — no
-live LLM. Each test runs its own scratch DB and campaign so commits,
-queue positions, and revisions are deterministic.
+Covers the 2.3 rows WAVE1_ONLY, TWO_WAVES, MALFORMED_OUTPUT, BAD_VOCAB,
+ORPHAN, BUDGET_EXCEEDED, DETERMINISM, CANCEL_MIDRUN, STALE_BASE,
+RETRIEVAL_CAP, UNKNOWN_CURSOR and the 2.4 stat-block rows STAT_OK,
+STAT_INVALID_REPAIRED, STAT_MISSING_REPAIRED, STAT_STILL_INVALID,
+STAT_REPAIR_BUDGET, STAT_REPAIR_BAD_REF, STAT_REPAIR_FENCE,
+WAVE2_CHARACTERS_UNREQUIRED, STAT_CANCEL_BEFORE_REPAIR — with fake
+providers, no live LLM. Each test runs its own scratch DB and campaign
+so commits, queue positions, and revisions are deterministic.
 """
 
 import json
@@ -21,6 +24,7 @@ from app.pipeline.build_in import (
     build_wave2_prompt,
 )
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
+from app.pipeline.statblocks import spells_reference_text, stat_block_rules_text
 from app.pipeline.worker import run_next_job
 from app.store import (
     InvalidJobInputError,
@@ -532,6 +536,12 @@ def test_build_wave1_prompt_deterministic() -> None:
     assert build_wave1_prompt(seed_a, {**payload, "notes": "secret notes"}) == first
     # The prompt carries the closed vocabulary + counter semantics (2.2).
     assert "EDGE VOCABULARY" in first and "member_of" in first and "debt: amount" in first
+    # spec-2.4: the wave-1 prompt embeds the stat-block contract — the
+    # shared rules text and the full spells reference, exactly what the
+    # validator enforces (AD-16).
+    assert "STAT BLOCKS" in first and stat_block_rules_text() in first
+    assert spells_reference_text() in first and "SRD SPELLS BY CLASS" in first
+    assert "characters MUST include" in first and '"stat_block"' in first
     assert seed_a.id not in first and seed_a.created_at not in first
 
 
@@ -775,13 +785,6 @@ def test_real_provider_via_mock_transport(world: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _stat_block(**overrides: Any) -> dict[str, Any]:
-    """A valid AR25 stat block; ``overrides`` replace top-level keys."""
-    base = dict(_MIRA_STAT_BLOCK)
-    base.update(overrides)
-    return base
-
-
 def test_valid_stat_block_commits_without_repair(world: str) -> None:
     """STAT_OK: a wave-1 character with a valid data.stat_block commits
     as given (round-trips through Entity.data) with a single provider
@@ -837,22 +840,28 @@ def test_missing_stat_block_repaired(world: str) -> None:
     """STAT_MISSING_REPAIRED: a character without data.stat_block is
     flagged 'stat_block section missing'; the repair pass supplies the
     block and the wave commits."""
+    output = _wave1_output()
+    output["entities"][1]["data"] = {"goal": "tea house"}  # drop the block
     responses = [
-        json.dumps(_wave1_output()),
+        json.dumps(output),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
     ]
+    calls: list[str] = []
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
         return responses.pop(0)
 
     processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == job_id
+    assert len(calls) == 2  # wave 1 + exactly one repair pass
+    assert "stat_block section missing" in calls[1]  # the flagged violation
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     with session_scope() as session:
         mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
-    assert "stat_block" in mira.data
+    assert mira.data["stat_block"] == _MIRA_STAT_BLOCK
 
 
 def test_still_invalid_stat_block_fails_zero_commits(world: str) -> None:
@@ -961,3 +970,88 @@ def test_wave2_characters_without_stat_block_commit(world: str) -> None:
     with session_scope() as session:
         harlow = next(e for e in world_entities(session, world) if e.name == "Captain Harlow")
     assert "stat_block" not in harlow.data
+
+
+def test_monster_with_level_repaired_in_one_pass(world: str) -> None:
+    """STAT_INVALID_REPAIRED, monster-with-level variant of the matrix
+    row: a key figure rendered as Monster carrying `level` violates the
+    role-limited semantics; one repair pass replaces it with a CR block."""
+    bad_monster = {
+        "identity": {"role": "Monster", "level": 5, "race": "Goblin", "alignment": "unaligned"},
+        "attributes": {"str": 8, "dex": 14, "con": 10, "int": 9, "wis": 11, "cha": 8},
+        "combat": {"ac": 15, "hp": 7},
+    }
+    fixed_monster = {
+        "identity": {"role": "Monster", "cr": "1/4", "race": "Goblin", "alignment": "unaligned"},
+        "attributes": {"str": 8, "dex": 14, "con": 10, "int": 9, "wis": 11, "cha": 8},
+        "combat": {"ac": 15, "hp": 7},
+    }
+    output = _wave1_output()
+    output["entities"][1]["data"] = {"stat_block": bad_monster}
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": fixed_monster}]}),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 2
+    assert "identity.level is not allowed for role Monster" in calls[1]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"]["identity"]["cr"] == "1/4"
+
+
+def test_cancel_before_stat_repair_is_noop(world: str) -> None:
+    """STAT_CANCEL_BEFORE_REPAIR: a cancel landing between wave-1
+    validation and the repair call is a no-op — no repair call, no wave-1
+    commit, the job stays cancelled."""
+    output = _wave1_output()
+    output["entities"][1]["data"] = {"goal": "tea house"}  # flagged for repair
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        cancel_job(job_id)  # lands during the wave-1 call, before the poll
+        return json.dumps(output)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 1  # the repair call was never made
+    job, _position = job_status(job_id)
+    assert job.state == "cancelled"  # never failed/succeeded
+    with session_scope() as session:
+        assert revision_chain(session, world) == []  # no wave-1 commit
+
+
+def test_faction_stat_block_is_stripped(world: str) -> None:
+    """Only characters carry stat blocks (spec-2.4 review decision): a
+    faction shipping data.stat_block has the key stripped before commit —
+    tolerated, never fatal, so 2.6/2.7 can never see a stats-bearing
+    faction."""
+    output = _wave1_output()
+    output["entities"][0]["data"] = {"stat_block": {"nonsense": True}}
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(output)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 1  # stripping is silent: no repair churn
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        bar = next(e for e in world_entities(session, world) if e.name == "The Gilded Bar")
+    assert "stat_block" not in bar.data

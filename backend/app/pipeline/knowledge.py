@@ -15,11 +15,14 @@ Monster → CR), SRD vocabularies, and hard caps. Derived-value arithmetic
 validated — that is Phase-3/Epic-3 consistency, not the constrained
 field set (spec-2.4 Design Notes).
 
-``SPELLS`` is a curated starter set of SRD 5.1 base-class spell lists —
-deliberately conservative (no Xanathar's/unearthed material, only
-high-confidence mappings); spell names outside the local reference cannot
-be validated and are flagged, and the repair prompt tells the model to
-use listed spells only.
+``SPELLS`` maps spell name -> its full-list classes: the SRD 5.1 class
+lists (audited against two independent SRD 5.1 mirrors, which agree
+spell-for-spell) plus a small curated extension of well-known non-SRD
+staples (Hex, the smites, the Hadar spells) carried with their published
+class lists — deliberately conservative (no expanded-subclass material,
+only high-confidence mappings); spell names outside the local reference
+cannot be validated and are flagged, and the repair prompt tells the
+model to use listed spells only.
 """
 
 from types import MappingProxyType
@@ -95,7 +98,8 @@ SKILLS: frozenset[str] = frozenset(
     }
 )
 
-#: Spell name -> classes that have it on their SRD 5.1 base-class list.
+#: Spell name -> classes that have it on their class spell list (SRD 5.1
+# lists plus the curated non-SRD staples noted in the module docstring).
 #: The role-limited rule (AR25: "role=Wizard limits spells to the wizard
 #: list or relevant subset") checks membership here. Immutable by contract
 #: — the map feeds prompts, so a mutable dict would let one module change
@@ -139,23 +143,14 @@ _SPELLS = {
     "Comprehend Languages": {"Bard", "Sorcerer", "Warlock", "Wizard"},
     "Cure Wounds": {"Bard", "Cleric", "Druid", "Paladin", "Ranger"},
     "Detect Evil and Good": {"Cleric", "Paladin"},
-    "Detect Magic": {
-        "Bard",
-        "Cleric",
-        "Druid",
-        "Paladin",
-        "Ranger",
-        "Sorcerer",
-        "Warlock",
-        "Wizard",
-    },
+    "Detect Magic": {"Bard", "Cleric", "Druid", "Paladin", "Ranger", "Sorcerer", "Wizard"},
     "Disguise Self": {"Bard", "Sorcerer", "Wizard"},
     "Divine Favor": {"Paladin"},
     "Ensnaring Strike": {"Ranger"},
-    "Entangle": {"Druid", "Ranger"},
+    "Entangle": {"Druid"},
     "Expeditious Retreat": {"Sorcerer", "Warlock", "Wizard"},
-    "Faerie Fire": {"Bard", "Druid"},
-    "False Life": {"Sorcerer", "Warlock", "Wizard"},
+    "Faerie Fire": {"Druid"},
+    "False Life": {"Sorcerer", "Wizard"},
     "Feather Fall": {"Bard", "Sorcerer", "Wizard"},
     "Fog Cloud": {"Druid", "Ranger", "Sorcerer", "Wizard"},
     "Goodberry": {"Druid", "Ranger"},
@@ -177,7 +172,7 @@ _SPELLS = {
     "Searing Smite": {"Paladin"},
     "Shield": {"Sorcerer", "Wizard"},
     "Shield of Faith": {"Cleric", "Paladin"},
-    "Sleep": {"Bard", "Sorcerer", "Warlock", "Wizard"},
+    "Sleep": {"Bard", "Sorcerer", "Wizard"},
     "Speak with Animals": {"Bard", "Druid", "Ranger"},
     "Thunderous Smite": {"Paladin"},
     "Thunderwave": {"Bard", "Druid", "Sorcerer", "Wizard"},
@@ -190,7 +185,7 @@ _SPELLS = {
     "Alter Self": {"Sorcerer", "Wizard"},
     "Animal Messenger": {"Bard", "Druid", "Ranger"},
     "Arcane Lock": {"Wizard"},
-    "Blindness/Deafness": {"Bard", "Cleric", "Sorcerer", "Warlock", "Wizard"},
+    "Blindness/Deafness": {"Bard", "Cleric", "Sorcerer", "Wizard"},
     "Blur": {"Sorcerer", "Wizard"},
     "Branding Smite": {"Paladin"},
     "Cloud of Daggers": {"Bard", "Sorcerer", "Warlock", "Wizard"},
@@ -202,7 +197,7 @@ _SPELLS = {
     "Enthrall": {"Bard", "Warlock"},
     "Find Steed": {"Paladin"},
     "Flame Blade": {"Druid"},
-    "Flaming Sphere": {"Druid", "Sorcerer", "Wizard"},
+    "Flaming Sphere": {"Druid", "Wizard"},
     "Gust of Wind": {"Druid", "Sorcerer", "Wizard"},
     "Heat Metal": {"Bard", "Druid"},
     "Hold Person": {"Bard", "Cleric", "Druid", "Sorcerer", "Warlock", "Wizard"},
@@ -210,12 +205,12 @@ _SPELLS = {
     "Knock": {"Bard", "Sorcerer", "Wizard"},
     "Lesser Restoration": {"Bard", "Cleric", "Druid", "Paladin", "Ranger"},
     "Levitate": {"Sorcerer", "Wizard"},
-    "Magic Weapon": {"Cleric", "Paladin", "Wizard"},
+    "Magic Weapon": {"Paladin", "Wizard"},
     "Mirror Image": {"Sorcerer", "Warlock", "Wizard"},
     "Misty Step": {"Sorcerer", "Warlock", "Wizard"},
     "Moonbeam": {"Druid"},
     "Pass without Trace": {"Druid", "Ranger"},
-    "Prayer of Healing": {"Cleric", "Paladin"},
+    "Prayer of Healing": {"Cleric"},
     "Protection from Poison": {"Cleric", "Druid", "Paladin", "Ranger"},
     "Ray of Enfeeblement": {"Warlock", "Wizard"},
     "Scorching Ray": {"Sorcerer", "Wizard"},
@@ -235,18 +230,9 @@ _SPELLS = {
     "Call Lightning": {"Druid"},
     "Clairvoyance": {"Bard", "Cleric", "Sorcerer", "Wizard"},
     "Counterspell": {"Sorcerer", "Warlock", "Wizard"},
-    "Create Food and Water": {"Cleric", "Paladin"},
-    "Daylight": {"Cleric", "Druid", "Paladin", "Ranger", "Sorcerer", "Wizard"},
-    "Dispel Magic": {
-        "Bard",
-        "Cleric",
-        "Druid",
-        "Paladin",
-        "Ranger",
-        "Sorcerer",
-        "Warlock",
-        "Wizard",
-    },
+    "Create Food and Water": {"Cleric", "Druid", "Paladin"},
+    "Daylight": {"Cleric", "Druid", "Paladin", "Ranger", "Sorcerer"},
+    "Dispel Magic": {"Bard", "Cleric", "Druid", "Paladin", "Sorcerer", "Warlock", "Wizard"},
     "Fear": {"Bard", "Sorcerer", "Warlock", "Wizard"},
     "Fireball": {"Sorcerer", "Wizard"},
     "Fly": {"Sorcerer", "Warlock", "Wizard"},
@@ -258,14 +244,14 @@ _SPELLS = {
     "Lightning Bolt": {"Sorcerer", "Wizard"},
     "Magic Circle": {"Cleric", "Paladin", "Warlock", "Wizard"},
     "Major Image": {"Bard", "Sorcerer", "Warlock", "Wizard"},
-    "Mass Healing Word": {"Bard", "Cleric"},
+    "Mass Healing Word": {"Cleric"},
     "Protection from Energy": {"Cleric", "Druid", "Ranger", "Sorcerer", "Wizard"},
     "Revivify": {"Cleric", "Paladin"},
     "Sleet Storm": {"Druid", "Sorcerer", "Wizard"},
     "Slow": {"Sorcerer", "Wizard"},
-    "Speak with Dead": {"Bard", "Cleric", "Wizard"},
+    "Speak with Dead": {"Bard", "Cleric"},
     "Spirit Guardians": {"Cleric"},
-    "Stinking Cloud": {"Bard", "Sorcerer", "Warlock", "Wizard"},
+    "Stinking Cloud": {"Bard", "Sorcerer", "Wizard"},
     "Tongues": {"Bard", "Cleric", "Sorcerer", "Warlock", "Wizard"},
     "Vampiric Touch": {"Warlock", "Wizard"},
     "Water Breathing": {"Druid", "Ranger", "Sorcerer", "Wizard"},
@@ -276,34 +262,34 @@ _SPELLS = {
     "Confusion": {"Bard", "Druid", "Sorcerer", "Wizard"},
     "Conjure Minor Elementals": {"Druid", "Wizard"},
     "Dimension Door": {"Bard", "Sorcerer", "Warlock", "Wizard"},
-    "Divination": {"Cleric"},
+    "Divination": {"Druid"},
     "Dominate Beast": {"Druid", "Sorcerer"},
-    "Evard's Black Tentacles": {"Warlock", "Wizard"},
+    "Evard's Black Tentacles": {"Wizard"},
     "Fire Shield": {"Wizard"},
-    "Greater Invisibility": {"Bard", "Sorcerer", "Warlock", "Wizard"},
+    "Greater Invisibility": {"Bard", "Sorcerer", "Wizard"},
     "Hallucinatory Terrain": {"Bard", "Druid", "Warlock", "Wizard"},
     "Ice Storm": {"Druid", "Sorcerer", "Wizard"},
-    "Phantasmal Killer": {"Warlock", "Wizard"},
+    "Phantasmal Killer": {"Wizard"},
     "Polymorph": {"Bard", "Druid", "Sorcerer", "Wizard"},
     "Stone Shape": {"Cleric", "Druid", "Wizard"},
-    "Stoneskin": {"Bard", "Druid", "Ranger", "Sorcerer", "Wizard"},
-    "Wall of Fire": {"Druid", "Sorcerer", "Warlock", "Wizard"},
+    "Stoneskin": {"Druid", "Ranger", "Sorcerer", "Wizard"},
+    "Wall of Fire": {"Druid", "Sorcerer", "Wizard"},
     # 5th level
-    "Cloudkill": {"Sorcerer", "Warlock", "Wizard"},
+    "Cloudkill": {"Sorcerer", "Wizard"},
     "Cone of Cold": {"Sorcerer", "Wizard"},
     "Conjure Elemental": {"Druid", "Wizard"},
     "Contact Other Plane": {"Warlock", "Wizard"},
     "Contagion": {"Cleric", "Druid"},
     "Death Ward": {"Cleric", "Paladin"},
-    "Dominate Person": {"Bard", "Cleric", "Sorcerer", "Warlock", "Wizard"},
+    "Dominate Person": {"Bard", "Sorcerer", "Wizard"},
     "Dream": {"Bard", "Warlock", "Wizard"},
     "Geas": {"Bard", "Cleric", "Druid", "Paladin", "Wizard"},
     "Greater Restoration": {"Bard", "Cleric", "Druid"},
-    "Hold Monster": {"Bard", "Cleric", "Sorcerer", "Warlock", "Wizard"},
-    "Insect Plague": {"Cleric", "Druid"},
+    "Hold Monster": {"Bard", "Sorcerer", "Warlock", "Wizard"},
+    "Insect Plague": {"Cleric", "Druid", "Sorcerer"},
     "Legend Lore": {"Bard", "Cleric", "Wizard"},
     "Mass Cure Wounds": {"Bard", "Cleric", "Druid"},
-    "Planar Binding": {"Bard", "Cleric", "Druid", "Warlock", "Wizard"},
+    "Planar Binding": {"Bard", "Cleric", "Druid", "Wizard"},
     "Raise Dead": {"Bard", "Cleric", "Paladin"},
     "Scrying": {"Bard", "Cleric", "Druid", "Warlock", "Wizard"},
     "Teleportation Circle": {"Bard", "Sorcerer", "Wizard"},
@@ -314,11 +300,11 @@ _SPELLS = {
     "Circle of Death": {"Sorcerer", "Warlock", "Wizard"},
     "Disintegrate": {"Sorcerer", "Wizard"},
     "Eyebite": {"Bard", "Sorcerer", "Warlock", "Wizard"},
-    "Flesh to Stone": {"Sorcerer", "Warlock", "Wizard"},
+    "Flesh to Stone": {"Warlock", "Wizard"},
     "Globe of Invulnerability": {"Sorcerer", "Wizard"},
     "Harm": {"Cleric"},
     "Heal": {"Cleric", "Druid"},
-    "Heroes' Feast": {"Bard", "Cleric", "Druid"},
+    "Heroes' Feast": {"Cleric", "Druid"},
     "Mass Suggestion": {"Bard", "Sorcerer", "Warlock", "Wizard"},
     "Otiluke's Freezing Sphere": {"Sorcerer", "Wizard"},
     "Sunbeam": {"Druid", "Sorcerer", "Wizard"},
@@ -329,7 +315,7 @@ _SPELLS = {
     "Divine Word": {"Cleric"},
     "Etherealness": {"Bard", "Cleric", "Sorcerer", "Warlock", "Wizard"},
     "Finger of Death": {"Sorcerer", "Warlock", "Wizard"},
-    "Fire Storm": {"Cleric", "Druid"},
+    "Fire Storm": {"Cleric", "Druid", "Sorcerer"},
     "Mordenkainen's Sword": {"Bard", "Wizard"},
     "Plane Shift": {"Cleric", "Druid", "Sorcerer", "Warlock", "Wizard"},
     "Prismatic Spray": {"Sorcerer", "Wizard"},
@@ -339,7 +325,7 @@ _SPELLS = {
     "Teleport": {"Bard", "Sorcerer", "Wizard"},
     # 8th level
     "Antimagic Field": {"Cleric", "Wizard"},
-    "Antipathy/Sympathy": {"Bard", "Druid", "Wizard"},
+    "Antipathy/Sympathy": {"Druid", "Wizard"},
     "Clone": {"Wizard"},
     "Control Weather": {"Cleric", "Druid", "Wizard"},
     "Earthquake": {"Cleric", "Druid", "Sorcerer"},
@@ -356,7 +342,7 @@ _SPELLS = {
     "Imprisonment": {"Warlock", "Wizard"},
     "Mass Heal": {"Cleric"},
     "Meteor Swarm": {"Sorcerer", "Wizard"},
-    "Power Word Kill": {"Sorcerer", "Warlock", "Wizard"},
+    "Power Word Kill": {"Bard", "Sorcerer", "Warlock", "Wizard"},
     "Prismatic Wall": {"Wizard"},
     "Shapechange": {"Druid", "Wizard"},
     "Time Stop": {"Sorcerer", "Wizard"},
@@ -435,10 +421,21 @@ def _check_named_list(
                 errors.append(f"{section} entries must have a string 'description'")
 
 
-def _check_spells(value: Any, klass: str | None, errors: list[str]) -> None:
-    """Role-limited spell check (AR25): spells require a class, every name
-    must be in the local SRD reference, and the class must be on that
-    spell's list."""
+def resolve_class(value: Any) -> str | None:
+    """Fold a raw ``identity.class`` to its canonical SRD class name, or
+    ``None`` when it is absent or outside the vocabulary — case- and
+    whitespace-insensitive, like every other vocabulary check."""
+    if isinstance(value, str):
+        return _CLASS_INDEX.get(value.strip().lower())
+    return None
+
+
+def _check_spells(value: Any, klass: str | None, role: str | None, errors: list[str]) -> None:
+    """Role-limited spell check (AR25, spec-2.4): a Monster never carries
+    spells (its magic is actions/traits); otherwise spells require a
+    class, no name may repeat (parity with skills/actions/traits), every
+    name must be in the local SRD reference, and the class must be on
+    that spell's list."""
     if value is None:
         return
     if not isinstance(value, list):
@@ -446,14 +443,24 @@ def _check_spells(value: Any, klass: str | None, errors: list[str]) -> None:
         return
     if not value:
         return
+    if role == "Monster":
+        errors.append(
+            "spells are not allowed for role Monster (express magic as actions or traits)"
+        )
+        return
     if klass is None:
         errors.append("spells require identity.class (a class from the SRD class list)")
         return
+    seen: set[str] = set()
     for spell in value:
         if not isinstance(spell, str) or not spell.strip():
             errors.append("spell names must be non-blank strings")
             continue
-        canonical = _SPELL_INDEX.get(spell.strip().lower())
+        folded = spell.strip().lower()
+        if folded in seen:
+            errors.append(f"spell {spell!r} duplicated")
+        seen.add(folded)
+        canonical = _SPELL_INDEX.get(folded)
         if canonical is None:
             errors.append(f"spell {spell!r} is not in the local SRD reference")
             continue
@@ -475,11 +482,11 @@ def validate_stat_block(block: Any) -> list[str]:
 
     identity = block.get("identity")
     canonical_class: str | None = None
+    canonical_role: str | None = None
     if not isinstance(identity, dict):
         errors.append("identity section missing or not an object")
     else:
         role = identity.get("role")
-        canonical_role: str | None = None
         if isinstance(role, str):
             canonical_role = _ROLE_INDEX.get(role.strip().lower())
         if canonical_role is None:
@@ -506,7 +513,7 @@ def validate_stat_block(block: Any) -> list[str]:
             errors.append(f"identity.race must be one of the SRD races: {sorted(RACES)}")
         klass = identity.get("class")
         if klass is not None:
-            canonical_class = _CLASS_INDEX.get(klass.lower()) if isinstance(klass, str) else None
+            canonical_class = resolve_class(klass)
             if canonical_class is None:
                 errors.append(f"identity.class must be one of {sorted(CLASSES)}")
         alignment = identity.get("alignment")
@@ -544,6 +551,7 @@ def validate_stat_block(block: Any) -> list[str]:
     _check_spells(
         block.get("spells"),
         canonical_class,
+        canonical_role,
         errors,
     )
     return errors

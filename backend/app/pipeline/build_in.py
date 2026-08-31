@@ -1,8 +1,10 @@
-"""The build-in runner (spec-2.3): one job, two internal waves.
+"""The build-in runner (spec-2.3 + spec-2.4): one job, two internal waves.
 
 Wave 1 digests the named sections (places, factions, key figures) into a
 fully networked core subgraph of ``character``/``faction``/``place``
-entities + typed edges and commits it atomically (one revision). Wave 2
+entities + typed edges and commits it atomically (one revision); every
+wave-1 character must first carry a valid minimal stat block, repaired in
+at most one bounded pass (AR25). Wave 2
 digests ``notes`` into a second subgraph — every new entity wired by at
 least one typed edge into the committed core — committed against wave 1's
 revision (a DM edit landing between the waves raises
@@ -40,8 +42,10 @@ from app.pipeline.statblocks import (
     build_stat_repair_prompt,
     collect_stat_issues,
     parse_stat_repair_output,
+    spells_reference_text,
     stat_block_rules_text,
     stat_failure_message,
+    strip_noncharacter_stat_blocks,
 )
 from app.pipeline.worker import JobPayloadError
 from app.store import (
@@ -107,6 +111,9 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     text_1 = budget.call(lambda: provider(prompt_1, settings=settings))
     parsed_1 = parse_build_output(text_1, wave=1)
     entities_1, edges_1 = _validate_subgraph(1, parsed_1)
+    # Only characters carry stat blocks (AR24, spec-2.4 review decision): a
+    # stray block from a faction/place is stripped before validation or commit.
+    entities_1 = strip_noncharacter_stat_blocks(entities_1)
     # Stat-block enforcement (AR24/AR25, spec-2.4): every wave-1 character
     # must carry a valid minimal stat block before the wave commits — or
     # exactly one bounded repair pass; a block still invalid after the
@@ -209,6 +216,8 @@ def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) 
         "",
         "STAT BLOCKS",
         stat_block_rules_text(),
+        "",
+        spells_reference_text(),
         "",
         "OUTPUT CONTRACT",
         'Respond with one JSON object: {"entities": [...], "edges": [...]}.',

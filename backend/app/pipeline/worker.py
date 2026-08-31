@@ -14,7 +14,8 @@ compensating undo.
 Budget (AR21): every LLM call goes through ``CallBudget``
 (``app.pipeline.budget``), which checks the per-job counter against
 ``job.max_llm_calls`` BEFORE the HTTP request and fails the job when
-exceeded — the build-in runner's two waves reuse the same guard.
+exceeded — the build-in runner's waves and stat-repair pass all reuse
+the same guard (up to three calls per job since spec-2.4).
 """
 
 import asyncio
@@ -39,7 +40,9 @@ IDLE_SLEEP = 0.2
 
 
 class JobPayloadError(ValueError):
-    """A job's payload is not what the worker expects (e.g. ``prompt`` missing)."""
+    """A job's output channel is not what the worker expects: bad payload
+    (``prompt`` missing), malformed wave/repair output, or — since spec-2.4 —
+    the AR25 stat-block failure whose message becomes the fail event."""
 
 
 def run_next_job(

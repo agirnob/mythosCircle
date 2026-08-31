@@ -87,9 +87,29 @@ context:
 - Given a valid wave-1 output, when the job runs, then no repair call happens and the block round-trips through the commit (smoke: `Entity.data["stat_block"]`).
 - Given the same world state + the same wave-1 payload (or the same flagged issues), when a prompt is built, then it is byte-identical (AD-16) — pinned by unit tests for both the wave-1 and repair prompts.
 
+### Review Findings
+
+- [x] [Review][Patch] Enforce the Monster-spells role gate — **owner decision: enforce**. `_check_spells` now takes the canonical role and rejects non-empty `spells` for Monster (knowledge.py); `test_monster_spells_not_allowed` asserts the rejection.
+- [x] [Review][Patch] Ratified free-text Monster `identity.race` — **owner decision: ratify**. Spec Change Log entry added; `test_race_vocabulary_enforced_for_npc_and_free_for_monster` pins both directions.
+- [x] [Review][Patch] Kept `SPELLS` full size; prompts now embed `spells_reference_text()` — **owner decision: restructure prompt embedding**. Wave-1: per-class grouped reference (all classes); repair: flagged classes only; wave-1 embedding pinned by `test_build_wave1_prompt_deterministic`; subset/determinism pinned in `test_statblocks.py`.
+- [x] [Review][Patch] `stat_block` stripped from non-character entities at wave-1 validation — **owner decision: strip**. `strip_noncharacter_stat_blocks` runs in `run_build_in` after `_validate_subgraph`; pinned by `test_faction_stat_block_is_stripped` + unit test; recorded in Spec Change Log.
+- [x] [Review][Patch] `test_missing_stat_block_repaired` fixed — drops the fixture block, asserts two calls and the "stat_block section missing" violation in the repair prompt [backend/tests/test_build_in_pipeline.py]
+- [x] [Review][Patch] STAT_CANCEL_BEFORE_REPAIR now has `test_cancel_before_stat_repair_is_noop` — no repair call, `revision_chain == []`, job stays `cancelled` [backend/tests/test_build_in_pipeline.py]
+- [x] [Review][Patch] Wave-1 prompt stat-block contract pinned — rules text + spells reference + "characters MUST include" asserted in `test_build_wave1_prompt_deterministic` [backend/tests/test_build_in_pipeline.py]
+- [x] [Review][Patch] SRD spell→class mappings corrected against the open5e SRD 5.1 dataset audit (Stoneskin/Bard, Phantasmal Killer/Warlock, Evard's/Warlock, Insect Plague/Sorcerer + full-table pass) [backend/app/pipeline/knowledge.py]
+- [x] [Review][Patch] `identity.class` folding now uses `.strip().lower()` via public `resolve_class` — parity with every other vocabulary; pinned by `test_class_whitespace_folding_matches_other_vocabularies` [backend/app/pipeline/knowledge.py]
+- [x] [Review][Patch] `_parse_ref` uses `.isdecimal()` — non-decimal digit refs ("E²") raise the canonical `JobPayloadError`, never a raw `ValueError`; malformed-parametrize case added [backend/app/pipeline/statblocks.py]
+- [x] [Review][Patch] Duplicate spell names rejected (parity with skills/actions/traits) — `test_duplicate_spells_rejected` [backend/app/pipeline/knowledge.py]
+- [x] [Review][Patch] Dead test helper `_stat_block()` deleted [backend/tests/test_build_in_pipeline.py]
+- [x] [Review][Patch] Docstrings refreshed post-cutover: build_in.py (spec-2.3 + 2.4, stat enforcement), worker.py (up to three guarded calls), `JobPayloadError` (AR25 fail-event channel), test module headers [backend/app/pipeline/]
+- [x] [Review][Patch] Monster-with-level pipeline variant added — `test_monster_with_level_repaired_in_one_pass` exercises the matrix row's second violation [backend/tests/test_build_in_pipeline.py]
+- [x] [Review][Defer] Invalid `identity.role` suppresses all level/cr violation reporting (knowledge.py:485-501) — a repair round only ever sees the role error, so a double violation survives the single bounded pass and fails the job; role-unknown cross-checks are inherently ambiguous — deferred
+
 ## Spec Change Log
 
 <!-- Append-only. Populated by step-04 during review loops. Do not modify or delete existing entries. -->
+
+- **2026-08-31 — review loop 1 (owner decisions).** (1) The frozen spells bullet is now *enforced*: `_check_spells` rejects a non-empty `spells` section for role Monster (it previously gated only on class membership); duplicate spell names are rejected (parity with skills/actions/traits). (2) The frozen "SRD vocabularies" bullet carries an explicit carve-out ratifying shipped behavior: `identity.race` is SRD-checked for NPC/BBEG only; Monster race is a free-text creature type/name (2.6/2.7 render it verbatim). (3) The "shared rules text" bullet is re-scoped: `stat_block_rules_text()` no longer enumerates spells; `spells_reference_text()` carries the per-class lists — full reference in the wave-1 prompt, flagged-classes subset in the repair prompt (pure functions of reference data + issues; determinism pins updated). The Design-Notes "~90 spells" figure is superseded: the table stays full-size and its 31 wrong mappings were corrected against two independent SRD 5.1 mirrors (dnd5eapi class lists and the SRD-5.1 markdown mirror, which agree spell-for-spell); the 18 non-SRD staples it also surfaced (Hex, the smites, the Hadar spells…) are kept as a documented curated extension. (4) The Always bullet "factions and places never carry one" gains its enforcement mechanism: `strip_noncharacter_stat_blocks` drops a stray `data["stat_block"]` from non-characters in `run_build_in` before validation/commit — tolerant strip, never a repair subject (the Never bullet's "no stat-block work" still holds: non-characters are never validated or repaired).
 
 ## Design Notes
 

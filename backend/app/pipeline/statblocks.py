@@ -3,8 +3,9 @@
 Wave-1 character entities (key figures) MUST carry a minimal 5e stat
 block in ``data["stat_block"]`` by the time they commit. This module is
 the enforcement machinery: issue collection (missing or violating blocks),
-the shared deterministic rules text (both the wave-1 prompt and the
-repair prompt embed the same constraints the validator enforces — AD-16),
+the shared deterministic rules text (both prompts embed the same
+constraints; the spells-by-class reference is scoped per prompt —
+full for wave 1, flagged classes only for repair, AD-16),
 the single bounded repair pass (one LLM call returning corrected stat
 blocks ONLY, so edges/names/kinds already validated are untouchable), and
 the merge back into the frozen ``EntityInput`` rows.
@@ -35,6 +36,7 @@ from app.pipeline.knowledge import (
     ROLES,
     SKILLS,
     SPELLS,
+    resolve_class,
     validate_stat_block,
 )
 from app.pipeline.worker import JobPayloadError
@@ -104,15 +106,31 @@ def stat_block_rules_text() -> str:
             f"skills (optional): entries with an SRD skill name and integer bonus: "
             f"{sorted(SKILLS)}.",
             "actions and traits (optional): entries with a name and a description string.",
-            "spells (optional): only for NPC/BBEG with an identity.class; every spell",
-            "name must be in the local SRD reference and on the class's list:",
-            *(
-                f"- {name}: {', '.join(sorted(classes))}"
-                for name, classes in sorted(SPELLS.items())
-            ),
-            "Monsters express magical abilities as actions or traits, never spells.",
+            "spells (optional): never for role Monster (a monster's magic is actions",
+            "or traits); otherwise only with an identity.class and no repeats — every",
+            "spell name must appear on that class's line of the SRD SPELLS BY CLASS",
+            "reference below.",
         ]
     )
+
+
+def spells_reference_text(classes: Sequence[str] | None = None) -> str:
+    """The SRD spells-by-class reference (AD-16), grouped per class.
+
+    A pure function of the reference data: sorted classes, sorted spell
+    names. ``classes`` (the flagged classes of a repair pass) narrows the
+    listing to those classes' lines; ``None`` lists every class — the
+    wave-1 prompt's form, where no class is known yet.
+    """
+    if classes is None:
+        selected = sorted(CLASSES)
+    else:
+        selected = sorted({klass for klass in classes if klass in CLASSES})
+    lines = ["SRD SPELLS BY CLASS:"]
+    for klass in selected:
+        spells = sorted(name for name, allowed in SPELLS.items() if klass in allowed)
+        lines.append(f"- {klass}: {'; '.join(spells) if spells else '(none listed)'}")
+    return "\n".join(lines)
 
 
 def build_stat_repair_prompt(issues: Sequence[StatIssue]) -> str:
@@ -136,6 +154,7 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue]) -> str:
             f"current stat_block: {current}\n"
             f"violations:\n{violations}"
         )
+    classes = _flagged_classes(issues) or None
     return "\n".join(
         [
             "You are repairing minimal 5e stat blocks for characters in a TTRPG world.",
@@ -143,6 +162,8 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue]) -> str:
             "",
             "STAT BLOCK RULES",
             stat_block_rules_text(),
+            "",
+            spells_reference_text(classes),
             "",
             "VIOLATIONS TO FIX",
             "\n\n".join(flagged),
@@ -219,6 +240,43 @@ def apply_stat_repairs(
     ]
 
 
+def _flagged_classes(issues: Sequence[StatIssue]) -> list[str]:
+    """Canonical classes present in the flagged blocks — the repair
+    prompt's spell-reference subset. Empty when no flagged block carries
+    a valid class (then every class is embedded, since the repair may
+    invent one)."""
+    classes: set[str] = set()
+    for issue in issues:
+        block = issue.entity.data.get("stat_block")
+        if isinstance(block, dict):
+            identity = block.get("identity")
+            if isinstance(identity, dict):
+                klass = resolve_class(identity.get("class"))
+                if klass is not None:
+                    classes.add(klass)
+    return sorted(classes)
+
+
+def strip_noncharacter_stat_blocks(
+    entities: Sequence[models.EntityInput],
+) -> list[models.EntityInput]:
+    """Drop ``data["stat_block"]`` from faction/place entities (spec-2.4
+    review decision): only characters carry stat blocks (AR24) and 2.6/2.7
+    must never see a stats-bearing faction. A stray block from a
+    non-character is stripped — tolerated, never a reason to fail the
+    whole build. Characters pass through untouched.
+    """
+    return [
+        dataclasses.replace(
+            entity,
+            data={k: v for k, v in entity.data.items() if k != "stat_block"},
+        )
+        if entity.kind != "character" and "stat_block" in entity.data
+        else entity
+        for entity in entities
+    ]
+
+
 def stat_failure_message(issues: Sequence[StatIssue]) -> str:
     """The fail-event message for a wave still invalid after the repair.
 
@@ -237,6 +295,6 @@ def _parse_ref(ref: Any) -> int:
     if not isinstance(ref, str) or not ref.startswith("E"):
         raise JobPayloadError(f"stat repair: ref must be E<position>, got {ref!r}")
     digits = ref[1:]
-    if not digits.isdigit() or str(int(digits)) != digits:
+    if not digits.isdecimal() or str(int(digits)) != digits:
         raise JobPayloadError(f"stat repair: ref must be E<position>, got {ref!r}")
     return int(digits)
