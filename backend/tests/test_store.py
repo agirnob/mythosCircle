@@ -596,11 +596,13 @@ def test_edge_counter_semantics_map_contract() -> None:
     assert resolved["kin_of"] == resolved["rival_of"] == "neutral"
 
 
-@pytest.mark.parametrize("counter", [1.5, True, "3"])
+@pytest.mark.parametrize("counter", [1.5, True, "3", 2**63, -(2**63) - 1])
 def test_edge_counter_invalid_shape_rejects_subgraph(world: str, counter: Any) -> None:
-    """A non-int counter is rejected at the store boundary with zero new
-    revision and zero rows — SQLite would otherwise store the Float/Blob
-    silently (the Integer column is not enforced by SQLite)."""
+    """A counter that is not an int — or is an int SQLite cannot
+    represent in its signed 64-bit INTEGER — is rejected at the store
+    boundary with zero new revision and zero rows: SQLite would store
+    the Float/Blob silently, and the larger magnitude would raise a raw
+    OverflowError at flush instead of a structured StoreError."""
     bar_id, mira_id = _seed_world(world)
     before = _state(world)
     before_head = _head(world)
@@ -614,6 +616,52 @@ def test_edge_counter_invalid_shape_rejects_subgraph(world: str, counter: Any) -
     assert "debt" in str(excinfo.value)
     assert _state(world) == before
     assert _head(world) == before_head
+
+
+def test_edge_counter_invalid_shape_rejects_update_path(world: str) -> None:
+    """The counter-update route (staged existing edge ULID) walks the
+    same shape guard — the primary production counter mutation is
+    pinned, not just fresh edge creation."""
+    bar_id, mira_id = _seed_world(world)
+    debt_id = _edge_id(world, mira_id, bar_id, "debt")
+    bad_counter: Any = 1.5
+    before = _state(world)
+    before_head = _head(world)
+    with pytest.raises(InvalidEdgeCounterError):
+        commit_subgraph(
+            world,
+            [],
+            [
+                models.EdgeInput(
+                    src=mira_id, dst=bar_id, type="debt", counter=bad_counter, id=debt_id
+                )
+            ],
+            base_revision=before_head,
+        )
+    assert _state(world) == before
+    assert _head(world) == before_head
+
+
+def test_edge_counter_valid_rows_stored_verbatim(world: str) -> None:
+    """EDGE_COUNTER_VALID's full row: an omitted counter commits as the
+    default 1, and the store pins shape not range — a negative and the
+    int64 bound are stored verbatim (semantic ranges are pipeline-owned)."""
+    bar_id, mira_id = _seed_world(world)
+    commit_subgraph(
+        world,
+        [],
+        [
+            models.EdgeInput(src=mira_id, dst=bar_id, type="ally_of"),
+            models.EdgeInput(src=bar_id, dst=mira_id, type="kin_of", counter=-5),
+            models.EdgeInput(src=bar_id, dst=mira_id, type="grudge", counter=2**63 - 1),
+        ],
+        base_revision=_head(world),
+    )
+    _entities, edges = _state(world)
+    stored = {(row[2], row[0]): row[3] for row in edges.values()}
+    assert stored[("ally_of", mira_id)] == 1  # default when omitted
+    assert stored[("kin_of", bar_id)] == -5  # shape, not range
+    assert stored[("grudge", bar_id)] == 2**63 - 1  # int64 upper bound stores
 
 
 def test_edge_never_carries_free_text_label() -> None:

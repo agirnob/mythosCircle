@@ -14,7 +14,9 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from pydantic import BaseModel
 
+from app.api.common import _store_error_as_http
 from app.core.errors import register_error_handlers
+from app.store import InvalidEdgeCounterError, models
 
 
 def _envelope_body(response: Response) -> dict[str, Any]:
@@ -79,6 +81,31 @@ def test_validation_error_422_envelope() -> None:
     body = _envelope_body(response)
     assert body["code"] == "validation_error"
     assert isinstance(body["details"], dict)
+
+
+def test_store_error_mapper_422_edge_counter_rejection() -> None:
+    """The store-error family is pinned at the mapper boundary: an edge
+    counter-shape rejection reaches the wire as a 422 validation_error
+    envelope (spec-2.2 EDGE_COUNTER_INVALID_SHAPE row), never a 500."""
+    application = FastAPI()
+    register_error_handlers(application)
+
+    bad_counter: Any = 1.5
+
+    @application.get("/api/probe-edge-counter")
+    def probe() -> None:
+        _store_error_as_http(
+            InvalidEdgeCounterError(
+                models.EdgeInput(src="0" * 26, dst="1" * 26, type="debt", counter=bad_counter)
+            )
+        )
+
+    with TestClient(application, raise_server_exceptions=False) as test_client:
+        response = test_client.get("/api/probe-edge-counter")
+    assert response.status_code == 422
+    body = _envelope_body(response)
+    assert body["code"] == "validation_error"
+    assert "debt" in body["message"]
 
 
 #: Wire contract: every HTTPException status maps to a machine-readable code.

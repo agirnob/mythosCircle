@@ -62,6 +62,15 @@ def edge_counter_semantic(edge_type: str) -> str:
     return EDGE_COUNTER_SEMANTICS.get(edge_type, DEFAULT_EDGE_COUNTER_SEMANTIC)
 
 
+#: SQLite's INTEGER is signed 64-bit; representability is part of the
+#: store's shape contract (the driver otherwise raises a raw
+#: ``OverflowError`` at flush — outside the StoreError/422 family).
+#: Semantic ranges (how big a score, whether a debt is negative) stay
+#: pipeline-owned.
+_SQLITE_INT_MIN = -(2**63)
+_SQLITE_INT_MAX = 2**63 - 1
+
+
 # ---------------------------------------------------------------------------
 # Structured store errors (plain exceptions; FastAPI mapping is a later story)
 # ---------------------------------------------------------------------------
@@ -106,13 +115,14 @@ class InvalidEdgeTypeError(StoreError):
 
 
 class InvalidEdgeCounterError(StoreError):
-    """An edge counter that is not an integer — shape rejection at the
-    store boundary (AD-23; SQLite does not enforce the Integer column)."""
+    """An edge counter that is not an integer SQLite can store — shape
+    rejection at the store boundary (AD-23; SQLite does not enforce the
+    Integer column, and larger magnitudes overflow the driver at flush)."""
 
     def __init__(self, edge: models.EdgeInput) -> None:
         super().__init__(
-            f"edge counter must be an integer: {edge.counter!r} "
-            f"({edge.src} --{edge.type}--> {edge.dst})"
+            f"edge counter must be an integer in SQLite's signed 64-bit "
+            f"range: {edge.counter!r} ({edge.src} --{edge.type}--> {edge.dst})"
         )
         self.edge = edge
 
@@ -195,7 +205,8 @@ def commit_subgraph(
     One transaction, exactly one new revision, all-or-nothing (AR3).
     Rejects (no state change) with ``UnknownCampaignError``,
     ``StaleRevisionError``, ``InvalidEdgeTypeError``,
-    ``DanglingEdgeError``, ``DuplicateEntityError``, ``DuplicateEdgeError``,
+    ``InvalidEdgeCounterError``, ``DanglingEdgeError``,
+    ``DuplicateEntityError``, ``DuplicateEdgeError``,
     ``EdgeRetargetError``, ``CrossCampaignConflictError``,
     ``InvalidUlidError``, or ``EmptySubgraphError``.
     """
@@ -250,7 +261,8 @@ def _commit(
     for edge in edges:
         if edge.type not in EDGE_TYPES:
             raise InvalidEdgeTypeError(edge)
-        if type(edge.counter) is not int:
+        counter = edge.counter
+        if type(counter) is not int or not _SQLITE_INT_MIN <= counter <= _SQLITE_INT_MAX:
             raise InvalidEdgeCounterError(edge)
         for endpoint in (edge.src, edge.dst):
             if endpoint not in known_ids:

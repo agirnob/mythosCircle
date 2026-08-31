@@ -98,8 +98,9 @@ class Edge(Base):
     """Typed, directed edge with a per-type counter (AD-5, AD-23).
 
     ``src``/``dst`` are entity ULIDs. ``type`` comes from the closed
-    Phase-1 vocabulary; ``counter`` semantics are per type
-    (debt = amount, grudge/loyalty = score, ally/enemy = intensity).
+    Phase-1 vocabulary; per-type ``counter`` semantics resolve from
+    ``app.store.EDGE_COUNTER_SEMANTICS`` (the code contract, AD-23),
+    and the commit path validates the counter's int shape, not its range.
     """
 
     __tablename__ = "edge"

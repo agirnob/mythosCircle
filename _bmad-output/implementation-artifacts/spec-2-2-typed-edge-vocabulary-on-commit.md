@@ -45,33 +45,52 @@ context:
 | EDGE_TYPE_INVALID | type outside vocabulary | whole subgraph rejected, zero rows, `InvalidEdgeTypeError` naming the type (existing pin) | 422 |
 | EDGE_COUNTER_VALID | int counter on any vocabulary member | commit accepted; counter stored verbatim; default 1 when omitted | N/A |
 | EDGE_COUNTER_INVALID_SHAPE | counter = 1.5 / True / "3" | whole subgraph rejected, zero rows, `InvalidEdgeCounterError` naming the edge | 422 |
-| EDGE_COUNTER_SEMANTICS | any vocabulary member via `edge_counter_semantic(type)` | debt→amount, grudge/loyalty→score, ally_of/enemy_of→intensity, others→neutral; map keys exactly the four semantic-bearing types | N/A |
+| EDGE_COUNTER_SEMANTICS | any vocabulary member via `edge_counter_semantic(type)` | debt→amount, grudge/loyalty→score, ally_of/enemy_of→intensity, others→neutral; map keys exactly the five semantic-bearing types (four semantics) | N/A |
 | EDGE_COUNTER_CHANGE | existing edge ULID staged with a new int counter | `edge_updated` event; counter changes only via commit; undo restores the prior counter (existing pins) | N/A |
 | EDGE_DANGLING | endpoint in neither revision nor subgraph | whole subgraph rejected, `DanglingEdgeError` (existing pin) | 422 |
 | EDGE_FREE_TEXT_LABEL | any attempt to carry a label on an edge | rejected structurally at construction (`EdgeInput` has no label field → TypeError); `edge` table columns pinned to the exact set | N/A |
 
 ## Code Map
 
-- `backend/app/store/commit.py` -- add `EDGE_COUNTER_SEMANTICS: dict[str, str]` (the four semantic-bearing types), `DEFAULT_EDGE_COUNTER_SEMANTIC = "neutral"`, and `edge_counter_semantic(edge_type: str) -> str` beside `EDGE_TYPES`; add `InvalidEdgeCounterError(StoreError)`; raise it in the edge-validation loop when `type(edge.counter) is not int`.
+- `backend/app/store/commit.py` -- add `EDGE_COUNTER_SEMANTICS: dict[str, str]` (the five semantic-bearing types), `DEFAULT_EDGE_COUNTER_SEMANTIC = "neutral"`, and `edge_counter_semantic(edge_type: str) -> str` beside `EDGE_TYPES`; add `InvalidEdgeCounterError(StoreError)`; raise it in the edge-validation loop when `type(edge.counter) is not int` or the int is outside SQLite's signed 64-bit INTEGER.
 - `backend/app/store/__init__.py` -- re-export `EDGE_COUNTER_SEMANTICS`, `DEFAULT_EDGE_COUNTER_SEMANTIC`, `edge_counter_semantic`, `InvalidEdgeCounterError`.
 - `backend/app/api/common.py` -- add `InvalidEdgeCounterError` to the 422 family of `_store_error_as_http` (contiguous with `InvalidEdgeTypeError`).
-- `backend/tests/test_store.py` -- new tests: semantic map contract (every EDGE_TYPES member resolves; map keys exactly the four; documented semantics set exactly {amount, score, intensity, neutral}); invalid-shape counter rejection (float/bool/str each reject the whole subgraph with zero rows); free-text structural pins (`Edge.__table__.columns` and `EdgeInput.__dataclass_fields__` exact sets; `EdgeInput(..., label=...)` raises TypeError); existing vocabulary/counter/dangling pins kept.
+- `backend/tests/test_store.py` -- new tests: semantic map contract (every EDGE_TYPES member resolves; map keys exactly the five; documented semantics set exactly {amount, score, intensity, neutral}); invalid-shape counter rejection (float/bool/str each reject the whole subgraph with zero rows); free-text structural pins (`Edge.__table__.columns` and `EdgeInput.__dataclass_fields__` exact sets; `EdgeInput(..., label=...)` raises TypeError); existing vocabulary/counter/dangling pins kept.
 
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `backend/app/store/commit.py` -- counter-semantics map + resolver; `InvalidEdgeCounterError` with an int-shape check in the edge-validation loop (before DUPLICATE/retarget checks, alongside the vocabulary check).
-- [ ] `backend/app/store/__init__.py` + `backend/app/api/common.py` -- exports and the 422 mapping row.
-- [ ] `backend/tests/test_store.py` -- EDGE_COUNTER_SEMANTICS / EDGE_COUNTER_INVALID_SHAPE / EDGE_FREE_TEXT_LABEL rows; keep the EDGE_TYPE_VALID/INVALID, counter-change, dangling pins green.
+- [x] `backend/app/store/commit.py` -- counter-semantics map + resolver; `InvalidEdgeCounterError` with an int-shape check in the edge-validation loop (before DUPLICATE/retarget checks, alongside the vocabulary check).
+- [x] `backend/app/store/__init__.py` + `backend/app/api/common.py` -- exports and the 422 mapping row.
+- [x] `backend/tests/test_store.py` -- EDGE_COUNTER_SEMANTICS / EDGE_COUNTER_INVALID_SHAPE / EDGE_FREE_TEXT_LABEL rows; keep the EDGE_TYPE_VALID/INVALID, counter-change, dangling pins green.
 
 **Acceptance Criteria:**
 - Given a generated edge, when it is committed, then its type is from the closed directional set, extensible by adding a type to the frozenset, never free text (FR3, AR3) — pinned from both the acceptance and rejection sides.
 - Given a free-form relation label, when it is persisted, then it is never stored as free text — the edge table and input dataclass carry no label field (FR3).
 - Given a per-type counter (debt = amount, grudge/loyalty = score, ally/enemy = intensity), when the counter changes, then it changes only via a commit, its semantic resolves from the code map, and zero dangling edges remain (AR8, AD-23).
 
+### Review Findings
+
+- [x] [Review][Decision] Spec says "map keys exactly the four semantic-bearing types" but the map carries five keys — the Always bullet, `EDGE_COUNTER_SEMANTICS`, and the test all carry five types (debt, grudge, loyalty, ally_of, enemy_of) = four semantic *values* {amount, score, intensity, neutral}; the code matches spec intent and the I/O matrix + Code Map wording (md:48, md:55, md:58) mis-counts. Fix belongs in the frozen-after-approval block, so it needs the owner's call: correct the wording to "five types / four semantics", or leave the frozen text and accept the contradiction. (blind-hunter+acceptance-auditor) — **owner call 2026-08-31: fixed spec wording to five types / four semantics; code unchanged.**
+- [x] [Review][Decision] Counters outside SQLite's signed-64-bit range pass the shape guard and overflow as a raw `OverflowError` at flush — `type(x) is not int` accepts `10**30`, but the sqlite3 driver rejects it at bind time (`OverflowError: Python int too large to convert to SQLite INTEGER`, reproduced live). `session_scope` rollback keeps the zero-rows guarantee, but a non-`StoreError` escapes the store boundary — no 422-family envelope, a 500 for future routes. int64 representability is arguably shape (storage), not the pipeline-owned semantic range the spec defers. Options: (a) extend the guard to `-(2**63) <= counter < 2**63` raising `InvalidEdgeCounterError`; (b) defer to 2.3's range-ownership story. (edge-case-hunter) — **owner call 2026-08-31: (a) applied — guard extended to the closed int64 interval `[_SQLITE_INT_MIN, _SQLITE_INT_MAX]`; semantic ranges stay pipeline-owned.**
+- [x] [Review][Patch] `commit_subgraph` docstring's rejection inventory omits `InvalidEdgeCounterError` [backend/app/store/commit.py:196-201] — fixed
+- [x] [Review][Patch] No test pins `InvalidEdgeCounterError` → 422 in `_store_error_as_http`; deleting the mapping row keeps the suite green [backend/app/api/common.py:71] — fixed (`test_store_error_mapper_422_edge_counter_rejection`)
+- [x] [Review][Patch] Unpinned matrix rows: omitted-counter-defaults-to-1 is never asserted on a committed edge; "shape, not range" has no verbatim negative/zero-counter case; the counter-update path (`EdgeInput(id=…)`) is unpinned for shape rejection [backend/tests/test_store.py] — fixed (`test_edge_counter_valid_rows_stored_verbatim`, `test_edge_counter_invalid_shape_rejects_update_path`, int64 cases in the shape parametrize)
+- [x] [Review][Patch] `models.py` `Edge` docstring still restates AD-23 per-type semantics as prose with no pointer to `EDGE_COUNTER_SEMANTICS` — the drift-prone second source the story's own rationale retires [backend/app/store/models.py:98-103] — fixed (docstring now points at the map)
+- [x] [Review][Defer] `edge_counter_semantic` silently returns "neutral" for non-vocabulary types [backend/app/store/commit.py:60-62] — deferred, no caller yet; the 2.3 pipeline (its first consumer) validates LLM-proposed types before commit and will need the membership semantics decided there
+- [x] [Review][Defer] Semantics map is a mutable `dict` and the resolver returns bare `str` (MappingProxyType / Literal return proposed) [backend/app/store/commit.py:45-58] — deferred, spec prescribes `dict[str, str]` + `-> str`; contents pinned by test; revisit when 2.3 imports the contract
+
 ## Spec Change Log
 
 <!-- Append-only. Populated by step-04 during review loops. Do not modify or delete existing entries. -->
+
+### Post-review (2026-08-31, code review sweep — 1 commit, 6 findings: 2 decisions + 4 patches)
+
+**Owner decisions:**
+- Frozen-block wording corrected: the semantics map carries **five** semantic-bearing types (debt, grudge, loyalty, ally_of, enemy_of) over **four** semantics {amount, score, intensity, neutral}; the I/O matrix and Code Map said "four semantic-bearing types" — a mis-count of types vs. semantics. Code always followed the Always bullet; spec text fixed, no behavior change.
+- int64 representability ruled **shape**, not range: the store-boundary guard now also rejects counters outside SQLite's signed 64-bit INTEGER (`[-2**63, 2**63-1]`) with `InvalidEdgeCounterError`. Without it such counters passed the int check and escaped as a raw `OverflowError` at flush (rollback kept zero-rows intact; the exception class bypassed the StoreError/422 family). Semantic ranges (score bounds, negative debt) stay pipeline-owned per the original design note.
+
+**Review patches applied:** `commit_subgraph` docstring rejection inventory gained `InvalidEdgeCounterError`; new mapper test pins the 422 `validation_error` envelope for counter-shape rejections (`backend/tests/test_api.py`); `test_store.py` pins the full EDGE_COUNTER_VALID row (omitted → 1, negative and int64-bound verbatim) and the update-path shape rejection; `models.py` `Edge` docstring now points at `EDGE_COUNTER_SEMANTICS` instead of restating the semantics. Two findings deferred to 2.3 (resolver behavior for non-vocabulary types; map immutability/Literal return) — see `deferred-work.md`.
 
 ## Design Notes
 

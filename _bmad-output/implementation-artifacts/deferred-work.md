@@ -63,3 +63,12 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `spec-1-7-deploy-to-the-operator-s-host.md`
   summary: Alembic/general schema migrations remain deferred to Epic 6 — 1.7 kept the per-column `_migrate_*` convention.
   evidence: the ledger's 1.4 deferral stands; config consumption is complete but migration tooling is an ops-story concern.
+
+## Deferred from: code review of spec-2-2-typed-edge-vocabulary-on-commit (2026-08-31)
+
+- source_spec: `spec-2-2-typed-edge-vocabulary-on-commit.md`
+  summary: `edge_counter_semantic` silently resolves non-vocabulary types to "neutral" — no membership guard on the exported resolver.
+  evidence: no caller exists yet; the 2.3 pipeline is the first consumer and validates LLM-proposed types before commit — decide raise-vs-Optional semantics when a real caller appears. [backend/app/store/commit.py]
+- source_spec: `spec-2-2-typed-edge-vocabulary-on-commit.md`
+  summary: `EDGE_COUNTER_SEMANTICS` ships as a mutable plain dict and the resolver returns bare `str` (MappingProxyType / Literal["amount","score","intensity","neutral"] proposed).
+  evidence: spec's Code Map prescribes `dict[str, str]` and `-> str`; map contents are pinned by test so drift fails CI; harden when 2.3 imports the contract. [backend/app/store/commit.py]
