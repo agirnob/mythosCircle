@@ -101,4 +101,119 @@ describe('jobs store', () => {
     expect(jobs.latestBuildIn('C1')?.id).toBe('J1')
     expect(jobs.latestBuildIn('C2')?.id).toBe('J2')
   })
+
+  it('buildInJobs returns build_in jobs for the campaign, newest first', () => {
+    const jobs = useJobsStore()
+    jobs.upsert(job('J1', { created_at: '2026-08-30T20:00:00Z' }))
+    jobs.upsert(job('J2', { campaign_id: 'C2', created_at: '2026-08-30T21:00:00Z' }))
+    jobs.upsert(job('J3', { id: 'J3', kind: 'text', created_at: '2026-08-30T22:00:00Z' }))
+    jobs.upsert(job('J4', { id: 'J4', kind: 'build_in', created_at: '2026-08-30T23:00:00Z' }))
+    expect(jobs.buildInJobs('C1').map((j) => j.id)).toEqual(['J4', 'J1'])
+    expect(jobs.buildInJobs('C2').map((j) => j.id)).toEqual(['J2'])
+  })
+
+  it('job_failed frame patches a cached running job and re-syncs terminal fields from REST', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          jobs: [
+            job('J1', {
+              state: 'failed',
+              progress: 1,
+              error: 'llm call failed: provider returned HTTP 429',
+            }),
+          ],
+          next_cursor: null,
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+    const jobs = useJobsStore()
+    jobs.upsert(job('J1', { state: 'running', progress: 0.5 }))
+    await jobs.handleWsMessage('C1', wsMessage({ type: 'job_failed', state: 'failed' }))
+    const cached = jobs.byId['J1']
+    expect(cached?.state).toBe('failed')
+    expect(cached?.progress).toBe(1)
+    expect(cached?.error).toBe('llm call failed: provider returned HTTP 429')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/jobs?campaign_id=C1',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    )
+  })
+
+  it('WS frame for an uncached job id recovers via a REST re-sync', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          jobs: [job('J9', { state: 'running', progress: 0.25 })],
+          next_cursor: null,
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+    const jobs = useJobsStore()
+    await jobs.handleWsMessage('C1', wsMessage({ job_id: 'J9' }))
+    expect(jobs.byId['J9']?.id).toBe('J9')
+    expect(jobs.byId['J9']?.state).toBe('running')
+  })
+
+  it('upsert is monotonic: a lower-progress REST snapshot never regresses the cached row', async () => {
+    const jobs = useJobsStore()
+    jobs.upsert(job('J1', { state: 'running', progress: 0.5 }))
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ jobs: [job('J1', { state: 'running', progress: 0 })], next_cursor: null }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+    await jobs.syncList('C1')
+    expect(jobs.byId['J1']?.progress).toBe(0.5)
+  })
+
+  it('upsert skips a stale queued snapshot for a cached running job', () => {
+    const jobs = useJobsStore()
+    jobs.upsert(job('J1', { state: 'running', progress: 0.5 }))
+    jobs.upsert(job('J1', { state: 'queued', progress: 0 }))
+    expect(jobs.byId['J1']?.state).toBe('running')
+    expect(jobs.byId['J1']?.progress).toBe(0.5)
+  })
+
+  it('syncList paginates until next_cursor is null', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jobs: [job('J1')], next_cursor: 'cursor-2' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ jobs: [job('J2', { queue_position: 2 })], next_cursor: null }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      )
+    const jobs = useJobsStore()
+    await jobs.syncList('C1')
+    expect(jobs.byId['J1']?.id).toBe('J1')
+    expect(jobs.byId['J2']?.queue_position).toBe(2)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/jobs?campaign_id=C1', expect.anything())
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/jobs?campaign_id=C1&cursor=cursor-2',
+      expect.anything(),
+    )
+  })
 })

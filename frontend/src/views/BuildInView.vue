@@ -1,17 +1,23 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../api/client'
-import { useJobsStore } from '../stores/jobs'
+import type { components } from '../api/schema'
+import { useAuthStore } from '../stores/auth'
 import { useCampaignsStore } from '../stores/campaigns'
+import { useJobsStore } from '../stores/jobs'
 import { connectJobSocket } from '../ws'
 
+type Job = components['schemas']['JobResponse']
+
 const route = useRoute()
+const router = useRouter()
 const campaignId = route.params.id as string
 
 const campaigns = useCampaignsStore()
 const jobs = useJobsStore()
+const loadError = ref<string | null>(null)
 
 const sections: Array<{ key: SectionKey; label: string; hint: string }> = [
   { key: 'places', label: 'Key places', hint: 'One per line — towns, taverns, ruins…' },
@@ -27,19 +33,40 @@ const submitting = ref(false)
 
 let disconnectSocket: (() => void) | null = null
 
-onMounted(() => {
-  void campaigns.fetchOne(campaignId)
-  void jobs.syncList(campaignId)
-  disconnectSocket = connectJobSocket(campaignId, (message) => {
-    jobs.handleWsMessage(campaignId, message)
-  })
+onMounted(async () => {
+  try {
+    await Promise.all([campaigns.fetchOne(campaignId), jobs.syncList(campaignId)])
+    if (campaigns.error) {
+      loadError.value = campaigns.error
+      return
+    }
+  } catch (err) {
+    loadError.value = err instanceof ApiError ? err.message : 'Could not load the world.'
+    return
+  }
+  disconnectSocket = connectJobSocket(
+    campaignId,
+    (message) => {
+      jobs.handleWsMessage(campaignId, message)
+    },
+    {
+      onReconnect: () => {
+        void jobs.syncList(campaignId)
+      },
+      onAuthFailure: () => {
+        const auth = useAuthStore()
+        auth.account = null
+        void router.push({ name: 'login' })
+      },
+    },
+  )
 })
 
 onUnmounted(() => {
   disconnectSocket?.()
 })
 
-const latestBuildIn = computed(() => jobs.latestBuildIn(campaignId))
+const recentJobs = computed(() => jobs.buildInJobs(campaignId).slice(0, 10))
 const hasContent = computed(() => {
   const anySection = sections.some(
     (section) => splitEntries(sectionText.value[section.key]).length > 0,
@@ -74,10 +101,8 @@ async function submit() {
   }
 }
 
-function stateLabel(state: string): string {
-  return state === 'queued'
-    ? `Queued (position ${latestBuildIn.value?.queue_position ?? '…'})`
-    : state
+function stateLabel(job: Job): string {
+  return job.state === 'queued' ? `Queued (position ${job.queue_position ?? '…'})` : job.state
 }
 </script>
 
@@ -85,7 +110,12 @@ function stateLabel(state: string): string {
   <section>
     <h1>Guided build-in</h1>
 
-    <div v-if="campaigns.current" class="card seed">
+    <div v-if="loadError" class="card">
+      <p class="error">{{ loadError }}</p>
+      <RouterLink :to="{ name: 'campaigns' }" class="back">Back to your worlds</RouterLink>
+    </div>
+    <p v-else-if="campaigns.loading || !campaigns.current" class="muted">Loading world seed…</p>
+    <div v-else class="card seed">
       <h2>{{ campaigns.current.title }}</h2>
       <p class="muted">{{ campaigns.current.description || 'No description.' }}</p>
       <p class="muted">
@@ -98,7 +128,6 @@ function stateLabel(state: string): string {
         The world seed is read from your campaign — it flows into generation.
       </p>
     </div>
-    <p v-else class="muted">Loading world seed…</p>
 
     <form class="card" @submit.prevent="submit">
       <label v-for="section in sections" :key="section.key">
@@ -109,9 +138,11 @@ function stateLabel(state: string): string {
         <span>Free-form notes</span>
         <textarea
           v-model="notes"
+          maxlength="2000"
           placeholder="Custom lore, rumors, history, anything in your head — one note per line is fine."
           rows="5"
         />
+        <span class="muted small counter">{{ notes.length }}/2000</span>
       </label>
       <p v-if="error" class="error">{{ error }}</p>
       <button type="submit" :disabled="submitting || !hasContent">
@@ -119,18 +150,22 @@ function stateLabel(state: string): string {
       </button>
     </form>
 
-    <div v-if="latestBuildIn" class="card job">
-      <h2>Build-in job</h2>
-      <dl>
-        <dt>State</dt>
-        <dd>{{ stateLabel(latestBuildIn.state) }}</dd>
-        <dt v-if="latestBuildIn.progress > 0">Progress</dt>
-        <dd v-if="latestBuildIn.progress > 0">{{ Math.round(latestBuildIn.progress * 100) }}%</dd>
-        <dt>Job id</dt>
-        <dd class="mono">{{ latestBuildIn.id }}</dd>
-        <dt v-if="latestBuildIn.error">Error</dt>
-        <dd v-if="latestBuildIn.error" class="error">{{ latestBuildIn.error }}</dd>
-      </dl>
+    <div v-if="recentJobs.length > 0" class="card job">
+      <h2>Build-in jobs</h2>
+      <article v-for="job in recentJobs" :key="job.id" class="job-row">
+        <dl>
+          <dt>Job id</dt>
+          <dd class="mono">{{ job.id }}</dd>
+          <dt>State</dt>
+          <dd>{{ stateLabel(job) }}</dd>
+          <dt v-if="job.queue_position !== null">Queue position</dt>
+          <dd v-if="job.queue_position !== null">{{ job.queue_position }}</dd>
+          <dt v-if="job.state === 'running'">Progress</dt>
+          <dd v-if="job.state === 'running'">{{ Math.round(job.progress * 100) }}%</dd>
+          <dt v-if="job.error">Error</dt>
+          <dd v-if="job.error" class="error">{{ job.error }}</dd>
+        </dl>
+      </article>
       <p class="muted small">
         The screen is not blocked — the job runs in the background and updates live.
       </p>
@@ -177,5 +212,19 @@ textarea {
 }
 .small {
   font-size: 0.85rem;
+}
+.back {
+  display: inline-block;
+  margin-top: 0.5rem;
+  color: #2f6feb;
+  text-decoration: none;
+}
+.counter {
+  text-align: right;
+}
+.job-row + .job-row {
+  border-top: 1px solid #2c3038;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
 }
 </style>

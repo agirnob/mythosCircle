@@ -215,3 +215,16 @@ def test_list_cursor_foreign_and_deleted_rejected(db: None) -> None:
     delete_campaign(owner_a, a_id)
     with pytest.raises(CampaignInputError):
         list_campaigns(owner_a, cursor=a_id)  # deleted
+
+
+def test_configured_seed_themes_falls_back_on_empty_config(
+    db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty config theme list falls back to the canonical code seed
+    (app.core.config.DEFAULT_THEMES) — one canonical seed, never an empty
+    allow-list that would reject every theme (epic-1 retro item 4)."""
+    import app.store.campaigns as campaigns_mod
+    from app.core.config import DEFAULT_THEMES
+
+    monkeypatch.setattr(campaigns_mod, "configured_themes", lambda: [])
+    assert campaigns_mod.configured_seed_themes() == set(DEFAULT_THEMES)

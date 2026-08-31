@@ -240,3 +240,42 @@ def test_register_rate_limited_per_ip(client: Any) -> None:
     )
     assert response.status_code == 429
     assert response.json()["code"] == "rate_limited"
+
+
+# ---------------------------------------------------------------------------
+# Session cookie + plain-http (spec-2.1 smoke findings)
+# ---------------------------------------------------------------------------
+
+
+def test_register_sets_session_cookie_already_logged_in(client: Any) -> None:
+    """Sign-up is sign-in: registration sets the session cookie (HttpOnly,
+    Path=/api) and ``/api/auth/me`` succeeds IMMEDIATELY, without a separate
+    login (spec-2.1 dogfood flow)."""
+    response = _register(client, "signup@example.com")
+    assert response.status_code == 201
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "mythoscircle_session=" in set_cookie
+    assert "HttpOnly" in set_cookie  # AR14
+    assert "Path=/api" in set_cookie  # AR14
+    me_response = client.get("/api/auth/me")
+    assert me_response.status_code == 200
+    assert me_response.json()["email"] == "signup@example.com"
+
+
+def test_login_plain_http_cookie_not_secure() -> None:
+    """Over plain http (the Vite dev proxy) the session cookie is NOT marked
+    Secure, so the owner's dogfood flow works without a cert (spec-2.1 smoke
+    find) — the session still authenticates."""
+    from app.main import app
+
+    with TestClient(app, base_url="http://testserver") as plain_client:
+        _register(plain_client, "plain@example.com")
+        response = plain_client.post(
+            "/api/auth/login",
+            json={"email": "plain@example.com", "password": "correct-battery-horse"},
+        )
+        assert response.status_code == 200
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "mythoscircle_session=" in set_cookie
+        assert "Secure" not in set_cookie  # plain http must not mark Secure
+        assert plain_client.get("/api/auth/me").status_code == 200

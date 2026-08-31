@@ -90,6 +90,7 @@ def init_db(url: str = DEFAULT_DB_URL) -> Engine:
     models.Base.metadata.create_all(_engine)
     _migrate_job_result(_engine)
     _migrate_campaign_seed(_engine)
+    _migrate_job_kind(_engine)
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 
@@ -112,6 +113,44 @@ def _migrate_job_result(engine: Engine) -> None:
         return
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE job ADD COLUMN result JSON"))
+
+
+def _migrate_job_kind(engine: Engine) -> None:
+    """Add ``build_in`` to the job-kind check constraint on a pre-2.1 database.
+
+    SQLite cannot ALTER a CHECK constraint, so the table is rebuilt with
+    the standard constraint-rebuild recipe: capture the table DDL plus the
+    job table's explicit index DDLs, create ``job_new`` with the widened
+    ``kind`` check, copy the rows, drop the old table, rename, then
+    re-create the indexes (their DDL references ``job``, which is valid
+    again after the rename). Idempotent: a ``job`` table whose DDL already
+    contains ``'build_in'`` is left untouched, and ``create_all`` on a
+    fresh database already emits the widened constraint.
+    """
+    from sqlalchemy import text
+
+    with engine.begin() as connection:
+        row = connection.execute(
+            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='job'")
+        ).first()
+        if row is None or row[0] is None or "build_in" in row[0]:
+            return
+        table_sql = row[0]
+        index_rows = connection.execute(
+            text(
+                "SELECT sql FROM sqlite_master WHERE type='index'"
+                " AND tbl_name='job' AND sql IS NOT NULL"
+            )
+        ).fetchall()
+        new_table_sql = table_sql.replace(
+            "'text','image','video'", "'text','image','video','build_in'"
+        ).replace("CREATE TABLE job ", "CREATE TABLE job_new ", 1)
+        connection.execute(text(new_table_sql))
+        connection.execute(text("INSERT INTO job_new SELECT * FROM job"))
+        connection.execute(text("DROP TABLE job"))
+        connection.execute(text("ALTER TABLE job_new RENAME TO job"))
+        for (index_sql,) in index_rows:
+            connection.execute(text(index_sql))
 
 
 def _migrate_campaign_seed(engine: Engine) -> None:

@@ -15,6 +15,13 @@ tear down mid-broadcast, or deadlock against a transitioning writer.
 The drain loop also never dies: a failed broadcast is logged and the
 affected socket dropped, but the loop keeps delivering subsequent
 events.
+
+Auth gate (AD-9): the socket is a private channel — the handshake
+accepts first, then the session cookie is resolved to an account and
+the campaign checked for ownership. Any failure closes with 4401
+(fatal, no reconnects) BEFORE the socket joins the hub; only an
+authenticated owner is ever registered, so the hub never broadcasts to
+or leaks existence for a foreign campaign.
 """
 
 import asyncio
@@ -26,7 +33,8 @@ from typing import Any
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from app.store import models
+from app.api.auth import COOKIE_NAME
+from app.store import get_campaign, get_session_account, models
 from app.store.jobs import (
     EVENT_JOB_PROGRESS,
     EVENT_QUEUE_CHANGED,
@@ -157,11 +165,24 @@ hub = JobHub()
 async def jobs_ws(websocket: WebSocket, campaign_id: str = Query(...)) -> None:
     """Subscribe to a campaign's job broadcasts (AD-17).
 
+    Auth gate (AD-9): ``accept()`` runs FIRST (the denial path sends a
+    close frame, which requires the completed handshake), then the
+    session cookie is resolved via ``get_session_account`` and the
+    campaign checked via ``get_campaign``; a missing/invalid session or
+    an unowned campaign closes with 4401 WITHOUT registering in the hub.
+    Only after auth passes does the socket join the campaign's
+    subscriber set.
+
     The server only broadcasts; inbound frames are drained so clients can
     keep the connection alive with pings. Disconnects are tolerated and
     the socket is removed from the hub (and closed if it failed a send).
     """
     await websocket.accept()
+    token = websocket.cookies.get(COOKIE_NAME)
+    account = get_session_account(token) if token is not None else None
+    if account is None or get_campaign(account.id, campaign_id) is None:
+        await websocket.close(code=4401)
+        return
     hub.register(websocket, campaign_id)
     try:
         while True:

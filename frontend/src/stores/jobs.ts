@@ -6,6 +6,15 @@ import type { WsMessage } from '../ws'
 
 type Job = components['schemas']['JobResponse']
 
+const TERMINAL_STATES: ReadonlySet<string> = new Set(['succeeded', 'failed', 'cancelled'])
+
+/** Monotonic state ordinal: queued(0) < running(1) < terminal(2). */
+function stateOrdinal(state: string): number {
+  if (state === 'running') return 1
+  if (TERMINAL_STATES.has(state)) return 2
+  return 0
+}
+
 /** The guided build-in submission shape (spec-2.1): four free-form sections. */
 export interface BuildInPayload {
   places: string[]
@@ -24,13 +33,34 @@ export const useJobsStore = defineStore('jobs', {
       Object.values(state.byId)
         .filter((job) => job.campaign_id === campaignId)
         .sort((a, b) => b.created_at.localeCompare(a.created_at)),
+    /** Build-in jobs for a campaign, newest first. */
+    buildInJobs: (state) => (campaignId: string) =>
+      Object.values(state.byId)
+        .filter((job) => job.campaign_id === campaignId && job.kind === 'build_in')
+        .sort((a, b) => b.created_at.localeCompare(a.created_at)),
     latestBuildIn: (state) => (campaignId: string) =>
       Object.values(state.byId)
         .filter((job) => job.campaign_id === campaignId && job.kind === 'build_in')
         .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null,
   },
   actions: {
+    /**
+     * Monotonic merge (review round 2): WS frames and REST snapshots can
+     * arrive out of order, so a row only moves forward. A stale snapshot
+     * (lower state ordinal, or equal ordinal with lower progress) never
+     * regresses the cached row.
+     */
     upsert(job: Job) {
+      const cached = this.byId[job.id]
+      if (cached) {
+        const incoming = stateOrdinal(job.state)
+        const current = stateOrdinal(cached.state)
+        if (incoming < current) return // stale snapshot — keep the newer row
+        if (incoming === current && job.progress < cached.progress) {
+          this.byId[job.id] = { ...job, progress: cached.progress }
+          return
+        }
+      }
       this.byId[job.id] = job
     },
     async submitBuildIn(campaignId: string, payload: BuildInPayload) {
@@ -47,29 +77,40 @@ export const useJobsStore = defineStore('jobs', {
     },
     /** Full re-sync after reconnect or a queue_changed (positions shift). */
     async syncList(campaignId: string) {
-      const response = await apiFetch<components['schemas']['JobListResponse']>(
-        `/api/jobs?campaign_id=${encodeURIComponent(campaignId)}`,
-      )
-      for (const job of response.jobs) {
-        this.upsert(job)
-      }
+      let cursor: string | null = null
+      let query: string
+      let response: components['schemas']['JobListResponse']
+      do {
+        query = cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`
+        response = await apiFetch<components['schemas']['JobListResponse']>(
+          `/api/jobs?campaign_id=${encodeURIComponent(campaignId)}${query}`,
+        )
+        for (const job of response.jobs) {
+          this.upsert(job)
+        }
+        cursor = response.next_cursor
+      } while (cursor !== null)
     },
     /**
      * AD-17 dispatch: WS frames carry only the delta ({type, job_id, state,
      * queue_position?, progress?}), never the full row — patch the cached row
      * in place, never clobber REST-fetched fields. queue_changed and terminal
-     * frames re-sync the list (positions shift).
+     * frames re-sync the list (positions shift). A frame for an uncached job
+     * (another tab's job, or a frame that beat the mount-time sync) recovers
+     * via a full REST re-sync.
      */
     async handleWsMessage(campaignId: string, message: WsMessage) {
       const cached = this.byId[message.job_id]
-      if (cached) {
-        cached.state = message.state
-        if (message.progress !== undefined && message.progress !== null) {
-          cached.progress = message.progress
-        }
-        if (message.queue_position !== undefined) {
-          cached.queue_position = message.queue_position
-        }
+      if (!cached) {
+        await this.syncList(campaignId)
+        return
+      }
+      cached.state = message.state
+      if (message.progress !== undefined && message.progress !== null) {
+        cached.progress = message.progress
+      }
+      if (message.queue_position !== undefined) {
+        cached.queue_position = message.queue_position
       }
       const shiftsPositions: WsMessage['type'][] = [
         'queue_changed',

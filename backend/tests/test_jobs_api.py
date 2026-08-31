@@ -39,6 +39,22 @@ def _owner_id() -> str:
     return register_account(f"owner-jobsapi-{new_id()}@example.com", "password123").id
 
 
+def _authed_owned_campaign(client: TestClient) -> str:
+    """Register via the API (sets the session cookie) and create a campaign
+    owned by that account — the WS subscription requires ownership (AD-9)."""
+    email = f"ws-{ids.new_id()}@example.com"
+    body = client.post("/api/auth/register", json={"email": email, "password": "password123"})
+    assert body.status_code == 201
+    account_id = body.json()["id"]
+    return create_campaign(
+        account_id,
+        title="WS Test World",
+        description="",
+        theme="High Fantasy",
+        custom_lore="",
+    ).id
+
+
 ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 
@@ -323,7 +339,9 @@ def _drive_transition(fn: Callable[[], Any]) -> Any:
 
 
 def test_ws_jobs_broadcasts_transitions(client: TestClient, job_api: Callable[[], str]) -> None:
-    campaign_id = job_api()
+    campaign_id = _authed_owned_campaign(
+        client
+    )  # job_api re-points the store at a fresh scratch DB
     with client.websocket_connect(f"/api/ws/jobs?campaign_id={campaign_id}") as ws:
         first = _post_job(client, campaign_id).json()["id"]
         second = _post_job(client, campaign_id).json()["id"]
@@ -369,7 +387,7 @@ def test_ws_jobs_broadcasts_transitions(client: TestClient, job_api: Callable[[]
 
 
 def test_ws_jobs_fail_event(client: TestClient, job_api: Callable[[], str]) -> None:
-    campaign_id = job_api()
+    campaign_id = _authed_owned_campaign(client)
     with client.websocket_connect(f"/api/ws/jobs?campaign_id={campaign_id}") as ws:
         job_id = _post_job(client, campaign_id).json()["id"]
         assert ws.receive_json()["type"] == "queue_changed"
@@ -395,7 +413,7 @@ def test_ws_jobs_fail_event(client: TestClient, job_api: Callable[[], str]) -> N
 
 
 def test_ws_jobs_cancel_flow(client: TestClient, job_api: Callable[[], str]) -> None:
-    campaign_id = job_api()
+    campaign_id = _authed_owned_campaign(client)
     with client.websocket_connect(f"/api/ws/jobs?campaign_id={campaign_id}") as ws:
         job_id = _post_job(client, campaign_id).json()["id"]
         assert ws.receive_json()["type"] == "queue_changed"
@@ -416,8 +434,8 @@ def test_ws_jobs_cancel_flow(client: TestClient, job_api: Callable[[], str]) -> 
 def test_ws_jobs_campaign_isolation(client: TestClient, job_api: Callable[[], str]) -> None:
     """A's transitions never surface on B's socket — B's frames are exactly
     its own job's sequence, asserted exactly (review round 1 hardening)."""
-    campaign_a = job_api()
-    campaign_b = job_api()
+    campaign_a = _authed_owned_campaign(client)
+    campaign_b = _authed_owned_campaign(client)
     with client.websocket_connect(f"/api/ws/jobs?campaign_id={campaign_b}") as ws:
         a_job = _post_job(client, campaign_a).json()["id"]  # must not leak to B
         b_job = _post_job(client, campaign_b).json()["id"]

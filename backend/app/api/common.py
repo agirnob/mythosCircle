@@ -13,12 +13,21 @@ from fastapi import HTTPException
 from app.core.pagination import InvalidCursorError
 from app.store import (
     CampaignInputError,
+    CrossCampaignConflictError,
+    DanglingEdgeError,
+    DuplicateEdgeError,
+    DuplicateEntityError,
     DuplicateJobError,
+    EdgeRetargetError,
+    EmptySubgraphError,
+    InvalidEdgeTypeError,
     InvalidJobInputError,
     InvalidThemeError,
+    InvalidUlidError,
     JobNotFoundError,
     JobStateConflictError,
     QueueFullError,
+    StaleRevisionError,
     UnknownCampaignError,
 )
 
@@ -26,17 +35,42 @@ from app.store import (
 def _store_error_as_http(exc: Exception) -> NoReturn:
     """Map a store rejection to its envelope HTTPException (4xx = user error).
 
-    The rejections are 409/404/422 — the same codes the I/O matrices pin,
+    The rejections are 404/409/422 — the same codes the I/O matrices pin,
     with machine-readable envelope codes from app.core.errors. Unknown
     exceptions are re-raised (5xx via the catch-all handler; nothing
-    internal leaks).
+    internal leaks). ``CorruptEventError`` is deliberately NOT mapped
+    here: a structurally malformed event log is internal corruption, not
+    user error — re-raising surfaces it as a 500 so it can never be
+    mistaken for a recoverable client mistake.
     """
     if isinstance(exc, (JobNotFoundError, UnknownCampaignError)):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if isinstance(exc, (JobStateConflictError, DuplicateJobError, QueueFullError)):
+    if isinstance(
+        exc,
+        (
+            JobStateConflictError,
+            DuplicateJobError,
+            QueueFullError,
+            StaleRevisionError,
+            CrossCampaignConflictError,
+            DuplicateEdgeError,
+        ),
+    ):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(
-        exc, (InvalidJobInputError, InvalidThemeError, CampaignInputError, InvalidCursorError)
+        exc,
+        (
+            InvalidJobInputError,
+            InvalidThemeError,
+            CampaignInputError,
+            InvalidCursorError,
+            EdgeRetargetError,
+            InvalidUlidError,
+            DanglingEdgeError,
+            InvalidEdgeTypeError,
+            DuplicateEntityError,
+            EmptySubgraphError,
+        ),
     ):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     raise exc

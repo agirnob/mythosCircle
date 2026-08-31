@@ -49,6 +49,7 @@ JOB_KINDS: frozenset[str] = frozenset({"text", "image", "video", "build_in"})
 #: Build-in payload contract (spec-2.1): free-form section caps.
 BUILD_IN_MAX_ENTRIES = 100
 BUILD_IN_MAX_ENTRY_LENGTH = 2000
+BUILD_IN_MAX_NOTE_LENGTH = 2000
 
 #: Closed job-state set; transitions are only ever driven by the store
 #: primitives below.
@@ -453,7 +454,8 @@ def _validate_build_in_payload(payload: dict[str, Any]) -> None:
 
     The free-form sections are ``places``, ``factions``, ``key_figures``
     (each a list of 1–2000-char trimmed strings, <= 100 entries) and
-    ``notes`` (a single string). At least one non-blank entry across all
+    ``notes`` (a single string, trimmed length <= 2000 chars; an explicit
+    null/non-string is rejected). At least one non-blank entry across all
     four is required. Unrecognized keys are ignored (the runner in 2.3
     owns the prompt contract); only the shape that can be validated
     up-front is rejected here.
@@ -476,10 +478,15 @@ def _validate_build_in_payload(payload: dict[str, Any]) -> None:
                     f"build_in {section}[{i}] exceeds {BUILD_IN_MAX_ENTRY_LENGTH} chars"
                 )
             any_content = any_content or bool(trimmed)
-    notes = payload.get("notes")
-    if notes is not None and not isinstance(notes, str):
+    # ``notes`` is optional (absent key stays allowed), but an explicit
+    # null or any non-string is rejected — the key, when present, must be
+    # a string within the cap.
+    if "notes" in payload and not isinstance(payload["notes"], str):
         raise InvalidJobInputError("build_in notes must be a string")
-    if isinstance(notes, str) and notes.strip():
+    notes = payload.get("notes", "")
+    if len(notes.strip()) > BUILD_IN_MAX_NOTE_LENGTH:
+        raise InvalidJobInputError(f"build_in notes exceeds {BUILD_IN_MAX_NOTE_LENGTH} chars")
+    if notes.strip():
         any_content = True
     if not any_content:
         raise InvalidJobInputError("build_in requires at least one non-blank section entry")

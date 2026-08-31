@@ -1,13 +1,22 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
+import { ApiError } from '../api/client'
 import { useCampaignsStore } from '../stores/campaigns'
 
 const campaigns = useCampaignsStore()
+const loadError = ref<string | null>(null)
 
-onMounted(() => {
-  void campaigns.list()
+onMounted(async () => {
+  try {
+    await campaigns.list()
+  } catch (err) {
+    loadError.value = err instanceof ApiError ? err.message : 'Could not load your worlds.'
+  }
+  if (campaigns.error) {
+    loadError.value = campaigns.error
+  }
 })
 </script>
 
@@ -15,6 +24,7 @@ onMounted(() => {
   <section>
     <h1>Your worlds</h1>
     <p v-if="campaigns.loading" class="muted">Loading…</p>
+    <p v-else-if="loadError" class="error">{{ loadError }}</p>
     <p v-else-if="campaigns.campaigns.length === 0" class="muted">
       No worlds yet. Create one from the campaigns API (story 2.1 ships the build-in surface).
     </p>

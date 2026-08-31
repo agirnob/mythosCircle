@@ -17,18 +17,21 @@ from collections.abc import Sequence
 from sqlalchemy import delete, select
 
 from app.core import ids, time
+from app.core.config import DEFAULT_THEMES
 from app.core.settings import configured_themes
 from app.store import models
 from app.store.commit import StoreError
 from app.store.db import session_scope
 
 
-#: The themes validated against — the config-resolved list (spec-1.7).
-#: The code fallback is ``app.core.config.DEFAULT_THEMES``; this module
-#: holds no copy (epic-1 retro item 4: one canonical code seed).
+#: The themes validated against — the config-resolved list (spec-1.7),
+#: falling back to ``app.core.config.DEFAULT_THEMES`` when the config ships
+#: an empty list. This module holds no copy of the seed (epic-1 retro item
+#: 4: one canonical code seed; an empty config falls back to it).
 def configured_seed_themes() -> frozenset[str]:
-    """The themes actually validated against — the config-resolved list."""
-    return frozenset(configured_themes())
+    """The themes actually validated against — config list, code seed fallback."""
+    themes = configured_themes()
+    return frozenset(themes) if themes else frozenset(DEFAULT_THEMES)
 
 
 DEFAULT_LIST_LIMIT = 50
@@ -57,7 +60,7 @@ def _require_non_blank(value: str, field: str) -> str:
     """Trim and reject a blank field (spec-1.6 CREATE_BLANK contract)."""
     trimmed = value.strip()
     if not trimmed:
-        raise InvalidThemeError(f"{field} must not be blank")
+        raise CampaignInputError(f"{field} must not be blank")
     return trimmed
 
 

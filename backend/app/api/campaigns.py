@@ -106,7 +106,7 @@ def list_own(
         try:
             after = decode_cursor(cursor)
         except InvalidCursorError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            _store_error_as_http(exc)
     try:
         campaigns, next_cursor = list_campaigns(current.id, after, limit)
     except StoreError as exc:

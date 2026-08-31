@@ -42,8 +42,14 @@ export const useAuthStore = defineStore('auth', {
       })
     },
     async logout() {
-      await apiFetch<void>('/api/auth/logout', { method: 'POST' })
-      this.account = null
+      try {
+        await apiFetch<void>('/api/auth/logout', { method: 'POST' })
+      } catch {
+        // Best-effort: the cookie may already be gone or the server down —
+        // the local session clears either way.
+      } finally {
+        this.account = null
+      }
     },
   },
 })

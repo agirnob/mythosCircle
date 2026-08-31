@@ -71,7 +71,7 @@ if [ -d backend/app ]; then
 	if command -v uv >/dev/null 2>&1; then
 		( cd "$BACKEND_DEST" && uv venv .venv && uv pip install --python .venv/bin/python -e . )
 	else
-		( cd "$BACKEND_DEST" && python3 -m venv .venv && .venv/bin/pip install uvicorn fastapi "sqlalchemy>=2.0,<3" "pydantic>=2.13,<3" "python-ulid>=4,<5" "httpx>=0.28,<1" "argon2-cffi>=25,<26" "email-validator>=2,<3" )
+		( cd "$BACKEND_DEST" && python3 -m venv .venv && .venv/bin/pip install uvicorn fastapi "sqlalchemy>=2.0,<3" "pydantic>=2.13,<3" "python-ulid>=4,<5" "httpx>=0.28,<1" "argon2-cffi>=25,<26" "email-validator>=2,<3" "websockets>=15,<16" )
 	fi
 fi
 

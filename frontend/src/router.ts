@@ -25,7 +25,12 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (!auth.hydrated) {
-    await auth.hydrate()
+    try {
+      await auth.hydrate()
+    } catch {
+      // A non-401 hydrate failure (e.g. server down) falls through to the
+      // normal isAuthenticated check instead of aborting navigation.
+    }
   }
   if (to.meta.requiresAuth && !auth.isAuthenticated) {
     return { name: 'login', query: { next: to.fullPath } }

@@ -72,4 +72,17 @@ describe('auth store', () => {
     await auth.logout()
     expect(auth.account).toBeNull()
   })
+
+  it('logout clears the account when the logout request fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ code: 'internal_error', message: 'Internal server error.' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const auth = useAuthStore()
+    auth.account = { id: '01A', email: 'dm@example.com' }
+    await expect(auth.logout()).resolves.toBeUndefined()
+    expect(auth.account).toBeNull()
+  })
 })

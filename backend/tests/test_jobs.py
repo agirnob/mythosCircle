@@ -8,13 +8,14 @@ dependence in assertions.
 """
 
 import re
+import sqlite3
 import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.core import ids
 from app.core.settings import (
@@ -269,6 +270,14 @@ def test_enqueue_build_in_valid_position_one(world: str) -> None:
     assert blank_trimmed.state == "queued"
 
 
+def test_enqueue_build_in_notes_at_cap_accepted(world: str) -> None:
+    """notes trimmed to exactly the 2000-char cap is valid; the cap is
+    inclusive (spec-2.1 notes contract)."""
+    job = enqueue_job(world, "build_in", {"notes": "x" * 2000})
+    assert job.state == "queued"
+    assert job_status(job.id)[1] == 1
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -278,6 +287,8 @@ def test_enqueue_build_in_valid_position_one(world: str) -> None:
         {"places": [1, 2]},  # non-string entry
         {"places": "not a list"},  # section not a list
         {"notes": 7},  # notes not a string
+        {"notes": None},  # notes key present but null
+        {"notes": "x" * 2001},  # notes over the 2000-char cap
         {"factions": list(range(101))},  # too many entries
     ],
 )
@@ -806,3 +817,99 @@ def test_non_json_serializable_payload_rejected(world: str) -> None:
     with pytest.raises(InvalidJobInputError):
         enqueue_job(world, "text", {"when": __import__("datetime").datetime.now()})
     assert _count_jobs() == 0
+
+
+def test_migrate_job_kind_adds_build_in(tmp_path: Path) -> None:
+    """A pre-2.1 database's job-kind CHECK is rebuilt to admit ``build_in``:
+    SQLite cannot ALTER a CHECK constraint, so ``store.db._migrate_job_kind``
+    rebuilds the table and re-creates its indexes; the queue keeps working
+    (store-level migration test)."""
+    db_path = tmp_path / "old-schema.db"
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        CREATE TABLE account (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            email VARCHAR(320) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        CREATE TABLE campaign (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            owner_id VARCHAR(26) NOT NULL REFERENCES account(id),
+            title VARCHAR(300) NOT NULL,
+            description TEXT NOT NULL,
+            theme VARCHAR(100) NOT NULL,
+            custom_lore TEXT NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        CREATE TABLE job (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            campaign_id VARCHAR(26) NOT NULL REFERENCES campaign(id),
+            kind VARCHAR(64) NOT NULL,
+            payload JSON NOT NULL,
+            state VARCHAR(32) NOT NULL,
+            progress FLOAT NOT NULL,
+            max_llm_calls INTEGER NOT NULL,
+            max_media_calls INTEGER NOT NULL,
+            error TEXT,
+            result JSON,
+            created_at VARCHAR(40) NOT NULL,
+            started_at VARCHAR(40),
+            finished_at VARCHAR(40),
+            CONSTRAINT ck_job_kind CHECK (kind IN ('text','image','video'))
+        );
+        CREATE INDEX ix_job_state ON job (state);
+        CREATE INDEX ix_job_campaign_id ON job (campaign_id);
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    previous = app_db_url()
+    init_db(f"sqlite:///{db_path}")
+    try:
+        campaign = create_campaign(
+            _owner_id(),
+            title="Migrated World",
+            description="",
+            theme="High Fantasy",
+            custom_lore="",
+        ).id
+        job = enqueue_job(campaign, "build_in", {"places": ["Greymarch"]})
+        assert job.kind == "build_in" and job.state == "queued"
+        with session_scope() as session:
+            ddl = session.execute(
+                text("SELECT sql FROM sqlite_master WHERE type='table' AND name='job'")
+            ).scalar_one()
+            assert "build_in" in ddl  # the rebuilt constraint admits build_in
+            index_names = set(
+                session.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='job'")
+                )
+                .scalars()
+                .all()
+            )
+        assert {"ix_job_state", "ix_job_campaign_id"} <= index_names
+        # Idempotent: re-init leaves the already-migrated table untouched.
+        init_db(f"sqlite:///{db_path}")
+        with session_scope() as session:
+            count = session.scalar(select(func.count()).select_from(models.Job)) or 0
+        assert count == 1  # the build_in job survived the re-init
+    finally:
+        init_db(previous)
+
+
+def test_enqueue_build_in_idempotent_by_job_id(world: str) -> None:
+    """Same valid build-in payload + same caller-supplied job_id twice ->
+    DuplicateJobError (409); exactly one row is written and the first
+    payload is unchanged (idempotent by job-id, spec-2.1)."""
+    job_id = ids.new_id()
+    payload = {"places": ["Greymarch"], "factions": ["The Guild"], "notes": "rain"}
+    first = enqueue_job(world, "build_in", payload, job_id=job_id)
+    assert first.state == "queued"
+    with pytest.raises(DuplicateJobError):
+        enqueue_job(world, "build_in", payload, job_id=job_id)
+    assert _count_jobs() == 1
+    _job, _position = job_status(job_id)
+    assert _job.payload == payload  # the first submission wins, unchanged

@@ -6,6 +6,11 @@
  * a state change), 5xx = server error. The session rides the httpOnly
  * cookie (SameSite=Lax, path /api) — `credentials: 'same-origin'`, no
  * token storage in the client (AD-9, AR14).
+ *
+ * 401 handling (AR29): there is one generic 401 for the whole app. The
+ * module-level handler registered via `setUnauthorizedHandler` runs once
+ * per 401 (the auth store clears and the router redirects), then the
+ * ApiError still throws so callers can react.
  */
 
 export class ApiError extends Error {
@@ -26,20 +31,17 @@ interface Envelope {
   details?: unknown
 }
 
-export interface ApiClientOptions {
-  /** Called when any call returns the generic 401 (AR29) — the auth store
-   * clears and the router redirects. */
-  onUnauthorized?: () => void
+let unauthorizedHandler: (() => void) | null = null
+
+/** Register the single 401 handler (AR29) — called before ApiError throws. */
+export function setUnauthorizedHandler(handler: () => void) {
+  unauthorizedHandler = handler
 }
 
 /** Same-origin by default — the Vite dev server proxies /api to FastAPI. */
 const DEFAULT_BASE_URL = ''
 
-export async function apiFetch<T>(
-  path: string,
-  init: RequestInit = {},
-  options: ApiClientOptions = {},
-): Promise<T> {
+export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${DEFAULT_BASE_URL}${path}`, {
     ...init,
     headers: {
@@ -61,9 +63,12 @@ export async function apiFetch<T>(
       envelope?.details,
     )
     if (response.status === 401) {
-      options.onUnauthorized?.()
+      unauthorizedHandler?.()
     }
     throw error
+  }
+  if (body === null) {
+    throw new ApiError(response.status, 'invalid_response', 'Empty or non-JSON response.')
   }
   return body as T
 }
