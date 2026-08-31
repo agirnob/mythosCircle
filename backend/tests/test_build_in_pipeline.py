@@ -71,12 +71,33 @@ def _enqueue(world: str, max_llm_calls: int | None = None, **payload: Any) -> st
     return enqueue_job(world, "build_in", payload, max_llm_calls=max_llm_calls).id
 
 
+#: A valid AR25 minimal stat block for the wave-1 key figure Mira Vane
+#: (spec-2.4): NPC, level 5 Human Fighter — passes every constraint, so
+#: the wave commits without a repair pass.
+_MIRA_STAT_BLOCK: dict[str, Any] = {
+    "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter", "alignment": "LG"},
+    "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+    "combat": {"ac": 16, "hp": 44},
+    "skills": [{"name": "Athletics", "bonus": 5}],
+    "actions": [
+        {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+    ],
+}
+
+
 def _wave1_output() -> dict[str, Any]:
-    """A valid wave-1 output: two core entities wired by typed edges."""
+    """A valid wave-1 output: two core entities wired by typed edges; the
+    character (key figure) carries an AR25-valid minimal stat block
+    (spec-2.4) so the wave commits without a repair pass."""
     return {
         "entities": [
             {"ref": "E0", "kind": "faction", "name": "The Gilded Bar", "text": "smoke and coin"},
-            {"ref": "E1", "kind": "character", "name": "Mira Vane", "data": {"goal": "tea house"}},
+            {
+                "ref": "E1",
+                "kind": "character",
+                "name": "Mira Vane",
+                "data": {"goal": "tea house", "stat_block": _MIRA_STAT_BLOCK},
+            },
         ],
         "edges": [
             {"src": "E0", "dst": "E1", "type": "member_of", "counter": 1},
@@ -747,3 +768,196 @@ def test_real_provider_via_mock_transport(world: str) -> None:
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert job.result is not None and job.result["entity_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# STAT BLOCKS (spec-2.4, AR24/AR25)
+# ---------------------------------------------------------------------------
+
+
+def _stat_block(**overrides: Any) -> dict[str, Any]:
+    """A valid AR25 stat block; ``overrides`` replace top-level keys."""
+    base = dict(_MIRA_STAT_BLOCK)
+    base.update(overrides)
+    return base
+
+
+def test_valid_stat_block_commits_without_repair(world: str) -> None:
+    """STAT_OK: a wave-1 character with a valid data.stat_block commits
+    as given (round-trips through Entity.data) with a single provider
+    call — no repair pass, job succeeded."""
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(_wave1_output())
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 1  # no repair call for a valid block
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"] == _MIRA_STAT_BLOCK
+
+
+def test_invalid_stat_block_repaired_in_one_pass(world: str) -> None:
+    """STAT_INVALID_REPAIRED: a constraint-violating block (STR 40) gets
+    exactly one repair call; the repaired block commits and the job
+    succeeds with two provider calls total."""
+    output = _wave1_output()
+    bad_block = dict(_MIRA_STAT_BLOCK)
+    bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
+    output["entities"][1]["data"] = {"stat_block": bad_block}
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 2  # wave 1 + exactly one repair pass
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"]["identity"]["level"] == 5  # repaired block landed
+    assert mira.data["stat_block"]["attributes"]["str"] == 14
+
+
+def test_missing_stat_block_repaired(world: str) -> None:
+    """STAT_MISSING_REPAIRED: a character without data.stat_block is
+    flagged 'stat_block section missing'; the repair pass supplies the
+    block and the wave commits."""
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert "stat_block" in mira.data
+
+
+def test_still_invalid_stat_block_fails_zero_commits(world: str) -> None:
+    """STAT_STILL_INVALID: a block still invalid after the repair pass is
+    never committed — the job fails naming the character and its
+    violations (fail event, AR25), zero revisions."""
+    output = _wave1_output()
+    bad_block = dict(_MIRA_STAT_BLOCK)
+    bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
+    output["entities"][1]["data"] = {"stat_block": bad_block}
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(
+        provider=lambda prompt, settings, responses=responses: responses.pop(0),
+        settings=SETTINGS,
+    )
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "still invalid after the repair pass" in (job.error or "")
+    assert "Mira Vane" in (job.error or "") and "attributes.str" in (job.error or "")
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+
+def test_stat_repair_budget_exceeded_fails_before_http(world: str) -> None:
+    """STAT_REPAIR_BUDGET: max_llm_calls=1 with an invalid block — the
+    repair call is refused before HTTP (AR21); the job fails and nothing
+    commits."""
+    output = _wave1_output()
+    bad_block = dict(_MIRA_STAT_BLOCK)
+    bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
+    output["entities"][1]["data"] = {"stat_block": bad_block}
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"], max_llm_calls=1)
+    run_next_job(provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "budget" in (job.error or "").lower()
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+
+def test_stat_repair_bad_ref_fails(world: str) -> None:
+    """STAT_REPAIR_BAD_REF: the repair response refs a position that was
+    not flagged (or an unknown one) — the job fails, zero commits."""
+    output = _wave1_output()
+    output["entities"][1]["data"] = {"goal": "tea house"}  # missing stat_block
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(
+        provider=lambda prompt, settings, responses=responses: responses.pop(0),
+        settings=SETTINGS,
+    )
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "was not flagged" in (job.error or "")
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+
+def test_stat_repair_fence_wrapped_succeeds(world: str) -> None:
+    """STAT_REPAIR_FENCE: a markdown-fenced repair output is stripped
+    before parsing (same tolerance as wave output)."""
+    output = _wave1_output()
+    output["entities"][1]["data"] = {"goal": "tea house"}
+    repair = (
+        "```json\n"
+        + json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]})
+        + "\n```"
+    )
+    responses = [json.dumps(output), repair]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    processed = run_next_job(
+        provider=lambda prompt, settings, responses=responses: responses.pop(0),
+        settings=SETTINGS,
+    )
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert "stat_block" in mira.data
+
+
+def test_wave2_characters_without_stat_block_commit(world: str) -> None:
+    """WAVE2_CHARACTERS_UNREQUIRED: stat-block enforcement is wave-1 key
+    figures only — a wave-2 character without a stat block still commits
+    (Epic 3's AR19 candidates carry the full stat-block contract)."""
+    wave2 = _wave2_output()
+    # Captain Harlow (N1, character) currently has no stat_block — as-is.
+    responses = [json.dumps(_wave1_output()), json.dumps(wave2)]
+    job_id = _enqueue(world, notes="the docks teem with the Drowned Rat and Captain Harlow")
+    processed = run_next_job(
+        provider=lambda prompt, settings, responses=responses: responses.pop(0),
+        settings=SETTINGS,
+    )
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["entity_count"] == 4
+    with session_scope() as session:
+        harlow = next(e for e in world_entities(session, world) if e.name == "Captain Harlow")
+    assert "stat_block" not in harlow.data

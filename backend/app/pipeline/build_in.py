@@ -33,7 +33,16 @@ from typing import Any, cast
 from app.core import ids
 from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
+from app.pipeline.fencing import strip_fence as _strip_fence
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
+from app.pipeline.statblocks import (
+    apply_stat_repairs,
+    build_stat_repair_prompt,
+    collect_stat_issues,
+    parse_stat_repair_output,
+    stat_block_rules_text,
+    stat_failure_message,
+)
 from app.pipeline.worker import JobPayloadError
 from app.store import (
     EDGE_TYPES,
@@ -98,6 +107,22 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     text_1 = budget.call(lambda: provider(prompt_1, settings=settings))
     parsed_1 = parse_build_output(text_1, wave=1)
     entities_1, edges_1 = _validate_subgraph(1, parsed_1)
+    # Stat-block enforcement (AR24/AR25, spec-2.4): every wave-1 character
+    # must carry a valid minimal stat block before the wave commits — or
+    # exactly one bounded repair pass; a block still invalid after the
+    # repair fails the job with an error event, zero commits.
+    stat_issues = collect_stat_issues(entities_1)
+    if stat_issues:
+        if not _job_still_running(job):
+            return
+        repair_text = budget.call(
+            lambda: provider(build_stat_repair_prompt(stat_issues), settings=settings)
+        )
+        repaired = parse_stat_repair_output(repair_text, [issue.position for issue in stat_issues])
+        entities_1 = apply_stat_repairs(entities_1, repaired)
+        remaining = collect_stat_issues(entities_1)
+        if remaining:
+            raise JobPayloadError(stat_failure_message(remaining))
     revision_1 = commit_subgraph(job.campaign_id, entities_1, edges_1, base_revision=wave1_base)
     waves: list[dict[str, Any]] = [_wave_result(1, revision_1.id, entities_1, edges_1)]
     # Cancel-race poll: a cancel that landed during wave 1's call/commit
@@ -182,10 +207,14 @@ def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) 
         "Every entity must appear in at least one edge within this subgraph — no orphans.",
         "Edges must connect two different entities — no self-loops.",
         "",
+        "STAT BLOCKS",
+        stat_block_rules_text(),
+        "",
         "OUTPUT CONTRACT",
         'Respond with one JSON object: {"entities": [...], "edges": [...]}.',
         'Each entity: {"ref": "E<index>", "kind": "character|faction|place", "name": "...",',
-        '  "text": "optional narrative", "data": {optional hard-truth object}}.',
+        '  "text": "optional narrative", "data": {hard truths; characters MUST include',
+        '  "stat_block" per the STAT BLOCK RULES above; factions and places never do}}.',
         "Refs are positional and canonical: the first entity in the list is E0, the",
         "second E1, and so on (never E01, E007).",
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
@@ -265,24 +294,6 @@ def build_wave2_prompt(
         *(f"- {edge_type}: {edge_counter_semantic(edge_type)}" for edge_type in sorted(EDGE_TYPES)),
     ]
     return "\n".join(lines)
-
-
-def _strip_fence(text: str) -> str:
-    """Strip one optional markdown fence pair from LLM output.
-
-    Leading blank lines are ignored; when the first non-blank line is a
-    fence opener (`` ``` `` or `` ```json ``) and the last line is a fence
-    closer, both are removed (trailing whitespace tolerated on both). A
-    fence without a closer is returned as-is so the JSON error names the
-    real problem.
-    """
-    stripped = text.strip()
-    if not stripped.startswith("```"):
-        return stripped
-    lines = stripped.splitlines()
-    if len(lines) >= 2 and lines[-1].strip().startswith("```"):
-        return "\n".join(lines[1:-1]).strip()
-    return stripped
 
 
 def parse_build_output(text: str, wave: int = 1) -> dict[str, Any]:

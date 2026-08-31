@@ -227,7 +227,28 @@ def _build_in_wave1_json() -> str:
                     "ref": "E1",
                     "kind": "character",
                     "name": "Mira Vane",
-                    "data": {"goal": "tea house"},
+                    "data": {
+                        "goal": "tea house",
+                        "stat_block": {
+                            "identity": {
+                                "role": "NPC",
+                                "level": 5,
+                                "race": "Human",
+                                "class": "Fighter",
+                                "alignment": "LG",
+                            },
+                            "attributes": {
+                                "str": 14,
+                                "dex": 12,
+                                "con": 14,
+                                "int": 10,
+                                "wis": 10,
+                                "cha": 8,
+                            },
+                            "combat": {"ac": 16, "hp": 44},
+                            "skills": [{"name": "Athletics", "bonus": 5}],
+                        },
+                    },
                 },
             ],
             "edges": [
