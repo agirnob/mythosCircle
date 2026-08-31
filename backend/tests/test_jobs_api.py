@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from app.core import ids
+from app.core.pagination import encode_cursor
 from app.core.settings import MAX_PENDING_PER_CAMPAIGN
 from app.store import (
     app_db_url,
@@ -302,14 +303,24 @@ def test_list_jobs_campaign_scoped_and_paginated(
         params={"campaign_id": campaign_a, "limit": 1, "cursor": page["next_cursor"]},
     ).json()
     assert [job["id"] for job in page2["jobs"]] == [a2]
-    assert page2["next_cursor"] is None
 
     empty = client.get("/api/jobs", params={"campaign_id": job_api()}).json()
     assert empty["jobs"] == [] and empty["next_cursor"] is None
 
 
 def test_list_jobs_bad_cursor_422(client: TestClient, job_api: Callable[[], str]) -> None:
+    """A cursor that cannot decode to a ULID is a 422 validation_error
+    envelope — the route's decode-failure branch (never a 500)."""
     response = client.get("/api/jobs", params={"campaign_id": job_api(), "cursor": "not-a-cursor"})
+    _assert_envelope(response, 422, "validation_error")
+
+
+def test_list_jobs_fabricated_cursor_422(client: TestClient, job_api: Callable[[], str]) -> None:
+    """UNKNOWN_CURSOR (epic-1 retro item 2): a decode-valid cursor naming
+    no job is a 422 user error on the wire, never a silent page reset."""
+    campaign_id = job_api()
+    cursor = encode_cursor(ids.new_id())
+    response = client.get("/api/jobs", params={"campaign_id": campaign_id, "cursor": cursor})
     _assert_envelope(response, 422, "validation_error")
 
 

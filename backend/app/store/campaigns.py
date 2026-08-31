@@ -14,10 +14,11 @@ boundary.
 
 from collections.abc import Sequence
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, literal_column, select
 
 from app.core import ids, time
 from app.core.config import DEFAULT_THEMES
+from app.core.pagination import InvalidCursorError, anchor_rowid, paging
 from app.core.settings import configured_themes
 from app.store import models
 from app.store.commit import StoreError
@@ -102,29 +103,29 @@ def list_campaigns(
     """
     if limit < 1:
         raise CampaignInputError("limit must be >= 1")
-    from sqlalchemy import literal_column
-
     with session_scope() as session:
         query = select(models.Campaign).where(models.Campaign.owner_id == owner_id)
         if cursor is not None:
-            # Owner-scoped cursor: a foreign or deleted campaign id must not
-            # silently reset the page or act as an existence oracle (NFR6).
+            # Cursor semantics (epic-1 retro item 2): a cursor naming no
+            # campaign (fabricated or deleted) is InvalidCursorError; a
+            # cursor naming another owner's existing campaign is
+            # CampaignInputError — neither acts as a silent page reset or
+            # an existence oracle (NFR6). The anchor resolves first (it
+            # owns the missing-row family), then the owner check.
+            anchor = anchor_rowid(
+                session,
+                models.Campaign,
+                cursor,
+                missing_error=InvalidCursorError(f"cursor names no campaign: {cursor}"),
+            )
             owner_of_cursor = session.scalar(
                 select(models.Campaign.owner_id).where(models.Campaign.id == cursor)
             )
             if owner_of_cursor != owner_id:
                 raise CampaignInputError("cursor names a campaign you do not own")
-            anchor = session.scalar(
-                select(literal_column("rowid"))
-                .select_from(models.Campaign)
-                .where(models.Campaign.id == cursor)
-            )
-            if anchor is not None:
-                query = query.where(literal_column("rowid") > anchor)
+            query = query.where(literal_column("rowid") > anchor)
         rows = session.scalars(query.order_by(literal_column("rowid")).limit(limit + 1)).all()
-        page = rows[:limit]
-        has_more = len(rows) > limit
-        next_cursor = page[-1].id if has_more and page else None
+        page, next_cursor = paging(rows, limit)
         return page, next_cursor
 
 

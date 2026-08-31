@@ -1,12 +1,14 @@
 """Private campaign CRUD with the AR27 world seed (spec-1.6).
 
-Every route requires a valid session (1.5's ``get_current_account``) and
-is owner-scoped: a foreign or unknown campaign id maps to the same 404
-(NFR6, AD-9 — no oracle). Delete requires an explicit confirmation body
-and is the AR20 total hard delete (cascades revisions/events/entities/
-edges/jobs/media rows). Store rejections map through the shared
-``_store_error_as_http`` (epic-1 retro item 3: campaigns errors are
-``StoreError`` subclasses, so the wire codes stay consistent).
+The ``campaign``/``campaigns`` routes require a valid session (1.5's
+``get_current_account``) and are owner-scoped: a foreign or unknown
+campaign id maps to the same 404 (NFR6, AD-9 — no oracle). Delete
+requires an explicit confirmation body and is the AR20 total hard delete
+(cascades revisions/events/entities/edges/jobs/media rows). Store
+rejections map through the shared ``_store_error_as_http`` (epic-1 retro
+item 3: campaigns errors are ``StoreError`` subclasses; the cursor-miss
+family — ``InvalidCursorError`` from a deleted/fabricated cursor — rides
+the same mapper, retro item 2).
 """
 
 import json as _json
@@ -109,7 +111,7 @@ def list_own(
             _store_error_as_http(exc)
     try:
         campaigns, next_cursor = list_campaigns(current.id, after, limit)
-    except StoreError as exc:
+    except (StoreError, InvalidCursorError) as exc:
         _store_error_as_http(exc)
     return CampaignListResponse(
         campaigns=[_to_response(c) for c in campaigns],

@@ -1,8 +1,8 @@
-"""Generation pipeline — proposes changes; never writes world state (AD-1).
+"""Generation pipeline — proposes changes; the store commits (AD-1).
 
-The pipeline reads the store, proposes a subgraph (entities, edges,
-media), and hands it to a store commit. Generation failures never
-mutate state.
-
-Empty until the pipeline stories (Epic 2).
+The pipeline reads the store, runs provider calls, and lands accepted
+output through a store commit (``commit_subgraph``) — the store remains
+the sole writer of world rows (AD-13). A failing wave writes nothing;
+waves committed before the failure (the build-in wave-1 core) stay
+committed — documented resilience, no compensating undo.
 """

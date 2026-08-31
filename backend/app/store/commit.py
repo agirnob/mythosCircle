@@ -15,7 +15,8 @@ check-then-act is atomic with the write even under concurrency.
 """
 
 from collections.abc import Sequence
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -46,18 +47,25 @@ EDGE_TYPES: frozenset[str] = frozenset(
 #: score, ally/enemy = intensity. The map is the code contract the
 #: pipeline assigns counters against and Phase 3 consumes; members
 #: without an entry carry the neutral default (counter informational).
-EDGE_COUNTER_SEMANTICS: dict[str, str] = {
-    "debt": "amount",
-    "grudge": "score",
-    "loyalty": "score",
-    "ally_of": "intensity",
-    "enemy_of": "intensity",
-}
+#: Immutable by contract (2.2 defer, hardened in 2.3): the pipeline
+#: imports the map into prompts, so a mutable dict would let one module
+#: change the prompt contract for everyone.
+EdgeCounterSemantic = Literal["amount", "score", "intensity", "neutral"]
 
-DEFAULT_EDGE_COUNTER_SEMANTIC = "neutral"
+EDGE_COUNTER_SEMANTICS: MappingProxyType[str, EdgeCounterSemantic] = MappingProxyType(
+    {
+        "debt": "amount",
+        "grudge": "score",
+        "loyalty": "score",
+        "ally_of": "intensity",
+        "enemy_of": "intensity",
+    }
+)
+
+DEFAULT_EDGE_COUNTER_SEMANTIC: EdgeCounterSemantic = "neutral"
 
 
-def edge_counter_semantic(edge_type: str) -> str:
+def edge_counter_semantic(edge_type: str) -> EdgeCounterSemantic:
     """The AD-23 counter semantic for an edge type (neutral when unassigned)."""
     return EDGE_COUNTER_SEMANTICS.get(edge_type, DEFAULT_EDGE_COUNTER_SEMANTIC)
 

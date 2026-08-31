@@ -36,6 +36,7 @@ from sqlalchemy import func, literal_column, select
 from sqlalchemy.orm import Session
 
 from app.core import ids, time
+from app.core.pagination import anchor_rowid, paging
 from app.core.settings import queue_settings
 from app.store import models
 from app.store.commit import StoreError, UnknownCampaignError
@@ -43,7 +44,7 @@ from app.store.db import session_scope
 
 #: Closed job-kind set (AD-3 runner split: text + build_in -> pipeline,
 #: image/video -> media). ``build_in`` is AD-19's guided build-in kind;
-#: its runner lands in Story 2.3.
+#: its runner is the two-wave core-first build-in pipeline (spec-2.3).
 JOB_KINDS: frozenset[str] = frozenset({"text", "image", "video", "build_in"})
 
 #: Build-in payload contract (spec-2.1): free-form section caps.
@@ -353,9 +354,7 @@ def list_jobs(
             .order_by(literal_column("rowid"))
             .limit(limit + 1)
         ).all()
-        has_more = len(jobs) > limit
-        page = jobs[:limit]
-        next_cursor = page[-1].id if has_more else None
+        page, next_cursor = paging(jobs, limit)
         pending_ids = session.scalars(
             select(models.Job.id)
             .where(
@@ -519,18 +518,21 @@ def _after_rowid(session: Session, campaign_id: str, cursor: str | None) -> int:
     rowid anchors the next page. A cursor naming another campaign's job
     is a user error (422): it would silently skip this campaign's jobs
     by anchoring on a foreign rowid. A well-formed ULID that names no
-    job falls back to the start: jobs are never deleted, so only
-    fabricated cursors can miss.
+    job is a user error too (422): jobs are never deleted, so only
+    fabricated cursors can miss — and they must not silently reset the
+    page (epic-1 retro item 2).
     """
     if cursor is None:
-        return -1
-    anchor = _rowid(session, cursor)
-    if anchor is None:
         return -1
     row = session.get(models.Job, cursor)
     if row is not None and row.campaign_id != campaign_id:
         raise InvalidJobInputError("cursor names a job of another campaign")
-    return anchor
+    return anchor_rowid(
+        session,
+        models.Job,
+        cursor,
+        missing_error=InvalidJobInputError(f"cursor names no job: {cursor}"),
+    )
 
 
 def _queue_position(session: Session, job: models.Job) -> int | None:

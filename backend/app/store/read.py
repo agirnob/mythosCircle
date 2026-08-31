@@ -27,6 +27,13 @@ def latest_revision(session: Session, campaign_id: str) -> models.Revision | Non
     ).first()
 
 
+def campaign_seed(session: Session, campaign_id: str) -> models.Campaign | None:
+    """The campaign's AR27 world-seed row (title, description, theme,
+    custom lore), or None for an unknown campaign — the deterministic
+    seed source for build-in prompts (spec-2.3, AD-16)."""
+    return session.get(models.Campaign, campaign_id)
+
+
 def revision_chain(session: Session, campaign_id: str) -> Sequence[models.Revision]:
     """All revisions of a campaign, oldest first."""
     return session.scalars(
@@ -48,20 +55,30 @@ def revision_events(session: Session, campaign_id: str, revision_id: str) -> Seq
     ).all()
 
 
+def world_entities(session: Session, campaign_id: str) -> Sequence[models.Entity]:
+    """The materialized latest-revision entities in rowid (commit) order —
+    deterministic retrieval (AD-16)."""
+    return session.scalars(
+        select(models.Entity)
+        .where(models.Entity.campaign_id == campaign_id)
+        .order_by(literal_column("rowid"))
+    ).all()
+
+
+def world_edges(session: Session, campaign_id: str) -> Sequence[models.Edge]:
+    """The materialized latest-revision edges in rowid (commit) order —
+    deterministic retrieval (AD-16)."""
+    return session.scalars(
+        select(models.Edge)
+        .where(models.Edge.campaign_id == campaign_id)
+        .order_by(literal_column("rowid"))
+    ).all()
+
+
 def world_state(
     session: Session, campaign_id: str
 ) -> tuple[Sequence[models.Entity], Sequence[models.Edge]]:
     """The materialized latest-revision entities and edges, in rowid
     (commit) order — deterministic retrieval (AD-16), matching the other
     read helpers' documented ordering."""
-    entities = session.scalars(
-        select(models.Entity)
-        .where(models.Entity.campaign_id == campaign_id)
-        .order_by(literal_column("rowid"))
-    ).all()
-    edges = session.scalars(
-        select(models.Edge)
-        .where(models.Edge.campaign_id == campaign_id)
-        .order_by(literal_column("rowid"))
-    ).all()
-    return entities, edges
+    return world_entities(session, campaign_id), world_edges(session, campaign_id)

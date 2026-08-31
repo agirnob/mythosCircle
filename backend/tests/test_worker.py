@@ -7,6 +7,7 @@ RESULT_PERSISTED + the listener emissions.
 """
 
 import asyncio
+import json
 from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
@@ -16,10 +17,9 @@ import httpx
 import pytest
 
 from app.core.settings import LLMSettings
+from app.pipeline.budget import BudgetExceededError, CallBudget
 from app.pipeline.worker import (
-    BudgetExceededError,
     JobPayloadError,
-    _CallBudget,
     run_next_job,
     worker_loop,
 )
@@ -130,7 +130,7 @@ def test_call_budget_guard_refuses_at_budget() -> None:
     """RUN_BUDGET_GUARD: the per-call primitive refuses before any HTTP
     request once the counter is at the budget (AR21)."""
     job = models.Job(id="J" * 26, max_llm_calls=1)
-    budget = _CallBudget(job)
+    budget = CallBudget(job)
     calls: list[str] = []
 
     def provider_call() -> str:
@@ -212,15 +212,71 @@ def test_unexpected_error_fails_job_not_crash(world: str) -> None:
     assert "kaboom" in (job.error or "")
 
 
-def test_build_in_job_fails_not_wedges_and_queue_flows(world: str) -> None:
-    """Before Story 2.3 the worker fails a claimed build_in job loudly and
-    the FIFO keeps flowing (the same fail-not-wedge convention as media)."""
+def _build_in_wave1_json() -> str:
+    """A valid wave-1 output: two core entities wired by typed edges."""
+    return json.dumps(
+        {
+            "entities": [
+                {
+                    "ref": "E0",
+                    "kind": "faction",
+                    "name": "The Gilded Bar",
+                    "text": "smoke and coin",
+                },
+                {
+                    "ref": "E1",
+                    "kind": "character",
+                    "name": "Mira Vane",
+                    "data": {"goal": "tea house"},
+                },
+            ],
+            "edges": [
+                {"src": "E0", "dst": "E1", "type": "member_of", "counter": 1},
+                {"src": "E1", "dst": "E0", "type": "debt", "counter": 3},
+            ],
+        }
+    )
+
+
+def test_build_in_job_succeeds_and_commits_world(world: str) -> None:
+    """Story 2.3's runner: a valid build-in job completes and the core
+    subgraph commits (one revision, entities + typed edges); the result
+    carries the wave summary and the queue keeps flowing."""
+    from app.store import session_scope, world_edges, world_entities
+
+    build_id = enqueue_job(world, "build_in", {"places": ["Greymarch"], "notes": ""}).id
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        assert settings is SETTINGS
+        return _build_in_wave1_json()
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == build_id
+    job, _position = job_status(build_id)
+    assert job.state == "succeeded"
+    assert job.progress == 0.5  # wave 2 skipped (notes blank)
+    assert job.result is not None
+    assert len(job.result["waves"]) == 1 and job.result["waves"][0]["wave"] == 1
+    assert job.result["entity_count"] == 2 and job.result["edge_count"] == 2
+    with session_scope() as session:
+        entities, edges = world_entities(session, world), world_edges(session, world)
+    assert {e.name for e in entities} == {"The Gilded Bar", "Mira Vane"}
+    assert {e.type for e in edges} == {"member_of", "debt"}
+
+
+def test_build_in_malformed_fails_not_wedges(world: str) -> None:
+    """MALFORMED_OUTPUT at the worker level: bad LLM output fails the job
+    loudly (naming the wave) and the FIFO keeps flowing."""
     build_id = enqueue_job(world, "build_in", {"places": ["Greymarch"], "notes": "a damp city"}).id
-    processed = run_next_job(provider=_ok_provider, settings=SETTINGS)
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        return "not json at all"
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == build_id
     job, _position = job_status(build_id)
     assert job.state == "failed"
-    assert "Story 2.3" in (job.error or "")
+    assert "wave 1" in (job.error or "")
     # The slot is freed: a subsequent text job processes normally.
     text_id = _enqueue_text(world)
     assert run_next_job(provider=_ok_provider, settings=SETTINGS) == text_id

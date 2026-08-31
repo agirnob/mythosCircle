@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core import ids, time
+from app.core.pagination import InvalidCursorError
 from app.store import (
     CampaignInputError,
     InvalidThemeError,
@@ -204,17 +205,18 @@ def test_list_pagination_cursor(db: None) -> None:
 
 
 def test_list_cursor_foreign_and_deleted_rejected(db: None) -> None:
-    """A cursor naming another owner's or a deleted campaign is a
-    ValueError (upstream 422), never a silent page reset or an existence
-    oracle (NFR6, review round 1)."""
+    """A cursor naming another owner's existing campaign is
+    CampaignInputError; a cursor naming a deleted (or fabricated) campaign
+    is InvalidCursorError — both 422 upstream, never a silent page reset
+    or an existence oracle (NFR6, retro item 2)."""
     owner_a, owner_b = _owner("a"), _owner("b")
     a_id = _create(owner_a)
     b_id = _create(owner_b)
     with pytest.raises(CampaignInputError):
-        list_campaigns(owner_a, cursor=b_id)  # foreign owner
+        list_campaigns(owner_a, cursor=b_id)  # foreign owner, exists
     delete_campaign(owner_a, a_id)
-    with pytest.raises(CampaignInputError):
-        list_campaigns(owner_a, cursor=a_id)  # deleted
+    with pytest.raises(InvalidCursorError):
+        list_campaigns(owner_a, cursor=a_id)  # deleted — no such row anymore
 
 
 def test_configured_seed_themes_falls_back_on_empty_config(

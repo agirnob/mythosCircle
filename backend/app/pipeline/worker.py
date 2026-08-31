@@ -3,23 +3,27 @@
 One worker loop, one job at a time: ``claim_next_job`` (DB-enforced
 exactly-one, BEGIN IMMEDIATE) -> dispatch on kind -> provider call over
 HTTP -> ``complete_job``/``fail_job`` so ``job_done``/``job_failed``/
-``queue_changed`` broadcast over the WS hub. The worker proposes nothing
-and commits nothing to the world graph (AD-1) — generation output rides
-on a job's ``result`` column, never a revision.
+``queue_changed`` broadcast over the WS hub. The worker writes no world
+rows itself (AD-1): text-job output rides on a job's ``result`` column,
+never a revision, and build-in jobs commit through the store's
+``commit_subgraph`` — the store remains the sole writer of world state.
+A failing generation writes nothing; waves committed before the failure
+(the build-in wave-1 core) stay committed — documented resilience, no
+compensating undo.
 
-Budget (AR21): every LLM call goes through ``_CallBudget``, which checks
-the per-job counter against ``job.max_llm_calls`` BEFORE the HTTP request
-and fails the job when exceeded — Epic 2's multi-call generations reuse
-the same guard unchanged.
+Budget (AR21): every LLM call goes through ``CallBudget``
+(``app.pipeline.budget``), which checks the per-job counter against
+``job.max_llm_calls`` BEFORE the HTTP request and fails the job when
+exceeded — the build-in runner's two waves reuse the same guard.
 """
 
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable
 from typing import Any
 
 from app.core.settings import LLMSettings, llm_settings
+from app.pipeline.budget import BudgetExceededError, CallBudget
 from app.providers.llm import ChatCompletion, ProviderError, chat_completion
 from app.store import claim_next_job, complete_job, fail_job, job_status, models
 
@@ -32,14 +36,6 @@ Provider = ChatCompletion
 #: Idle sleep between claim attempts (seconds). Claim is a BEGIN IMMEDIATE
 #: transaction; a hot loop would hammer the write lock (spec-1.4 Design Notes).
 IDLE_SLEEP = 0.2
-
-
-class BudgetExceededError(Exception):
-    """The job's per-call budget would be exceeded (AR21) — internal guard."""
-
-    def __init__(self, budget: int) -> None:
-        super().__init__(f"job would exceed its max_llm_calls budget ({budget})")
-        self.budget = budget
 
 
 class JobPayloadError(ValueError):
@@ -79,14 +75,19 @@ def run_next_job(
 
 def _run_job(job: models.Job, provider: Provider, settings: LLMSettings) -> None:
     if job.kind == "build_in":
-        raise JobPayloadError("job kind 'build_in': the build-in runner lands in Story 2.3")
+        # Lazy import: ``build_in`` imports ``JobPayloadError`` from this
+        # module, so a module-level import here would be circular.
+        from app.pipeline.build_in import run_build_in
+
+        run_build_in(job, provider, settings)
+        return
     if job.kind != "text":
         raise JobPayloadError(
             f"job kind {job.kind!r}: the media service lands in Epic 4 — "
             "only text jobs run in story 1.4"
         )
     prompt = _text_prompt(job.payload)
-    budget = _CallBudget(job)
+    budget = CallBudget(job)
     # Cancel-race poll (review round 1): cancel_job may have freed this
     # slot while we were between claim and call. A terminal job is a
     # no-op — completing a cancelled job would raise JobStateConflict.
@@ -116,21 +117,6 @@ def _text_prompt(payload: dict[str, Any]) -> str:
     if not isinstance(prompt, str) or not prompt.strip():
         raise JobPayloadError("text job payload 'prompt' must be a non-empty string")
     return prompt
-
-
-class _CallBudget:
-    """Per-job LLM-call budget guard (AR21): refuses before any HTTP request."""
-
-    def __init__(self, job: models.Job) -> None:
-        self._budget = job.max_llm_calls
-        self._used = 0
-
-    def call(self, provider_call: Callable[[], str]) -> str:
-        if self._used >= self._budget:
-            raise BudgetExceededError(self._budget)
-        text = provider_call()
-        self._used += 1
-        return text
 
 
 def _error_message(exc: Exception) -> str:

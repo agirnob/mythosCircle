@@ -72,3 +72,23 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `spec-2-2-typed-edge-vocabulary-on-commit.md`
   summary: `EDGE_COUNTER_SEMANTICS` ships as a mutable plain dict and the resolver returns bare `str` (MappingProxyType / Literal["amount","score","intensity","neutral"] proposed).
   evidence: spec's Code Map prescribes `dict[str, str]` and `-> str`; map contents are pinned by test so drift fails CI; harden when 2.3 imports the contract. [backend/app/store/commit.py]
+
+## Resolved by: spec-2-3-core-first-two-wave-build-in-pipeline (2026-08-31)
+
+- The 2.2 "resolver membership semantics" deferral is settled by contract: the build-in pipeline is the resolver's first caller and
+  validates every edge type against `EDGE_TYPES` BEFORE resolving (pipeline/build_in.py `_validate_subgraph`); the store's neutral
+  fallback for non-vocabulary types stays documented behavior. No raise-vs-Optional change needed.
+- The 2.2 "map immutability / Literal return" deferral is closed: `EDGE_COUNTER_SEMANTICS` is now `MappingProxyType[str,
+  EdgeCounterSemantic]` and `edge_counter_semantic` returns `Literal["amount","score","intensity","neutral"]` (contents unchanged;
+  the store-level pins in test_store.py stay green). [backend/app/store/commit.py]
+## Deferred from: review of spec-2-3-core-first-two-wave-build-in-pipeline (2026-08-31)
+
+- source_spec: `spec-2-3-core-first-two-wave-build-in-pipeline.md`
+  summary: Counter semantic ranges are still undecided while the pipeline now assigns counters — the store validates shape only (int, SQLite 64-bit), so a negative debt amount or a grudge score of 0 or 10^6 commits as-is.
+  evidence: 2.2's design note deferred ranges to "the 2.3/2.4 pipeline stories"; 2.3's frozen contract kept shape-only, but the 2.3/2.4 boundary (stat-block repair passes are 2.4) never owned score/debt bounds. Decide bounds + negative-debt semantics before Phase-3 counter arithmetic consumes them. [backend/app/pipeline/build_in.py `_validate_subgraph`]
+- source_spec: `spec-2-3-core-first-two-wave-build-in-pipeline.md`
+  summary: World-level re-build idempotency is absent — resubmitting the same build-in payload re-commits the same named entities as fresh ULIDs instead of growing the world (the spec's "DM resubmits to grow the world" resilience note).
+  evidence: `run_build_in` generates `ids.new_id()` per entity with no name/identity matching against committed rows; a re-run duplicates "The Gilded Bar"/"Mira Vane" and can hit the (src,dst,type) uniqueness constraint on identical edges. Needs an identity/dedup strategy decision (2.7 or Epic 3). [backend/app/pipeline/build_in.py]
+- source_spec: `spec-2-3-core-first-two-wave-build-in-pipeline.md`
+  summary: Wave-2 anchors truncate at the AR6 retrieval cap — when wave-1 commits more than `entity_cap` (24) entities, the model can only reference core anchors C0..C23; a wave-2 edge to a committed wave-1 entity beyond the cap fails as an orphan with no diagnostic.
+  evidence: `core_count = min(len(entities_1), len(context_entities))` ties the orphan rule to retrieval truncation; legal input (up to 100 key figures) can fail the build with a misleading message. Revisit cap/anchor-set in 2.7 or Epic 3. [backend/app/pipeline/build_in.py, pipeline/retrieval.py]

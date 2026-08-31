@@ -49,7 +49,7 @@ development_status:
   epic-2: in-progress
   2-1-guided-build-in-flow: done
   2-2-typed-edge-vocabulary-on-commit: done
-  2-3-core-first-two-wave-build-in-pipeline: backlog
+  2-3-core-first-two-wave-build-in-pipeline: review
   2-4-key-figures-carry-a-minimal-5e-stat-block: backlog
   2-5-no-orphans-and-cascade-delete: backlog
   2-6-world-state-export: backlog
@@ -108,7 +108,7 @@ action_items:
     action: "Converge cursor pagination scaffold + unify unknown-cursor miss semantics
       (jobs vs campaigns)"
     owner: "pipeline story dev"
-    status: open
+    status: done
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
   - id: "epic-1-retro-item-3-make-campaigns-errors-subclass-storeerro"
     epic: 1

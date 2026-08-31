@@ -598,11 +598,13 @@ def test_list_jobs_cursor_pagination(world: str) -> None:
     assert cursor == b
     page2, cursor2 = list_jobs(world, cursor=cursor, limit=2)
     assert [job.id for job, _ in page2] == [c]
-    assert [position for _, position in page2] == [3]
+    assert [position for _, position in page2] == [3]  # later pages keep positions
     assert cursor2 is None
-    # A fabricated cursor falls back to the start (jobs are never deleted).
-    page0, _ = list_jobs(world, cursor=ids.new_id(), limit=2)
-    assert [job.id for job, _ in page0] == [a, b]
+    # A fabricated cursor is a user error (422), never a silent page reset
+    # (epic-1 retro item 2) — jobs are never deleted, so a miss can only
+    # mean the cursor names nothing.
+    with pytest.raises(InvalidJobInputError):
+        list_jobs(world, cursor=ids.new_id(), limit=2)
 
 
 # ---------------------------------------------------------------------------
