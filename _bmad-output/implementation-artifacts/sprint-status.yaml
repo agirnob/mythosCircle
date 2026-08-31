@@ -48,7 +48,7 @@ development_status:
 
   epic-2: in-progress
   2-1-guided-build-in-flow: done
-  2-2-typed-edge-vocabulary-on-commit: backlog
+  2-2-typed-edge-vocabulary-on-commit: review
   2-3-core-first-two-wave-build-in-pipeline: backlog
   2-4-key-figures-carry-a-minimal-5e-stat-block: backlog
   2-5-no-orphans-and-cascade-delete: backlog
@@ -101,7 +101,7 @@ action_items:
     action: "Consolidate the Crockford-ULID predicate into core/ids.is_valid_ulid
       (commit/jobs/pagination)"
     owner: "next story dev"
-    status: open
+    status: done
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
   - id: "epic-1-retro-item-2-converge-cursor-pagination-scaffold-unif"
     epic: 1
@@ -115,14 +115,14 @@ action_items:
     action: "Make campaigns errors subclass StoreError; use the shared _store_error_as_http
       mapper"
     owner: "campaigns-touching story"
-    status: open
+    status: done
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
   - id: "epic-1-retro-item-4-drop-the-dead-seed_themes-fallback-one-c"
     epic: 1
     action: "Drop the dead SEED_THEMES fallback; one canonical theme seed from config
       DEFAULT_THEMES"
     owner: "config-touching story"
-    status: open
+    status: done
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
   - id: "epic-1-retro-item-5-consolidate-env-parse-helpers-constants"
     epic: 1

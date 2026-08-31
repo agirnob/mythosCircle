@@ -42,6 +42,25 @@ EDGE_TYPES: frozenset[str] = frozenset(
     }
 )
 
+#: Per-type counter semantic (AD-23): debt = amount, grudge/loyalty =
+#: score, ally/enemy = intensity. The map is the code contract the
+#: pipeline assigns counters against and Phase 3 consumes; members
+#: without an entry carry the neutral default (counter informational).
+EDGE_COUNTER_SEMANTICS: dict[str, str] = {
+    "debt": "amount",
+    "grudge": "score",
+    "loyalty": "score",
+    "ally_of": "intensity",
+    "enemy_of": "intensity",
+}
+
+DEFAULT_EDGE_COUNTER_SEMANTIC = "neutral"
+
+
+def edge_counter_semantic(edge_type: str) -> str:
+    """The AD-23 counter semantic for an edge type (neutral when unassigned)."""
+    return EDGE_COUNTER_SEMANTICS.get(edge_type, DEFAULT_EDGE_COUNTER_SEMANTIC)
+
 
 # ---------------------------------------------------------------------------
 # Structured store errors (plain exceptions; FastAPI mapping is a later story)
@@ -83,6 +102,18 @@ class InvalidEdgeTypeError(StoreError):
 
     def __init__(self, edge: models.EdgeInput) -> None:
         super().__init__(f"edge type not in vocabulary: {edge.type!r}")
+        self.edge = edge
+
+
+class InvalidEdgeCounterError(StoreError):
+    """An edge counter that is not an integer — shape rejection at the
+    store boundary (AD-23; SQLite does not enforce the Integer column)."""
+
+    def __init__(self, edge: models.EdgeInput) -> None:
+        super().__init__(
+            f"edge counter must be an integer: {edge.counter!r} "
+            f"({edge.src} --{edge.type}--> {edge.dst})"
+        )
         self.edge = edge
 
 
@@ -219,6 +250,8 @@ def _commit(
     for edge in edges:
         if edge.type not in EDGE_TYPES:
             raise InvalidEdgeTypeError(edge)
+        if type(edge.counter) is not int:
+            raise InvalidEdgeCounterError(edge)
         for endpoint in (edge.src, edge.dst):
             if endpoint not in known_ids:
                 raise DanglingEdgeError(edge, endpoint)

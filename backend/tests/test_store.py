@@ -21,6 +21,8 @@ from sqlalchemy import select
 
 from app.core import ids, time
 from app.store import (
+    DEFAULT_EDGE_COUNTER_SEMANTIC,
+    EDGE_COUNTER_SEMANTICS,
     EDGE_TYPES,
     CorruptEventError,
     CrossCampaignConflictError,
@@ -29,6 +31,7 @@ from app.store import (
     DuplicateEntityError,
     EdgeRetargetError,
     EmptySubgraphError,
+    InvalidEdgeCounterError,
     InvalidEdgeTypeError,
     InvalidUlidError,
     StaleRevisionError,
@@ -36,6 +39,7 @@ from app.store import (
     app_db_url,
     commit_subgraph,
     create_campaign,
+    edge_counter_semantic,
     init_db,
     models,
     session_scope,
@@ -562,6 +566,78 @@ def test_edge_counter_update_via_commit(world: str) -> None:
     assert event.type == "edge_updated"
     assert event.payload["before"]["counter"] == 3
     assert event.payload["after"]["counter"] == 7
+
+
+# ---------------------------------------------------------------------------
+# AD-23 / story 2.2: counter semantics map, counter shape, no free text
+# ---------------------------------------------------------------------------
+
+
+def test_edge_counter_semantics_map_contract() -> None:
+    """AD-23's per-type counter semantics are a code contract: every
+    vocabulary member resolves to exactly one documented semantic, map
+    keys are exactly the semantic-bearing types, the rest are neutral."""
+    assert EDGE_COUNTER_SEMANTICS == {
+        "debt": "amount",
+        "grudge": "score",
+        "loyalty": "score",
+        "ally_of": "intensity",
+        "enemy_of": "intensity",
+    }
+    assert set(EDGE_COUNTER_SEMANTICS) == {"debt", "grudge", "loyalty", "ally_of", "enemy_of"}
+    assert DEFAULT_EDGE_COUNTER_SEMANTIC == "neutral"
+    resolved = {edge_type: edge_counter_semantic(edge_type) for edge_type in EDGE_TYPES}
+    assert set(resolved.values()) == {"amount", "score", "intensity", "neutral"}
+    assert resolved["debt"] == "amount"
+    assert resolved["grudge"] == resolved["loyalty"] == "score"
+    assert resolved["ally_of"] == resolved["enemy_of"] == "intensity"
+    assert resolved["relationship"] == "neutral"
+    assert resolved["member_of"] == resolved["located_in"] == "neutral"
+    assert resolved["kin_of"] == resolved["rival_of"] == "neutral"
+
+
+@pytest.mark.parametrize("counter", [1.5, True, "3"])
+def test_edge_counter_invalid_shape_rejects_subgraph(world: str, counter: Any) -> None:
+    """A non-int counter is rejected at the store boundary with zero new
+    revision and zero rows — SQLite would otherwise store the Float/Blob
+    silently (the Integer column is not enforced by SQLite)."""
+    bar_id, mira_id = _seed_world(world)
+    before = _state(world)
+    before_head = _head(world)
+    with pytest.raises(InvalidEdgeCounterError) as excinfo:
+        commit_subgraph(
+            world,
+            [],
+            [models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=counter)],
+            base_revision=before_head,
+        )
+    assert "debt" in str(excinfo.value)
+    assert _state(world) == before
+    assert _head(world) == before_head
+
+
+def test_edge_never_carries_free_text_label() -> None:
+    """FR3's 'never free text' is structural: the edge table and input
+    dataclass carry no label/text field, and EdgeInput rejects one at
+    construction (a relation is the typed edge itself, AD-5)."""
+    assert list(models.Edge.__table__.columns.keys()) == [
+        "id",
+        "campaign_id",
+        "src",
+        "dst",
+        "type",
+        "counter",
+        "created_at",
+    ]
+    assert set(models.EdgeInput.__dataclass_fields__) == {
+        "src",
+        "dst",
+        "type",
+        "counter",
+        "id",
+    }
+    with pytest.raises(TypeError):
+        models.EdgeInput(src="0" * 26, dst="1" * 26, type="relationship", label="free-form label")  # type: ignore[call-arg]  # no label field exists (FR3)
 
 
 # ---------------------------------------------------------------------------
