@@ -20,11 +20,17 @@ os.environ["MYTHOSCIRCLE_TESTING"] = "1"
 # own the config surface; the app's setup_logging must not open /var/log).
 os.environ["MYTHOSCIRCLE_CONFIG"] = "/nonexistent/mythoscircle-test-config.toml"
 
-from app.main import app  # noqa: E402
-
 
 @pytest.fixture()
 def client() -> Iterator[TestClient]:
-    """An httpx ASGI test client for the app (no live server)."""
-    with TestClient(app) as test_client:
+    """An httpx ASGI test client over the real app (no live server).
+
+    The app is built per test — create_app() runs inside the fixture, not
+    at collection — so the store initializes within the test session under
+    the env pins above (epic-1 retro item 7; test_logging's pattern).
+    """
+    from app.main import create_app
+
+    application = create_app()
+    with TestClient(application) as test_client:
         yield test_client

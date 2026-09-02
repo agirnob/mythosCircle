@@ -27,6 +27,40 @@ LLM_TIMEOUT_ENV = "MYTHOSCIRCLE_LLM_TIMEOUT"
 DB_ENV = "MYTHOSCIRCLE_DB"
 LOG_FILE_ENV = "MYTHOSCIRCLE_LOG_FILE"
 
+
+def env_int(name: str, default: int, minimum: int = 0) -> int:
+    """Parse an integer env var; malformed or below-minimum values fail
+    loudly rather than silently defaulting (operator typos must surface)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got {value}")
+    return value
+
+
+def env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    """Parse a float env var; malformed or non-positive values fail loudly.
+
+    The default minimum is strict-positive (0.0 is rejected) — a zero or
+    negative timeout would disable the guard entirely.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a float, got {raw!r}") from exc
+    if value <= minimum:
+        raise ValueError(f"{name} must be > {minimum}, got {value}")
+    return value
+
+
 #: Code defaults (fallback when neither config nor env provides).
 DEFAULT_MAX_PENDING = 10
 DEFAULT_LLM_ENDPOINT = "http://127.0.0.1:8080/v1"
@@ -82,30 +116,6 @@ def runtime_config() -> RuntimeConfig:
     llm = data.get("llm", {})
     campaigns = data.get("campaigns", {})
 
-    def _env_int(name: str, default: int, minimum: int = 0) -> int:
-        raw = os.environ.get(name)
-        if raw is None:
-            return default
-        try:
-            value = int(raw)
-        except ValueError as exc:
-            raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
-        if value < minimum:
-            raise ValueError(f"{name} must be >= {minimum}, got {value}")
-        return value
-
-    def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
-        raw = os.environ.get(name)
-        if raw is None:
-            return default
-        try:
-            value = float(raw)
-        except ValueError as exc:
-            raise ValueError(f"{name} must be a float, got {raw!r}") from exc
-        if value <= minimum:
-            raise ValueError(f"{name} must be > {minimum}, got {value}")
-        return value
-
     def _config_int(value: Any, name: str, default: int) -> int:
         if value is None:
             return default
@@ -129,7 +139,7 @@ def runtime_config() -> RuntimeConfig:
         return parsed
 
     # queue cap: env > config > default (AR28 pending = in-flight + queued).
-    pending = _env_int(
+    pending = env_int(
         MAX_PENDING_ENV,
         _config_int(
             queue.get("max_in_flight_per_campaign"),
@@ -139,7 +149,7 @@ def runtime_config() -> RuntimeConfig:
     )
     endpoint = os.environ.get(LLM_ENDPOINT_ENV) or str(llm.get("endpoint", DEFAULT_LLM_ENDPOINT))
     model = os.environ.get(LLM_MODEL_ENV) or str(llm.get("model", DEFAULT_LLM_MODEL))
-    timeout = _env_float(
+    timeout = env_float(
         LLM_TIMEOUT_ENV,
         _config_float(llm.get("timeout"), "llm.timeout", DEFAULT_LLM_TIMEOUT),
     )

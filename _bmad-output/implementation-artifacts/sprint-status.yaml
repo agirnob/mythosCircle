@@ -129,7 +129,7 @@ action_items:
     action: "Consolidate env-parse helpers + constants between core/config.py and
       core/settings.py"
     owner: "refactor story"
-    status: open
+    status: done
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
   - id: "epic-1-retro-item-6-propose-spine-ad-1-exception-campaign-se"
     epic: 1
@@ -142,5 +142,5 @@ action_items:
     epic: 1
     action: "Prefer fixture-scoped app import over conftest module-level create_app"
     owner: "test-hardening story"
-    status: open
+    status: done
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"

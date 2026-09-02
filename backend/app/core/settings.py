@@ -9,15 +9,17 @@ import os
 from dataclasses import dataclass
 
 from app.core import config as config_mod
-from app.core.config import runtime_config
+from app.core.config import env_float, env_int, runtime_config
 
-#: Environment variables overriding the queue limits.
-MAX_PENDING_PER_CAMPAIGN = "MYTHOSCIRCLE_MAX_PENDING_PER_CAMPAIGN"
+#: Environment variables overriding the queue limits. The pending-cap and
+#: LLM keys live canonically in ``app.core.config`` (AD-22); these are the
+#: settings-layer aliases for the same env vars.
+MAX_PENDING_PER_CAMPAIGN = config_mod.MAX_PENDING_ENV
 MAX_LLM_CALLS_PER_JOB = "MYTHOSCIRCLE_MAX_LLM_CALLS_PER_JOB"
 MAX_MEDIA_CALLS_PER_JOB = "MYTHOSCIRCLE_MAX_MEDIA_CALLS_PER_JOB"
 
 #: Defaults per the spec's Always list.
-DEFAULT_MAX_PENDING_PER_CAMPAIGN = 10
+DEFAULT_MAX_PENDING_PER_CAMPAIGN = config_mod.DEFAULT_MAX_PENDING
 DEFAULT_MAX_LLM_CALLS_PER_JOB = 64
 DEFAULT_MAX_MEDIA_CALLS_PER_JOB = 8
 
@@ -34,46 +36,29 @@ class QueueSettings:
 def queue_settings() -> QueueSettings:
     """Read the queue limits with env > config > default precedence."""
     return QueueSettings(
-        max_pending_per_campaign=_env_non_negative_int(
+        max_pending_per_campaign=env_int(
             MAX_PENDING_PER_CAMPAIGN, runtime_config().queue_max_pending
         ),
-        max_llm_calls_per_job=_env_non_negative_int(
+        max_llm_calls_per_job=env_int(
             MAX_LLM_CALLS_PER_JOB, runtime_config().max_llm_calls_per_job
         ),
-        max_media_calls_per_job=_env_non_negative_int(
+        max_media_calls_per_job=env_int(
             MAX_MEDIA_CALLS_PER_JOB, runtime_config().max_media_calls_per_job
         ),
     )
 
 
-def _env_non_negative_int(name: str, default: int) -> int:
-    """Parse a non-negative integer env var; malformed values fail loudly.
-
-    A typo'd operator value silently defaulting would hide the mistake at
-    the exact moment the queue cap stops being enforced.
-    """
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
-    if value < 0:
-        raise ValueError(f"{name} must be >= 0, got {value}")
-    return value
-
-
 #: Environment variables for the inference adapter (spec-1.4; config in 1.7).
-LLM_ENDPOINT = "MYTHOSCIRCLE_LLM_ENDPOINT"
-LLM_MODEL = "MYTHOSCIRCLE_LLM_MODEL"
+#: Endpoint/model/timeout keys and defaults are canonical in config.py.
+LLM_ENDPOINT = config_mod.LLM_ENDPOINT_ENV
+LLM_MODEL = config_mod.LLM_MODEL_ENV
 LLM_API_KEY = "MYTHOSCIRCLE_LLM_API_KEY"
-LLM_TIMEOUT = "MYTHOSCIRCLE_LLM_TIMEOUT"
+LLM_TIMEOUT = config_mod.LLM_TIMEOUT_ENV
 
 #: Code defaults (spec-1.4; config.toml [llm] overrides in 1.7).
-DEFAULT_LLM_ENDPOINT = "http://127.0.0.1:8080/v1"
-DEFAULT_LLM_MODEL = "mythos-14b-q5"
-DEFAULT_LLM_TIMEOUT = 120
+DEFAULT_LLM_ENDPOINT = config_mod.DEFAULT_LLM_ENDPOINT
+DEFAULT_LLM_MODEL = config_mod.DEFAULT_LLM_MODEL
+DEFAULT_LLM_TIMEOUT = config_mod.DEFAULT_LLM_TIMEOUT
 
 
 @dataclass(frozen=True)
@@ -101,27 +86,8 @@ def llm_settings() -> LLMSettings:
         or resolved.llm_endpoint,
         model=(model_env if model_env else resolved.llm_model).strip() or resolved.llm_model,
         api_key=os.environ.get(LLM_API_KEY) or None,
-        timeout=_env_positive_float(LLM_TIMEOUT, resolved.llm_timeout),
+        timeout=env_float(LLM_TIMEOUT, resolved.llm_timeout),
     )
-
-
-def _env_positive_float(name: str, default: float) -> float:
-    """Parse a positive float env var; malformed values fail loudly.
-
-    A typo'd or zero/negative timeout would either crash obscurely inside
-    httpx at request time or disable the timeout entirely — fail at
-    start, exactly like the queue settings (review round 1).
-    """
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a float, got {raw!r}") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be > 0, got {value}")
-    return value
 
 
 #: Environment variable for the session lifetime (spec-1.5).
@@ -132,7 +98,7 @@ DEFAULT_SESSION_TTL_DAYS = 30
 
 def session_ttl_days() -> int:
     """The session lifetime in days; 0 disables expiry (never expire)."""
-    return _env_non_negative_int(SESSION_TTL_DAYS, DEFAULT_SESSION_TTL_DAYS)
+    return env_int(SESSION_TTL_DAYS, DEFAULT_SESSION_TTL_DAYS)
 
 
 def configured_themes() -> list[str]:
