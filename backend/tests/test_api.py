@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from pydantic import BaseModel
 
-from app.api.common import _store_error_as_http
+from app.api.common import store_error_as_http
 from app.core.errors import register_error_handlers
 from app.store import InvalidEdgeCounterError, models
 
@@ -94,7 +94,7 @@ def test_store_error_mapper_422_edge_counter_rejection() -> None:
 
     @application.get("/api/probe-edge-counter")
     def probe() -> None:
-        _store_error_as_http(
+        store_error_as_http(
             InvalidEdgeCounterError(
                 models.EdgeInput(src="0" * 26, dst="1" * 26, type="debt", counter=bad_counter)
             )

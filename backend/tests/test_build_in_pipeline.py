@@ -673,11 +673,18 @@ def test_stale_base_between_waves_fails_core_stays(world: str) -> None:
         nonlocal dm_committed
         if len(responses) == 1 and not dm_committed:  # the wave-2 call
             dm_committed = True
+            keep_id = ids.new_id()
             with session_scope() as session:
                 head = latest_revision(session, world)
+                mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+            # The DM edit is a legal commit: FR2's no-orphan rule (spec-2.5)
+            # requires the new entity to carry an edge into existing state.
             commit_subgraph(
                 world,
-                [models.EntityInput(kind="place", name="DM's New Keep")],
+                [models.EntityInput(kind="place", name="DM's New Keep", id=keep_id)],
+                # Mira (character) located_in her keep (place) — the AD-5
+                # vocabulary reads character -> place.
+                [models.EdgeInput(src=mira.id, dst=keep_id, type="located_in")],
                 base_revision=head.id if head is not None else None,
             )
         return responses.pop(0)

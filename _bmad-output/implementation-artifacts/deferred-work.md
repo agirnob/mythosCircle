@@ -98,3 +98,30 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `spec-2-4-key-figures-carry-a-minimal-5e-stat-block.md`
   summary: An invalid `identity.role` suppresses all level/cr violation reporting — the repair round only sees the role error, so a double violation (bad role + level 99) survives the single bounded pass and fails the job the model could have fixed in one round.
   evidence: knowledge.py:485-501 skips the whole level/cr branch when `canonical_role` is None; which semantics apply is genuinely ambiguous with the role unknown, so a "report all at once" fix needs a design call. Revisit when repair-prompt quality gets measured (dogfood/2.7). [backend/app/pipeline/knowledge.py]
+
+## Deferred from: review of spec-2-5-no-orphans-and-cascade-delete (2026-09-02)
+
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: Repair prompt embeds only the flagged blocks' classes in the spell reference — a repair that legally switches `identity.class` to an unflagged class never sees that class's spell line, so an off-list spell fails final validation with no second repair pass.
+  evidence: `spells_reference_text(_flagged_classes(issues))` subsets by the flagged classes only; rules text tells the model to use its class's line. Real only when a spell violation coexists with a class switch — revisit with 2.4's repair-prompt quality measurement. [backend/app/pipeline/statblocks.py]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: `_check_spells` early-returns after the Monster-role error, suppressing duplicate/unknown-spell reporting in the same pass — the same violation-suppression shape as the deferred invalid-role → level/cr issue, different code path.
+  evidence: role error appends and returns before the duplicate/unknown spell checks; a Monster block with bad role AND bad spells reports only the role error. [backend/app/pipeline/knowledge.py]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: Cancel landing DURING the stat-repair call is specified (repaired core commits) but untested — only the before-repair cancel has a test.
+  evidence: spec-2.4 frozen bullet pins the semantics; `test_cancel_before_stat_repair_is_noop` covers only the pre-call poll. [backend/tests/test_build_in_pipeline.py]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: env-parse helpers carry inconsistent boundary and leniency semantics — `env_int` raises on value < minimum but accepts lenient `int()` forms ("1_0", "+5", " 5 "); `env_float` raises on value <= minimum (strictly >) and accepts nan/inf, which bypass the >minimum guard entirely.
+  evidence: same-signature helpers with opposite boundary semantics; NaN comparison `value <= minimum` is False so a NaN timeout reaches httpx. Epic-1 retro item 5 consolidation shipped these; hardening is an ops-story concern. [backend/app/core/config.py, backend/app/core/settings.py]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: A stat-repair ref with ≥4301 decimal digits raises a raw ValueError (CPython int-string limit) from `_parse_ref`, bypassing the `JobPayloadError` fail-event channel.
+  evidence: `int(digits)` raises ValueError before the canonical re-raise; adversarial refs escape AR25's structured failure. [backend/app/pipeline/statblocks.py `_parse_ref`]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: Empty/whitespace-only action and trait descriptions pass stat-block validation while names are guarded — guard parity gap.
+  evidence: name checks require non-blank strings; the description check accepts `""`/`"   "`. [backend/app/pipeline/knowledge.py]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: Cascade delete leaves media rows pointing at the deleted entity until Epic 4's reclamation — story 4-3 must handle media whose entity was deleted post-2.5.
+  evidence: AD-10 reclamation is explicitly deferred by 2.5's frozen constraints; the delete path appends no media events. [backend/app/store/commit.py `delete_entity`]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: Wave-1 prompt's "STAT BLOCKS" section embeds rules text that opens with its own "STAT BLOCK RULES" heading (redundant nesting), and `spells_reference_text` emits "(none listed)" lines with no statement that the phrase means "no spells permitted".
+  evidence: prompt-quality nit only — validation is unaffected; revisit when prompts are next measured. [backend/app/pipeline/build_in.py, backend/app/pipeline/statblocks.py]

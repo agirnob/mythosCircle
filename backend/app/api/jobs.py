@@ -11,7 +11,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.api.common import _store_error_as_http
+from app.api.common import store_error_as_http
 from app.core.pagination import InvalidCursorError, decode_cursor, encode_cursor
 from app.store import (
     StoreError,
@@ -97,7 +97,7 @@ def create_job(payload: JobCreate) -> JobResponse:
         )
         job, position = job_status(job.id)
     except StoreError as exc:
-        _store_error_as_http(exc)
+        store_error_as_http(exc)
     return _to_response(job, position)
 
 
@@ -107,7 +107,7 @@ def get_job(job_id: str) -> JobResponse:
     try:
         job, position = job_status(job_id)
     except StoreError as exc:
-        _store_error_as_http(exc)
+        store_error_as_http(exc)
     return _to_response(job, position)
 
 
@@ -127,7 +127,7 @@ def list_campaign_jobs(
     try:
         jobs, next_cursor = list_jobs(campaign_id, after, limit)
     except StoreError as exc:
-        _store_error_as_http(exc)
+        store_error_as_http(exc)
     return JobListResponse(
         jobs=[_to_response(job, position) for job, position in jobs],
         next_cursor=encode_cursor(next_cursor) if next_cursor is not None else None,
@@ -141,5 +141,5 @@ def cancel_job_route(job_id: str) -> JobResponse:
         job = cancel_job(job_id)
         job, position = job_status(job.id)
     except StoreError as exc:
-        _store_error_as_http(exc)
+        store_error_as_http(exc)
     return _to_response(job, position)

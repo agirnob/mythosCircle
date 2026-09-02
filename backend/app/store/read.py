@@ -75,6 +75,20 @@ def world_edges(session: Session, campaign_id: str) -> Sequence[models.Edge]:
     ).all()
 
 
+def entity_live_edges(session: Session, campaign_id: str, entity_id: str) -> Sequence[models.Edge]:
+    """The campaign's edges touching ``entity_id``, in rowid (commit)
+    order — the delete preflight's live-edge set (FR4, AD-5; spec-2.5)
+    and the source of the affected-neighbor listing."""
+    return session.scalars(
+        select(models.Edge)
+        .where(
+            models.Edge.campaign_id == campaign_id,
+            (models.Edge.src == entity_id) | (models.Edge.dst == entity_id),
+        )
+        .order_by(literal_column("rowid"))
+    ).all()
+
+
 def world_state(
     session: Session, campaign_id: str
 ) -> tuple[Sequence[models.Entity], Sequence[models.Edge]]:

@@ -50,6 +50,19 @@ VALIDATION_ERROR_CODE = "validation_error"
 INTERNAL_ERROR_MESSAGE = "Internal server error."
 
 
+class StoreHTTPException(StarletteHTTPException):
+    """``HTTPException`` that additionally carries envelope ``details``
+    (spec-2.5: the LiveEdgesError affected-entities listing). Defined
+    here so the handler can gate the ``details`` passthrough on it
+    without a core→api import; re-exported from ``app.api.common``."""
+
+    def __init__(
+        self, status_code: int, detail: str, details: dict[str, Any] | None = None
+    ) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.details = details
+
+
 class ErrorEnvelope(BaseModel):
     """The error envelope for every non-2xx JSON response."""
 
@@ -82,7 +95,11 @@ def handle_http_error(request: Request, exc: StarletteHTTPException) -> JSONResp
     detail = exc.detail if isinstance(exc.detail, str) else None
     code = _HTTP_CODES.get(status_code, "error")
     message = detail if detail else _DEFAULT_MESSAGES.get(status_code, "Request failed.")
-    return _envelope(status_code, code, message)
+    # Only a StoreHTTPException carries envelope ``details`` (e.g.
+    # spec-2.5's LiveEdgesError affected-entities listing) — a bare
+    # StarletteHTTPException's attributes are never leaked to the wire.
+    details = exc.details if isinstance(exc, StoreHTTPException) else None
+    return _envelope(status_code, code, message, details)
 
 
 def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:

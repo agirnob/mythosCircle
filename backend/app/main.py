@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import auth, campaigns, health, jobs, ws
+from app.api import auth, campaigns, entities, health, jobs, ws
 from app.core.errors import register_error_handlers
 from app.core.logging_setup import setup_logging
 from app.pipeline.worker import worker_loop
@@ -61,6 +61,7 @@ def create_app() -> FastAPI:
     application.include_router(health.router)
     application.include_router(jobs.router)
     application.include_router(ws.router)
+    application.include_router(entities.router)
     return application
 
 

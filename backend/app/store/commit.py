@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from app.core import ids, time
 from app.store import models
 from app.store.db import session_scope
-from app.store.read import latest_revision
+from app.store.read import entity_live_edges, latest_revision
 
 #: Closed Phase-1 edge vocabulary (AD-5): directed, per-type counter
 #: semantics (AD-23). Extensible by adding a type, never by free text.
@@ -192,6 +192,47 @@ class CorruptEventError(StoreError):
         self.event_id = event_id
 
 
+class OrphanEntityError(StoreError):
+    """A newly created entity participates in zero edges (FR2, AD-23).
+
+    The store-level backstop for commits that bypass the pipeline's
+    ``_validate_subgraph``: every *new* entity must carry at least one
+    edge whose other endpoint is staged or already committed.
+    """
+
+    def __init__(self, orphans: list[tuple[str, str]]) -> None:
+        named = ", ".join(f"{name!r} ({entity_id})" for entity_id, name in orphans)
+        super().__init__(
+            f"newly created entity with no edges (FR2): {named} — every new "
+            "entity needs at least one edge into staged or existing state"
+        )
+        self.orphans = orphans
+
+
+class UnknownEntityError(StoreError):
+    """A delete target does not exist in this campaign's world (FR4)."""
+
+    def __init__(self, entity_id: str) -> None:
+        super().__init__(f"unknown entity: {entity_id}")
+        self.entity_id = entity_id
+
+
+class LiveEdgesError(StoreError):
+    """A delete with live edges was requested without cascade confirm
+    (FR4, AD-5). Carries the affected neighbor entities — id + name per
+    neighbor — so the DM sees the list before confirming (AD-5)."""
+
+    def __init__(self, entity_id: str, affected: list[dict[str, str]]) -> None:
+        named = ", ".join(f"{item['name']!r} ({item['id']})" for item in affected)
+        super().__init__(
+            f"entity {entity_id} has live edges touching {len(affected)} "
+            f"neighbor(s): {named} — confirm cascade deletion to proceed"
+        )
+        self.entity_id = entity_id
+        #: Neighbor entities, rowid-ordered, deduplicated: {"id", "name"}.
+        self.affected = affected
+
+
 # ---------------------------------------------------------------------------
 # Campaign seed helper (campaign CRUD is story 1.6)
 # ---------------------------------------------------------------------------
@@ -216,7 +257,9 @@ def commit_subgraph(
     ``InvalidEdgeCounterError``, ``DanglingEdgeError``,
     ``DuplicateEntityError``, ``DuplicateEdgeError``,
     ``EdgeRetargetError``, ``CrossCampaignConflictError``,
-    ``InvalidUlidError``, or ``EmptySubgraphError``.
+    ``InvalidUlidError``, ``EmptySubgraphError``, or
+    ``OrphanEntityError`` (FR2: a newly created entity with zero edges
+    into staged or existing state).
     """
     with session_scope() as session:
         return _commit(session, campaign_id, list(entities), list(edges), base_revision)
@@ -294,6 +337,32 @@ def _commit(
         else:
             _reject_duplicate_relationship(edge, relationship_rows, staged_relationships)
 
+    # FR2 no-orphans (store-level backstop, spec-2.5): every *newly
+    # created* entity must participate in at least one edge whose other
+    # endpoint is staged or already committed. Updates and edge-only
+    # commits are unaffected; wave-1's first commit (empty world) commits
+    # because its edges are staged in the same subgraph. Self-loops never
+    # connect: the pipeline forbids them outright and they do not weave
+    # the entity into the world.
+    new_entity_ids = {staged_id for staged_id, _entity, existing in staged if existing is None}
+    if new_entity_ids:
+        connected: set[str] = set()
+        for edge in edges:
+            if edge.src != edge.dst:
+                connected.add(edge.src)
+                connected.add(edge.dst)
+        for row in edge_rows.values():
+            if row.src != row.dst:
+                connected.add(row.src)
+                connected.add(row.dst)
+        orphans = [
+            (staged_id, entity.name)
+            for staged_id, entity, existing in staged
+            if existing is None and staged_id not in connected
+        ]
+        if orphans:
+            raise OrphanEntityError(orphans)
+
     now = time.now()
     revision = models.Revision(
         id=ids.new_id(),
@@ -370,6 +439,106 @@ def _commit(
             now,
         )
 
+    return revision
+
+
+def delete_entity(
+    campaign_id: str,
+    entity_id: str,
+    *,
+    cascade: bool = False,
+    base_revision: str | None = None,
+) -> models.Revision:
+    """Delete one entity through the commit path (FR4, AD-5, AD-23).
+
+    With live edges and ``cascade=False`` (the default) the delete is a
+    no-op failure: ``LiveEdgesError`` carries the affected neighbor
+    entities (id + name) so the caller can list them before confirming.
+    With ``cascade=True`` the entity plus every edge touching it leaves
+    in exactly one revision — neighbors survive, never deleted
+    transitively, so the graph holds zero dangling edges (AD-23). An
+    entity with zero live edges deletes without confirmation (AD-5
+    requires it only "with live edges").
+
+    The revision appends ``entity_deleted``/``edge_deleted`` events with
+    ``before`` snapshots matching undo's ``_ENTITY_KEYS``/``_EDGE_KEYS``
+    contract exactly — undoing the delete revision recreates the rows
+    with stable ULIDs via the existing undo machinery, zero undo changes.
+
+    Rejects (no state change) with ``UnknownCampaignError``,
+    ``UnknownEntityError`` (unknown or foreign-campaign entity),
+    ``StaleRevisionError`` (a supplied ``base_revision`` must match the
+    head — the DELETE_STALE row; ``None`` targets the current head, the
+    DM wire default), or ``LiveEdgesError``.
+    """
+    with session_scope() as session:
+        return _delete_entity(session, campaign_id, entity_id, cascade, base_revision)
+
+
+def _delete_entity(
+    session: Session,
+    campaign_id: str,
+    entity_id: str,
+    cascade: bool,
+    base_revision: str | None,
+) -> models.Revision:
+    if session.get(models.Campaign, campaign_id) is None:
+        raise UnknownCampaignError(campaign_id)
+    latest = latest_revision(session, campaign_id)
+    if base_revision is not None:
+        # Optimistic concurrency is opt-in at the store boundary: an
+        # omitted base targets the current head (the DM's DELETE carries
+        # none), a supplied base must match it (DELETE_STALE, AD-2).
+        _check_base(latest, base_revision)
+    entity = session.scalars(
+        select(models.Entity).where(
+            models.Entity.campaign_id == campaign_id,
+            models.Entity.id == entity_id,
+        )
+    ).first()
+    if entity is None:
+        # Foreign-campaign ULIDs are invisible to this campaign's world —
+        # unknown and foreign are indistinguishable (AD-9).
+        raise UnknownEntityError(entity_id)
+
+    live_edges = entity_live_edges(session, campaign_id, entity_id)
+    if live_edges and not cascade:
+        neighbors: dict[str, str] = {}
+        for edge in live_edges:
+            neighbor_id = edge.dst if edge.src == entity_id else edge.src
+            neighbor = session.get(models.Entity, neighbor_id)
+            neighbors.setdefault(neighbor_id, neighbor.name if neighbor else neighbor_id)
+        raise LiveEdgesError(
+            entity_id, [{"id": nid, "name": name} for nid, name in neighbors.items()]
+        )
+
+    now = time.now()
+    revision = models.Revision(
+        id=ids.new_id(),
+        campaign_id=campaign_id,
+        base_revision=latest.id if latest is not None else None,
+        created_at=now,
+    )
+    session.add(revision)
+    for edge in live_edges:
+        _add_event(
+            session,
+            campaign_id,
+            revision.id,
+            "edge_deleted",
+            {"id": edge.id, "before": _edge_snapshot(edge), "after": None},
+            now,
+        )
+        session.delete(edge)
+    _add_event(
+        session,
+        campaign_id,
+        revision.id,
+        "entity_deleted",
+        {"id": entity_id, "before": _entity_snapshot(entity), "after": None},
+        now,
+    )
+    session.delete(entity)
     return revision
 
 

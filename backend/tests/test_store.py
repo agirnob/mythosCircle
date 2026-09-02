@@ -34,12 +34,17 @@ from app.store import (
     InvalidEdgeCounterError,
     InvalidEdgeTypeError,
     InvalidUlidError,
+    LiveEdgesError,
+    OrphanEntityError,
     StaleRevisionError,
     UnknownCampaignError,
+    UnknownEntityError,
     app_db_url,
     commit_subgraph,
     create_campaign,
+    delete_entity,
     edge_counter_semantic,
+    entity_live_edges,
     init_db,
     models,
     session_scope,
@@ -186,6 +191,7 @@ def test_commit_new_subgraph_one_revision(world: str) -> None:
         [
             models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1),
             models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=3),
+            models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1),
         ],
         base_revision=None,
     )
@@ -198,10 +204,11 @@ def test_commit_new_subgraph_one_revision(world: str) -> None:
     assert chain[0].id == revision.id
     assert chain[0].base_revision is None  # first commit on an empty world
     assert {e.name for e in entities} == {"The Gilded Bar", "Mira Vane", "Kellan Ash"}
-    assert len(edges) == 2
-    assert len(events) == 5  # one event per change
+    assert len(edges) == 3
+    assert len(events) == 6  # one event per change
     assert all(ev.revision_id == revision.id for ev in events)
     assert sorted(ev.type for ev in events) == [
+        "edge_created",
         "edge_created",
         "edge_created",
         "entity_created",
@@ -212,11 +219,14 @@ def test_commit_new_subgraph_one_revision(world: str) -> None:
 
 def test_commit_ids_and_timestamps_follow_conventions(world: str) -> None:
     """ULID ids and UTC ISO-8601 ``Z`` timestamps everywhere (AD-13, AR4)."""
-    bar_id = ids.new_id()
+    bar_id, mira_id = ids.new_id(), ids.new_id()
     revision = commit_subgraph(
         world,
-        [models.EntityInput(kind="faction", name="The Gilded Bar", id=bar_id)],
-        [],
+        [
+            models.EntityInput(kind="faction", name="The Gilded Bar", id=bar_id),
+            models.EntityInput(kind="character", name="Mira Vane", id=mira_id),
+        ],
+        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
         base_revision=None,
     )
     with session_scope() as session:
@@ -378,7 +388,7 @@ def test_unknown_campaign(world: str) -> None:
 def test_stale_base_rejected_naming_latest(world: str) -> None:
     """A commit staged on a stale base is rejected with the latest revision
     id surfaced — never a silent overwrite."""
-    _bar_id, _mira_id = _seed_world(world)
+    bar_id, _mira_id = _seed_world(world)
     first = _head(world)
     assert first is not None
     # A concurrent commit moves the head.
@@ -386,7 +396,7 @@ def test_stale_base_rejected_naming_latest(world: str) -> None:
     commit_subgraph(
         world,
         [models.EntityInput(kind="character", name="A Stranger", id=stranger_id)],
-        [],
+        [models.EdgeInput(src=stranger_id, dst=bar_id, type="ally_of", counter=1)],
         base_revision=first,
     )
     latest = _head(world)
@@ -521,14 +531,14 @@ def test_undo_is_redoable(world: str) -> None:
 
 def test_undo_non_latest_raises(world: str) -> None:
     """Undo targets the latest revision only; otherwise stale (AD-2)."""
-    _bar_id, _mira_id = _seed_world(world)
+    bar_id, _mira_id = _seed_world(world)
     first = _head(world)
     assert first is not None
     stranger_id = ids.new_id()
     commit_subgraph(
         world,
         [models.EntityInput(kind="character", name="A Stranger", id=stranger_id)],
-        [],
+        [models.EdgeInput(src=stranger_id, dst=bar_id, type="ally_of", counter=1)],
         base_revision=first,
     )
     latest = _head(world)
@@ -899,10 +909,11 @@ def test_corrupt_event_payload_rejected(world: str) -> None:
     """A structurally malformed event payload is a structured rejection —
     the undo log is validated before it is re-played."""
     bar_id, mira_id = _seed_world(world)
+    kellan_id = ids.new_id()
     rev = commit_subgraph(
         world,
-        [models.EntityInput(kind="character", name="Kellan")],
-        [],
+        [models.EntityInput(kind="character", name="Kellan", id=kellan_id)],
+        [models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1)],
         base_revision=_head(world),
     )
     with session_scope() as session:
@@ -1014,7 +1025,7 @@ def test_concurrent_commits_same_base_exactly_one_wins(world: str) -> None:
     winner's head — the old sleep-based version only exercised the
     sequential-stale case.
     """
-    _seed_world(world)
+    bar_id, _mira_id = _seed_world(world)
     head = _head(world)
     assert head is not None
     barrier = threading.Barrier(2)
@@ -1022,11 +1033,12 @@ def test_concurrent_commits_same_base_exactly_one_wins(world: str) -> None:
 
     def _commit(label: str) -> None:
         barrier.wait()  # both threads race for the write lock together
+        entity_id = ids.new_id()
         try:
             rev = commit_subgraph(
                 world,
-                [models.EntityInput(kind="character", name=label)],
-                [],
+                [models.EntityInput(kind="character", name=label, id=entity_id)],
+                [models.EdgeInput(src=entity_id, dst=bar_id, type="ally_of", counter=1)],
                 base_revision=head,
             )
             results[label] = rev.id
@@ -1207,14 +1219,17 @@ def test_events_share_revision_timestamp(world: str) -> None:
             models.EntityInput(kind="character", name="Mira Vane", id=mira_id),
             models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id),
         ],
-        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
+        [
+            models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1),
+            models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1),
+        ],
         base_revision=None,
     )
     with session_scope() as session:
         events = list(revision_events(session, world, revision.id))
         row = session.get(models.Revision, revision.id)
     assert row is not None
-    assert len(events) == 4
+    assert len(events) == 5
     assert all(ev.created_at == row.created_at for ev in events)
 
 
@@ -1242,3 +1257,267 @@ def test_explicit_id_new_edge_duplicate_relationship_rejected(world: str) -> Non
             base_revision=head,
         )
     assert _state(world) == state_before
+
+
+# ---------------------------------------------------------------------------
+# Story 2.5: FR2 no-orphans at the store + FR4/AD-5 cascade delete
+# ---------------------------------------------------------------------------
+
+
+def _seed_edgeless_neighbor(campaign_id: str) -> str:
+    """Commit kellan connected to the bar, then cascade-delete the bar:
+    leaves kellan edgeless (the only way an edgeless committed entity
+    arises — the orphan rule forbids creating one directly)."""
+    bar_id, mira_id = _seed_world(campaign_id)
+    kellan_id = ids.new_id()
+    commit_subgraph(
+        campaign_id,
+        [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
+        [models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1)],
+        base_revision=_head(campaign_id),
+    )
+    delete_entity(campaign_id, bar_id, cascade=True, base_revision=_head(campaign_id))
+    return kellan_id
+
+
+def test_commit_orphan_entity_rejected_with_zero_revisions(world: str) -> None:
+    """COMMIT_ORPHAN: a staged create with zero staged/existing edges is
+    rejected in full — zero revisions, zero state change (FR2, AD-23)."""
+    _bar_id, _mira_id = _seed_world(world)
+    before = _state(world)
+    orphan_id = ids.new_id()
+    with pytest.raises(OrphanEntityError) as excinfo:
+        commit_subgraph(
+            world,
+            [models.EntityInput(kind="character", name="Kellan the Lost", id=orphan_id)],
+            [],
+            base_revision=_head(world),
+        )
+    assert excinfo.value.orphans == [(orphan_id, "Kellan the Lost")]
+    assert "Kellan the Lost" in str(excinfo.value)
+    assert _state(world) == before
+    with session_scope() as session:
+        assert len(list(revision_chain(session, world))) == 1  # seed only
+
+
+def test_commit_orphan_on_empty_world_rejected(world: str) -> None:
+    """COMMIT_ORPHAN on an empty world: a bare entity with no edges is
+    rejected even when it would be the first commit."""
+    with pytest.raises(OrphanEntityError):
+        commit_subgraph(world, [models.EntityInput(kind="place", name="Lone Hill")])
+
+
+def test_commit_self_loop_does_not_connect_new_entity(world: str) -> None:
+    """A self-loop edge never satisfies the no-orphan rule (FR2): a
+    self-loop does not weave the entity into staged or existing state,
+    and the pipeline forbids self-loops outright (spec-2.3)."""
+    loner_id = ids.new_id()
+    with pytest.raises(OrphanEntityError):
+        commit_subgraph(
+            world,
+            [models.EntityInput(kind="place", name="The Lonely Hill", id=loner_id)],
+            [models.EdgeInput(src=loner_id, dst=loner_id, type="located_in")],
+            base_revision=None,
+        )
+
+
+def test_commit_connected_staged_create_accepted(world: str) -> None:
+    """COMMIT_CONNECTED: a staged create wired to an existing entity via
+    a staged edge commits as today."""
+    bar_id, _mira_id = _seed_world(world)
+    kellan_id = ids.new_id()
+    revision = commit_subgraph(
+        world,
+        [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
+        [models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1)],
+        base_revision=_head(world),
+    )
+    entities, edges = _state(world)
+    assert kellan_id in entities
+    assert edges[_edge_id(world, kellan_id, bar_id, "ally_of")][3] == 1
+    assert revision.id == _head(world)
+
+
+def test_commit_update_of_edgeless_entity_accepted(world: str) -> None:
+    """COMMIT_UPDATE_EDGELESS: the orphan rule is create-only — an
+    ``entity_updated`` on an existing edgeless entity is accepted."""
+    kellan_id = _seed_edgeless_neighbor(world)
+    revision = commit_subgraph(
+        world,
+        [models.EntityInput(kind="character", name="Kellan Ash, Remembered", id=kellan_id)],
+        [],
+        base_revision=_head(world),
+    )
+    entities, _edges = _state(world)
+    assert entities[kellan_id][1] == "Kellan Ash, Remembered"
+    assert revision.id == _head(world)
+
+
+def test_delete_edgeless_no_confirm_one_revision(world: str) -> None:
+    """DELETE_EDGELESS: an entity with zero live edges deletes without
+    confirmation — one revision carrying ``entity_deleted`` with the
+    ``before`` snapshot (AD-5 requires confirmation only with edges)."""
+    kellan_id = _seed_edgeless_neighbor(world)
+    head_before = _head(world)
+    revision = delete_entity(world, kellan_id, cascade=False, base_revision=head_before)
+    assert revision.id != head_before
+    entities, _edges = _state(world)
+    assert kellan_id not in entities
+    with session_scope() as session:
+        events = list(revision_events(session, world, revision.id))
+        assert [ev.type for ev in events] == ["entity_deleted"]
+        assert events[0].payload["id"] == kellan_id
+        assert events[0].payload["before"]["name"] == "Kellan Ash"
+        assert set(events[0].payload["before"]) == {"kind", "name", "text", "data", "created_at"}
+        assert len(list(revision_chain(session, world))) == 4
+
+
+def test_delete_live_edges_no_confirm_lists_neighbors(world: str) -> None:
+    """DELETE_LIVE_NO_CONFIRM: deleting an entity with live edges without
+    cascade is a no-op failure naming the affected neighbor entities
+    (ids + names, deduplicated) (FR4, AD-5)."""
+    bar_id, mira_id = _seed_world(world)
+    before = _state(world)
+    head = _head(world)
+    with pytest.raises(LiveEdgesError) as excinfo:
+        delete_entity(world, mira_id, cascade=False, base_revision=head)
+    assert excinfo.value.entity_id == mira_id
+    assert excinfo.value.affected == [{"id": bar_id, "name": "The Gilded Bar"}]
+    assert "The Gilded Bar" in str(excinfo.value)
+    assert _state(world) == before  # no state change
+    assert _head(world) == head
+
+
+def test_delete_cascade_confirmed_one_revision_zero_dangling(world: str) -> None:
+    """DELETE_CASCADE_CONFIRMED: one revision removes the entity plus
+    every edge touching it; neighbors survive; zero dangling edges."""
+    bar_id, mira_id = _seed_world(world)
+    # A second edge from the bar keeps the bar alive after mira leaves.
+    kellan_id = ids.new_id()
+    commit_subgraph(
+        world,
+        [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
+        [
+            models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1),
+            models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=2),
+        ],
+        base_revision=_head(world),
+    )
+    head = _head(world)
+    revision = delete_entity(world, mira_id, cascade=True, base_revision=head)
+    entities, edges = _state(world)
+    assert mira_id not in entities
+    assert bar_id in entities and kellan_id in entities  # neighbors survive
+    assert all(mira_id not in (src, dst) for src, dst, *_rest in edges.values())
+    dangling = [eid for e in edges.values() for eid in (e[0], e[1]) if eid not in entities]
+    assert dangling == []  # AD-23
+    with session_scope() as session:
+        events = list(revision_events(session, world, revision.id))
+        assert [ev.type for ev in events] == [
+            "edge_deleted",
+            "edge_deleted",
+            "edge_deleted",
+            "entity_deleted",
+        ]
+        for ev in events:
+            assert ev.payload["after"] is None
+            assert ev.payload["before"]  # undo-compatible before snapshots
+        assert len(list(revision_chain(session, world))) == 3  # seed, kellan, delete
+
+
+def test_delete_unknown_and_foreign_entity_rejected(world: str) -> None:
+    """DELETE_UNKNOWN: an unknown or foreign-campaign entity is a
+    structured 404-class rejection with no state change."""
+    bar_id, _mira_id = _seed_world(world)
+    before = _state(world)
+    with pytest.raises(UnknownEntityError) as excinfo:
+        delete_entity(world, MISSING_ID, base_revision=_head(world))
+    assert excinfo.value.entity_id == MISSING_ID
+    # Foreign world: a ULID owned by another campaign is invisible.
+    other_campaign = create_campaign(
+        _owner_id(), title="Other World", description="", theme="High Fantasy", custom_lore=""
+    ).id
+    foreign_tavern_id, foreign_keep_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        other_campaign,
+        [
+            models.EntityInput(kind="place", name="Foreign Tavern", id=foreign_tavern_id),
+            models.EntityInput(kind="place", name="Foreign Keep", id=foreign_keep_id),
+        ],
+        [models.EdgeInput(src=foreign_keep_id, dst=foreign_tavern_id, type="located_in")],
+    )
+    with pytest.raises(UnknownEntityError):
+        delete_entity(world, foreign_tavern_id, base_revision=_head(world))
+    assert _state(world) == before
+
+
+def test_delete_stale_base_rejected_no_state_change(world: str) -> None:
+    """DELETE_STALE: a delete staged on a stale base is rejected with
+    ``StaleRevisionError`` — same semantics as ``commit_subgraph``."""
+    _bar_id, mira_id = _seed_world(world)
+    stale_head = _head(world)
+    new_place_id = ids.new_id()
+    commit_subgraph(
+        world,
+        [models.EntityInput(kind="place", name="New Place", id=new_place_id)],
+        [models.EdgeInput(src=mira_id, dst=new_place_id, type="located_in")],
+        base_revision=_head(world),
+    )
+    before = _state(world)
+    with pytest.raises(StaleRevisionError):
+        delete_entity(world, mira_id, cascade=True, base_revision=stale_head)
+    assert _state(world) == before
+
+
+def test_undo_of_cascade_delete_recreates_with_stable_ulids(world: str) -> None:
+    """DELETE_UNDO: undoing a cascade-delete revision recreates the
+    entity and its edges with stable ULIDs via the existing undo
+    machinery — zero undo.py changes (AD-2)."""
+    bar_id, mira_id = _seed_world(world)
+    delete_entity(world, mira_id, cascade=True, base_revision=_head(world))
+    entities_after_delete, edges_after_delete = _state(world)
+    assert mira_id not in entities_after_delete
+    head = _head(world)
+    assert head is not None
+    undo_revision = undo(world, head)
+    entities, edges = _state(world)
+    assert mira_id in entities  # stable ULID
+    assert entities[mira_id][1] == "Mira Vane"
+    member_id = _edge_id(world, mira_id, bar_id, "member_of")
+    debt_id = _edge_id(world, mira_id, bar_id, "debt")
+    assert edges[member_id][3] == 1  # stable ULID + counter
+    assert edges[debt_id][3] == 3
+    with session_scope() as session:
+        events = list(revision_events(session, world, undo_revision.id))
+        assert [ev.type for ev in events] == [
+            "entity_created",
+            "edge_created",
+            "edge_created",
+        ]
+        assert all(ev.payload["before"] is None for ev in events)
+    # And it redoes: undoing the undo re-deletes (existing machinery).
+    redo_revision = undo(world, undo_revision.id)
+    entities_redone, _edges_redone = _state(world)
+    assert mira_id not in entities_redone
+    assert redo_revision.id == _head(world)
+
+
+def test_entity_live_edges_helper_rowid_ordered(world: str) -> None:
+    """The read helper returns only the edges touching the entity, in
+    rowid order, for the delete preflight and the API listing."""
+    bar_id, mira_id = _seed_world(world)
+    kellan_id = ids.new_id()
+    commit_subgraph(
+        world,
+        [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
+        [models.EdgeInput(src=kellan_id, dst=mira_id, type="rival_of", counter=1)],
+        base_revision=_head(world),
+    )
+    with session_scope() as session:
+        mira_edges = entity_live_edges(session, world, mira_id)
+        assert [(e.src, e.dst, e.type) for e in mira_edges] == [
+            (mira_id, bar_id, "member_of"),
+            (mira_id, bar_id, "debt"),
+            (kellan_id, mira_id, "rival_of"),
+        ]
+        assert list(entity_live_edges(session, world, ids.new_id())) == []

@@ -1,6 +1,6 @@
 """Shared API helpers (AD-17 envelope contract).
 
-``_store_error_as_http`` is the single mapping from a store rejection to
+``store_error_as_http`` is the single mapping from a store rejection to
 its error envelope. Every API router that calls into ``app.store`` routes
 its store rejections through this one mapper, so the wire codes stay
 consistent across surfaces (spec-1.4, spec-1.6, spec-2.1 retro item 3).
@@ -10,6 +10,7 @@ from typing import NoReturn
 
 from fastapi import HTTPException
 
+from app.core.errors import StoreHTTPException
 from app.core.pagination import InvalidCursorError
 from app.store import (
     CampaignInputError,
@@ -27,13 +28,18 @@ from app.store import (
     InvalidUlidError,
     JobNotFoundError,
     JobStateConflictError,
+    LiveEdgesError,
+    OrphanEntityError,
     QueueFullError,
     StaleRevisionError,
     UnknownCampaignError,
+    UnknownEntityError,
 )
 
+__all__ = ["StoreHTTPException", "store_error_as_http"]
 
-def _store_error_as_http(exc: Exception) -> NoReturn:
+
+def store_error_as_http(exc: Exception) -> NoReturn:
     """Map a store rejection to its envelope HTTPException (4xx = user error).
 
     The rejections are 404/409/422 — the same codes the I/O matrices pin,
@@ -44,7 +50,7 @@ def _store_error_as_http(exc: Exception) -> NoReturn:
     user error — re-raising surfaces it as a 500 so it can never be
     mistaken for a recoverable client mistake.
     """
-    if isinstance(exc, (JobNotFoundError, UnknownCampaignError)):
+    if isinstance(exc, (JobNotFoundError, UnknownCampaignError, UnknownEntityError)):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if isinstance(
         exc,
@@ -55,8 +61,17 @@ def _store_error_as_http(exc: Exception) -> NoReturn:
             StaleRevisionError,
             CrossCampaignConflictError,
             DuplicateEdgeError,
+            LiveEdgesError,
         ),
     ):
+        if isinstance(exc, LiveEdgesError):
+            # AD-5: the DM must see the affected neighbors before
+            # confirming — the listing rides the envelope's ``details``.
+            raise StoreHTTPException(
+                status_code=409,
+                detail=str(exc),
+                details={"affected_entities": exc.affected, "entity_id": exc.entity_id},
+            ) from exc
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(
         exc,
@@ -72,10 +87,8 @@ def _store_error_as_http(exc: Exception) -> NoReturn:
             InvalidEdgeTypeError,
             DuplicateEntityError,
             EmptySubgraphError,
+            OrphanEntityError,
         ),
     ):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     raise exc
-
-
-__all__ = ["_store_error_as_http"]
