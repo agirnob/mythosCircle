@@ -118,6 +118,11 @@ function stateLabel(job: Job): string {
     <div v-else class="card seed">
       <h2>{{ campaigns.current.title }}</h2>
       <p class="muted">{{ campaigns.current.description || 'No description.' }}</p>
+      <p>
+        <RouterLink :to="{ name: 'world', params: { id: campaignId } }" class="cta secondary"
+          >Open world view</RouterLink
+        >
+      </p>
       <p class="muted">
         Theme: <strong>{{ campaigns.current.theme }}</strong>
       </p>
@@ -226,5 +231,18 @@ textarea {
   border-top: 1px solid #2c3038;
   margin-top: 0.75rem;
   padding-top: 0.75rem;
+}
+.cta {
+  display: inline-block;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  background: #2f6feb;
+  color: #fff;
+  text-decoration: none;
+}
+.cta.secondary {
+  background: transparent;
+  border: 1px solid #2c3038;
+  color: #9aa0a6;
 }
 </style>

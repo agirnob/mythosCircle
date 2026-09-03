@@ -38,6 +38,9 @@ onMounted(async () => {
         <RouterLink :to="{ name: 'build-in', params: { id: campaign.id } }" class="cta">
           Open build-in
         </RouterLink>
+        <RouterLink :to="{ name: 'world', params: { id: campaign.id } }" class="cta secondary">
+          Open world
+        </RouterLink>
       </li>
     </ul>
   </section>
@@ -64,5 +67,10 @@ onMounted(async () => {
   background: #2f6feb;
   color: #fff;
   text-decoration: none;
+}
+.cta.secondary {
+  background: transparent;
+  border: 1px solid #2c3038;
+  color: #9aa0a6;
 }
 </style>

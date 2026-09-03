@@ -19,6 +19,12 @@ const router = createRouter({
       component: () => import('./views/BuildInView.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      path: '/campaigns/:id/world',
+      name: 'world',
+      component: () => import('./views/WorldView.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

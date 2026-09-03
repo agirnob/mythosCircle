@@ -234,6 +234,46 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/campaigns/{campaign_id}/entities/{entity_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Entity
+     * @description FR4/AD-5: delete one entity through the store's commit path.
+     */
+    delete: operations['delete_entity_api_campaigns__campaign_id__entities__entity_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/campaigns/{campaign_id}/export': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Export World
+     * @description The complete latest-revision world state as JSON or Obsidian Markdown.
+     */
+    get: operations['export_world_api_campaigns__campaign_id__export_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -269,6 +309,21 @@ export interface components {
       /** Next Cursor */
       next_cursor: string | null
     }
+    /** CampaignMeta */
+    CampaignMeta: {
+      /** Id */
+      id: string
+      /** Title */
+      title: string
+      /** Theme */
+      theme: string
+      /** Description */
+      description: string
+      /** Custom Lore */
+      custom_lore: string
+      /** Created At */
+      created_at: string
+    }
     /** CampaignResponse */
     CampaignResponse: {
       /** Id */
@@ -296,6 +351,34 @@ export interface components {
       theme?: string | null
       /** Custom Lore */
       custom_lore?: string | null
+    }
+    /** EdgeExport */
+    EdgeExport: {
+      /** Id */
+      id: string
+      /** Src */
+      src: string
+      /** Dst */
+      dst: string
+      /** Type */
+      type: string
+      /** Counter */
+      counter: number
+    }
+    /** EntityExport */
+    EntityExport: {
+      /** Id */
+      id: string
+      /** Kind */
+      kind: string
+      /** Name */
+      name: string
+      /** Text */
+      text: string | null
+      /** Data */
+      data: {
+        [key: string]: unknown
+      }
     }
     /** HTTPValidationError */
     HTTPValidationError: {
@@ -393,6 +476,13 @@ export interface components {
       /** Password */
       password: string
     }
+    /** RevisionMeta */
+    RevisionMeta: {
+      /** Id */
+      id: string
+      /** Created At */
+      created_at: string
+    }
     /** ValidationError */
     ValidationError: {
       /** Location */
@@ -405,6 +495,15 @@ export interface components {
       input?: unknown
       /** Context */
       ctx?: Record<string, never>
+    }
+    /** WorldExport */
+    WorldExport: {
+      campaign: components['schemas']['CampaignMeta']
+      revision: components['schemas']['RevisionMeta'] | null
+      /** Entities */
+      entities: components['schemas']['EntityExport'][]
+      /** Edges */
+      edges: components['schemas']['EdgeExport'][]
     }
   }
   responses: never
@@ -848,6 +947,73 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['JobResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_entity_api_campaigns__campaign_id__entities__entity_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        campaign_id: string
+        entity_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  export_world_api_campaigns__campaign_id__export_get: {
+    parameters: {
+      query?: {
+        format?: 'json' | 'markdown'
+      }
+      header?: never
+      path: {
+        campaign_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['WorldExport']
         }
       }
       /** @description Validation Error */

@@ -148,3 +148,11 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `spec-2-6-world-state-export.md`
   summary: frontend/src/api/schema.ts is stale — generated once in 2.1 (gen:api) and never regenerated for the routes added by 2.3/2.5/2.6 (incl. GET /api/campaigns/{id}/export); nothing verifies its freshness.
   evidence: schema.ts last touched in commit 0c166fe (2.1); delete op present at schema.ts:646 but no export operation. Regeneration naturally belongs to 2.7's world-view frontend work. [frontend/src/api/schema.ts]
+
+## Deferred from: review of spec-2-7-first-visible-moment.md (2026-09-03)
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-7-first-visible-moment.md`
+  summary: WorldView renders only `data['stat_block']` — any other committed `data` keys are invisible with no indication of omission.
+  evidence: EntityExport.data is an open map; the markdown export renders full data but the world view shows only the stat block; extra keys land with Epic 3+ sectioned profiles (AR24 tolerates unknown keys) — surface a muted "additional data" section when a real consumer appears. [frontend/src/views/WorldView.vue]
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-7-first-visible-moment.md`
+  summary: Generated schema.ts types the export route's 200 response as application/json WorldExport even for format=markdown, which actually returns text/markdown with attachment disposition.
+  evidence: Backend OpenAPI on exports.py declares only the JSON response; the generated frontend copy cannot be hand-edited — fix the backend response declaration (a backend OpenAPI change) and regenerate; revisit if a frontend caller ever consumes format=markdown. [backend/app/api/exports.py, frontend/src/api/schema.ts]
