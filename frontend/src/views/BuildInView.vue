@@ -182,10 +182,6 @@ function stateLabel(job: Job): string {
 .seed h2 {
   margin-top: 0;
 }
-.lore {
-  border-left: 3px solid #2c3038;
-  padding-left: 0.75rem;
-}
 form {
   display: grid;
   gap: 1rem;
@@ -211,19 +207,6 @@ textarea {
 .job dt {
   color: #9aa0a6;
 }
-.mono {
-  font-family: ui-monospace, monospace;
-  font-size: 0.85rem;
-}
-.small {
-  font-size: 0.85rem;
-}
-.back {
-  display: inline-block;
-  margin-top: 0.5rem;
-  color: #2f6feb;
-  text-decoration: none;
-}
 .counter {
   text-align: right;
 }
@@ -231,18 +214,5 @@ textarea {
   border-top: 1px solid #2c3038;
   margin-top: 0.75rem;
   padding-top: 0.75rem;
-}
-.cta {
-  display: inline-block;
-  padding: 0.5rem 0.75rem;
-  border-radius: 6px;
-  background: #2f6feb;
-  color: #fff;
-  text-decoration: none;
-}
-.cta.secondary {
-  background: transparent;
-  border: 1px solid #2c3038;
-  color: #9aa0a6;
 }
 </style>

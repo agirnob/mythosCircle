@@ -2,9 +2,10 @@
  * WebSocket client for job broadcasts (AD-17).
  *
  * One reconnecting socket per open campaign to `/api/ws/jobs?campaign_id=`.
- * Any drop triggers a bounded exponential-backoff reconnect; after a
- * reconnect the caller should re-sync the job list via REST (positions
- * shift, frames only carry deltas). Close code 4401 means the session is
+ * Any drop triggers a bounded exponential-backoff reconnect; on every open
+ * — the first and each reopen — the caller should re-sync via REST (job
+ * positions shift, frames only carry deltas, and the world view closes its
+ * load→socket window this way). Close code 4401 means the session is
  * no longer authorized — fatal: `onAuthFailure` fires and the socket never
  * reconnects. Teardown via the returned function stops reconnects.
  */
@@ -21,7 +22,7 @@ export interface WsMessage {
 }
 
 export interface JobSocketOptions {
-  /** Fired when the socket reopens after a drop — re-sync via REST. */
+  /** Fired on every socket open — the first and each reopen after a drop — re-sync via REST. */
   onReconnect?: () => void
   /** Fired on a 4401 close — the session is invalid (fatal, no reconnect). */
   onAuthFailure?: () => void
@@ -47,9 +48,10 @@ export function connectJobSocket(
     reconnectTimer = null
     socket = new WebSocket(url)
     socket.onopen = () => {
-      if (retry > 0) {
-        options.onReconnect?.()
-      }
+      // Fire on the first open too — callers use this as their REST
+      // re-sync hook, and the world view leans on it to catch a commit
+      // landing between its snapshot fetch and the socket opening.
+      options.onReconnect?.()
       retry = 0
     }
     socket.onmessage = (event) => {

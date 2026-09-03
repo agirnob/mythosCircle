@@ -70,6 +70,14 @@ describe('connectJobSocket', () => {
     disconnect()
   })
 
+  it('calls onReconnect on the first open too (closes the load→socket window)', () => {
+    const onReconnect = vi.fn()
+    const disconnect = connectJobSocket('C1', vi.fn(), { onReconnect })
+    FakeWebSocket.instances[0].open()
+    expect(onReconnect).toHaveBeenCalledOnce()
+    disconnect()
+  })
+
   it('teardown cancels a pending reconnect', async () => {
     vi.useFakeTimers()
     const disconnect = connectJobSocket('C1', vi.fn())

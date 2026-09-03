@@ -135,6 +135,9 @@ describe('world store', () => {
     // Sub-threshold progress (before the wave-1 commit) is ignored.
     await world.handleJobMessage('C1', wsMessage({ type: 'job_progress', progress: 0.25 }))
     expect(exportCalls).toHaveLength(1)
+    // 0.49 still precedes the wave-1 commit — no refetch.
+    await world.handleJobMessage('C1', wsMessage({ type: 'job_progress', progress: 0.49 }))
+    expect(exportCalls).toHaveLength(1)
 
     // 0.5 = wave-1 commit; 1.0 = wave-2 commit.
     await world.handleJobMessage('C1', wsMessage({ type: 'job_progress', progress: 0.5 }))
@@ -267,5 +270,31 @@ describe('world store', () => {
     // Non-terminal frames with an unresolved kind are still ignored.
     await world.handleJobMessage('C1', wsMessage({ type: 'job_progress', progress: 1.0 }))
     expect(exportCalls).toHaveLength(2)
+  })
+
+  it('ignores frames for another campaign even when the job is cached', async () => {
+    mockFetch()
+    const jobs = useJobsStore()
+    jobs.upsert(job('J1', { campaign_id: 'C2' }))
+    const world = useWorldStore()
+    await world.load('C1')
+
+    await world.handleJobMessage(
+      'C1',
+      wsMessage({ type: 'job_progress', job_id: 'J1', progress: 1.0 }),
+    )
+    expect(exportCalls).toHaveLength(1)
+  })
+
+  it('a terminal frame whose REST recovery fails still refetches (kind unresolved)', async () => {
+    mockFetch()
+    const world = useWorldStore()
+    await world.load('C1')
+
+    // REST recovery itself fails — the kind stays unknown; the read-only
+    // refetch still runs (job_done is a build-in's last frame).
+    vi.mocked(globalThis.fetch).mockRejectedValueOnce(new Error('jobs api down'))
+    await world.handleJobMessage('C1', wsMessage({ type: 'job_done', state: 'succeeded' }))
+    await vi.waitFor(() => expect(exportCalls).toHaveLength(2))
   })
 })

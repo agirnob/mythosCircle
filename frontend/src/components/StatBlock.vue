@@ -39,6 +39,9 @@ const props = defineProps<{ block: unknown }>()
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value)
+
 const identity = computed<StatIdentity | null>(() => {
   const raw = isObject(props.block) ? props.block['identity'] : null
   return isObject(raw) ? (raw as StatIdentity) : null
@@ -71,10 +74,9 @@ const spells = computed<string[]>(() => {
 /** "Monster" blocks carry cr instead of level. */
 const powerLabel = computed(() => {
   if (!identity.value) return null
-  if (identity.value.cr !== undefined && identity.value.cr !== null)
-    return `CR ${String(identity.value.cr)}`
-  if (identity.value.level !== undefined && identity.value.level !== null)
-    return `Level ${String(identity.value.level)}`
+  const { cr, level } = identity.value
+  if (typeof cr === 'number' || typeof cr === 'string') return `CR ${String(cr)}`
+  if (typeof level === 'number' || typeof level === 'string') return `Level ${String(level)}`
   return null
 })
 
@@ -102,13 +104,13 @@ const abilityScores = computed(() => {
   if (!attrs) return []
   return ABILITY_KEYS.map((key) => {
     const value = attrs[key]
-    const modifier =
-      typeof value === 'number' && Number.isFinite(value) ? Math.floor((value - 10) / 2) : null
+    const modifier = isFiniteNumber(value) ? Math.floor((value - 10) / 2) : null
     const modifierText = modifier === null ? '' : ` (${modifier >= 0 ? '+' : ''}${modifier})`
     return {
       key,
       label: ABILITY_LABELS[key],
-      score: value === undefined || value === null ? '—' : String(value),
+      score:
+        isFiniteNumber(value) || (typeof value === 'string' && value.trim()) ? String(value) : '—',
       modifierText,
     }
   })
@@ -117,7 +119,7 @@ const abilityScores = computed(() => {
 /** Initiative rides DEX — the block is "ready to roll initiative". */
 const initiative = computed(() => {
   const dex = attributes.value?.dex
-  if (typeof dex !== 'number' || !Number.isFinite(dex)) return null
+  if (!isFiniteNumber(dex)) return null
   const modifier = Math.floor((dex - 10) / 2)
   return modifier >= 0 ? `+${modifier}` : String(modifier)
 })
@@ -126,19 +128,15 @@ const combatLine = computed(() => {
   const combatValue = combat.value
   if (!combatValue) return null
   const parts = [
-    combatValue['ac'] !== undefined && combatValue['ac'] !== null
-      ? `AC ${String(combatValue['ac'])}`
-      : null,
-    combatValue['hp'] !== undefined && combatValue['hp'] !== null
-      ? `HP ${String(combatValue['hp'])}`
-      : null,
+    isFiniteNumber(combatValue['ac']) ? `AC ${combatValue['ac']}` : null,
+    isFiniteNumber(combatValue['hp']) ? `HP ${combatValue['hp']}` : null,
     initiative.value !== null ? `Initiative ${initiative.value}` : null,
   ].filter((part): part is string => part !== null)
   return parts.length > 0 ? parts.join(' · ') : null
 })
 
 const skillLine = (skill: NamedEntry) =>
-  `${String(skill.name ?? '?')}${typeof skill.bonus === 'number' ? (skill.bonus >= 0 ? ' +' : ' ') + String(skill.bonus) : ''}`
+  `${typeof skill.name === 'string' && skill.name.trim() ? skill.name : '?'}${typeof skill.bonus === 'number' ? (skill.bonus >= 0 ? ' +' : ' ') + String(skill.bonus) : ''}`
 </script>
 
 <template>
@@ -168,13 +166,15 @@ const skillLine = (skill: NamedEntry) =>
     <dl v-if="actions.length > 0">
       <dt>Actions</dt>
       <dd v-for="(action, index) in actions" :key="`${index}-${String(action.name)}`">
-        <strong>{{ action.name }}</strong> — {{ action.description }}
+        <strong>{{ action.name ?? '?' }}</strong
+        ><template v-if="action.description"> — {{ action.description }}</template>
       </dd>
     </dl>
     <dl v-if="traits.length > 0">
       <dt>Traits</dt>
       <dd v-for="(trait, index) in traits" :key="`${index}-${String(trait.name)}`">
-        <strong>{{ trait.name }}</strong> — {{ trait.description }}
+        <strong>{{ trait.name ?? '?' }}</strong
+        ><template v-if="trait.description"> — {{ trait.description }}</template>
       </dd>
     </dl>
     <dl v-if="spells.length > 0">

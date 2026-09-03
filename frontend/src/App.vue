@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { RouterLink, RouterView, useRouter } from 'vue-router'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 
 import { useAuthStore } from './stores/auth'
 
 const auth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
 
 async function logout() {
   await auth.logout()
@@ -22,7 +23,9 @@ async function logout() {
       </nav>
     </header>
     <main>
-      <RouterView />
+      <!-- Keyed by fullPath: a param-only change (world/A -> world/B)
+           remounts the view instead of reusing a stale instance. -->
+      <RouterView :key="route.fullPath" />
     </main>
   </div>
 </template>
@@ -75,5 +78,36 @@ textarea {
 }
 .muted {
   color: #9aa0a6;
+}
+.cta {
+  white-space: nowrap;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  background: #2f6feb;
+  color: #fff;
+  text-decoration: none;
+}
+.cta.secondary {
+  background: transparent;
+  border: 1px solid #2c3038;
+  color: #9aa0a6;
+}
+.mono {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+.small {
+  font-size: 0.85rem;
+}
+.back {
+  display: inline-block;
+  margin-top: 0.5rem;
+  color: #2f6feb;
+  text-decoration: none;
+}
+.lore {
+  border-left: 3px solid #2c3038;
+  padding-left: 0.75rem;
+  white-space: pre-wrap;
 }
 </style>

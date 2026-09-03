@@ -156,3 +156,12 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-7-first-visible-moment.md`
   summary: Generated schema.ts types the export route's 200 response as application/json WorldExport even for format=markdown, which actually returns text/markdown with attachment disposition.
   evidence: Backend OpenAPI on exports.py declares only the JSON response; the generated frontend copy cannot be hand-edited — fix the backend response declaration (a backend OpenAPI change) and regenerate; revisit if a frontend caller ever consumes format=markdown. [backend/app/api/exports.py, frontend/src/api/schema.ts]
+
+## Deferred from: code review of spec-2-7-first-visible-moment.md (2026-09-03)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-7-first-visible-moment.md`
+  summary: The world view shows the raw 26-char revision ULID with no last-synced timestamp — the DM cannot tell whether the displayed snapshot is seconds or days old.
+  evidence: `revision.id` is displayed verbatim (the backend exposes the full id deliberately for the optimistic-concurrency DELETE flow); shortening or a "synced at" stamp is a display-format decision not covered by the frozen spec. [frontend/src/views/WorldView.vue]
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-7-first-visible-moment.md`
+  summary: The frontend pins `WAVE1_PROGRESS = 0.5` and its own test suite, but nothing pins the backend wire contract — if `build_in.py` ever reports intermediate progress ≥ 0.5, the "refetch once per wave" property silently degrades into a refetch per frame.
+  evidence: `build_in.py:149,159` emit exactly 0.5/1.0 (frozen spec behavior); a cross-stack contract test requires a backend edit, which the spec's ask-first constraint forbids without owner approval. [frontend/src/stores/world.ts, backend/app/pipeline/build_in.py]

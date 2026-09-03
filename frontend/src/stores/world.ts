@@ -7,12 +7,14 @@
  * components; this store never writes world state.
  *
  * Live updates (FR1, NFR9): WS frames only signal "the world changed", so
- * `handleJobMessage` re-fetches the snapshot — once for a build-in
- * `job_progress` at/after the wave-1 commit (progress 0.5), once for any
+ * `handleJobMessage` re-fetches the snapshot — on a build-in
+ * `job_progress` at/after the wave-1 commit (progress 0.5), on any
  * terminal build-in frame (a mid-wave-2 failure still leaves wave 1
- * committed), and the view re-fetches on WS reconnect. Fetches coalesce:
- * a frame landing while a fetch is in flight marks the entry dirty and
- * one trailing fetch covers the delta; parallel fetches never stack.
+ * committed), and on WS reconnect. Adjacent qualifying frames (the 0.5
+ * wave-1 commit, then the 1.0 terminal frame) each trigger a fetch;
+ * fetches coalesce — a frame landing while a fetch is in flight marks
+ * the entry dirty and one trailing fetch covers the delta, so parallel
+ * fetches never stack.
  */
 import { defineStore } from 'pinia'
 
@@ -92,19 +94,22 @@ export const useWorldStore = defineStore('world', {
       }
       entry.fetching = true
       entry.loading = true
-      entry.error = null
       try {
         const world = await apiFetch<WorldExport>(
           `/api/campaigns/${encodeURIComponent(campaignId)}/export`,
         )
         entry.world = world
         entry.notFound = false
+        // Clear only on success — an in-flight refetch must not blank
+        // the sync-failed banner before the outcome is known.
+        entry.error = null
       } catch (err) {
         if (err instanceof ApiError && err.status === 404) {
           // Foreign or unknown campaign — the indistinguishable 404; a
           // previous snapshot must not linger in the not-found view.
           entry.world = null
           entry.notFound = true
+          entry.error = null
         } else {
           entry.error = err instanceof ApiError ? err.message : 'Could not load the world.'
         }
@@ -123,11 +128,11 @@ export const useWorldStore = defineStore('world', {
      * uncached job id), then decide by the cached job's kind — the wire
      * frame itself carries no kind. Refetch on a build-in `job_progress`
      * at/after 0.5 (wave 1 committed) and on any terminal build-in frame;
-     * sub-threshold progress, queue_changed, and non-build_in kinds are
-     * ignored. A terminal frame for an UNRESOLVED kind (the job never
-     * reached the cache — e.g. REST recovery failed) still refetches:
-     * `job_done` is the last frame a build-in emits, and the fetch is
-     * read-only with coalescing already preventing stacking.
+     * Sub-threshold progress, queue_changed, and non-build_in kinds are
+     * ignored — except a TERMINAL frame for an UNRESOLVED kind (the job
+     * never reached the cache — e.g. REST recovery failed) still
+     * refetches: `job_done` is the last frame a build-in emits, and the
+     * fetch is read-only with coalescing already preventing stacking.
      */
     async handleJobMessage(campaignId: string, message: WsMessage) {
       const jobs = useJobsStore()

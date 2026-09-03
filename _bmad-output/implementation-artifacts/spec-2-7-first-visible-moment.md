@@ -71,7 +71,7 @@ context: []
 
 **Execution:**
 - [x] `frontend/src/api/schema.ts` -- regenerate from the running backend (`npm run gen:api`); wire-in only, no hand edits.
-- [x] `frontend/src/stores/world.ts` -- new Pinia store: `load(campaignId)` fetches export JSON into `byCampaign`, tracks loading/error/notFound; `handleJobMessage(campaignId, WsMessage)` implements the refetch rule (progress >= 0.5, any terminal build-in frame) with in-flight coalescing + dirty-flag trailing refetch; exposes the WS teardown wiring.
+- [x] `frontend/src/stores/world.ts` -- new Pinia store: `load(campaignId)` fetches export JSON into `byCampaign`, tracks loading/error/notFound; `handleJobMessage(campaignId, WsMessage)` implements the refetch rule (progress >= 0.5, any terminal build-in frame) with in-flight coalescing + dirty-flag trailing refetch; stays thin — the view owns the WS subscription lifecycle (see the WorldView.vue task below).
 - [x] `frontend/src/views/WorldView.vue` -- route view: campaign header + revision, entities grouped by kind, per-entity relations lines with counter semantics, stat block for key figures, empty/loading/error/not-found states; owns the WS subscription lifecycle (connect on mount, teardown on unmount, reconnect refetch).
 - [x] `frontend/src/components/StatBlock.vue` -- minimal 5e stat-block renderer for `data['stat_block']` (identity, attributes, combat, skills/actions/traits, spells); tolerates absence.
 - [x] `frontend/src/router.ts` -- add the `world` route.
@@ -83,7 +83,30 @@ context: []
 - Given a committed core wave, when the DM opens the world view, then every committed entity renders grouped by kind with its typed edges and counters, and each key figure shows a complete minimal stat block ready to roll initiative (FR1).
 - Given a build-in job whose second wave commits while the view is open, when the WS `job_progress` frame arrives, then the new entity appears without a reload or manual refresh (NFR9).
 - Given an empty world, when the view opens, then an empty state with a build-in CTA renders; a foreign/unknown campaign renders not-found; an unauthenticated visit redirects to login.
-- Given a WS drop and reconnect, when the socket reopens, then the world re-syncs from REST exactly once.
+-
+### Review Findings
+
+**Code review of story 2-7 (2026-09-03)** — 4 review layers (blind hunter, edge case hunter, verification gap, acceptance auditor). 16 findings after dedup: 1 decision, 11 patches, 2 deferred, 2 dismissed.
+
+**Decision needed (resolved 2026-09-03 — spec wording amended to match delivery):**
+- [x] [Review][Decision] Store check-item "exposes the WS teardown wiring" is not delivered literally — the subscription lifecycle lives in `WorldView.vue` (whose own task says it owns it). Either amend the frozen spec wording to match delivery (view owns lifecycle) or move teardown wiring into the store.
+
+**Patches:**
+- [x] [Review][Patch] `WorldView.test.ts` omits the spec-mandated I/O-matrix render rows — HAPPY_PATH (kind-group counts, counter semantics, stat block), EMPTY_WORLD, ODD_DATA; no test renders an edge line (`COUNTER_TYPES`/`edgeLabel`/self-loop dedupe), mounts `StatBlock` (modifier arithmetic, initiative, CR-vs-level precedence), or exercises initial-load error + Retry + the `entry.error` socket gate [frontend/src/views/WorldView.test.ts:105]
+- [x] [Review][Patch] Load→socket window: `onReconnect` fires only after a drop (`retry > 0`), never on the first open — a commit landing in the window is silently missed; `start()`'s comment cites a mitigation that does not exist [frontend/src/ws.ts:66]
+- [x] [Review][Patch] `campaignId` captured once at setup; `RouterView` unkeyed — a param-only world→world navigation pins the store entry and socket to the old campaign (latent today, no reaching path) [frontend/src/views/WorldView.vue:17]
+- [x] [Review][Patch] No socket disconnect when a post-connect refetch resolves 404 (deleted/foreign campaign) — socket leaks and unknown-kind terminal frames keep refetching; the 404 branch should also clear `error` [frontend/src/stores/world.ts:105]
+- [x] [Review][Patch] `StatBlock` renders `"true"`/`"[object Object]"` for non-numeric truthy values (ability scores, AC/HP, cr/level, entry name/description) and blank/partial lines for entries missing `name`/`description` [frontend/src/components/StatBlock.vue:104]
+- [x] [Review][Patch] No loading state on first paint — a bare `World` h1 flashes for one frame before "Loading the world…" [frontend/src/views/WorldView.vue:151]
+- [x] [Review][Patch] "Live sync failed" banner has no Retry affordance — a stale snapshot with no further frames has no manual re-sync path [frontend/src/views/WorldView.vue:165]
+- [x] [Review][Patch] Refetch clears `error` pre-flight, so the sync-failed banner flickers across reconnect storms — clear only on success [frontend/src/stores/world.ts:87]
+- [x] [Review][Patch] Store docstrings overstate the refetch rule ("once", "non-build_in kinds are ignored") — terminal unresolved-kind frames refetch regardless of kind [frontend/src/stores/world.ts:8]
+- [x] [Review][Patch] Populated world state has no link back to its build-in view — only the empty state does [frontend/src/views/WorldView.vue:181]
+- [x] [Review][Patch] `.cta`/`.cta.secondary`/`.mono`/`.back`/`.lore` duplicated across three views; `.lore` lacks `pre-wrap` so multi-line `custom_lore` collapses [frontend/src/views/WorldView.vue:100]
+
+**Deferred:**
+- [x] [Review][Defer] Raw 26-char ULID revision + no last-synced timestamp — display-format decision, not spec'd [frontend/src/views/WorldView.vue:172] — deferred, pre-existing
+- [x] [Review][Defer] `WAVE1_PROGRESS = 0.5` coupling to `build_in.py`'s wire contract is untested — a backend contract pin needs a backend edit (ask-first) [frontend/src/stores/world.ts:21] — deferred, pre-existing
 
 ## Design Notes
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import type { components } from '../api/schema'
@@ -56,6 +56,22 @@ async function start() {
     },
   )
 }
+
+/**
+ * A post-connect refetch resolving 404 (campaign deleted or ownership
+ * revoked) must tear the socket down — otherwise it keeps receiving
+ * unrelated frames and refetching forever.
+ */
+watch(
+  () => world.entry(campaignId).notFound,
+  (notFound) => {
+    if (notFound && connectedCampaign === campaignId) {
+      disconnectSocket?.()
+      disconnectSocket = null
+      connectedCampaign = null
+    }
+  },
+)
 
 onMounted(() => {
   void start()
@@ -163,6 +179,7 @@ function relationsFor(entityId: string): RelationLine[] {
     <template v-else-if="exportData">
       <p v-if="entry.error" class="error sync-failed">
         Live sync failed — showing the last synced world. ({{ entry.error }})
+        <button type="button" @click="world.requestRefetch(campaignId)">Retry</button>
       </p>
       <div class="card">
         <p class="muted">
@@ -176,6 +193,11 @@ function relationsFor(entityId: string): RelationLine[] {
         </p>
         <p v-if="revision" class="muted small mono">Revision {{ revision.id }}</p>
         <p class="muted small">Read-only view — the world updates live as build-in jobs commit.</p>
+        <p>
+          <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }" class="cta secondary">
+            Open build-in
+          </RouterLink>
+        </p>
       </div>
 
       <div v-if="entities.length === 0" class="card">
@@ -208,6 +230,7 @@ function relationsFor(entityId: string): RelationLine[] {
         </section>
       </template>
     </template>
+    <p v-else class="muted">Loading the world…</p>
   </section>
 </template>
 
@@ -230,30 +253,6 @@ function relationsFor(entityId: string): RelationLine[] {
 .relations p {
   margin: 0.1rem 0;
   font-size: 0.85rem;
-}
-.mono {
-  font-family: ui-monospace, monospace;
-}
-.small {
-  font-size: 0.85rem;
-}
-.back {
-  display: inline-block;
-  margin-top: 0.5rem;
-  color: #2f6feb;
-  text-decoration: none;
-}
-.cta {
-  display: inline-block;
-  padding: 0.5rem 0.75rem;
-  border-radius: 6px;
-  background: #2f6feb;
-  color: #fff;
-  text-decoration: none;
-}
-.lore {
-  border-left: 3px solid #2c3038;
-  padding-left: 0.75rem;
 }
 .sync-failed {
   border: 1px solid #2c3038;
