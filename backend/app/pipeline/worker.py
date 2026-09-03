@@ -5,17 +5,20 @@ exactly-one, BEGIN IMMEDIATE) -> dispatch on kind -> provider call over
 HTTP -> ``complete_job``/``fail_job`` so ``job_done``/``job_failed``/
 ``queue_changed`` broadcast over the WS hub. The worker writes no world
 rows itself (AD-1): text-job output rides on a job's ``result`` column,
-never a revision, and build-in jobs commit through the store's
-``commit_subgraph`` — the store remains the sole writer of world state.
+never a revision; build-in jobs commit through the store's
+``commit_subgraph``; ``generate`` jobs (spec-3.1) stage
+``ProposedCandidate`` rows through the store — the store remains the
+sole writer of world state, and the generate runner commits nothing.
 A failing generation writes nothing; waves committed before the failure
 (the build-in wave-1 core) stay committed — documented resilience, no
 compensating undo.
-
 Budget (AR21): every LLM call goes through ``CallBudget``
 (``app.pipeline.budget``), which checks the per-job counter against
 ``job.max_llm_calls`` BEFORE the HTTP request and fails the job when
-exceeded — the build-in runner's waves and stat-repair pass all reuse
-the same guard (up to three calls per job since spec-2.4).
+exceeded — the build-in runner's waves and stat-repair pass, and the
+generate runner's call plus its one bounded repair pass, all reuse
+the same guard.
+
 """
 
 import asyncio
@@ -83,6 +86,13 @@ def _run_job(job: models.Job, provider: Provider, settings: LLMSettings) -> None
         from app.pipeline.build_in import run_build_in
 
         run_build_in(job, provider, settings)
+        return
+    if job.kind == "generate":
+        # Lazy import (same circularity as ``build_in``): the generate
+        # runner stages candidates and commits nothing (spec-3.1).
+        from app.pipeline.generate import run_generate
+
+        run_generate(job, provider, settings)
         return
     if job.kind != "text":
         raise JobPayloadError(

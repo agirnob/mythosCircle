@@ -165,8 +165,9 @@ def delete_campaign(owner_id: str, campaign_id: str) -> bool:
     """AR20 total hard delete of an owned campaign; False for unknown/foreign.
 
     One transaction: remove the campaign row and cascade revisions, events,
-    entities, edges, jobs, and media-manifest rows. Any failure rolls the
-    whole delete back — nothing is half-removed.
+    entities, edges, proposed candidates (spec-3.1 staging rows carry FKs
+    to campaign and job), jobs, and media-manifest rows. Any failure rolls
+    the whole delete back — nothing is half-removed.
     """
     deleted = False
     with session_scope() as session:
@@ -177,6 +178,11 @@ def delete_campaign(owner_id: str, campaign_id: str) -> bool:
         session.execute(delete(models.Revision).where(models.Revision.campaign_id == campaign_id))
         session.execute(delete(models.Entity).where(models.Entity.campaign_id == campaign_id))
         session.execute(delete(models.Edge).where(models.Edge.campaign_id == campaign_id))
+        session.execute(
+            delete(models.ProposedCandidate).where(
+                models.ProposedCandidate.campaign_id == campaign_id
+            )
+        )
         session.execute(delete(models.Job).where(models.Job.campaign_id == campaign_id))
         session.execute(delete(models.Media).where(models.Media.campaign_id == campaign_id))
         session.delete(row)

@@ -116,34 +116,48 @@ def _migrate_job_result(engine: Engine) -> None:
 
 
 def _migrate_job_kind(engine: Engine) -> None:
-    """Add ``build_in`` to the job-kind check constraint on a pre-2.1 database.
+    """Widen the job-kind CHECK constraint on a pre-current database.
 
     SQLite cannot ALTER a CHECK constraint, so the table is rebuilt with
     the standard constraint-rebuild recipe: capture the table DDL plus the
     job table's explicit index DDLs, create ``job_new`` with the widened
     ``kind`` check, copy the rows, drop the old table, rename, then
     re-create the indexes (their DDL references ``job``, which is valid
-    again after the rename). Idempotent: a ``job`` table whose DDL already
-    contains ``'build_in'`` is left untouched, and ``create_all`` on a
-    fresh database already emits the widened constraint.
+    again after the rename). The rebuild derives BOTH the canonical kind
+    list and the idempotency test from ``JOB_KINDS`` (function-local
+    import — store.jobs imports this package): a job table whose DDL
+    already admits every current kind is left untouched; otherwise the
+    IN-list is substituted with the full sorted set. One pass therefore
+    migrates every older shape — the pre-2.1 3-kind list (spec-2.1), the
+    2.1 list missing ``generate`` (spec-3.1), and any future kind added
+    to ``JOB_KINDS`` — and ``create_all`` on a fresh database already
+    emits the widened constraint.
     """
+    import re
+
     from sqlalchemy import text
+
+    from app.store.jobs import JOB_KINDS
 
     with engine.begin() as connection:
         row = connection.execute(
             text("SELECT sql FROM sqlite_master WHERE type='table' AND name='job'")
         ).first()
-        if row is None or row[0] is None or "build_in" in row[0]:
+        table_sql = row[0] if row is not None else None
+        if table_sql is None or all(f"'{kind}'" in table_sql for kind in JOB_KINDS):
             return
-        table_sql = row[0]
         index_rows = connection.execute(
             text(
                 "SELECT sql FROM sqlite_master WHERE type='index'"
                 " AND tbl_name='job' AND sql IS NOT NULL"
             )
         ).fetchall()
-        new_table_sql = table_sql.replace(
-            "'text','image','video'", "'text','image','video','build_in'"
+        kind_list = ",".join(f"'{kind}'" for kind in sorted(JOB_KINDS))
+        new_table_sql = re.sub(
+            r"kind IN \([^)]*\)",
+            f"kind IN ({kind_list})",
+            table_sql,
+            count=1,
         ).replace("CREATE TABLE job ", "CREATE TABLE job_new ", 1)
         connection.execute(text(new_table_sql))
         connection.execute(text("INSERT INTO job_new SELECT * FROM job"))

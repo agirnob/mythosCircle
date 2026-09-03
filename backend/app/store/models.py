@@ -28,6 +28,15 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+#: The epic's proposal-kind contract (spec-3.1 Design Notes): a
+#: ``generate`` job stages ``entity`` proposals. Defined here (not in
+#: store.candidates) so the table CHECKs and the staging writer share one
+#: definition; story 3.2 extends the lists in place.
+PROPOSAL_KIND = "entity"
+#: The only staged status this story writes; accept/reject (3.2) owns the
+#: remaining states.
+STATUS_PROPOSED = "proposed"
+
 
 class Base(DeclarativeBase):
     """Declarative base for the world-store schema."""
@@ -164,7 +173,7 @@ class Job(Base):
             name="ck_job_state",
         ),
         CheckConstraint(
-            "kind IN ('text','image','video','build_in')",
+            "kind IN ('text','image','video','build_in','generate')",
             name="ck_job_kind",
         ),
         CheckConstraint("progress >= 0.0 AND progress <= 1.0", name="ck_job_progress"),
@@ -185,6 +194,38 @@ class Job(Base):
     created_at: Mapped[str] = mapped_column(String(40))
     started_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     finished_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class ProposedCandidate(Base):
+    """One staged candidate entity from a ``generate`` job (AR7, AR19).
+
+    Staging rows live OUTSIDE the entity/edge tables (AR7): retrieval,
+    export, and every world read are untouched until the DM accepts
+    (story 3.2 owns the accept/reject lifecycle and the commit path; the
+    generate runner never calls ``commit_subgraph``). ``payload`` is the
+    candidate's structured AR19 record (name, role, personality, the
+    secret/rumor/party-hook triple, an AR25 stat block, typed edges into
+    the committed world) and tolerates extra keys (AR24 forward
+    compatibility). Written only through the store's staging function
+    (AD-1) — one row per staged candidate, no revision, no event.
+    """
+
+    __tablename__ = "proposed_candidate"
+    __table_args__ = (
+        # DB-level enforcement of the closed proposal-kind and staging-
+        # status sets, mirroring ck_job_kind/ck_job_state; story 3.2
+        # extends these same lists.
+        CheckConstraint(f"kind IN ('{PROPOSAL_KIND}')", name="ck_proposed_candidate_kind"),
+        CheckConstraint(f"status IN ('{STATUS_PROPOSED}')", name="ck_proposed_candidate_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaign.id"), index=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("job.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[str] = mapped_column(String(40))
 
 
 class Media(Base):

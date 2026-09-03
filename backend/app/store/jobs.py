@@ -45,7 +45,12 @@ from app.store.db import session_scope
 #: Closed job-kind set (AD-3 runner split: text + build_in -> pipeline,
 #: image/video -> media). ``build_in`` is AD-19's guided build-in kind;
 #: its runner is the two-wave core-first build-in pipeline (spec-2.3).
-JOB_KINDS: frozenset[str] = frozenset({"text", "image", "video", "build_in"})
+#: ``generate`` is Epic 3's plain-language ask kind (spec-3.1): its runner
+#: stages 2-3 proposed candidates, committing nothing.
+JOB_KINDS: frozenset[str] = frozenset({"text", "image", "video", "build_in", "generate"})
+
+#: Generate payload contract (spec-3.1): exactly one plain-language ask.
+GENERATE_MAX_ASK_LENGTH = 2000
 
 #: Build-in payload contract (spec-2.1): free-form section caps.
 BUILD_IN_MAX_ENTRIES = 100
@@ -176,8 +181,11 @@ def enqueue_job(
     """Enqueue one job at the tail of the global FIFO (AD-3).
 
     Rejects (zero rows written) with ``UnknownCampaignError`` (404),
-    ``InvalidJobInputError`` (422: kind outside {text,image,video},
-    non-ULID ``job_id``, negative budgets, non-dict payload),
+    ``InvalidJobInputError`` (422: kind outside the closed set,
+    non-ULID ``job_id``, negative budgets, non-dict payload, a
+    ``build_in`` payload violating the spec-2.1 contract, a ``generate``
+    payload that is not exactly ``{"ask": str}`` or a campaign with zero
+    committed entities — spec-3.1 ASK_EMPTY_WORLD),
     ``DuplicateJobError`` (409, idempotent by job-id), or
     ``QueueFullError`` (409, AR28 pending cap). Budgets default from
     env; enforcement is Story 1.4 (AR21).
@@ -385,6 +393,8 @@ def _enqueue(
         raise InvalidJobInputError(f"job kind must be one of {sorted(JOB_KINDS)}, got {kind!r}")
     if kind == "build_in":
         _validate_build_in_payload(payload)
+    elif kind == "generate":
+        _validate_generate_payload(payload)
     if not isinstance(payload, dict):
         raise InvalidJobInputError("job payload must be a JSON object")
     _check_json_serializable(payload)
@@ -401,8 +411,23 @@ def _enqueue(
         raise InvalidJobInputError(f"max_media_calls must be >= 0, got {max_media_calls}")
     if session.get(models.Campaign, campaign_id) is None:
         raise UnknownCampaignError(campaign_id)
+    # The idempotency check precedes the generate empty-world gate: a
+    # retry whose world was emptied by undo is the documented 409, never
+    # a 422 masquerading as new input (spec-3.1 review round 1).
     if job_id is not None and session.get(models.Job, job_id) is not None:
         raise DuplicateJobError(job_id)
+    if kind == "generate":
+        # ASK_EMPTY_WORLD (spec-3.1): a plain-language ask needs a world
+        # to weave into — zero committed entities is a 422, no job row.
+        committed = session.scalar(
+            select(func.count())
+            .select_from(models.Entity)
+            .where(models.Entity.campaign_id == campaign_id)
+        )
+        if not committed:
+            raise InvalidJobInputError(
+                "generate requires at least one committed entity in the campaign"
+            )
     pending = session.scalar(
         select(func.count())
         .select_from(models.Job)
@@ -489,6 +514,27 @@ def _validate_build_in_payload(payload: dict[str, Any]) -> None:
         any_content = True
     if not any_content:
         raise InvalidJobInputError("build_in requires at least one non-blank section entry")
+
+
+def _validate_generate_payload(payload: dict[str, Any]) -> None:
+    """Enforce the spec-3.1 generate payload contract (422, zero rows).
+
+    The payload is exactly ``{"ask": str}`` — the DM's plain-language
+    ask, a single non-blank string whose trimmed length is at most
+    ``GENERATE_MAX_ASK_LENGTH``. A missing/non-string/blank/over-long
+    ask, or any extra key, is rejected before any row is written.
+    """
+    if not isinstance(payload, dict):
+        raise InvalidJobInputError("generate payload must be a JSON object")
+    if set(payload) != {"ask"}:
+        raise InvalidJobInputError("generate payload must be exactly {'ask': str}")
+    ask = payload["ask"]
+    if not isinstance(ask, str):
+        raise InvalidJobInputError("generate ask must be a string")
+    if not ask.strip():
+        raise InvalidJobInputError("generate ask must be non-blank")
+    if len(ask.strip()) > GENERATE_MAX_ASK_LENGTH:
+        raise InvalidJobInputError(f"generate ask exceeds {GENERATE_MAX_ASK_LENGTH} chars")
 
 
 def _check_json_serializable(payload: dict[str, Any]) -> None:

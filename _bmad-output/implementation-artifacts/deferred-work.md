@@ -171,3 +171,9 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-1-guided-build-in-flow.md`
   summary: Cold-visiting any public route (/register, /login) redirects to /login — the auth hydrate probe's 401 fires the global AR29 unauthorized handler, which pushes to login regardless of the current route; a new DM with a bookmarked register link can never reach it directly.
   evidence: Browser-instrumented navigation shows frame /register -> GET /api/auth/me 401 -> frame /login; main.ts registers the handler unconditionally. Fix shape: skip the login redirect when `router.currentRoute.value.meta` marks the route public (or when the 401 originates from `hydrate`). [frontend/src/main.ts, frontend/src/api/client.ts, frontend/src/router.ts]
+
+## Deferred from: code review of spec-3-1-plain-language-ask-returns-2-3-candidates.md (2026-09-03)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-plain-language-ask-returns-2-3-candidates.md`
+  summary: Worlds beyond the 24-entity AR6 retrieval cap silently lose ask-relevant context — the generate runner seeds retrieval with the full committed world (seed_ids=None), so in a world larger than the cap the entity the ask targets may be absent from the prompt and candidates weave to arbitrary rowid-first anchors with no diagnostic.
+  evidence: generate.py retrieves with seed_ids=None and the default entity cap of 24; build-in may legally commit up to 100 key figures, so worlds routinely exceed the cap. This narrows the spec-2-3 deferred item ("revisit cap/anchor-set in 2.7 or Epic 3") for the candidates path — the cap/anchor-set decision (surfacing truncation in the job result, ask-target seeding) still needs an owner-reviewed story. [backend/app/pipeline/generate.py, backend/app/pipeline/retrieval.py]
