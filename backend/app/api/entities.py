@@ -1,9 +1,12 @@
 """Entity deletion REST surface (FR4, AD-5; spec-2.5).
 
 One route mirroring the campaigns DELETE confirm-body pattern: the body
-is read via ``request`` (FastAPI cannot bind a Pydantic body to DELETE
-directly) and malformed JSON behaves like an absent body. Ownership is
-checked FIRST: a foreign campaign id is always 404, even without a body.
+is read via ``request`` because a DELETE body is parsed leniently by
+hand (a missing body is legal here — an entity with zero live edges
+deletes without confirmation), but anything that IS present must be a
+JSON object: malformed JSON is a 400 and a non-dict JSON body (list,
+number, string) is a 400. Ownership is checked FIRST: a foreign
+campaign id is always 404, even without a body.
 
 Confirmation contract (AD-5 — required only "with live edges"):
 - an entity with zero live edges deletes with no body at all;
@@ -12,11 +15,13 @@ Confirmation contract (AD-5 — required only "with live edges"):
 - ``{"cascade": true}`` requires ``{"confirm": true}`` — the destructive
   option, like AR20's campaign delete, is gated on explicit confirmation;
 - ``{"confirm": true, "cascade": true}`` removes the entity plus every
-  edge touching it in one revision; neighbors survive.
+  edge touching it in one revision; neighbors survive;
+- ``cascade`` and ``confirm`` must be JSON booleans when present —
+  any other type is a 400, never silently ignored.
 """
 
 import json as _json
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -43,14 +48,35 @@ async def delete_entity(
         # Foreign or unknown — indistinguishable 404 even without a body
         # (matrix row DELETE_UNKNOWN mirrors campaigns DELETE_FOREIGN).
         raise HTTPException(status_code=404, detail="Campaign not found.")
-    try:
-        payload = await request.json()
-    except (ValueError, _json.JSONDecodeError):
-        payload = None
+    body = await request.body()
+    if not body:
+        # An absent body is legal: an entity with zero live edges
+        # deletes without confirmation (DELETE_EDGELESS, AD-5).
+        payload: Any = {}
+    else:
+        try:
+            payload = _json.loads(body)
+        except (ValueError, _json.JSONDecodeError):
+            # A malformed body is a client error, not an absent one —
+            # mirroring the campaigns DELETE pattern (owner decision
+            # 2026-09-03).
+            raise HTTPException(
+                status_code=400, detail="Request body must be valid JSON."
+            ) from None
     if not isinstance(payload, dict):
-        payload = {}
-    cascade = payload.get("cascade") is True
-    confirm = payload.get("confirm") is True
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    cascade = payload.get("cascade")
+    confirm = payload.get("confirm")
+    if (
+        cascade is not None
+        and not isinstance(cascade, bool)
+        or (confirm is not None and not isinstance(confirm, bool))
+    ):
+        raise HTTPException(
+            status_code=400, detail="'cascade' and 'confirm' must be booleans when present."
+        )
+    cascade = bool(cascade)
+    confirm = bool(confirm)
     if cascade and not confirm:
         # The destructive option requires the explicit confirmation, same
         # gate as AR20's campaign delete — a bare {"cascade": true} is a

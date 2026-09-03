@@ -110,23 +110,43 @@ context:
 - [Review][Defer ×8] 2.4-scope items (repair spell-reference subsetting, `_check_spells` suppression, cancel-during-repair test, repair ref digit overflow, blank descriptions, prompt heading/"(none listed)" nit) + env-helper boundary/leniency inconsistency + post-delete media reclamation for 4-3 — routed to `deferred-work.md`.
 - [Review][Reject] Ask-First-2 "reported as affected" is satisfied: post-cascade edgeless neighbors are a subset of the `LiveEdgesError` affected list; `OrphanEntityError`→422 mapping is a defensive shared-mapper entry (Epic 3 accept path gains API callers); "Suggested Review Order" section is not part of the template.
 
+**Second review pass — 2026-09-03** (4 layers: blind-hunter, edge-case-hunter, verification-gap, acceptance-auditor; post-patch state of 5e655d1)
+- [x] [Review][Patch] Malformed/non-dict JSON body on entity DELETE now a 400 (owner decision 2026-09-03: mirror campaigns; missing body still allowed per DELETE_EDGELESS). [backend/app/api/entities.py:46-51]
+- [x] [Review][Patch] Store-level commit rejects self-loop edges (`src == dst`) with a structured StoreError → 422 (owner decision 2026-09-03: close the bypass hole outright; neighbor listing still skips self-loops defensively). [backend/app/store/commit.py:312-338]
+- [x] [Review][Patch] Self-loop delete lists the entity as its own affected neighbor — `neighbor_id = edge.dst if edge.src == entity_id else edge.src` resolves a self-loop to the target itself, so the AD-5 409 listing names the deleted entity; skip `src == dst` edges in the neighbor loop (cascade deletion itself is unaffected). [blind-hunter+edge-case-hunter+acceptance-auditor] [backend/app/store/commit.py:505-513]
+- [x] [Review][Patch] Wrong-typed cascade/confirm JSON values silently ignored — `{"cascade": "true"}` behaves as absent: 409 on live edges (safe) but a silent 204 delete on an edgeless target; reject non-bool cascade/confirm with 400, mirroring campaigns' strict `is not True` gate. [backend/app/api/entities.py:52-53]
+- [x] [Review][Patch] AC3's edge-ULID stability is implemented but not pinned — `test_undo_of_cascade_delete_recreates_with_stable_ulids` resolves edge ids via post-undo `_edge_id(...)` lookup, so a regression that re-mints ULIDs on undo would pass; capture edge ids from the pre-delete state (or `edge_deleted` payloads) and assert equality. [acceptance-auditor] [backend/tests/test_store.py:1486-1489]
+- [x] [Review][Patch] Entities DELETE body-parsing contract ships unverified — malformed JSON → absent, non-dict body → absent, non-string base_revision → 400 are pinned in the docstring but exercised by none of the 8 API tests (and the mirrored campaigns test only sends well-formed JSON); add the three rows (malformed-body shape depends on the Decision above). [blind-hunter+verification-gap] [backend/tests/test_entities_api.py, backend/app/api/entities.py:49-66]
+- [x] [Review][Patch] `OrphanEntityError` docstring omits the self-loop exclusion the implementation enforces (commit.py:351-357) — an implementer working from the docstring alone would accept a self-loop-connected orphan. [backend/app/store/commit.py:196-200]
+- [x] [Review][Patch] Deferred-work ledger misattributes six 2.4-scope findings (statblocks/knowledge/build_in/config) to `spec-2-5` — correct the source attribution for traceability. [_bmad-output/implementation-artifacts/deferred-work.md:101-128]
+- [x] [Review][Patch] Stale spec anchor: Suggested Review Order pins "edge_deleted per touching edge + entity_deleted" at commit.py:478, which falls inside `delete_entity`'s docstring; the event-append block sits ~L523-541. [spec §Suggested Review Order]
+- [x] [Review][Patch] The `details` envelope wire shape is undocumented — `affected_entities` item keys (id/name), rowid ordering, dedup, and the `entity_id` key are defined only by reverse-reading tests; document the schema for 2.7/Epic 3 consumers. [backend/app/api/common.py:64-71, backend/app/api/entities.py]
+- [x] [Review][Patch] entities.py propagates a false rationale: "FastAPI cannot bind a Pydantic body to DELETE directly" is inaccurate — FastAPI binds Pydantic DELETE bodies fine; the real motive is lenient manual body parsing; fix the comment in the new file (don't widen the campaigns.py copy). [backend/app/api/entities.py:3-5]
+- [x] [Review][Defer] `base_revision` is accepted on the wire but unusable until revision ids are exposed (2.6 export / 2.3 world view own that surface). [backend/app/api/entities.py:52-65] — deferred, pre-existing scope boundary
+- [x] [Review][Defer] No delete-side concurrency coverage (delete vs commit race, interleaved base=None semantics). [backend/app/store/commit.py:445-475] — deferred, test hardening
+- [x] [Review][Defer] Delete during an in-flight build-in job: the next wave dies on DanglingEdgeError surfaced as a structured job-fail event; no I/O-matrix row — Epic 3 candidate lifecycle revisits. [spec §I/O & Edge-Case Matrix] — deferred, frozen "no pipeline changes"
+- [x] [Review][Defer] Affected-listing guarantees (multi-neighbor dedup, rowid ordering, id+name shape) asserted only via the helper, never through the shipped API error payload. [backend/tests/test_entities_api.py:150-170] — deferred, test hardening
+- [x] [Review][Defer] Async route runs a synchronous session_scope-backed SQLite transaction on the event loop (blocks all concurrent requests for the txn duration incl. busy-timeout waits) — inherited from the campaigns DELETE pattern, codebase-wide. [backend/app/api/entities.py:35-65] — deferred, pre-existing pattern
+
+
 ## Suggested Review Order
 
 **FR2 — store-level no-orphan rule**
 
 - Entry point: the create-only orphan backstop, after edge validation, before the revision exists.
-  [`commit.py:340`](../../backend/app/store/commit.py#L340)
+  [`commit.py:366`](../../backend/app/store/commit.py#L366)
 - New error names the orphans (id + name) for the fail path.
   [`commit.py:195`](../../backend/app/store/commit.py#L195)
-- Self-loops don't weave an entity into the world — excluded from the connected set (review fix).
-  [`test_store.py:1310`](../../backend/tests/test_store.py#L1310)
+- Self-loop edges are rejected outright at the store backstop — new and existing entities alike (second-pass review fix, owner decision 2026-09-03).
+  [`commit.py:341`](../../backend/app/store/commit.py#L341)
+  [`test_store.py:1311`](../../backend/tests/test_store.py#L1311)
 
 **FR4 — commit-path cascade delete**
 
 - Public entry: campaign-scoped fetch, optional base_revision, cascade gate.
-  [`commit.py:445`](../../backend/app/store/commit.py#L445)
+  [`commit.py:471`](../../backend/app/store/commit.py#L471)
 - One revision: `edge_deleted` per touching edge + `entity_deleted`, `before` snapshots match undo's keys.
-  [`commit.py:478`](../../backend/app/store/commit.py#L478)
+  [`commit.py:558`](../../backend/app/store/commit.py#L558)
 - Live-edge rejection carries the affected neighbors (ids + names, deduplicated) for AD-5's listing.
   [`commit.py:220`](../../backend/app/store/commit.py#L220)
 - Adjacency read helper — rowid-ordered edges touching one entity; delete preflight + API listing share it.
@@ -135,16 +155,16 @@ context:
 **Wire surface**
 
 - Route mirrors AR20's campaigns confirm-body pattern; cascade-without-confirm is a 400.
-  [`entities.py:35`](../../backend/app/api/entities.py#L35)
+  [`entities.py:40`](../../backend/app/api/entities.py#L40)
 - `StoreHTTPException` moved to core (no api→core leak); envelope `details` gated on it.
   [`errors.py:53`](../../backend/app/core/errors.py#L53)
-- Mapper made public (`store_error_as_http`); new errors: orphan 422, live-edges 409, unknown-entity 404.
-  [`common.py:42`](../../backend/app/api/common.py#L42)
+- Mapper made public (`store_error_as_http`); new errors: orphan 422, self-loop 422, live-edges 409, unknown-entity 404.
+  [`common.py:44`](../../backend/app/api/common.py#L44)
 
 **Undo + tests**
 
 - Undo of a cascade recreates entity + edges with stable ULIDs — zero undo.py changes, pinned.
-  [`test_store.py:1472`](../../backend/tests/test_store.py#L1472)
+  [`test_store.py:1486`](../../backend/tests/test_store.py#L1486)
 - Matrix rows: orphan rejection, cascade one-revision/zero-dangling, API 409 listing + stale base.
   [`test_store.py:1283`](../../backend/tests/test_store.py#L1283)
   [`test_entities_api.py:126`](../../backend/tests/test_entities_api.py#L126)

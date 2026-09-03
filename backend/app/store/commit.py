@@ -198,6 +198,8 @@ class OrphanEntityError(StoreError):
     The store-level backstop for commits that bypass the pipeline's
     ``_validate_subgraph``: every *new* entity must carry at least one
     edge whose other endpoint is staged or already committed.
+    Self-loop edges never count — they are rejected outright and are
+    not an edge "into existing world state".
     """
 
     def __init__(self, orphans: list[tuple[str, str]]) -> None:
@@ -233,6 +235,24 @@ class LiveEdgesError(StoreError):
         self.affected = affected
 
 
+class SelfLoopEdgeError(StoreError):
+    """An edge whose endpoints are the same entity (FR2, AD-23).
+
+    A self-loop is not an edge "into existing world state" — the
+    pipeline's ``_validate_subgraph`` forbids them, and the store is
+    the backstop for commits that bypass the pipeline, so it rejects
+    them at the same boundary (FR2, owner decision 2026-09-03).
+    """
+
+    def __init__(self, edge: models.EdgeInput) -> None:
+        super().__init__(
+            f"self-loop edge rejected: edge {edge.id or '(new)'} "
+            f"({edge.src} -> {edge.dst}, type {edge.type!r}) — an entity "
+            "cannot be its own edge endpoint"
+        )
+        self.edge = edge
+
+
 # ---------------------------------------------------------------------------
 # Campaign seed helper (campaign CRUD is story 1.6)
 # ---------------------------------------------------------------------------
@@ -255,11 +275,11 @@ def commit_subgraph(
     Rejects (no state change) with ``UnknownCampaignError``,
     ``StaleRevisionError``, ``InvalidEdgeTypeError``,
     ``InvalidEdgeCounterError``, ``DanglingEdgeError``,
-    ``DuplicateEntityError``, ``DuplicateEdgeError``,
-    ``EdgeRetargetError``, ``CrossCampaignConflictError``,
-    ``InvalidUlidError``, ``EmptySubgraphError``, or
-    ``OrphanEntityError`` (FR2: a newly created entity with zero edges
-    into staged or existing state).
+    ``SelfLoopEdgeError``, ``DuplicateEntityError``,
+    ``DuplicateEdgeError``, ``EdgeRetargetError``,
+    ``CrossCampaignConflictError``, ``InvalidUlidError``,
+    ``EmptySubgraphError``, or ``OrphanEntityError`` (FR2: a newly
+    created entity with zero edges into staged or existing state).
     """
     with session_scope() as session:
         return _commit(session, campaign_id, list(entities), list(edges), base_revision)
@@ -318,6 +338,12 @@ def _commit(
         for endpoint in (edge.src, edge.dst):
             if endpoint not in known_ids:
                 raise DanglingEdgeError(edge, endpoint)
+        if edge.src == edge.dst:
+            # A self-loop is not an edge "into existing world state" —
+            # the pipeline forbids them and the store is the backstop
+            # for commits that bypass the pipeline (FR2, owner decision
+            # 2026-09-03).
+            raise SelfLoopEdgeError(edge)
         if edge.id is not None:
             if edge.id in seen_edge_ids:
                 raise DuplicateEdgeError(f"edge staged twice: {edge.id}")
@@ -505,6 +531,11 @@ def _delete_entity(
     if live_edges and not cascade:
         neighbors: dict[str, str] = {}
         for edge in live_edges:
+            if edge.src == edge.dst:
+                # Defensive: the commit path rejects self-loops
+                # (SelfLoopEdgeError), so a live self-loop cannot exist;
+                # if one ever did, the entity is not its own neighbor.
+                continue
             neighbor_id = edge.dst if edge.src == entity_id else edge.src
             neighbor = session.get(models.Entity, neighbor_id)
             neighbors.setdefault(neighbor_id, neighbor.name if neighbor else neighbor_id)

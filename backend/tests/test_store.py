@@ -36,6 +36,7 @@ from app.store import (
     InvalidUlidError,
     LiveEdgesError,
     OrphanEntityError,
+    SelfLoopEdgeError,
     StaleRevisionError,
     UnknownCampaignError,
     UnknownEntityError,
@@ -1307,18 +1308,31 @@ def test_commit_orphan_on_empty_world_rejected(world: str) -> None:
         commit_subgraph(world, [models.EntityInput(kind="place", name="Lone Hill")])
 
 
-def test_commit_self_loop_does_not_connect_new_entity(world: str) -> None:
-    """A self-loop edge never satisfies the no-orphan rule (FR2): a
-    self-loop does not weave the entity into staged or existing state,
-    and the pipeline forbids self-loops outright (spec-2.3)."""
+def test_commit_self_loop_rejected(world: str) -> None:
+    """A self-loop edge is rejected outright (FR2, owner decision
+    2026-09-03): the pipeline forbids self-loops (spec-2.3) and the
+    store is the backstop for commits that bypass the pipeline — for
+    new entities and existing entities alike. A self-loop never
+    satisfies the no-orphan rule either."""
     loner_id = ids.new_id()
-    with pytest.raises(OrphanEntityError):
+    with pytest.raises(SelfLoopEdgeError):
         commit_subgraph(
             world,
             [models.EntityInput(kind="place", name="The Lonely Hill", id=loner_id)],
             [models.EdgeInput(src=loner_id, dst=loner_id, type="located_in")],
             base_revision=None,
         )
+    # An existing entity cannot loop onto itself either.
+    bar_id, _mira_id = _seed_world(world)
+    with pytest.raises(SelfLoopEdgeError):
+        commit_subgraph(
+            world,
+            edges=[models.EdgeInput(src=bar_id, dst=bar_id, type="rival_of")],
+            base_revision=_head(world),
+        )
+    # Nothing was written beyond the seed wave.
+    with session_scope() as session:
+        assert len(list(revision_chain(session, world))) == 1  # seed wave only
 
 
 def test_commit_connected_staged_create_accepted(world: str) -> None:
@@ -1474,19 +1488,26 @@ def test_undo_of_cascade_delete_recreates_with_stable_ulids(world: str) -> None:
     entity and its edges with stable ULIDs via the existing undo
     machinery — zero undo.py changes (AD-2)."""
     bar_id, mira_id = _seed_world(world)
+    # Capture the edge ids BEFORE the delete so the undo assertion pins
+    # the stable-ULID contract itself, not a post-undo lookup (AC3).
+    member_id_before = _edge_id(world, mira_id, bar_id, "member_of")
+    debt_id_before = _edge_id(world, mira_id, bar_id, "debt")
     delete_entity(world, mira_id, cascade=True, base_revision=_head(world))
     entities_after_delete, edges_after_delete = _state(world)
     assert mira_id not in entities_after_delete
+    assert member_id_before not in edges_after_delete
+    assert debt_id_before not in edges_after_delete
     head = _head(world)
     assert head is not None
     undo_revision = undo(world, head)
     entities, edges = _state(world)
     assert mira_id in entities  # stable ULID
     assert entities[mira_id][1] == "Mira Vane"
-    member_id = _edge_id(world, mira_id, bar_id, "member_of")
-    debt_id = _edge_id(world, mira_id, bar_id, "debt")
-    assert edges[member_id][3] == 1  # stable ULID + counter
-    assert edges[debt_id][3] == 3
+    # The recreated edges carry the deleted edges' ULIDs, not fresh ones.
+    assert member_id_before in edges
+    assert debt_id_before in edges
+    assert edges[member_id_before][3] == 1  # stable ULID + counter
+    assert edges[debt_id_before][3] == 3
     with session_scope() as session:
         events = list(revision_events(session, world, undo_revision.id))
         assert [ev.type for ev in events] == [

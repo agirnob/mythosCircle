@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import ids
-from app.store import commit_subgraph, models
+from app.store import commit_subgraph, models, session_scope, world_entities
 
 
 @pytest.fixture()
@@ -263,3 +263,73 @@ def test_delete_stale_base_revision_409_then_current_head_succeeds(client: Any) 
     with session_scope() as session:
         # seed, stale-maker, delete — the stale attempt wrote nothing.
         assert len(list(revision_chain(session, mine["id"]))) == 3
+
+
+def test_delete_malformed_body_400(client: Any) -> None:
+    """A syntactically invalid body is a client error — 400, never
+    silently treated as absent; nothing is deleted (owner decision
+    2026-09-03, mirroring campaigns DELETE)."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    _bar_id, mira_id = _seed_world(mine["id"])
+    response = client.request(
+        "DELETE",
+        f"/api/campaigns/{mine['id']}/entities/{mira_id}",
+        content=b"{oops",
+    )
+    assert response.status_code == 400
+    with session_scope() as session:
+        assert mira_id in {e.id for e in world_entities(session, mine["id"])}
+
+
+def test_delete_non_dict_body_400(client: Any) -> None:
+    """A JSON body that is not an object (array, number) is a 400 — it
+    is a present body the client sent, not an absent one."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    _bar_id, mira_id = _seed_world(mine["id"])
+    for body in (b"[1, 2]", b"42", b'"cascade"'):
+        response = client.request(
+            "DELETE",
+            f"/api/campaigns/{mine['id']}/entities/{mira_id}",
+            content=body,
+        )
+        assert response.status_code == 400
+    with session_scope() as session:
+        assert mira_id in {e.id for e in world_entities(session, mine["id"])}
+
+
+def test_delete_wrong_typed_flags_400(client: Any) -> None:
+    """Non-boolean ``cascade``/``confirm`` values are rejected with 400 —
+    never silently treated as absent (an edgeless target would otherwise
+    delete on ``{\"cascade\": \"true\"}``)."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    _bar_id, mira_id = _seed_world(mine["id"])
+    for payload in (
+        {"cascade": "true"},
+        {"cascade": 1},
+        {"confirm": "yes"},
+        {"confirm": 1, "cascade": True},
+    ):
+        response = client.request(
+            "DELETE", f"/api/campaigns/{mine['id']}/entities/{mira_id}", json=payload
+        )
+        assert response.status_code == 400, payload
+    with session_scope() as session:
+        assert mira_id in {e.id for e in world_entities(session, mine["id"])}
+
+
+def test_delete_non_string_base_revision_400(client: Any) -> None:
+    """A non-string ``base_revision`` is a 400 before any store call."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    _bar_id, mira_id = _seed_world(mine["id"])
+    response = client.request(
+        "DELETE",
+        f"/api/campaigns/{mine['id']}/entities/{mira_id}",
+        json={"confirm": True, "cascade": True, "base_revision": 123},
+    )
+    assert response.status_code == 400
+    with session_scope() as session:
+        assert mira_id in {e.id for e in world_entities(session, mine["id"])}

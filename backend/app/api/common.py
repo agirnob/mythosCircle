@@ -31,6 +31,7 @@ from app.store import (
     LiveEdgesError,
     OrphanEntityError,
     QueueFullError,
+    SelfLoopEdgeError,
     StaleRevisionError,
     UnknownCampaignError,
     UnknownEntityError,
@@ -67,6 +68,12 @@ def store_error_as_http(exc: Exception) -> NoReturn:
         if isinstance(exc, LiveEdgesError):
             # AD-5: the DM must see the affected neighbors before
             # confirming — the listing rides the envelope's ``details``.
+            # Wire schema (consumed by 2.7's world view and Epic 3's
+            # accept path):
+            #   details.affected_entities: list of {"id": <ULID>,
+            #     "name": <entity name>}, rowid-ordered, deduplicated
+            #     per neighbor;
+            #   details.entity_id: the delete target's ULID.
             raise StoreHTTPException(
                 status_code=409,
                 detail=str(exc),
@@ -88,6 +95,7 @@ def store_error_as_http(exc: Exception) -> NoReturn:
             DuplicateEntityError,
             EmptySubgraphError,
             OrphanEntityError,
+            SelfLoopEdgeError,
         ),
     ):
         raise HTTPException(status_code=422, detail=str(exc)) from exc

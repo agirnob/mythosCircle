@@ -101,27 +101,45 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 
 ## Deferred from: review of spec-2-5-no-orphans-and-cascade-delete (2026-09-02)
 
-- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+- source_spec: `spec-2-4-key-figures-carry-a-minimal-5e-stat-block.md` (found in the spec-2-5 review)
   summary: Repair prompt embeds only the flagged blocks' classes in the spell reference — a repair that legally switches `identity.class` to an unflagged class never sees that class's spell line, so an off-list spell fails final validation with no second repair pass.
   evidence: `spells_reference_text(_flagged_classes(issues))` subsets by the flagged classes only; rules text tells the model to use its class's line. Real only when a spell violation coexists with a class switch — revisit with 2.4's repair-prompt quality measurement. [backend/app/pipeline/statblocks.py]
-- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+- source_spec: `spec-2-4-key-figures-carry-a-minimal-5e-stat-block.md` (found in the spec-2-5 review)
   summary: `_check_spells` early-returns after the Monster-role error, suppressing duplicate/unknown-spell reporting in the same pass — the same violation-suppression shape as the deferred invalid-role → level/cr issue, different code path.
   evidence: role error appends and returns before the duplicate/unknown spell checks; a Monster block with bad role AND bad spells reports only the role error. [backend/app/pipeline/knowledge.py]
-- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+- source_spec: `spec-2-4-key-figures-carry-a-minimal-5e-stat-block.md` (found in the spec-2-5 review)
   summary: Cancel landing DURING the stat-repair call is specified (repaired core commits) but untested — only the before-repair cancel has a test.
   evidence: spec-2.4 frozen bullet pins the semantics; `test_cancel_before_stat_repair_is_noop` covers only the pre-call poll. [backend/tests/test_build_in_pipeline.py]
-- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+- source_spec: `spec-1-1-repo-scaffold.md` (env-parse helpers; epic-1 retro item 5 — found in the spec-2-5 review)
   summary: env-parse helpers carry inconsistent boundary and leniency semantics — `env_int` raises on value < minimum but accepts lenient `int()` forms ("1_0", "+5", " 5 "); `env_float` raises on value <= minimum (strictly >) and accepts nan/inf, which bypass the >minimum guard entirely.
   evidence: same-signature helpers with opposite boundary semantics; NaN comparison `value <= minimum` is False so a NaN timeout reaches httpx. Epic-1 retro item 5 consolidation shipped these; hardening is an ops-story concern. [backend/app/core/config.py, backend/app/core/settings.py]
-- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+- source_spec: `spec-2-4-key-figures-carry-a-minimal-5e-stat-block.md` (found in the spec-2-5 review)
   summary: A stat-repair ref with ≥4301 decimal digits raises a raw ValueError (CPython int-string limit) from `_parse_ref`, bypassing the `JobPayloadError` fail-event channel.
   evidence: `int(digits)` raises ValueError before the canonical re-raise; adversarial refs escape AR25's structured failure. [backend/app/pipeline/statblocks.py `_parse_ref`]
-- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+- source_spec: `spec-2-4-key-figures-carry-a-minimal-5e-stat-block.md` (found in the spec-2-5 review)
   summary: Empty/whitespace-only action and trait descriptions pass stat-block validation while names are guarded — guard parity gap.
   evidence: name checks require non-blank strings; the description check accepts `""`/`"   "`. [backend/app/pipeline/knowledge.py]
 - source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
   summary: Cascade delete leaves media rows pointing at the deleted entity until Epic 4's reclamation — story 4-3 must handle media whose entity was deleted post-2.5.
   evidence: AD-10 reclamation is explicitly deferred by 2.5's frozen constraints; the delete path appends no media events. [backend/app/store/commit.py `delete_entity`]
-- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+- source_spec: `spec-2-4-key-figures-carry-a-minimal-5e-stat-block.md` (found in the spec-2-5 review)
   summary: Wave-1 prompt's "STAT BLOCKS" section embeds rules text that opens with its own "STAT BLOCK RULES" heading (redundant nesting), and `spells_reference_text` emits "(none listed)" lines with no statement that the phrase means "no spells permitted".
   evidence: prompt-quality nit only — validation is unaffected; revisit when prompts are next measured. [backend/app/pipeline/build_in.py, backend/app/pipeline/statblocks.py]
+
+## Deferred from: code review of spec-2-5-no-orphans-and-cascade-delete.md (2026-09-03)
+
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: `base_revision` is accepted on the entity-DELETE wire but unusable until revision ids are exposed — 2.6 export / 2.3 world view own that surface.
+  evidence: DELETE returns 204 with no body and the route discards the `models.Revision` the store returns. [backend/app/api/entities.py:52-65]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: No delete-side concurrency coverage — delete vs commit race and interleaved `base_revision=None` semantics are unpinned (the commit race has `test_concurrent_commits_same_base_exactly_one_wins`; delete has no equivalent).
+  evidence: store tests pin commit races only. [backend/app/store/commit.py `delete_entity`]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: Delete during an in-flight build-in job: the next wave dies on `DanglingEdgeError` surfaced as a structured job-fail event; the I/O matrix has no delete-during-active-job row — Epic 3 candidate lifecycle revisits.
+  evidence: frozen constraint "no pipeline changes" keeps this out of 2.5 scope. [spec-2-5 I/O matrix, backend/app/pipeline/build_in.py]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: Affected-listing guarantees (multi-neighbor dedup, rowid ordering, id+name item shape) are exercised only via the `entity_live_edges` helper test, never asserted through the shipped 409 API error payload.
+  evidence: all API tests seed a single-neighbor world. [backend/tests/test_entities_api.py]
+- source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
+  summary: Async route runs a synchronous session_scope-backed SQLite transaction on the event loop, blocking concurrent requests for the txn duration (incl. busy-timeout waits) — inherited from the campaigns DELETE pattern, codebase-wide.
+  evidence: campaigns DELETE (AR20) uses the identical async-def + sync-store shape. [backend/app/api/entities.py:35-65, backend/app/api/campaigns.py:153-180]
