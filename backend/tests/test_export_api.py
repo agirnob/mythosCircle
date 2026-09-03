@@ -349,7 +349,8 @@ def test_export_multi_revision_exposes_head(client: Any) -> None:
 
 def test_export_non_finite_floats_never_500(client: Any) -> None:
     """Non-finite floats (NaN/inf round-trip through the JSON column)
-    coerce to null — a pure read endpoint never fails on its own data."""
+    coerce to null at any nesting depth — a pure read endpoint never
+    fails on its own data."""
     _register_login(client)
     campaign = _create_campaign(client).json()
     campaign_id = campaign["id"]
@@ -361,15 +362,126 @@ def test_export_non_finite_floats_never_500(client: Any) -> None:
                 id=probe_id,
                 kind="character",
                 name="Probe",
-                data={"probe": float("nan"), "inf": float("inf")},
+                data={
+                    "probe": float("nan"),
+                    "inf": float("inf"),
+                    "stat_block": {"hp": float("nan")},
+                    "note": [float("inf")],
+                },
             ),
             models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
         ],
         edges=[models.EdgeInput(src=probe_id, dst=anchor_id, type="located_in", counter=1)],
     )
     body = client.get(f"/api/campaigns/{campaign_id}/export").json()
-    assert body["entities"][0]["data"] == {"probe": None, "inf": None}
+    assert body["entities"][0]["data"] == {
+        "probe": None,
+        "inf": None,
+        "stat_block": {"hp": None},
+        "note": [None],
+    }
     md = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "markdown"}).text
-    assert _fences(md) == [{"probe": None, "inf": None}, {}]
+    assert _fences(md) == [
+        {"probe": None, "inf": None, "stat_block": {"hp": None}, "note": [None]},
+        {},
+    ]
     # The neutral located_in renders bare in Relations (second neutral type).
     assert "[[Probe]] --located_in--> [[Anchor]]" in md
+
+
+def test_export_fence_grows_with_backticks(client: Any) -> None:
+    """The yaml fence outgrows any backtick run inside the payload: data
+    containing ``` must never terminate the fence early (review patch P3
+    — a constant 3-backtick fence passes every other assertion while
+    corrupting real exports)."""
+    _register_login(client)
+    campaign = _create_campaign(client).json()
+    campaign_id = campaign["id"]
+    probe_id, anchor_id = new_id(), new_id()
+    payload = {"snippet": "```yaml\ntricky: true\n````"}
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(id=probe_id, kind="character", name="Probe", data=payload),
+            models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
+        ],
+        edges=[models.EdgeInput(src=probe_id, dst=anchor_id, type="located_in", counter=1)],
+    )
+    md = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "markdown"}).text
+    # Longest backtick run in the payload is 4, so the opening fence is 5.
+    assert re.search(r"`{5}yaml", md)
+    assert _fences(md) == [payload, {}]
+
+
+def test_export_campaign_deleted_mid_request_404s(
+    client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-transaction campaign re-check is load-bearing: a campaign
+    deleted between the ownership check and the snapshot transaction must
+    still 404, not produce a phantom empty-world 200 (review patch P4)."""
+    _register_login(client)
+    campaign = _create_campaign(client).json()
+    campaign_id = campaign["id"]
+    from app.api import exports as exports_module
+    from app.store import get_campaign as real_get_campaign
+
+    def get_campaign_then_delete(owner_id: str, cid: str) -> Any:
+        found = real_get_campaign(owner_id, cid)
+        if found is not None:
+            # Simulate the concurrent delete: the real DELETE route (AR20)
+            # runs after the ownership check has already passed.
+            client.request("DELETE", f"/api/campaigns/{cid}", json={"confirm": True})
+        return found
+
+    monkeypatch.setattr(exports_module, "get_campaign", get_campaign_then_delete)
+    response = client.get(f"/api/campaigns/{campaign_id}/export")
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+
+
+def test_export_markdown_label_uniqueness(client: Any) -> None:
+    """Post-sanitization label uniqueness (review patch P1): distinct
+    names can sanitize to one label, an all-unsafe name goes blank, and
+    structural headings are reserved — every emitted heading is unique,
+    duplicates grow ULID discriminators, and wikilinks match headings."""
+    _register_login(client)
+    campaign = _create_campaign(client).json()
+    campaign_id = campaign["id"]
+    vex_a, vex_b, ab1, ab2, edges_named, all_unsafe = (
+        new_id(),
+        new_id(),
+        new_id(),
+        new_id(),
+        new_id(),
+        new_id(),
+    )
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(id=vex_a, kind="character", name="Vex"),
+            models.EntityInput(id=vex_b, kind="character", name="Vex"),
+            models.EntityInput(id=ab1, kind="place", name="A[B"),
+            models.EntityInput(id=ab2, kind="place", name="A]B"),
+            models.EntityInput(id=edges_named, kind="place", name="Edges"),
+            models.EntityInput(id=all_unsafe, kind="place", name="[[[#]"),
+        ],
+        edges=[
+            models.EdgeInput(src=vex_a, dst=vex_b, type="debt", counter=50),
+            models.EdgeInput(src=ab1, dst=ab2, type="located_in", counter=1),
+            models.EdgeInput(src=ab2, dst=vex_a, type="located_in", counter=1),
+            models.EdgeInput(src=edges_named, dst=vex_a, type="located_in", counter=1),
+            models.EdgeInput(src=all_unsafe, dst=ab1, type="located_in", counter=1),
+        ],
+    )
+    md = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "markdown"}).text
+    headings = re.findall(r"^## (.+)$", md, re.MULTILINE)
+    # Every heading unique — the sanitized "A B" collision got a
+    # discriminator, the all-unsafe name fell back to its ULID.
+    assert len(headings) == len(set(headings))
+    assert headings.count("Edges") == 1  # structural heading not shadowed
+    vexes = [h for h in headings if h.startswith("Vex (")]
+    assert len(vexes) == 2 and vexes[0][-4:] != vexes[1][-4:]
+    sanitized_collide = [h for h in headings if h.startswith("A B")]
+    assert len(sanitized_collide) == 2
+    # Wikilinks use the same labels as headings.
+    assert f"[[{vexes[0]}]] --debt(50)--> [[{vexes[1]}]]" in md

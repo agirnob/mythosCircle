@@ -35,7 +35,7 @@ from app.api.auth import get_current_account
 from app.store import get_campaign, models
 from app.store.commit import edge_counter_semantic
 from app.store.db import session_scope
-from app.store.read import latest_revision, world_state
+from app.store.read import campaign_seed, latest_revision, world_state
 
 router = APIRouter()
 
@@ -97,6 +97,7 @@ def _edge_label(edge: EdgeExport) -> str:
     return f"{edge.type}({edge.counter})"
 
 
+_RESERVED_HEADINGS = frozenset({"Edges", "Relations"})
 _WIKI_UNSAFE = re.compile(r"[\[\]|#^\n\r]")
 
 
@@ -113,19 +114,35 @@ def _finite_only(value: Any) -> Any:
     return value
 
 
+def _unique_label(base: str, entity_id: str, used: set[str]) -> str:
+    """A label unique against ``used``, grown from the short-id
+    discriminator. Full ULIDs are unique, so the loop terminates."""
+    for width in range(4, len(entity_id) + 1):
+        candidate = f"{base} ({entity_id[-width:]})"
+        if candidate not in used:
+            return candidate
+    raise AssertionError("unreachable: full ULIDs are unique")
+
+
 def _name_labels(export: WorldExport) -> dict[str, str]:
     """Display label per entity id. Entity names are neither unique (the
-    store constrains staged ULIDs, not names) nor wikilink-safe: duplicates
-    get a short-id discriminator, unsafe characters are stripped — applied
-    consistently to headings, wikilinks, and table cells."""
+    store constrains staged ULIDs, not names) nor wikilink-safe. Uniqueness
+    is enforced *after* sanitization — raw-name dedup alone lets distinct
+    names ("A[B", "A]B") collapse into one label or an all-unsafe name go
+    blank — by growing the short-id discriminator; structural headings
+    ("Edges", "Relations") are reserved and get a discriminator too.
+    Applied consistently to headings, wikilinks, and table cells."""
     counts = Counter(entity.name for entity in export.entities)
-    return {
-        entity.id: _WIKI_UNSAFE.sub(
-            " ",
-            entity.name if counts[entity.name] == 1 else f"{entity.name} ({entity.id[-4:]})",
-        )
-        for entity in export.entities
-    }
+    labels: dict[str, str] = {}
+    used: set[str] = set()
+    for entity in export.entities:
+        base = _WIKI_UNSAFE.sub(" ", entity.name).strip() or entity.id
+        if counts[entity.name] == 1 and base not in used and base not in _RESERVED_HEADINGS:
+            labels[entity.id] = base
+        else:
+            labels[entity.id] = _unique_label(base, entity.id, used)
+        used.add(labels[entity.id])
+    return labels
 
 
 def _longest_backtick_run(text: str) -> int:
@@ -218,7 +235,7 @@ def export_world(
         # Re-check inside the snapshot transaction: a campaign deleted
         # between the ownership check and here must still 404, not
         # produce a phantom export.
-        if session.get(models.Campaign, campaign_id) is None:
+        if campaign_seed(session, campaign_id) is None:
             raise HTTPException(status_code=404, detail="Campaign not found.")
         revision = latest_revision(session, campaign_id)
         entities, edges = world_state(session, campaign_id)

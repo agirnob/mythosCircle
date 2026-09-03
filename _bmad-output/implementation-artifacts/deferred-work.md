@@ -143,3 +143,8 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `spec-2-5-no-orphans-and-cascade-delete.md`
   summary: Async route runs a synchronous session_scope-backed SQLite transaction on the event loop, blocking concurrent requests for the txn duration (incl. busy-timeout waits) — inherited from the campaigns DELETE pattern, codebase-wide.
   evidence: campaigns DELETE (AR20) uses the identical async-def + sync-store shape. [backend/app/api/entities.py:35-65, backend/app/api/campaigns.py:153-180]
+
+## Deferred from: code review of spec-2-6-world-state-export.md (2026-09-03)
+- source_spec: `spec-2-6-world-state-export.md`
+  summary: frontend/src/api/schema.ts is stale — generated once in 2.1 (gen:api) and never regenerated for the routes added by 2.3/2.5/2.6 (incl. GET /api/campaigns/{id}/export); nothing verifies its freshness.
+  evidence: schema.ts last touched in commit 0c166fe (2.1); delete op present at schema.ts:646 but no export operation. Regeneration naturally belongs to 2.7's world-view frontend work. [frontend/src/api/schema.ts]

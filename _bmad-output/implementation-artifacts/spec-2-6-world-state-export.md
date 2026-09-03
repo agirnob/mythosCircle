@@ -73,11 +73,22 @@ context: []
 - Given the Markdown export, when inspected, then every entity has a section with its data and stat block, every typed edge appears from both endpoints with its counter, and the document is valid Obsidian Markdown (frontmatter + [[wikilinks]]) (epic AC).
 - Given a foreign or unknown campaign id, when exporting, then the response is the same 404 `not_found` envelope as the campaigns routes.
 
+### Review Findings
+
+- [x] [Review][Decision] `[[Name]]` wikilinks cannot resolve to entity headings within the single-file export — Obsidian `[[Name]]` targets a note, not an in-document heading (`[[#Name]]` would) [backend/app/api/exports.py:172-185] — the epic AC "wikilinks resolve to entity headings" is unachievable with the frozen Design Note's mandated `[[Name]]` format. RESOLVED 2026-09-03, owner call: **accepted as-is** — the link target is the entity *note* in a per-note vault (Epic 5 exports, or the DM splitting this file); manual-check wording amended, Design Note updated.
+- [x] [Review][Patch] Label namespace not collision-free after sanitization [backend/app/api/exports.py:106-134] — dedup runs on raw names pre-sanitization: distinct names can sanitize to identical labels, all-unsafe names yield blank labels, same-named entities sharing the last 4 ULID chars collide, and an entity literally named "Edges"/"Relations" collides with structural headings; fix = enforce post-sanitization uniqueness (grow the discriminator, reserve structural headings) + a two-"Vex" test. APPLIED 2026-09-03.
+- [x] [Review][Patch] Nested (depth ≥ 2) non-finite float coercion untested [backend/app/api/exports.py:109-119, backend/tests/test_export_api.py:352-375] — recursion is correct but only depth-1 is asserted; a regression to depth-1-only coercion 500s (Starlette `allow_nan=False`) on nested stat blocks; fix = extend the test with `{"stat_block": {"hp": NaN}, "note": [inf]}`. APPLIED 2026-09-03.
+- [x] [Review][Patch] Fence-growth path untested [backend/app/api/exports.py:137-139, backend/app/api/exports.py:170] — `_longest_backtick_run` regressing to a constant fence passes the whole suite while backtick-containing data corrupts the document; fix = test with data containing ``` ```yaml ```. APPLIED 2026-09-03.
+- [x] [Review][Patch] In-transaction campaign re-check untested [backend/app/api/exports.py:227-228] — the phantom-export 404 guard is load-bearing but uncovered; fix = monkeypatch-style test that deletes the campaign inside a patched `get_campaign` and asserts 404. APPLIED 2026-09-03.
+- [x] [Review][Patch] Store re-check bypasses the read-helper surface [backend/app/api/exports.py:227] — raw `session.get(models.Campaign, ...)` duplicates the existing `read.campaign_seed` helper (read.py:30); spec "Always" row requires wiring existing read helpers; fix = `campaign_seed(session, campaign_id)`. APPLIED 2026-09-03.
+- [x] [Review][Defer] frontend/src/api/schema.ts stale — no generated operation for the new export route [frontend/src/api/schema.ts:646] — deferred, pre-existing (generated in 2.1, never regenerated for 2.3/2.5 either; regen belongs to 2.7 frontend work).
+
 ## Design Notes
 
 - Renderer stays a pure function `dict -> str` inside `exports.py`: session assembly (store reads) separated from string building — the Markdown builder takes already-fetched rows, never a session.
 - Determinism falls out of rowid ordering — do not add sorting beyond what read helpers already guarantee; keep dict insertion order stable.
 - Markdown edge rendering: `[[Source Name]] --type(counter)--> [[Target Name]]` per line under the source entity's Relations heading; world-level table `| source | type | counter | target |` after the entity sections.
+- Wikilinks stay `[[Name]]` (owner decision 2026-09-03): Obsidian resolves them to a *note* named `Name`, never an in-document heading — the target document is the per-entity-note vault (Epic 5 exports, or the DM splitting this file), which is what the no-lock-in claim serves; in-document anchors (`[[#Label]]`) would die on split.
 - Counter rendering uses EDGE_COUNTER_SEMANTICS: debt shows the amount, grudge/loyalty the score, ally/enemy intensity, others render bare.
 
 ## Verification
@@ -87,7 +98,7 @@ context: []
 - `make lint && make typecheck` -- expected: clean
 
 **Manual checks (if no CLI):**
-- Inspect a sample Markdown export for Obsidian validity: frontmatter parses, wikilinks resolve to entity headings, stat block yaml fence is valid.
+- Inspect a sample Markdown export for Obsidian validity: frontmatter parses, `[[Name]]` wikilinks resolve as cross-note links to entity notes in a per-note vault (decision 2026-09-03), stat block yaml fence is valid.
 
 ## Suggested Review Order
 
