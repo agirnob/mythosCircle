@@ -26,6 +26,16 @@ export const useCampaignsStore = defineStore('campaigns', {
         this.loading = false
       }
     },
+    /** Create a campaign (POST /api/campaigns, story 1.6 contract). Rethrows so the form can show the ApiError. */
+    async create(payload: components['schemas']['CampaignCreate']) {
+      this.error = null
+      const campaign = await apiFetch<Campaign>('/api/campaigns', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      this.campaigns.unshift(campaign)
+      return campaign
+    },
     async fetchOne(campaignId: string) {
       this.error = null
       try {
