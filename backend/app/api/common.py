@@ -21,6 +21,7 @@ from app.store import (
     DuplicateJobError,
     EdgeRetargetError,
     EmptySubgraphError,
+    InvalidCandidateError,
     InvalidEdgeCounterError,
     InvalidEdgeTypeError,
     InvalidJobInputError,
@@ -84,6 +85,7 @@ def store_error_as_http(exc: Exception) -> NoReturn:
         exc,
         (
             InvalidJobInputError,
+            InvalidCandidateError,
             InvalidThemeError,
             CampaignInputError,
             InvalidCursorError,

@@ -190,6 +190,30 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
         if index not in still_bad
     ]
 
+    # Strict-JSON guard (review round 2): Python's ``json.loads`` accepts
+    # NaN/Infinity and turns 1e999 into ``inf`` — values the candidates
+    # read cannot re-serialize (Starlette dumps with ``allow_nan=False``;
+    # a staged payload containing one would 500 the headline endpoint).
+    # Drop such a candidate like any other malformed one; the AR24
+    # unknown-key passthrough stays faithful — only representable values
+    # pass. ``store.candidates.stage_candidates`` repeats the check as
+    # the write-boundary backstop.
+    strict: list[tuple[int, dict[str, Any]]] = []
+    for index, candidate in valid:
+        try:
+            json.dumps(candidate, allow_nan=False)
+        except (TypeError, ValueError):
+            drops.append(
+                (
+                    index,
+                    candidate["name"],
+                    "payload contains non-finite numbers (not strict JSON)",
+                )
+            )
+        else:
+            strict.append((index, candidate))
+    valid = strict
+
     if len(valid) < MIN_CANDIDATES:
         detail = (
             " | ".join(f"E{index} ({name!r}): {reason}" for index, name, reason in drops)
@@ -344,7 +368,14 @@ def _parse_context_ref(ref: Any, context_entities: Sequence[models.Entity]) -> i
     if not isinstance(ref, str) or not ref.startswith("C"):
         return None
     digits = ref[1:]
-    if not digits.isdecimal() or str(int(digits)) != digits:
+    # The int-conversion cap (CPython >= 3.11, 4300 digits) would raise
+    # ValueError on an adversarial ref like "C" + 5000 digits and abort
+    # the WHOLE job — a malformed edge must drop as BAD_EDGE, never brick
+    # the batch (review round 2). 6 digits exceeds any real context index
+    # (entity cap <= 24) yet is trivially convertible.
+    if not digits.isdecimal() or len(digits) > 6:
+        return None
+    if str(int(digits)) != digits:
         return None
     index = int(digits)
     if index >= len(context_entities):

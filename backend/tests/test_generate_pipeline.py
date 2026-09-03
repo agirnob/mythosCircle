@@ -31,8 +31,6 @@ from app.store import (
     EntityInput,
     InvalidCandidateError,
     InvalidJobInputError,
-    JobNotFoundError,
-    UnknownCampaignError,
     app_db_url,
     campaign_seed,
     cancel_job,
@@ -44,6 +42,7 @@ from app.store import (
     job_status,
     list_candidates,
     models,
+    recover_stale_running,
     register_account,
     report_progress,
     stage_candidates,
@@ -462,12 +461,25 @@ def test_more_than_three_candidates_sliced(world: str) -> None:
     """The prompt requests exactly 3; a model that returns 4 has only its
     first 3 validated (validation keeps 2-3, deterministically)."""
     _commit_world(world)
+    # A 4th entry that would fail validation if parsed: an unsliced run
+    # would drop it in shape validation and still succeed with 3.
     output = _generate_output(4)
-    output["candidates"][3] = "not an object"  # would fail validation if parsed
+    output["candidates"][3] = "not an object"
     job_id = _run(world, lambda prompt, settings: json.dumps(output))
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
-    assert len(_staged(world)) == 3
+    result = job.result
+    assert result is not None and len(result["candidate_ids"]) == 3
+    # The slice is the only guard between the model contract and the
+    # staged 2-3 contract: 4 VALID candidates must still stage exactly
+    # the first 3 — this fails if the [:MAX_CANDIDATES] slice is ever
+    # removed (E3 would stage and candidate_ids would be 4).
+    output = _generate_output(4)
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    result = job.result
+    assert result is not None and len(result["candidate_ids"]) == 3
 
 
 def test_malformed_output_fails_zero_staged(world: str) -> None:
@@ -747,14 +759,18 @@ def test_stage_candidates_all_or_nothing(world: str) -> None:
     assert _staged(world) == []
 
 
-def test_stage_candidates_requires_campaign_and_job(world: str) -> None:
-    """Staging rejects an unknown campaign or job before writing."""
+def test_stage_candidates_rejects_non_strict_json(world: str) -> None:
+    """NaN/Infinity in a staged payload is rejected at the store boundary
+    — the strict-JSON backstop (the read surface would 500 them)."""
     _commit_world(world)
-    payload = _candidate_record(world)
-    with pytest.raises(UnknownCampaignError):
-        stage_candidates(ids.new_id(), ids.new_id(), [payload])
-    with pytest.raises(JobNotFoundError):
-        stage_candidates(world, ids.new_id(), [payload])
+    job = enqueue_job(world, "generate", {"ask": "stage me"})
+    bad = _candidate_record(world, "Infinity")
+    bad["power"] = float("inf")  # json.loads yields this from 1e999/Infinity
+    with pytest.raises(InvalidCandidateError):
+        stage_candidates(world, job.id, [bad])
+    assert _staged(world) == []
+    with pytest.raises(InvalidCandidateError):
+        stage_candidates(world, job.id, [_candidate_record(world, "NaN") | {"power": float("nan")}])
     assert _staged(world) == []
 
 
@@ -921,6 +937,77 @@ def test_prompt_pins_context_refs(world: str) -> None:
     prompt = build_generate_prompt(seed, "an ask", (context_entities, context_edges))
     assert "CONTEXT REFS" in prompt
     assert "C0..C1" in prompt and "entity[<i>] = C<i>" in prompt
+
+
+#
+# Review round 2 pins: adversarial edge refs, non-finite stat values,
+# crash-requeue re-run failure cleanup
+# ---------------------------------------------------------------------------
+
+
+def test_oversized_context_ref_drops_edge(world: str) -> None:
+    """An edge endpoint ref with thousands of digits (CPython's
+    int-conversion cap would raise on int()) drops that edge as BAD_EDGE
+    instead of aborting the whole job — the anchor rule stays honest."""
+    _commit_world(world)
+    output = _generate_output()
+    output["candidates"][1]["edges"] = [
+        {"endpoint": "C" + "9" * 5000, "direction": "outbound", "type": "rival_of"},
+        {"endpoint": "C1", "direction": "inbound", "type": "rival_of"},
+    ]
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"  # malformed edge dropped, anchor kept
+    rows = _staged(world)
+    assert len(rows) == 3
+    yeva = next(row for row in rows if row.payload["name"] == "Sister Yeva")
+    assert [edge["type"] for edge in yeva.payload["edges"]] == ["rival_of"]
+
+
+def test_non_finite_stat_value_drops_candidate(world: str) -> None:
+    """json.loads turns 1e999/Infinity into inf — AR25's stat validation
+    tolerates the unknown key, so the strict-JSON guard must drop the
+    candidate (the candidates read would 500 an Infinity payload)."""
+    _commit_world(world)
+    output = _generate_output()
+    # A fresh dict — json.loads turns 1e999 into inf HERE (the shared
+    # _VALID_STAT_BLOCK must never be mutated in place).
+    output["candidates"][0]["stat_block"] = {**_VALID_STAT_BLOCK, "power": 1e999}
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    rows = _staged(world)
+    assert len(rows) == 2  # E0 dropped, E1/E2 survive
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    result = job.result
+    assert result is not None
+    assert any(drop["ref"] == "E0" and "non-finite" in drop["reason"] for drop in result["dropped"])
+    assert all("power" not in row.payload["stat_block"] for row in rows)
+
+
+def test_failed_requeue_rerun_discards_staged_rows(world: str) -> None:
+    """A crash after staging leaves a ``running`` job; the re-queued
+    re-run fails (malformed output) — the first run's staged rows must
+    not outlive the FAILED job (FEWER_THAN_TWO 'nothing staged')."""
+    _commit_world(world)
+    # The crash window: staging committed, then the process died before
+    # the terminal write — the job row is still 'running'.
+    job = enqueue_job(world, "generate", {"ask": "rerun"})
+    staged = stage_candidates(
+        world, job.id, [_candidate_record(world, f"Candidate {i}") for i in range(3)]
+    )
+    assert len(staged) == 3
+    with session_scope() as session:
+        row = session.get(models.Job, job.id)
+        assert row is not None
+        row.state = "running"
+    # Startup recovery re-queues the stale running job (AR11).
+    assert recover_stale_running() == 1
+    # Run 2: fails on garbage provider output — the worker must discard
+    # the run-1 rows so a failed job never serves candidates.
+    assert run_next_job(provider=lambda prompt, settings: "bogus", settings=SETTINGS) == job.id
+    state, _position = job_status(job.id)
+    assert state.state == "failed"
+    assert _staged(world) == []
 
 
 def test_unhashable_edge_type_dropped_cleanly(world: str) -> None:

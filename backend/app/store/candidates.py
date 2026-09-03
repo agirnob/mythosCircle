@@ -8,6 +8,7 @@ the write through this store module (never raw SQL in ``pipeline/``).
 The accept/reject lifecycle and the commit path are story 3.2.
 """
 
+import json
 from typing import Any
 
 from sqlalchemy import literal_column, select
@@ -82,6 +83,18 @@ def stage_candidates(
         entities, _edges = world_state(session, campaign_id)
         committed = {entity.id for entity in entities}
         for index, payload in enumerate(payloads):
+            # Strict-JSON backstop (review round 2): Python's json.loads
+            # accepts NaN/Infinity and 1e999 overflows to inf, which the
+            # SQLAlchemy JSON column stores but Starlette refuses to
+            # re-serialize (allow_nan=False) — such a staged payload
+            # would 500 the candidates read. The runner already drops
+            # these; this is the write-boundary defense for any caller.
+            try:
+                json.dumps(payload, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise InvalidCandidateError(
+                    f"candidate {index}: payload is not strict JSON ({exc})"
+                ) from exc
             _check_candidate_edges(index, payload, committed)
         rows = [
             models.ProposedCandidate(

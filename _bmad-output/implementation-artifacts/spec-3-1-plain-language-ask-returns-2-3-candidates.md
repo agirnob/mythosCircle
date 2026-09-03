@@ -53,7 +53,7 @@ context: []
 | INVALID_STATS | Candidate stat block violates AR25 | One bounded repair pass; if still invalid, candidate invalid | Per FEWER_THAN_TWO; `stat_failure_message` detail |
 | BUDGET_EXCEEDED | Repair pass would exceed `max_llm_calls` | Job fails | `BudgetExceededError` → `job_failed` (existing semantics) |
 | DETERMINISM | Same world state + same ask, prompt rebuilt | Byte-identical prompt (AR6) | Pinned by test |
-| FOREIGN_OWNER | Non-owner (or unauthed) lists candidates / submits | 401/404 indistinguishable | Envelope per auth conventions |
+| FOREIGN_OWNER | Non-owner (or unauthed) lists candidates | 401/404 indistinguishable | Envelope per auth conventions (the "submits" half stays unauthenticated per Ask First; submit-side auth is a future story) |
 
 </frozen-after-approval>
 
@@ -112,7 +112,24 @@ context: []
 **Deferred:**
 - [ ] [Review][Defer] Worlds beyond the 24-entity retrieval cap silently lose ask-relevant context (spec-2-3 item narrowed for the candidates path) — ledgered in deferred-work.md [backend/app/pipeline/generate.py]
 
-**Dismissed:** speculative `job_id`/`status` filter params on the candidates read (story 3.2/3.3 own that contract).
+### Review Findings (round 2, 2026-09-04)
+
+**Fresh 3-layer review of the final code (blind hunter, edge case hunter, verification gap)** — 13 raw findings, 5 after dedup: 5 patches applied, 2 deferred, 1 accepted. All 13 round-1 patches independently re-verified applied-and-correct by all three lenses. Full verification: 451 tests, ruff, mypy, eslint, vue-tsc clean.
+
+**Patches:**
+- [x] [Review][Patch] Oversized `C<index>` edge refs (>=4301 digits) raised CPython's int-conversion ValueError, aborting the WHOLE job instead of dropping one malformed edge as BAD_EDGE — digit length now bounded (6) before `int()` [backend/app/pipeline/generate.py:368]
+- [x] [Review][Patch] Non-finite floats (json.loads accepts NaN/Infinity/1e999→inf) staged through AR24's unvalidated passthrough and 500'd the candidates read (Starlette `allow_nan=False`) — the runner drops such candidates as malformed (dropped summary), and `stage_candidates` repeats the strict-JSON check as the write-boundary backstop [backend/app/pipeline/generate.py:193, backend/app/store/candidates.py:86]
+- [x] [Review][Patch] A crash-requeued generate job whose re-run FAILED kept the first run's staged rows under a failed job (served to the accept screen, contradicting FEWER_THAN_TWO "nothing staged") — the worker now discards a generate job's staged rows on any failure before `fail_job`; first-run failures remove zero rows [backend/app/pipeline/worker.py:75]
+- [x] [Review][Patch] `test_more_than_three_candidates_sliced` was vacuous (its 4th entry was shape-invalid, so removing the slice changed nothing) — rewritten with 4 VALID candidates asserting `candidate_ids == 3` [backend/tests/test_generate_pipeline.py:464]
+- [x] [Review][Patch] `InvalidCandidateError` unmapped in `store_error_as_http` (would 500 if it ever crossed an API boundary) — mapped to 422 alongside `InvalidJobInputError` [backend/app/api/common.py:88]
+
+**Tests added (round 2):** oversized-ref drop, non-finite stat-block candidate drop, store strict-JSON rejection, crash-requeue re-run failure discard, non-vacuous slice pin.
+
+**Deferred (ledgered in deferred-work.md):**
+- [ ] [Review][Defer] Hard crash between the staging commit and the conflict-discard leaves a cancelled job's rows listable — story 3.2's reject/timeout lifecycle garbage-collects them
+- [ ] [Review][Defer] Failure paths (FEWER_THAN_TWO/BAD_EDGE/INVALID_STATS/BUDGET_EXCEEDED) don't assert the world graph unchanged (AC4); runner-level delete-mid-job composition untested — assertion-strength hardening for a later sweep
+
+**Accepted:** FOREIGN_OWNER matrix row's "submits" half — POST /api/jobs stays unauthenticated by the Ask First constraint (submit-side auth is owned by a future story); the read half is fully covered.
 
 ## Design Notes
 

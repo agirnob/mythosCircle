@@ -29,7 +29,7 @@ from typing import Any
 from app.core.settings import LLMSettings, llm_settings
 from app.pipeline.budget import BudgetExceededError, CallBudget
 from app.providers.llm import ChatCompletion, ProviderError, chat_completion
-from app.store import claim_next_job, complete_job, fail_job, job_status, models
+from app.store import claim_next_job, complete_job, discard_candidates, fail_job, job_status, models
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,19 @@ def run_next_job(
     try:
         _run_job(job, provider, settings)
     except Exception as exc:  # noqa: BLE001 - a claimed job must never wedge the queue
+        if job.kind == "generate":
+            # A re-run of a crash-requeued generate job can fail before
+            # re-staging (provider outage, <2 valid survivors, world
+            # emptied by undo): the first run's staged rows would outlive
+            # the FAILED job and be served to the accept screen — "a
+            # failed job stages nothing" (spec-3.1 FEWER_THAN_TWO
+            # semantics). Discard them; a first-run failure removes zero
+            # rows (none staged yet). Success-path idempotency is
+            # untouched (review round 2).
+            try:
+                discard_candidates(job.id)
+            except Exception:  # noqa: BLE001 - discard must not mask the original error
+                logger.exception("failed to discard staged rows for job %s", job.id)
         try:
             fail_job(job.id, _error_message(exc))
         except Exception:  # noqa: BLE001 - failing the fail must not crash the loop
