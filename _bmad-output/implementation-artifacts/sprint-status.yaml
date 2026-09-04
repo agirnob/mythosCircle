@@ -60,7 +60,7 @@ development_status:
   3-1-plain-language-ask-returns-2-3-candidates: done
   3-2-candidate-lifecycle-and-atomic-commit: done
   3-3-accept-screen-on-substance: review
-  3-4-inline-relation-editing: review
+  3-4-inline-relation-editing: done
   3-5-regeneration-whole-and-per-section: backlog
   3-6-hand-editing-the-dm-is-the-final-author: backlog
   epic-3-retrospective: optional
