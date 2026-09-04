@@ -636,6 +636,74 @@ def test_migrate_job_kind_adds_generate(
         init_db(previous)
 
 
+def test_migrate_job_kind_handles_sqlalchemy_quoted_ddl(tmp_path: Path) -> None:
+    """A database created by ``create_all`` stores the job DDL with a
+    QUOTED table name and tab indentation (``CREATE TABLE "job" (`` +
+    ``\\n\\t``). That real-world shape wedged every subsequent start when
+    the rebuild's regex/rename missed it (found 2026-09-04 on a live dev
+    DB): the rewrite must match it, and an unrewritable shape must fail
+    loudly instead of re-CREATE-ing the live table."""
+    db_path = tmp_path / "quoted-ddl.db"
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        CREATE TABLE "account" (
+\t"id" VARCHAR(26) NOT NULL,
+\t"email" VARCHAR(320) NOT NULL UNIQUE,
+\t"password_hash" VARCHAR(255) NOT NULL,
+\t"created_at" VARCHAR(40) NOT NULL,
+\tPRIMARY KEY ("id")
+);
+        CREATE TABLE "campaign" (
+\t"id" VARCHAR(26) NOT NULL,
+\t"owner_id" VARCHAR(26) NOT NULL REFERENCES "account" ("id"),
+\t"title" VARCHAR(300) NOT NULL,
+\t"description" TEXT NOT NULL,
+\t"theme" VARCHAR(100) NOT NULL,
+\t"custom_lore" TEXT NOT NULL,
+\t"created_at" VARCHAR(40) NOT NULL,
+\tPRIMARY KEY ("id")
+);
+        CREATE TABLE "job" (
+\t"id" VARCHAR(26) NOT NULL,
+\t"campaign_id" VARCHAR(26) NOT NULL REFERENCES "campaign" ("id"),
+\t"kind" VARCHAR(64) NOT NULL,
+\t"payload" JSON NOT NULL,
+\t"state" VARCHAR(32) NOT NULL,
+\t"progress" FLOAT NOT NULL,
+\t"max_llm_calls" INTEGER NOT NULL,
+\t"max_media_calls" INTEGER NOT NULL,
+\t"error" TEXT,
+\t"result" JSON,
+\t"created_at" VARCHAR(40) NOT NULL,
+\t"started_at" VARCHAR(40),
+\t"finished_at" VARCHAR(40),
+\tPRIMARY KEY ("id"),
+\tCONSTRAINT "ck_job_kind" CHECK (kind IN ('text','image','video','build_in'))
+);
+        """
+    )
+    raw.execute("INSERT INTO account VALUES ('A' || ?, 'q@example.com', 'x', 'now')", ("A" * 25,))
+    raw.execute(
+        "INSERT INTO campaign VALUES ('C' || ?, 'A' || ?, 'Quoted World', '',"
+        " 'High Fantasy', '', 'now')",
+        ("C" * 25, "A" * 25),
+    )
+    raw.commit()
+    raw.close()
+
+    previous = app_db_url()
+    init_db(f"sqlite:///{db_path}")  # must not raise 'table "job" already exists'
+    try:
+        with session_scope() as session:
+            ddl = session.execute(
+                text("SELECT sql FROM sqlite_master WHERE type='table' AND name='job'")
+            ).scalar_one()
+            assert "'generate'" in ddl and '"job_new"' not in ddl
+    finally:
+        init_db(previous)
+
+
 # ---------------------------------------------------------------------------
 # FEWER_THAN_TWO / BAD_EDGE / malformed output
 # ---------------------------------------------------------------------------

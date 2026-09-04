@@ -154,12 +154,24 @@ def _migrate_job_kind(engine: Engine) -> None:
             )
         ).fetchall()
         kind_list = ",".join(f"'{kind}'" for kind in sorted(JOB_KINDS))
-        new_table_sql = re.sub(
-            r"kind IN \([^)]*\)",
-            f"kind IN ({kind_list})",
-            table_sql,
-            count=1,
-        ).replace("CREATE TABLE job ", "CREATE TABLE job_new ", 1)
+        new_table_sql = (
+            re.sub(
+                r"kind\s+IN\s*\([^)]*\)",
+                f"kind IN ({kind_list})",
+                table_sql,
+                count=1,
+            )
+            .replace('CREATE TABLE "job" ', 'CREATE TABLE "job_new" ', 1)
+            .replace("CREATE TABLE job ", "CREATE TABLE job_new ", 1)
+        )
+        if new_table_sql == table_sql:
+            # The CHECK regex missed (DDL shape the patterns above do not
+            # cover) — rebuilding blindly would re-CREATE the live table.
+            # Fail loudly instead of wedging every subsequent start.
+            raise RuntimeError(
+                "job-kind migration: could not rewrite the job table DDL "
+                f"(unrecognized shape): {table_sql!r}"
+            )
         connection.execute(text(new_table_sql))
         connection.execute(text("INSERT INTO job_new SELECT * FROM job"))
         connection.execute(text("DROP TABLE job"))
@@ -203,12 +215,29 @@ def _migrate_proposed_candidate_status(engine: Engine) -> None:
                 " AND tbl_name='proposed_candidate' AND sql IS NOT NULL"
             )
         ).fetchall()
-        new_table_sql = re.sub(
-            r"status IN \([^)]*\)",
-            f"status IN ({status_list})",
-            table_sql,
-            count=1,
-        ).replace("CREATE TABLE proposed_candidate ", "CREATE TABLE proposed_candidate_new ", 1)
+        new_table_sql = (
+            re.sub(
+                r"status\s+IN\s*\([^)]*\)",
+                f"status IN ({status_list})",
+                table_sql,
+                count=1,
+            )
+            .replace(
+                'CREATE TABLE "proposed_candidate" ',
+                'CREATE TABLE "proposed_candidate_new" ',
+                1,
+            )
+            .replace(
+                "CREATE TABLE proposed_candidate ",
+                "CREATE TABLE proposed_candidate_new ",
+                1,
+            )
+        )
+        if new_table_sql == table_sql:
+            raise RuntimeError(
+                "proposed-candidate-status migration: could not rewrite the "
+                f"proposed_candidate table DDL (unrecognized shape): {table_sql!r}"
+            )
         connection.execute(text(new_table_sql))
         connection.execute(
             text("INSERT INTO proposed_candidate_new SELECT * FROM proposed_candidate")
