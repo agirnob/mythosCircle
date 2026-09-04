@@ -23,6 +23,11 @@ log_file = "/var/log/mythoscircle/app.jsonl"
 # config change; the key, if any, is an environment variable.
 endpoint = "http://127.0.0.1:8080/v1"
 model = "mythos-14b-q5"
+# HTTP timeout for one chat-completion call (seconds). Local llama-server
+# generating full AR24 profiles decodes 5-6k tokens; at ~55 tok/s that is
+# ~2min of decode alone — the 120s default aborted mid-generation
+# (client disconnect -> provider connection error, 2026-09-04).
+timeout = 900
 # Per-job LLM/media call budgets are declared per job and capped here.
 max_llm_calls_per_job = 64
 max_media_calls_per_job = 8
