@@ -2,7 +2,7 @@
 title: 'Inline Relation Editing'
 type: 'feature'
 created: '2026-09-04'
-status: 'ready-for-dev'
+status: approved
 review_loop_iteration: 0
 baseline_commit: '8b4a8bb47dc8fe6997a2b740fce0126842e0729c'
 context:
