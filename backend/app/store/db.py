@@ -92,6 +92,7 @@ def init_db(url: str = DEFAULT_DB_URL) -> Engine:
     _migrate_campaign_seed(_engine)
     _migrate_job_kind(_engine)
     _migrate_proposed_candidate_status(_engine)
+    _migrate_proposed_candidate_provenance(_engine)
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 
@@ -246,6 +247,32 @@ def _migrate_proposed_candidate_status(engine: Engine) -> None:
         connection.execute(text("ALTER TABLE proposed_candidate_new RENAME TO proposed_candidate"))
         for (index_sql,) in index_rows:
             connection.execute(text(index_sql))
+
+
+def _migrate_proposed_candidate_provenance(engine: Engine) -> None:
+    """Add the accept-provenance columns to a pre-3.3 database.
+
+    ``create_all`` never ALTERs an existing table, and the status-CHECK
+    rebuild that precedes this runs ``SELECT *`` across the table, so the
+    columns are only added AFTER that rebuild (a ``SELECT *`` copy would
+    otherwise break on them). Runs per-column, idempotently: a
+    half-migrated database finishes on the next init; a fresh database
+    already has them from ``create_all``.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "proposed_candidate" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("proposed_candidate")}
+    adds = [name for name in ("accepted_entity_id", "accept_revision_id") if name not in columns]
+    if not adds:
+        return
+    with engine.begin() as connection:
+        for name in adds:
+            connection.execute(
+                text(f"ALTER TABLE proposed_candidate ADD COLUMN {name} VARCHAR(26)")
+            )
 
 
 def _migrate_campaign_seed(engine: Engine) -> None:

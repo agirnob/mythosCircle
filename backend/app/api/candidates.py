@@ -46,6 +46,12 @@ class CandidateResponse(BaseModel):
     #: — extra keys tolerated (AR24 forward compatibility).
     payload: dict[str, Any]
     created_at: str
+    #: The entity ULID this candidate became on accept, and the revision
+    #: ULID that made it real (spec-3.3 provenance). Null while
+    #: ``proposed`` and for a ``rejected`` row — only acceptance produces
+    #: a world artifact, so only an accepted row carries them.
+    accepted_entity_id: str | None = None
+    accept_revision_id: str | None = None
 
 
 class AcceptBody(BaseModel):
@@ -77,6 +83,8 @@ def _candidate_response(candidate: models.ProposedCandidate) -> CandidateRespons
         status=candidate.status,
         payload=candidate.payload,
         created_at=candidate.created_at,
+        accepted_entity_id=candidate.accepted_entity_id,
+        accept_revision_id=candidate.accept_revision_id,
     )
 
 

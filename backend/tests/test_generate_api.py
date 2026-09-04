@@ -431,8 +431,20 @@ def test_accept_route_commits_and_settles(client: TestClient, job_api: Callable[
     body = response.json()
     assert body["id"] == candidate_id and body["status"] == "accepted"
 
+    # The accept response carries durable provenance (spec-3.3 deferred
+    # finding): the entity id the candidate became and the revision that
+    # made it real — the accept screen can lead the DM straight to the
+    # committed entity.
+    assert body["accepted_entity_id"]
+    assert body["accept_revision_id"]
+
     export = client.get(f"/api/campaigns/{campaign_id}/export").json()
     assert "Sable Rook" in {entity["name"] for entity in export["entities"]}
+    assert any(
+        entity["id"] == body["accepted_entity_id"]
+        for entity in export["entities"]
+        if entity["name"] == "Sable Rook"
+    )
     with session_scope() as session:
         assert len(list(revision_chain(session, campaign_id))) == 2  # seed + accept
     listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()

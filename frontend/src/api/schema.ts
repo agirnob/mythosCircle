@@ -476,6 +476,10 @@ export interface components {
       }
       /** Created At */
       created_at: string
+      /** Accepted Entity Id */
+      accepted_entity_id?: string | null
+      /** Accept Revision Id */
+      accept_revision_id?: string | null
     }
     /** EdgeExport */
     EdgeExport: {

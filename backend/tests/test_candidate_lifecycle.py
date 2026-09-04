@@ -184,9 +184,17 @@ def test_accept_commits_subgraph_and_settles_row(world: str) -> None:
         "edge_created",
         "entity_created",
     ]
-    assert all(ev.revision_id == revision.id for ev in events)
     sable = next(e for e in entities if e.name == "Sable Rook")
-    assert sable.kind == "character" and sable.id not in {bar_id, mira_id}
+    # Provenance is durable on the row, not just the returned object:
+    # the row points at the entity it became and the revision that made
+    # it real (spec-3.3 deferred finding).
+    accepted_entity_id = accepted.accepted_entity_id
+    accept_revision_id = accepted.accept_revision_id
+    assert accepted_entity_id == sable.id
+    assert accept_revision_id == revision.id
+    mrow = _row(world, candidate.id)
+    assert mrow.accepted_entity_id == sable.id
+    assert mrow.accept_revision_id == revision.id
     payload = candidate.payload
     assert set(sable.data) == set(payload) - {"edges"}
     assert sable.data["stat_block"] == payload["stat_block"]  # entity-data convention
@@ -516,6 +524,10 @@ def test_accept_already_settled_conflict(world: str) -> None:
         reject_candidate(world, candidate.id)
     assert _head(world) == revisions_after_accept  # no new revision
     assert _row(world, candidate.id).status == "accepted"
+    # An accepted row keeps its provenance even after a later conflict.
+    mrow = _row(world, candidate.id)
+    assert mrow.accepted_entity_id is not None
+    assert mrow.accept_revision_id is not None
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +546,11 @@ def test_reject_settles_row_world_untouched(world: str) -> None:
 
     assert rejected.status == "rejected"
     assert _row(world, candidate.id).status == "rejected"
+    # A rejected row produces no world artifact, so it carries no
+    # provenance (provenance is only set by acceptance — spec-3.3).
+    mrow = _row(world, candidate.id)
+    assert mrow.accepted_entity_id is None
+    assert mrow.accept_revision_id is None
     with session_scope() as session:
         assert len(list(revision_chain(session, world))) == 1  # seed only
     assert _state(world) == state_before
@@ -907,14 +924,17 @@ def test_migrate_proposed_candidate_status_widens_check(tmp_path: Path) -> None:
         # The widened constraint admits the terminal statuses...
         with engine.begin() as conn:
             conn.exec_driver_sql(
-                "INSERT INTO proposed_candidate VALUES"
+                "INSERT INTO proposed_candidate"
+                " (id, campaign_id, job_id, kind, status, payload, created_at) VALUES"
                 " (?, ?, ?, 'entity', 'accepted', '{}', 'now')",
                 (ids.new_id(), campaign_id, job_id),
             )
         # ...and still rejects junk.
         with pytest.raises(IntegrityError), engine.begin() as conn:
             conn.exec_driver_sql(
-                "INSERT INTO proposed_candidate VALUES (?, ?, ?, 'entity', 'settled', '{}', 'now')",
+                "INSERT INTO proposed_candidate"
+                " (id, campaign_id, job_id, kind, status, payload, created_at)"
+                " VALUES (?, ?, ?, 'entity', 'settled', '{}', 'now')",
                 (ids.new_id(), campaign_id, job_id),
             )
         # A second pass is a no-op: DDL and row count unchanged.

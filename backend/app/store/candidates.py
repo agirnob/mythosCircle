@@ -396,6 +396,8 @@ def accept_candidate(
             latest.id if latest is not None else None,
         )
         candidate.status = STATUS_ACCEPTED
+        candidate.accepted_entity_id = new_entity_id
+        candidate.accept_revision_id = revision.id
     return candidate, revision
 
 
