@@ -86,7 +86,7 @@ def run_next_job(
         # raise a second conflict that only produces a spurious log.
         pass
     except Exception as exc:  # noqa: BLE001 - a claimed job must never wedge the queue
-        if job.kind == "generate":
+        if job.kind in ("generate", "regenerate"):
             # A re-run of a crash-requeued generate job can fail before
             # re-staging (provider outage, <2 valid survivors, world
             # emptied by undo): the first run's staged rows would outlive
@@ -120,6 +120,15 @@ def _run_job(job: models.Job, provider: Provider, settings: LLMSettings) -> None
         from app.pipeline.generate import run_generate
 
         run_generate(job, provider, settings)
+        return
+    if job.kind == "regenerate":
+        # Lazy import (same circularity): the regenerate runner re-rolls
+        # an entity (whole, staging a new proposal) or a proposed
+        # candidate (whole/per-section, replacing its row) — commits
+        # nothing (spec-3.5).
+        from app.pipeline.regenerate import run_regenerate
+
+        run_regenerate(job, provider, settings)
         return
     if job.kind != "text":
         raise JobPayloadError(

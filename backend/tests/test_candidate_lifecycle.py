@@ -23,9 +23,13 @@ from sqlalchemy.exc import IntegrityError
 from app.core import ids
 from app.store import (
     BOSS_FIELDS,
+    STATUS_PROPOSED,
     CandidateNotFoundError,
     CandidateSettledError,
     DanglingEdgeError,
+    DuplicateEdgeError,
+    EdgeInput,
+    EntityInput,
     InvalidCandidateError,
     OrphanEntityError,
     accept_candidate,
@@ -39,6 +43,7 @@ from app.store import (
     init_db,
     models,
     reject_candidate,
+    replace_candidate_payload,
     session_scope,
     stage_candidates,
     undo,
@@ -838,6 +843,281 @@ def test_accept_on_empty_world_rejects_with_zero_revisions(world: str) -> None:
     with session_scope() as session:
         assert len(list(revision_chain(session, world))) == 0
     assert _row(world, candidate_id).status == "proposed"
+
+
+# ---------------------------------------------------------------------------
+# _migrate_proposed_candidate_provenance (pre-3.5 regenerates_entity_id)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_provenance_adds_regenerates_entity_id(tmp_path: Path) -> None:
+    """A 3-4-era database (ck_job_kind already admits 'generate',
+    proposed_candidate already carries accepted_entity_id/
+    accept_revision_id, NO regenerates_entity_id) is upgraded in place:
+    the new column exists (PRAGMA table_info) and an in-place regen
+    accept on a migrated row still commits with ULID + edges preserved."""
+    db_path = tmp_path / "pre35.db"
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        CREATE TABLE account (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            email VARCHAR(320) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        CREATE TABLE campaign (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            owner_id VARCHAR(26) NOT NULL REFERENCES account(id),
+            title VARCHAR(300) NOT NULL,
+            description TEXT NOT NULL,
+            theme VARCHAR(100) NOT NULL,
+            custom_lore TEXT NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        CREATE TABLE job (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            campaign_id VARCHAR(26) NOT NULL REFERENCES campaign(id),
+            kind VARCHAR(64) NOT NULL,
+            payload JSON NOT NULL,
+            state VARCHAR(32) NOT NULL,
+            progress FLOAT NOT NULL,
+            max_llm_calls INTEGER NOT NULL,
+            max_media_calls INTEGER NOT NULL,
+            error TEXT,
+            result JSON,
+            created_at VARCHAR(40) NOT NULL,
+            started_at VARCHAR(40),
+            finished_at VARCHAR(40),
+            CONSTRAINT ck_job_kind CHECK (kind IN
+                ('text','image','video','build_in','generate'))
+        );
+        CREATE TABLE proposed_candidate (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            campaign_id VARCHAR(26) NOT NULL REFERENCES campaign(id),
+            job_id VARCHAR(26) NOT NULL REFERENCES job(id),
+            kind VARCHAR(64) NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            payload JSON NOT NULL,
+            created_at VARCHAR(40) NOT NULL,
+            accepted_entity_id VARCHAR(26),
+            accept_revision_id VARCHAR(26),
+            CONSTRAINT ck_proposed_candidate_kind CHECK (kind IN ('entity')),
+            CONSTRAINT ck_proposed_candidate_status CHECK (
+                status IN ('proposed','accepted','rejected'))
+        );
+        """
+    )
+    owner_id = _owner_id()
+    campaign_id, job_id, mira_id, guild_id = (ids.new_id() for _ in range(4))
+    raw.execute("INSERT INTO account VALUES (?, 'dm@example.com', 'x', 'now')", (owner_id,))
+    raw.execute(
+        "INSERT INTO campaign VALUES (?, ?, 'Old World', '', 'High Fantasy', '', 'now')",
+        (campaign_id, owner_id),
+    )
+    raw.execute(
+        "INSERT INTO job VALUES (?, ?, 'generate', '{}', 'succeeded', 0.0, 64, 8,"
+        " NULL, NULL, 'now', NULL, NULL)",
+        (job_id, campaign_id),
+    )
+    raw.execute(
+        "INSERT INTO proposed_candidate VALUES (?, ?, ?, 'entity', 'accepted', '{}', 'now', ?, ?)",
+        (ids.new_id(), campaign_id, job_id, mira_id, ids.new_id()),
+    )
+    raw.commit()
+    raw.close()
+
+    previous = app_db_url()
+    init_db(f"sqlite:///{db_path}")
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            columns = {
+                row[1]
+                for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('proposed_candidate')"
+                ).fetchall()
+            }
+        assert "regenerates_entity_id" in columns
+        assert {"accepted_entity_id", "accept_revision_id"} <= columns
+
+        # An in-place regen accept on a migrated database commits with
+        # ULID + edges preserved (the fixture path of spec-3.5).
+        bar_id = ids.new_id()
+        commit_subgraph(
+            campaign_id,
+            [
+                EntityInput(kind="character", name="Mira Vane", id=mira_id),
+                EntityInput(kind="faction", name="The Guild", id=bar_id),
+            ],
+            [EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
+            base_revision=None,
+        )
+        job = enqueue_job(campaign_id, "generate", {"ask": "regen"})
+        candidate = stage_candidates(
+            campaign_id,
+            job.id,
+            [_regen_entity_payload(mira_id, bar_id, personality="new")],
+            target_entity_id=mira_id,
+        )[0]
+        accepted, _revision = accept_candidate(campaign_id, candidate.id)
+        assert accepted.accepted_entity_id == mira_id
+        with session_scope() as session:
+            ents, edges = world_state(session, campaign_id)
+            by_id = {e.id: e for e in ents}
+            assert by_id[mira_id].data["personality"] == "new"
+            assert {(ed.src, ed.dst, ed.type) for ed in edges} == {(mira_id, bar_id, "member_of")}
+    finally:
+        init_db(previous)
+
+
+def _regen_entity_payload(mira_id: str, bar_id: str, **overrides: Any) -> dict[str, Any]:
+    """A regen-entity staged payload: the full AR24 record, ``edges``
+    empty (the committed edges are the anchor)."""
+    payload = _payload(mira_id, bar_id)
+    payload["edges"] = []
+    payload.update(overrides)
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# REGENERATE-ENTITY in-place accept (spec-3.5): ULID + edges preserved,
+# one revision, undo restores byte-identical; dup edges 422; deleted
+# target rejected
+# ---------------------------------------------------------------------------
+
+
+def test_regen_entity_accept_replaces_in_place_one_revision(world: str) -> None:
+    """WHOLE_REGEN_ENTITY accept: the commit is an in-place ``entity_updated``
+    — the entity ULID survives, every existing edge is untouched, one new
+    revision; undoing it restores the prior record byte-identical."""
+    bar_id, mira_id = _seed_world(world)
+    job = enqueue_job(world, "generate", {"ask": "regen"})
+    candidate = stage_candidates(
+        world,
+        job.id,
+        [_regen_entity_payload(mira_id, bar_id, personality="new")],
+        target_entity_id=mira_id,
+    )[0]
+    assert candidate.regenerates_entity_id == mira_id
+
+    _before, before_edges = _state(world)
+    accepted, revision = accept_candidate(world, candidate.id)
+
+    assert accepted.accepted_entity_id == mira_id
+    assert accepted.accept_revision_id == revision.id
+    entities, edges = _state(world)
+    mira = [e for e in entities if e[0] == mira_id][0]
+    data = json.loads(mira[4])
+    assert data["personality"] == "new"
+    # Every existing edge survives byte-identical (same rows, tuples).
+    assert edges == before_edges
+    with session_scope() as session:
+        assert len(list(revision_chain(session, world))) == 2
+        events = list(revision_events(session, world, revision.id))
+    assert [event.type for event in events] == ["entity_updated"]
+
+    # Undo restores the original committed record byte-identical (the
+    # seeded Mira carries no data).
+    undo(world, revision.id)
+    entities_after, _ = _state(world)
+    mira_after = [e for e in entities_after if e[0] == mira_id][0]
+    data_after = json.loads(mira_after[4])
+    assert data_after == {}
+
+
+def test_regen_entity_accept_duplicate_edge_rejected(world: str) -> None:
+    """A regen-entity proposal staging an edge that duplicates the existing
+    graph (same src/dst/type — here the seeded member_of) is a
+    ``DuplicateEdgeError`` (422): zero revisions, the row stays
+    ``proposed`` (edge re-targeting + duplication forbidden, AD-2)."""
+    bar_id, mira_id = _seed_world(world)
+    job = enqueue_job(world, "generate", {"ask": "regen"})
+    candidate = stage_candidates(
+        world,
+        job.id,
+        [
+            _regen_entity_payload(
+                mira_id,
+                bar_id,
+                edges=[
+                    {"endpoint": bar_id, "direction": "outbound", "type": "member_of", "counter": 1}
+                ],
+            )
+        ],
+        target_entity_id=mira_id,
+    )[0]
+    before = _state(world)
+    with pytest.raises(DuplicateEdgeError):
+        accept_candidate(world, candidate.id)
+    assert _state(world) == before
+    assert _row(world, candidate.id).status == STATUS_PROPOSED
+
+
+def test_regen_entity_accept_deleted_target_rejected(world: str) -> None:
+    """A regen-entity proposal whose target was deleted since staging has
+    nothing left to replace — ``InvalidCandidateError`` (422), zero
+    revisions (the in-place branch never falls back to a fresh-ULID
+    create, which would orphan the original's inbound edges)."""
+    bar_id, mira_id = _seed_world(world)
+    job = enqueue_job(world, "generate", {"ask": "regen"})
+    candidate = stage_candidates(
+        world,
+        job.id,
+        [_regen_entity_payload(mira_id, bar_id)],
+        target_entity_id=mira_id,
+    )[0]
+    # Remove Mira through the commit path (cascades her edge).
+    other = ids.new_id()
+    commit_subgraph(
+        world,
+        [models.EntityInput(kind="place", name="The Docks", id=other)],
+        [models.EdgeInput(src=other, dst=bar_id, type="located_in", counter=1)],
+        base_revision=_head(world),
+    )
+    delete_entity(world, mira_id, cascade=True)
+    before = _state(world)
+    with pytest.raises(InvalidCandidateError, match="regenerates_entity_id"):
+        accept_candidate(world, candidate.id)
+    assert _state(world) == before
+    assert _row(world, candidate.id).status == STATUS_PROPOSED
+
+
+def test_replace_candidate_payload_in_place(world: str) -> None:
+    """``replace_candidate_payload`` swaps a proposed row's staged payload
+    in place (one row per intent): the row id, kind, job, and status are
+    untouched; a settled row is 409 and a foreign row 404, both with no
+    change; a shape-violating replacement is 422."""
+    bar_id, mira_id = _seed_world(world)
+    job = enqueue_job(world, "generate", {"ask": "a rival"})
+    candidate = stage_candidates(world, job.id, [_payload(mira_id, bar_id)])[0]
+
+    new_payload = _payload(mira_id, bar_id)
+    new_payload["personality"] = "re-rerolled"
+    replaced = replace_candidate_payload(world, candidate.id, new_payload)
+    assert replaced.id == candidate.id
+    assert replaced.job_id == job.id
+    assert replaced.status == STATUS_PROPOSED
+    assert _row(world, candidate.id).payload["personality"] == "re-rerolled"
+    assert _row(world, candidate.id).payload["edges"] == _payload(mira_id, bar_id)["edges"]
+
+    # A settled row is a 409 with no change.
+    accept_candidate(world, candidate.id)
+    with pytest.raises(CandidateSettledError):
+        replace_candidate_payload(world, candidate.id, _payload(mira_id, bar_id))
+    assert _row(world, candidate.id).payload["personality"] == "re-rerolled"
+
+    # A fresh proposed row: unknown id 404, shape violation 422, neither
+    # changes the staged payload.
+    job2 = enqueue_job(world, "generate", {"ask": "another"})
+    second = stage_candidates(world, job2.id, [_payload(mira_id, bar_id)])[0]
+    with pytest.raises(CandidateNotFoundError):
+        replace_candidate_payload(world, "0" * 26, _payload(mira_id, bar_id))
+    with pytest.raises(InvalidCandidateError):
+        bad = _payload(mira_id, bar_id)
+        del bad["personality"]
+        replace_candidate_payload(world, second.id, bad)
+    assert _row(world, second.id).payload["personality"] == "dry"
 
 
 # ---------------------------------------------------------------------------

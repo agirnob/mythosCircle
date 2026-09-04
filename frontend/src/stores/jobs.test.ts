@@ -216,4 +216,49 @@ describe('jobs store', () => {
       expect.anything(),
     )
   })
+
+  it('submitRegenerate posts a regenerate job with sections null (whole)', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify(
+            job('J5', { id: 'J5', kind: 'regenerate', state: 'queued', queue_position: 1 }),
+          ),
+          { status: 201, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    const jobs = useJobsStore()
+    await jobs.submitRegenerate('C1', { kind: 'entity', id: 'E1' }, null)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe('/api/jobs')
+    expect(JSON.parse(init?.body as string)).toEqual({
+      campaign_id: 'C1',
+      kind: 'regenerate',
+      payload: { target: { kind: 'entity', id: 'E1' } },
+    })
+    expect(jobs.byId['J5']?.kind).toBe('regenerate')
+  })
+
+  it('submitRegenerate includes the sections list for a per-section re-roll', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify(
+            job('J6', { id: 'J6', kind: 'regenerate', state: 'queued', queue_position: 1 }),
+          ),
+          { status: 201, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    const jobs = useJobsStore()
+    await jobs.submitRegenerate('C1', { kind: 'candidate', id: 'CA1' }, ['personality'])
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe('/api/jobs')
+    expect(JSON.parse(init?.body as string)).toEqual({
+      campaign_id: 'C1',
+      kind: 'regenerate',
+      payload: { target: { kind: 'candidate', id: 'CA1' }, sections: ['personality'] },
+    })
+  })
 })

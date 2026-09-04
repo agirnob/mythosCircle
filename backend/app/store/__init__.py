@@ -40,10 +40,12 @@ from app.store.campaigns import (
 )
 from app.store.candidates import (
     BOSS_FIELDS,
+    BOSS_ROLES,
     IDENTITY_FIELDS,
     LORE_FIELDS,
     PROPOSAL_KIND,
     PROPOSAL_STATUS,
+    REGEN_SECTIONS,
     ROLES,
     STATUS_ACCEPTED,
     STATUS_PROPOSED,
@@ -57,6 +59,7 @@ from app.store.candidates import (
     list_candidates,
     payload_section_violations,
     reject_candidate,
+    replace_candidate_payload,
     stage_candidates,
 )
 from app.store.commit import (
@@ -182,6 +185,7 @@ __all__ = [
     "EntityInput",
     "Event",
     "BOSS_FIELDS",
+    "BOSS_ROLES",
     "InvalidCandidateError",
     "InvalidEdgeCounterError",
     "InvalidEdgeTypeError",
@@ -203,6 +207,7 @@ __all__ = [
     "PROPOSAL_KIND",
     "PROPOSAL_STATUS",
     "ProposedCandidate",
+    "REGEN_SECTIONS",
     "QueueFullError",
     "Revision",
     "Session",
@@ -249,6 +254,7 @@ __all__ = [
     "payload_section_violations",
     "register_account",
     "reject_candidate",
+    "replace_candidate_payload",
     "report_progress",
     "revision_chain",
     "revision_events",

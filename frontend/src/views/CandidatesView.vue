@@ -29,6 +29,8 @@ const asking = ref(false)
 /** Last action failure, keyed to its candidate so it stays visible after the in-flight flag clears. */
 const actionError = ref<{ id: string; message: string } | null>(null)
 const actingId = ref<string | null>(null)
+/** candidateId -> the in-flight re-roll: 'whole' or the section name. */
+const rollingId = ref<Record<string, string>>({})
 /** candidateId -> edit mode. */
 const editing = ref<Record<string, boolean>>({})
 /** candidateId -> draft section values ('field' or 'section.field' -> new text). */
@@ -168,6 +170,14 @@ const recentGenerate = computed(() =>
   jobs
     .forCampaign(campaignId)
     .filter((job) => job.kind === 'generate')
+    .slice(0, 5),
+)
+
+/** Recent regenerate jobs — re-roll progress/errors (spec-3.5). */
+const recentRegenerate = computed(() =>
+  jobs
+    .forCampaign(campaignId)
+    .filter((job) => job.kind === 'regenerate')
     .slice(0, 5),
 )
 
@@ -490,6 +500,43 @@ async function rejectCandidate(candidate: Candidate) {
     actingId.value = null
   }
 }
+
+/**
+ * Spec-3.5 re-roll: whole candidate (sections null) or one section.
+ * A re-roll visibly discards any in-flight manual draft on that
+ * candidate (3-3 precedent — never a silent merge); the row's payload
+ * is replaced when the job lands (WS job_done -> resync). The draft is
+ * discarded only AFTER the job enqueues successfully — a failed submit
+ * (network/4xx/409) leaves the DM's manual draft and edit mode intact.
+ * `actingId` gates the whole row's buttons while the roll is in flight
+ * (a double-click can never fire two jobs for one intent).
+ */
+async function rollCandidate(candidate: Candidate, sections: string[] | null, label: string) {
+  actionError.value = null
+  actingId.value = candidate.id
+  rollingId.value[candidate.id] = label
+  try {
+    await jobs.submitRegenerate(campaignId, { kind: 'candidate', id: candidate.id }, sections)
+    await jobs.syncList(campaignId)
+    if (editing.value[candidate.id]) {
+      cancelEdit(candidate.id)
+      staleEdits.value[candidate.id] = false
+    }
+  } catch (err) {
+    actionError.value = {
+      id: candidate.id,
+      message: err instanceof ApiError ? err.message : 'Could not re-roll the candidate.',
+    }
+  } finally {
+    delete rollingId.value[candidate.id]
+    actingId.value = null
+  }
+}
+
+/** Re-roll label text for a section while a job is in flight. */
+function rollLabel(candidateId: string, section: string): string {
+  return rollingId.value[candidateId] === section ? 'Re-rolling…' : 'Re-roll'
+}
 </script>
 
 <template>
@@ -520,6 +567,14 @@ async function rejectCandidate(candidate: Candidate) {
           :class="{ failed: job.state === 'failed' }"
         >
           Ask — {{ stateText(job) }}
+        </p>
+        <p
+          v-for="job in recentRegenerate"
+          :key="job.id"
+          class="muted small"
+          :class="{ failed: job.state === 'failed' }"
+        >
+          Re-roll — {{ stateText(job) }}
         </p>
       </form>
 
@@ -562,19 +617,49 @@ async function rejectCandidate(candidate: Candidate) {
               <div v-else-if="asString(candidate.payload[field])" class="view-row">
                 <dt>{{ FIELD_LABELS[field] }}</dt>
                 <dd class="text">{{ candidate.payload[field] }}</dd>
+                <button
+                  type="button"
+                  class="link re-roll"
+                  :disabled="actingId !== null"
+                  @click="rollCandidate(candidate, [field], field)"
+                >
+                  {{ rollLabel(candidate.id, field) }}
+                </button>
               </div>
             </template>
           </dl>
 
           <!-- Mechanics -->
-          <StatBlock
-            v-if="isObject(candidate.payload['stat_block'])"
-            :block="candidate.payload['stat_block']"
-          />
+          <div v-if="isObject(candidate.payload['stat_block'])" class="subblock">
+            <h4>
+              Stat block
+              <button
+                v-if="!editing[candidate.id]"
+                type="button"
+                class="link re-roll"
+                :disabled="actingId !== null"
+                @click="rollCandidate(candidate, ['stat_block'], 'stat_block')"
+              >
+                {{ rollLabel(candidate.id, 'stat_block') }}
+              </button>
+            </h4>
+            <StatBlock :block="candidate.payload['stat_block']" />
+          </div>
 
           <!-- Conditional boss section -->
           <div v-if="editing[candidate.id] || sectionObject(candidate, 'boss')" class="subblock">
-            <h4>Boss</h4>
+            <h4>
+              Boss
+              <button
+                v-if="!editing[candidate.id]"
+                type="button"
+                class="link re-roll"
+                :disabled="actingId !== null"
+                @click="rollCandidate(candidate, ['boss'], 'boss')"
+              >
+                {{ rollLabel(candidate.id, 'boss') }}
+              </button>
+            </h4>
             <dl>
               <template v-for="field in BOSS_FIELDS" :key="field">
                 <div v-if="editing[candidate.id]" class="edit-row">
@@ -603,7 +688,18 @@ async function rejectCandidate(candidate: Candidate) {
             v-if="editing[candidate.id] || sectionObject(candidate, 'world_integration')"
             class="subblock"
           >
-            <h4>World integration</h4>
+            <h4>
+              World integration
+              <button
+                v-if="!editing[candidate.id]"
+                type="button"
+                class="link re-roll"
+                :disabled="actingId !== null"
+                @click="rollCandidate(candidate, ['world_integration'], 'world_integration')"
+              >
+                {{ rollLabel(candidate.id, 'world_integration') }}
+              </button>
+            </h4>
             <dl>
               <template v-for="field in WORLD_FIELDS" :key="field">
                 <div v-if="editing[candidate.id]" class="edit-row">
@@ -690,7 +786,7 @@ async function rejectCandidate(candidate: Candidate) {
           {{ actionError.message }}
         </p>
 
-        <!-- Reject / Edit / Accept: one tap each, equal prominence —
+        <!-- Reject / Edit / Re-roll / Accept: one tap each, equal prominence —
              accept is never the path of least resistance (inversion #2). -->
         <div class="actions">
           <button type="button" :disabled="actingId !== null" @click="rejectCandidate(candidate)">
@@ -698,6 +794,13 @@ async function rejectCandidate(candidate: Candidate) {
           </button>
           <button type="button" :disabled="actingId !== null" @click="toggleEdit(candidate)">
             {{ editing[candidate.id] ? 'Cancel edit' : 'Edit' }}
+          </button>
+          <button
+            type="button"
+            :disabled="actingId !== null"
+            @click="rollCandidate(candidate, null, 'whole')"
+          >
+            {{ rollingId[candidate.id] === 'whole' ? 'Re-rolling…' : 'Re-roll' }}
           </button>
           <button type="button" :disabled="actingId !== null" @click="acceptCandidate(candidate)">
             {{ editing[candidate.id] && isEdited(candidate) ? 'Accept edited' : 'Accept' }}
@@ -806,6 +909,10 @@ dd {
 .link:disabled {
   color: #484f58;
   cursor: default;
+}
+.re-roll {
+  margin-left: 0;
+  float: right;
 }
 .counter-input {
   width: 5rem;

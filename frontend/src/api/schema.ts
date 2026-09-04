@@ -608,7 +608,7 @@ export interface components {
        * Kind
        * @enum {string}
        */
-      kind: 'text' | 'image' | 'video' | 'build_in' | 'generate'
+      kind: 'text' | 'image' | 'video' | 'build_in' | 'generate' | 'regenerate'
       /** Payload */
       payload: {
         [key: string]: unknown

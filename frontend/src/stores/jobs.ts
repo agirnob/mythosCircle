@@ -75,6 +75,31 @@ export const useJobsStore = defineStore('jobs', {
       this.upsert(job)
       return job
     },
+    /**
+     * Spec-3.5 re-roll: one regenerate job. `target` is the entity
+     * (whole-character re-roll, staging a NEW proposal) or the proposed
+     * candidate (whole or per-section re-roll, replacing its own row).
+     * `sections` null = whole character; a non-empty list = exactly
+     * those AR24 content sections.
+     */
+    async submitRegenerate(
+      campaignId: string,
+      target: { kind: 'entity' | 'candidate'; id: string },
+      sections: string[] | null,
+    ) {
+      const payload: Record<string, unknown> = { target }
+      if (sections !== null) payload['sections'] = sections
+      const job = await apiFetch<Job>('/api/jobs', {
+        method: 'POST',
+        body: JSON.stringify({
+          campaign_id: campaignId,
+          kind: 'regenerate',
+          payload,
+        }),
+      })
+      this.upsert(job)
+      return job
+    },
     /** Full re-sync after reconnect or a queue_changed (positions shift). */
     async syncList(campaignId: string) {
       let cursor: string | null = null

@@ -44,6 +44,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { ApiError } from '../api/client'
+import { useJobsStore } from '../stores/jobs'
 import CandidatesView from './CandidatesView.vue'
 
 const SABLE: Candidate = {
@@ -457,5 +458,263 @@ describe('CandidatesView', () => {
     expect(wrapper.find('form.add-relation').exists()).toBe(false)
     expect(wrapper.findAll('button').filter((b) => b.text() === 'Delete').length).toBe(0)
     expect(wrapper.text()).toContain('Sable Rook --rival_of(1)--> Mira Vane')
+  })
+
+  // -------------------------------------------------------------------------
+  // Re-roll (spec-3-5): whole + per-section, draft discarded visibly
+  // -------------------------------------------------------------------------
+
+  it('whole Re-roll posts a regenerate job with no sections and keeps the row', async () => {
+    stubApi()
+    const wrapper = mountView()
+    await flushPromises()
+
+    const reRoll = wrapper.findAll('div.actions button').filter((b) => b.text() === 'Re-roll')[0]
+    await reRoll!.trigger('click')
+    await flushPromises()
+
+    const jobCall = apiFetchMock.mock.calls.find((call) => String(call[0]) === '/api/jobs')
+    expect(jobCall).toBeDefined()
+    const jobInit = jobCall![1] as RequestInit
+    expect(jobInit.method).toBe('POST')
+    expect(JSON.parse(jobInit.body as string)).toEqual({
+      campaign_id: 'C1',
+      kind: 'regenerate',
+      payload: { target: { kind: 'candidate', id: 'CA1' } },
+    })
+    // The row stays on the accept screen while the job runs.
+    expect(wrapper.text()).toContain('Sable Rook')
+  })
+
+  it('per-section Re-roll posts the exact section list', async () => {
+    stubApi()
+    const wrapper = mountView()
+    await flushPromises()
+
+    const personalityRoll = wrapper.findAll('button.re-roll')[0] // a section row
+    await personalityRoll!.trigger('click')
+    await flushPromises()
+
+    const jobCall = apiFetchMock.mock.calls.find((call) => String(call[0]) === '/api/jobs')
+    const body = JSON.parse((jobCall![1] as RequestInit).body as string)
+    expect(body.kind).toBe('regenerate')
+    expect(body.payload.target).toEqual({ kind: 'candidate', id: 'CA1' })
+    expect(Array.isArray(body.payload.sections)).toBe(true)
+    expect(body.payload.sections.length).toBe(1)
+  })
+
+  it('a re-roll visibly discards an in-flight manual draft before enqueueing', async () => {
+    stubApi()
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Edit')[0]
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('textarea').length).toBeGreaterThan(1)
+
+    await wrapper
+      .findAll('div.actions button')
+      .filter((b) => b.text() === 'Re-roll')[0]
+      .trigger('click')
+    await flushPromises()
+
+    // Only the ask box remains — the draft is gone, never silently merged.
+    expect(wrapper.findAll('textarea').length).toBe(1)
+    const jobCall = apiFetchMock.mock.calls.find((call) => String(call[0]) === '/api/jobs')
+    expect(JSON.parse((jobCall![1] as RequestInit).body as string).kind).toBe('regenerate')
+  })
+
+  it('renders the recent regenerate job progress line', async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/candidates')) {
+        return { candidates: [SABLE], next_cursor: null }
+      }
+      if (url.includes('/export')) {
+        return {
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: '2026-09-04T19:00:00Z',
+          },
+          revision: { id: '01JZZZZZZZZZZZZZZZZZZZZZZZ', created_at: '2026-09-04T19:05:00Z' },
+          entities: [
+            { id: 'E1', kind: 'character', name: 'Mira Vane', text: 'The barkeep.', data: {} },
+          ],
+          edges: [],
+        }
+      }
+      // GENERATE_JOB is mutated by an earlier test's job_done frame (it is
+      // upserted by reference), so the RJ1 fixture pins its own state.
+      return {
+        jobs: [
+          {
+            ...GENERATE_JOB,
+            id: 'RJ1',
+            kind: 'regenerate',
+            state: 'running',
+          },
+        ],
+        next_cursor: null,
+      }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const jobs = useJobsStore()
+    const rj = Object.values(jobs.byId).find((j) => j.id === 'RJ1')
+    // The jobs store caches the regenerate job; the progress line shows it.
+    expect(rj?.kind).toBe('regenerate')
+    expect(apiFetchMock.mock.calls.map((c) => String(c[0]))).toContain('/api/jobs?campaign_id=C1')
+    expect(rj?.state).toBe('running')
+    expect(wrapper.text()).toContain('Re-roll — running')
+  })
+
+  it('a re-roll job_done replaces the row payload via WS resync', async () => {
+    const replaced: Candidate = {
+      ...SABLE,
+      payload: { ...SABLE.payload, personality: 're-rolled by the model' },
+    }
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/candidates')) {
+        return { candidates: [replaced], next_cursor: null }
+      }
+      if (url.includes('/export')) {
+        return {
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: '2026-09-04T19:00:00Z',
+          },
+          revision: { id: '01JZZZZZZZZZZZZZZZZZZZZZZZ', created_at: '2026-09-04T19:05:00Z' },
+          entities: [
+            { id: 'E1', kind: 'character', name: 'Mira Vane', text: 'The barkeep.', data: {} },
+          ],
+          edges: [],
+        }
+      }
+      return { jobs: [{ ...GENERATE_JOB, id: 'RJ1', kind: 'regenerate' }], next_cursor: null }
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('div.actions button')
+      .filter((b) => b.text() === 'Re-roll')[0]
+      .trigger('click')
+    await flushPromises()
+
+    // The job drains; the WS job_done frame lands and re-syncs the rows.
+    socketCalls[0].onMessage({ type: 'job_done', job_id: 'RJ1', state: 'succeeded' })
+    await flushPromises()
+    expect(wrapper.text()).toContain('re-rolled by the model')
+  })
+
+  it('a failed re-roll submit keeps the manual draft and edit mode', async () => {
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        throw new ApiError(409, 'queue_full', 'pending jobs at the cap')
+      }
+      if (url.includes('/candidates')) {
+        return { candidates: [SABLE], next_cursor: null }
+      }
+      if (url.includes('/export')) {
+        return {
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: '2026-09-04T19:00:00Z',
+          },
+          revision: { id: '01JZZZZZZZZZZZZZZZZZZZZZZZ', created_at: '2026-09-04T19:05:00Z' },
+          entities: [
+            { id: 'E1', kind: 'character', name: 'Mira Vane', text: 'The barkeep.', data: {} },
+          ],
+          edges: [],
+        }
+      }
+      return { jobs: [GENERATE_JOB], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Edit')[0]
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('textarea').length).toBeGreaterThan(1)
+
+    await wrapper
+      .findAll('div.actions button')
+      .filter((b) => b.text() === 'Re-roll')[0]
+      .trigger('click')
+    await flushPromises()
+
+    // Submit failed: the draft and edit mode survive; the error renders.
+    expect(wrapper.findAll('textarea').length).toBeGreaterThan(1)
+    expect(wrapper.text()).toContain('pending jobs at the cap')
+    expect(wrapper.findAll('button').some((b) => b.text() === 'Cancel edit')).toBe(true)
+  })
+
+  it('re-roll buttons disable while a roll is in flight', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        await gate
+        return { ...GENERATE_JOB, id: 'RJ2', kind: 'regenerate' }
+      }
+      if (url.includes('/candidates')) {
+        return { candidates: [SABLE], next_cursor: null }
+      }
+      if (url.includes('/export')) {
+        return {
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: '2026-09-04T19:00:00Z',
+          },
+          revision: { id: '01JZZZZZZZZZZZZZZZZZZZZZZZ', created_at: '2026-09-04T19:05:00Z' },
+          entities: [
+            { id: 'E1', kind: 'character', name: 'Mira Vane', text: 'The barkeep.', data: {} },
+          ],
+          edges: [],
+        }
+      }
+      return { jobs: [GENERATE_JOB], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('div.actions button')
+      .filter((b) => b.text() === 'Re-roll')[0]
+      .trigger('click')
+    await flushPromises()
+    // While the roll is in flight, the row's buttons are disabled (actingId).
+    const disabled = wrapper
+      .findAll('div.actions button')
+      .filter((b) => b.text().startsWith('Re-roll'))[0]
+      .attributes('disabled')
+    expect(disabled).toBeDefined()
+    release()
+    await flushPromises()
+    wrapper.unmount()
   })
 })

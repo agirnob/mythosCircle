@@ -54,6 +54,30 @@ from app.store.read import latest_revision, world_state
 #: from the endpoint to the candidate (``inbound``).
 EDGE_DIRECTIONS: frozenset[str] = frozenset({"outbound", "inbound"})
 
+#: The closed regenerable-section set (spec-3.5): the AR24 content
+#: sections a ``regenerate`` job may re-roll. The identity anchor
+#: (name, role, level_cr, race_type, class_profession, alignment) and
+#: ``edges`` are NOT regenerable — hand-edit (3-6) / inline-editing
+#: (3-4) territory. Re-exported to the pipeline (``__all__``) so the
+#: enqueue validator and the runner share one vocabulary.
+REGEN_SECTIONS: frozenset[str] = frozenset(
+    {
+        "personality",
+        "secret",
+        "rumor",
+        "party_hook",
+        "appearance",
+        "background",
+        "goals",
+        "relationships",
+        "voice_style",
+        "catchphrases",
+        "stat_block",
+        "world_integration",
+        "boss",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # The AR24 sectioned-record shape (spec-3.3) — shared by the generate
@@ -207,6 +231,8 @@ def stage_candidates(
     campaign_id: str,
     job_id: str,
     payloads: list[dict[str, Any]],
+    *,
+    target_entity_id: str | None = None,
 ) -> list[models.ProposedCandidate]:
     """Stage candidate records atomically — one transaction, all-or-nothing.
 
@@ -215,6 +241,17 @@ def stage_candidates(
     every edge type must be a string in the closed vocabulary; otherwise
     ``InvalidCandidateError`` and zero rows written. Unknown campaign or
     job is rejected before anything is staged.
+
+    ``target_entity_id`` (spec-3.5): when set, the staged row is a
+    regenerate-entity proposal — placed on the new row's
+    ``regenerates_entity_id`` column. The target must be a committed
+    entity of the campaign at staging time (the race backstop: an entity
+    deleted between the runner's fresh resolve and this write fails the
+    job, zero rows); the regenerate runner never commits, so the target
+    stays untouched until the DM accepts. ``edges: []``-carrying
+    proposals are legal here — the target's own committed edges are the
+    anchor and the in-place accept preserves them, so there is no
+    orphan risk (unlike a fresh-ULID accept).
 
     Idempotent per job: a crash between the staging commit and
     ``complete_job`` re-queues the job (``recover_stale_running``), so a
@@ -238,6 +275,11 @@ def stage_candidates(
             return list(existing)
         entities, _edges = world_state(session, campaign_id)
         committed = {entity.id for entity in entities}
+        if target_entity_id is not None and target_entity_id not in committed:
+            raise InvalidCandidateError(
+                f"target entity {target_entity_id} is not committed world state "
+                f"of campaign {campaign_id}"
+            )
         for index, payload in enumerate(payloads):
             # Strict-JSON backstop (review round 2): Python's json.loads
             # accepts NaN/Infinity and 1e999 overflows to inf, which the
@@ -261,6 +303,7 @@ def stage_candidates(
                 status=STATUS_PROPOSED,
                 payload=payload,
                 created_at=time.now(),
+                regenerates_entity_id=target_entity_id,
             )
             for payload in payloads
         ]
@@ -288,6 +331,57 @@ def discard_candidates(job_id: str) -> int:
         return len(rows)
 
 
+def replace_candidate_payload(
+    campaign_id: str, candidate_id: str, payload: dict[str, Any]
+) -> models.ProposedCandidate:
+    """Replace a still-proposed candidate's staged payload IN PLACE
+    (spec-3.5): the re-roll of a proposed candidate writes through this
+    store function — one row per intent, the row's identity and edges
+    contract preserved, the job's own rows untouched (a re-rolled
+    candidate keeps its original ``job_id``; the regenerate job owns no
+    rows for it).
+
+    One transaction: the replacement commits only when the row is
+    ``proposed``, belongs to the campaign, and the payload satisfies the
+    same required AR24 section shape as staging
+    (``payload_section_violations``) and strict-JSON limits — otherwise
+    ``CandidateNotFoundError`` (404) / ``CandidateSettledError`` (409) /
+    ``InvalidCandidateError`` (422) and the staged payload is unchanged.
+    The ``edges`` list itself is NOT re-validated here (the record's
+    edges were validated at staging; a delete since is the accept-time
+    commit path's authority) — shape and JSON only, mirroring the
+    staging contract's write-boundary guards.
+    """
+    with session_scope() as session:
+        candidate = session.get(models.ProposedCandidate, candidate_id)
+        if candidate is None or candidate.campaign_id != campaign_id:
+            raise CandidateNotFoundError(candidate_id)
+        if candidate.status != STATUS_PROPOSED:
+            raise CandidateSettledError(candidate_id, candidate.status)
+        if candidate.kind != PROPOSAL_KIND:
+            raise InvalidCandidateError(
+                f"candidate {candidate_id}: kind must be {PROPOSAL_KIND!r}, got {candidate.kind!r}"
+            )
+        if not isinstance(payload, dict):
+            raise InvalidCandidateError(
+                f"candidate {candidate_id}: replacement payload must be an object, got {payload!r}"
+            )
+        try:
+            json.dumps(payload, allow_nan=False)
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise InvalidCandidateError(
+                f"candidate {candidate_id}: replacement payload is not strict JSON ({exc})"
+            ) from exc
+        violations = payload_section_violations(payload)
+        if violations:
+            raise InvalidCandidateError(
+                f"candidate {candidate_id}: replacement payload fails the required-section "
+                f"shape: {'; '.join(violations)}"
+            )
+        candidate.payload = payload
+    return candidate
+
+
 def accept_candidate(
     campaign_id: str,
     candidate_id: str,
@@ -298,14 +392,22 @@ def accept_candidate(
     ONE transaction (FR11, AD-15): the subgraph commit and the
     ``accepted`` status flip share the same ``session_scope`` — any
     ``StoreError`` rolls back both, leaving the row ``proposed`` and
-    zero new revisions. The new entity is a fresh ULID the staged edges
-    are wired against; it is not any existing entity's id, so the commit
-    path structurally cannot mutate accepted state (FR11, AR4) — and no
-    edge is re-targeted. The commit path is the accept-time authority
+    zero new revisions. The commit path is the accept-time authority
     for endpoints deleted since staging: a dead endpoint raises
     ``DanglingEdgeError`` (422, rebase-or-reject, AD-2) with no state
     change. ``base_revision`` is the head read inside THIS transaction
     (``None`` on an empty world — the accept becomes revision 1).
+
+    Spec-3.5 in-place branch: a regenerate-entity row
+    (``regenerates_entity_id`` set) commits AS its target — the entity
+    ULID is never a fresh id, so ``_commit`` updates the committed row
+    in place (one ``entity_updated`` event, one revision, AD-2/AR4) and
+    every existing committed edge survives untouched (the proposal's own
+    staged edges are the DM's additions and must not duplicate the
+    existing graph — ``DuplicateEdgeError`` 422 otherwise). A target
+    deleted since staging is an ``InvalidCandidateError`` — there is
+    nothing left to replace, and a fresh-ULID create would orphan its
+    inbound edges.
 
     ``payload_override`` (spec-3.3 edit-before-accept, relaxed by
     spec-3.4): when given, it replaces the staged payload as the record
@@ -390,25 +492,49 @@ def accept_candidate(
                 )
         else:
             payload = dict(candidate.payload)
-        # A fresh ULID minted up front so the staged edges can name the
-        # new entity: the commit path needs concrete ids to wire edges,
-        # and this id is not any existing entity's — ``_commit`` finds no
-        # row for it and creates (never updates). The spec's "id=None"
-        # wording describes the invariant (fresh ULID, never an existing
-        # entity), not the minting site.
         name = payload.get("name")
         if not isinstance(name, str):
             raise InvalidCandidateError(f"candidate {candidate_id}: payload has no name")
-        new_entity_id = ids.new_id()
+        if candidate.regenerates_entity_id is not None:
+            # Spec-3.5 in-place accept: a regenerate-entity proposal
+            # replaces its target IN PLACE — same ULID, existing edges
+            # preserved, one revision (AD-2, AR4). The target must still
+            # be committed world state: a fresh-ULID create would leave a
+            # second entity behind (orphaning the original's inbound
+            # edges or duplicating pairs), and an entity deleted since
+            # staging has nothing left to replace — both are structured
+            # rejections, never a guessed create.
+            target_id = candidate.regenerates_entity_id
+            target = session.get(models.Entity, target_id)
+            if target is None or target.campaign_id != campaign_id:
+                raise InvalidCandidateError(
+                    f"candidate {candidate_id}: regenerates_entity_id names no committed "
+                    f"entity of this campaign: {target_id}"
+                )
+            entity_id = target_id
+            # The DM asked to re-roll SECTIONS, not the row's shell: the
+            # target's kind and prose text pass through untouched — only
+            # ``data`` (and the regenerated name) change.
+            entity_kind = target.kind
+            entity_text = target.text
+        else:
+            # A fresh ULID minted up front so the staged edges can name
+            # the new entity: the commit path needs concrete ids to wire
+            # edges, and this id is not any existing entity's — ``_commit``
+            # finds no row for it and creates (never updates). The spec's
+            # "id=None" wording describes the invariant (fresh ULID, never
+            # an existing entity), not the minting site.
+            entity_id = ids.new_id()
+            entity_kind = "character"
+            entity_text = None
         entity = models.EntityInput(
-            kind="character",
+            kind=entity_kind,
             name=name,
+            text=entity_text,
             data={key: value for key, value in payload.items() if key != "edges"},
-            id=new_entity_id,
+            id=entity_id,
         )
-        edges = [
-            _accept_edge(new_entity_id, candidate_id, edge) for edge in _candidate_edges(payload)
-        ]
+        edges = [_accept_edge(entity_id, candidate_id, edge) for edge in _candidate_edges(payload)]
         latest = latest_revision(session, campaign_id)
         revision = _commit(
             session,
@@ -418,7 +544,7 @@ def accept_candidate(
             latest.id if latest is not None else None,
         )
         candidate.status = STATUS_ACCEPTED
-        candidate.accepted_entity_id = new_entity_id
+        candidate.accepted_entity_id = entity_id
         candidate.accept_revision_id = revision.id
     return candidate, revision
 
@@ -569,9 +695,11 @@ def _after_rowid(session: Session, campaign_id: str, cursor: str | None) -> int:
 
 
 __all__ = [
+    "BOSS_ROLES",
     "EDGE_DIRECTIONS",
     "PROPOSAL_KIND",
     "PROPOSAL_STATUS",
+    "REGEN_SECTIONS",
     "STATUS_ACCEPTED",
     "STATUS_PROPOSED",
     "STATUS_REJECTED",
@@ -582,5 +710,6 @@ __all__ = [
     "discard_candidates",
     "list_candidates",
     "reject_candidate",
+    "replace_candidate_payload",
     "stage_candidates",
 ]

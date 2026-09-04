@@ -426,4 +426,115 @@ describe('WorldView', () => {
     expect(apiFetchMock.mock.calls.length).toBe(callsBefore + 1)
     wrapper.unmount()
   })
+
+  it('Regenerate posts a whole-entity regenerate job and surfaces it in the jobs store', async () => {
+    const world = populatedWorld()
+    world.entities[0] = {
+      ...world.entities[0],
+      data: {
+        stat_block: world.entities[0].data['stat_block'],
+        name: 'Mira Vane',
+        role: 'NPC',
+        personality: 'warm',
+        secret: 's',
+      },
+    }
+    apiFetchMock.mockResolvedValue(world)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const regen = wrapper.findAll('button').filter((b) => b.text() === 'Regenerate')[0]
+    expect(regen).toBeDefined()
+    await regen!.trigger('click')
+    await flushPromises()
+
+    const jobCall = apiFetchMock.mock.calls.find(
+      (call) => String(call[0]) === '/api/jobs' || String(call[0]).includes('/api/jobs'),
+    )
+    expect(jobCall).toBeDefined()
+    const body = JSON.parse((jobCall![1] as RequestInit).body as string)
+    expect(body.kind).toBe('regenerate')
+    expect(body.payload).toEqual({ target: { kind: 'entity', id: 'E1' } })
+    // The world snapshot is untouched — regeneration stages, it does not commit.
+    expect(apiFetchMock.mock.calls.some((call) => String(call[0]).includes('/export'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('hides Regenerate on non-AR24 entity cards', async () => {
+    const mixed = populatedWorld()
+    // E2 (The Gilded Bar) has no sectioned profile — no Regenerate button.
+    apiFetchMock.mockResolvedValue(mixed)
+    const wrapper = mountView()
+    await flushPromises()
+    const regen = wrapper.findAll('button').filter((b) => b.text() === 'Regenerate')
+    // Mira (E1) has an AR24-shaped data record? No — the fixture data is a
+    // stat_block only, so the button is hidden for BOTH cards here.
+    expect(regen).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('shows Regenerate on an AR24 entity card', async () => {
+    const world = populatedWorld()
+    world.entities[0] = {
+      ...world.entities[0],
+      data: {
+        name: 'Mira Vane',
+        role: 'NPC',
+        personality: 'warm',
+        secret: 's',
+      },
+    }
+    apiFetchMock.mockResolvedValue(world)
+    const wrapper = mountView()
+    await flushPromises()
+    const regen = wrapper.findAll('button').filter((b) => b.text() === 'Regenerate')
+    expect(regen).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('regenerate buttons disable while a roll is in flight', async () => {
+    const world = populatedWorld()
+    world.entities[0] = {
+      ...world.entities[0],
+      data: {
+        name: 'Mira Vane',
+        role: 'NPC',
+        personality: 'warm',
+        secret: 's',
+      },
+    }
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        await gate
+        return {
+          id: 'RJ1',
+          campaign_id: 'C1',
+          kind: 'regenerate',
+          state: 'queued',
+          queue_position: 1,
+        }
+      }
+      return world
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Regenerate')[0]
+      .trigger('click')
+    await flushPromises()
+    // While the roll is in flight (regeneratingId set), the button shows
+    // Regenerating… and is disabled.
+    const inFlight = wrapper.findAll('button').filter((b) => b.text() === 'Regenerating…')[0]
+    expect(inFlight).toBeDefined()
+    expect(inFlight.attributes('disabled')).toBeDefined()
+    release()
+    await flushPromises()
+    wrapper.unmount()
+  })
 })

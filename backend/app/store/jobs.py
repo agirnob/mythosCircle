@@ -39,15 +39,16 @@ from app.core import ids, time
 from app.core.pagination import anchor_rowid, paging
 from app.core.settings import queue_settings
 from app.store import models
-from app.store.commit import StoreError, UnknownCampaignError
+from app.store.commit import StoreError, UnknownCampaignError, UnknownEntityError
 from app.store.db import session_scope
 
-#: Closed job-kind set (AD-3 runner split: text + build_in -> pipeline,
-#: image/video -> media). ``build_in`` is AD-19's guided build-in kind;
-#: its runner is the two-wave core-first build-in pipeline (spec-2.3).
-#: ``generate`` is Epic 3's plain-language ask kind (spec-3.1): its runner
-#: stages 2-3 proposed candidates, committing nothing.
-JOB_KINDS: frozenset[str] = frozenset({"text", "image", "video", "build_in", "generate"})
+#: stages 2-3 proposed candidates, committing nothing. ``regenerate`` is
+#: spec-3.5's re-roll kind: its runner re-rolls one entity (whole) or one
+#: proposed candidate (whole or per-section), staging/replacing zero or
+#: one proposed row and committing nothing.
+JOB_KINDS: frozenset[str] = frozenset(
+    {"text", "image", "video", "build_in", "generate", "regenerate"}
+)
 
 #: Generate payload contract (spec-3.1): exactly one plain-language ask.
 GENERATE_MAX_ASK_LENGTH = 2000
@@ -416,6 +417,15 @@ def _enqueue(
     # a 422 masquerading as new input (spec-3.1 review round 1).
     if job_id is not None and session.get(models.Job, job_id) is not None:
         raise DuplicateJobError(job_id)
+    if kind == "regenerate":
+        # Spec-3.5: resolve the target (entity/candidate of this
+        # campaign) and validate the closed-section list BEFORE any row
+        # — unknown/foreign target is a 404, a shape/section violation a
+        # 422, both zero rows. Placed after the duplicate-job gate (a
+        # same-job_id retry is the documented 409, never a 422
+        # masquerading as new input — the generate empty-world gate's
+        # rationale).
+        _validate_regenerate_payload(payload, session, campaign_id)
     if kind == "generate":
         # ASK_EMPTY_WORLD (spec-3.1): a plain-language ask needs a world
         # to weave into — zero committed entities is a 422, no job row.
@@ -535,6 +545,103 @@ def _validate_generate_payload(payload: dict[str, Any]) -> None:
         raise InvalidJobInputError("generate ask must be non-blank")
     if len(ask.strip()) > GENERATE_MAX_ASK_LENGTH:
         raise InvalidJobInputError(f"generate ask exceeds {GENERATE_MAX_ASK_LENGTH} chars")
+
+
+def _validate_regenerate_payload(
+    payload: dict[str, Any], session: Session, campaign_id: str
+) -> None:
+    """Enforce the spec-3.5 regenerate payload contract (422/404, zero rows).
+
+    Payload is ``{"target": {"kind": "entity"|"candidate", "id": <ULID>},
+    "sections": [AR24 content section, ...] | null}`` — ``sections``
+    absent or null means the whole character; a non-empty list means
+    exactly those regenerable content sections (the closed
+    ``REGEN_SECTIONS`` set; an empty list is "regenerate nothing" and
+    rejected). The target is resolved inside the enqueue transaction:
+    unknown or foreign entity/candidate id -> ``UnknownEntityError`` /
+    ``CandidateNotFoundError`` (404); a settled candidate -> 422; a
+    target without an AR24 sectioned record (``payload_section_violations``
+    non-empty — e.g. a build-in entity, which never carries a sectioned
+    profile) -> 422; a section outside the closed set -> 422; and
+    ``boss`` on a target whose role is not BBEG/Monster -> 422 — all
+    before any row is written (function-local import: store.candidates
+    imports this module, the db.py-precedented direction).
+    """
+    from app.store.candidates import (
+        BOSS_ROLES,
+        REGEN_SECTIONS,
+        CandidateNotFoundError,
+        payload_section_violations,
+    )
+
+    if not isinstance(payload, dict):
+        raise InvalidJobInputError("regenerate payload must be a JSON object")
+    if set(payload) > {"target", "sections"}:
+        raise InvalidJobInputError(
+            "regenerate payload must be exactly {'target': ..., 'sections': ...|null}"
+        )
+    target = payload.get("target")
+    if not isinstance(target, dict) or set(target) != {"kind", "id"}:
+        raise InvalidJobInputError(
+            "regenerate target must be exactly {'kind': 'entity'|'candidate', 'id': <ULID>}"
+        )
+    kind = target.get("kind")
+    if kind not in ("entity", "candidate"):
+        raise InvalidJobInputError(
+            "regenerate target kind must be 'entity' or 'candidate', got {kind!r}"
+        )
+    target_id = target.get("id")
+    if not isinstance(target_id, str) or not ids.is_valid_ulid(target_id):
+        raise InvalidJobInputError(f"regenerate target id is not a ULID: {target_id!r}")
+    # Whole-character by default: sections absent OR null. A non-empty
+    # list is exactly those sections; an empty list regenerates nothing
+    # and is rejected.
+    sections = payload.get("sections")
+    if sections is not None:
+        if not isinstance(sections, list) or not sections:
+            raise InvalidJobInputError(
+                "regenerate sections must be null (whole character) or a non-empty list"
+            )
+        for section in sections:
+            if not isinstance(section, str) or section not in REGEN_SECTIONS:
+                raise InvalidJobInputError(
+                    f"regenerate section {section!r} is not regenerable — "
+                    f"closed set: {sorted(REGEN_SECTIONS)}"
+                )
+    if kind == "entity":
+        entity = session.get(models.Entity, target_id)
+        if entity is None or entity.campaign_id != campaign_id:
+            raise UnknownEntityError(target_id)
+        record = entity.data
+    else:
+        candidate = session.get(models.ProposedCandidate, target_id)
+        if candidate is None or candidate.campaign_id != campaign_id:
+            raise CandidateNotFoundError(target_id)
+        if candidate.status != models.STATUS_PROPOSED:
+            raise InvalidJobInputError(
+                f"regenerate target candidate {target_id} is already "
+                f"{candidate.status} — only proposed candidates are re-rollable"
+            )
+        record = candidate.payload
+    # The regeneration unit is the AR24 sectioned record: a target
+    # without one (build-in entities, hand-written rows) has no sections
+    # to preserve byte-identically — reject up front, never at the job.
+    violations = (
+        payload_section_violations(record)
+        if isinstance(record, dict)
+        else ["record must be an object"]
+    )
+    if violations:
+        raise InvalidJobInputError(
+            f"regenerate target {target_id!r} has no AR24 sectioned profile: "
+            f"{'; '.join(violations)}"
+        )
+    if sections is not None and "boss" in sections:
+        role = record.get("role")
+        if not isinstance(role, str) or role not in BOSS_ROLES:
+            raise InvalidJobInputError(
+                "regenerate section 'boss' is only allowed for a BBEG or Monster target role"
+            )
 
 
 def _check_json_serializable(payload: dict[str, Any]) -> None:

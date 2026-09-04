@@ -178,7 +178,7 @@ class Job(Base):
             name="ck_job_state",
         ),
         CheckConstraint(
-            "kind IN ('text','image','video','build_in','generate')",
+            "kind IN ('text','image','video','build_in','generate','regenerate')",
             name="ck_job_kind",
         ),
         CheckConstraint("progress >= 0.0 AND progress <= 1.0", name="ck_job_progress"),
@@ -248,6 +248,13 @@ class ProposedCandidate(Base):
     #: accepts). Lets a DM jump from the settled row to the accepting
     #: revision's events.
     accept_revision_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    #: For a regenerate-entity proposal (spec-3.5): the committed entity
+    #: ULID this candidate was regenerated FROM. Null for every
+    #: generate-staged row. Its accept is the ONLY legal regen-entity
+    #: commit: the accept replaces the target entity in place (same ULID,
+    #: existing edges preserved, one revision — AD-2/AR4) instead of
+    #: minting a fresh ULID (which would orphan or duplicate edges).
+    regenerates_entity_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
 
 
 class Media(Base):

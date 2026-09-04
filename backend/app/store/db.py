@@ -117,6 +117,45 @@ def _migrate_job_result(engine: Engine) -> None:
         connection.execute(text("ALTER TABLE job ADD COLUMN result JSON"))
 
 
+@contextmanager
+def _raw_rebuild_connection(engine: Engine) -> Iterator[Any]:
+    """A raw sqlite3 connection with FK enforcement OFF for table rebuilds.
+
+    ``_migrate_job_kind``/``_migrate_proposed_candidate_status`` rebuild a
+    parent table (SQLite cannot ALTER a CHECK) by dropping the live table
+    and renaming a copy into place. Under the engine's per-connection
+    ``PRAGMA foreign_keys=ON`` that DROP fails while a child table (e.g.
+    ``proposed_candidate`` referencing ``job``) still has rows — and both
+    ``foreign_keys`` and ``defer_foreign_keys`` are no-ops inside a
+    transaction, which is exactly where the engine's ``BEGIN IMMEDIATE``
+    listener would put this work. A raw autocommit connection bypasses
+    both: enforcement off for the rebuild, back on after, one explicit
+    BEGIN IMMEDIATE transaction keeps the rebuilding statements atomic.
+    The copy keeps every primary key, so the child FKs are valid again as
+    soon as the rebuilt table is renamed back.
+    """
+    import sqlite3
+
+    if engine.url.drivername != "sqlite":
+        raise RuntimeError("constraint rebuild requires the sqlite3 driver")
+    path = engine.url.database
+    if path is None:
+        raise RuntimeError("constraint rebuild requires a file-backed sqlite database")
+    connection = sqlite3.connect(path)
+    connection.isolation_level = None  # autocommit: the pragmas take effect
+    try:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("BEGIN IMMEDIATE")
+        yield connection
+        connection.execute("COMMIT")
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    finally:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.close()
+
+
 def _migrate_job_kind(engine: Engine) -> None:
     """Widen the job-kind CHECK constraint on a pre-current database.
 
@@ -134,25 +173,31 @@ def _migrate_job_kind(engine: Engine) -> None:
     2.1 list missing ``generate`` (spec-3.1), and any future kind added
     to ``JOB_KINDS`` — and ``create_all`` on a fresh database already
     emits the widened constraint.
+
+    The rebuild drops the LIVE table, so it runs on a raw connection with
+    foreign-key enforcement OFF: with ``PRAGMA foreign_keys=ON`` (the
+    app's per-connection setup) the DROP fails while a child table
+    (``proposed_candidate`` referencing ``job``) still has rows — and
+    both ``foreign_keys``/``defer_foreign_keys`` pragmas are no-ops
+    inside a transaction (the engine's ``BEGIN IMMEDIATE`` listener),
+    which is exactly why the engine is bypassed here. Enforcement is
+    re-enabled after the rebuild and the copied rows keep their
+    references valid (the renamed table carries the same primary keys).
     """
     import re
 
-    from sqlalchemy import text
-
     from app.store.jobs import JOB_KINDS
 
-    with engine.begin() as connection:
+    with _raw_rebuild_connection(engine) as connection:
         row = connection.execute(
-            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='job'")
-        ).first()
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='job'"
+        ).fetchone()
         table_sql = row[0] if row is not None else None
         if table_sql is None or all(f"'{kind}'" in table_sql for kind in JOB_KINDS):
             return
         index_rows = connection.execute(
-            text(
-                "SELECT sql FROM sqlite_master WHERE type='index'"
-                " AND tbl_name='job' AND sql IS NOT NULL"
-            )
+            "SELECT sql FROM sqlite_master WHERE type='index'"
+            " AND tbl_name='job' AND sql IS NOT NULL"
         ).fetchall()
         kind_list = ",".join(f"'{kind}'" for kind in sorted(JOB_KINDS))
         new_table_sql = (
@@ -173,12 +218,12 @@ def _migrate_job_kind(engine: Engine) -> None:
                 "job-kind migration: could not rewrite the job table DDL "
                 f"(unrecognized shape): {table_sql!r}"
             )
-        connection.execute(text(new_table_sql))
-        connection.execute(text("INSERT INTO job_new SELECT * FROM job"))
-        connection.execute(text("DROP TABLE job"))
-        connection.execute(text("ALTER TABLE job_new RENAME TO job"))
+        connection.execute(new_table_sql)
+        connection.execute("INSERT INTO job_new SELECT * FROM job")
+        connection.execute("DROP TABLE job")
+        connection.execute("ALTER TABLE job_new RENAME TO job")
         for (index_sql,) in index_rows:
-            connection.execute(text(index_sql))
+            connection.execute(index_sql)
 
 
 def _migrate_proposed_candidate_status(engine: Engine) -> None:
@@ -200,21 +245,17 @@ def _migrate_proposed_candidate_status(engine: Engine) -> None:
     """
     import re
 
-    from sqlalchemy import text
-
     status_list = ",".join(f"'{status}'" for status in sorted(models.PROPOSAL_STATUS))
-    with engine.begin() as connection:
+    with _raw_rebuild_connection(engine) as connection:
         row = connection.execute(
-            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='proposed_candidate'")
-        ).first()
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='proposed_candidate'"
+        ).fetchone()
         table_sql = row[0] if row is not None else None
         if table_sql is None or all(f"'{s}'" in table_sql for s in models.PROPOSAL_STATUS):
             return
         index_rows = connection.execute(
-            text(
-                "SELECT sql FROM sqlite_master WHERE type='index'"
-                " AND tbl_name='proposed_candidate' AND sql IS NOT NULL"
-            )
+            "SELECT sql FROM sqlite_master WHERE type='index'"
+            " AND tbl_name='proposed_candidate' AND sql IS NOT NULL"
         ).fetchall()
         new_table_sql = (
             re.sub(
@@ -239,14 +280,12 @@ def _migrate_proposed_candidate_status(engine: Engine) -> None:
                 "proposed-candidate-status migration: could not rewrite the "
                 f"proposed_candidate table DDL (unrecognized shape): {table_sql!r}"
             )
-        connection.execute(text(new_table_sql))
-        connection.execute(
-            text("INSERT INTO proposed_candidate_new SELECT * FROM proposed_candidate")
-        )
-        connection.execute(text("DROP TABLE proposed_candidate"))
-        connection.execute(text("ALTER TABLE proposed_candidate_new RENAME TO proposed_candidate"))
+        connection.execute(new_table_sql)
+        connection.execute("INSERT INTO proposed_candidate_new SELECT * FROM proposed_candidate")
+        connection.execute("DROP TABLE proposed_candidate")
+        connection.execute("ALTER TABLE proposed_candidate_new RENAME TO proposed_candidate")
         for (index_sql,) in index_rows:
-            connection.execute(text(index_sql))
+            connection.execute(index_sql)
 
 
 def _migrate_proposed_candidate_provenance(engine: Engine) -> None:
@@ -257,7 +296,9 @@ def _migrate_proposed_candidate_provenance(engine: Engine) -> None:
     columns are only added AFTER that rebuild (a ``SELECT *`` copy would
     otherwise break on them). Runs per-column, idempotently: a
     half-migrated database finishes on the next init; a fresh database
-    already has them from ``create_all``.
+    already has them from ``create_all``. ``regenerates_entity_id``
+    (spec-3.5, the regenerate-entity proposal's origin ULID) rides the
+    same per-name ALTER pass.
     """
     from sqlalchemy import inspect, text
 
@@ -265,7 +306,11 @@ def _migrate_proposed_candidate_provenance(engine: Engine) -> None:
     if "proposed_candidate" not in inspector.get_table_names():
         return
     columns = {column["name"] for column in inspector.get_columns("proposed_candidate")}
-    adds = [name for name in ("accepted_entity_id", "accept_revision_id") if name not in columns]
+    adds = [
+        name
+        for name in ("accepted_entity_id", "accept_revision_id", "regenerates_entity_id")
+        if name not in columns
+    ]
     if not adds:
         return
     with engine.begin() as connection:

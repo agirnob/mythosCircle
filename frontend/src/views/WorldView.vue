@@ -6,6 +6,7 @@ import type { components } from '../api/schema'
 import { ApiError } from '../api/client'
 import StatBlock from '../components/StatBlock.vue'
 import { useAuthStore } from '../stores/auth'
+import { useJobsStore } from '../stores/jobs'
 import { useWorldStore } from '../stores/world'
 import { connectJobSocket } from '../ws'
 
@@ -18,6 +19,7 @@ const router = useRouter()
 const campaignId = route.params.id as string
 
 const world = useWorldStore()
+const jobs = useJobsStore()
 
 let disconnectSocket: (() => void) | null = null
 let connectedCampaign: string | null = null
@@ -202,6 +204,42 @@ const editCounter = ref<number>(1)
 const relationBusy = ref(false)
 const relationErrors = ref<Record<string, string>>({})
 
+/** Spec-3.5: entity-id -> in-flight whole-character regeneration. */
+const regeneratingId = ref<string | null>(null)
+const regenerateErrors = ref<Record<string, string>>({})
+
+/**
+ * Only AR24 sectioned records are regenerable (the enqueue validator
+ * 422s everything else — a build-in entity has no sectioned profile).
+ * The AR19/AR24 core markers: non-blank name, role, personality, secret.
+ */
+function isRegenerable(entity: EntityExport): boolean {
+  const data = entity.data
+  if (typeof data !== 'object' || data === null) return false
+  return ['name', 'role', 'personality', 'secret'].every(
+    (key) => typeof (data as Record<string, unknown>)[key] === 'string',
+  )
+}
+
+/**
+ * Whole-character regeneration (spec-3.5): stage a regenerate job whose
+ * new proposal surfaces on the accept screen (CandidatesView). The
+ * committed entity is untouched until the DM accepts the proposal.
+ */
+async function regenerateEntity(entityId: string) {
+  regenerateErrors.value[entityId] = ''
+  regeneratingId.value = entityId
+  try {
+    await jobs.submitRegenerate(campaignId, { kind: 'entity', id: entityId }, null)
+    await jobs.syncList(campaignId)
+  } catch (err) {
+    regenerateErrors.value[entityId] =
+      err instanceof ApiError ? err.message : 'Could not regenerate the entity.'
+  } finally {
+    regeneratingId.value = null
+  }
+}
+
 function relationTargets(entityId: string): EntityExport[] {
   // Any existing entity except the card's own — a self-loop is not an
   // edge into existing world state (the store rejects it outright).
@@ -339,9 +377,23 @@ async function removeEdge(entityId: string, relation: RelationLine) {
             {{ kind }} <span class="muted small">({{ group.length }})</span>
           </h2>
           <article v-for="entity in group" :key="entity.id" class="card entity">
-            <h3>{{ entity.name }}</h3>
+            <h3>
+              {{ entity.name }}
+              <button
+                v-if="isRegenerable(entity)"
+                type="button"
+                class="link"
+                :disabled="regeneratingId !== null"
+                @click="regenerateEntity(entity.id)"
+              >
+                {{ regeneratingId === entity.id ? 'Regenerating…' : 'Regenerate' }}
+              </button>
+            </h3>
             <p v-if="entity.text" class="text">{{ entity.text }}</p>
             <p v-else class="muted">No description.</p>
+            <p v-if="regenerateErrors[entity.id]" class="error">
+              {{ regenerateErrors[entity.id] }}
+            </p>
             <StatBlock
               v-if="entity.data && entity.data['stat_block']"
               :block="entity.data['stat_block']"
