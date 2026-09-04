@@ -73,8 +73,13 @@ def stage_candidates(
     with session_scope() as session:
         if session.get(models.Campaign, campaign_id) is None:
             raise UnknownCampaignError(campaign_id)
-        if session.get(models.Job, job_id) is None:
+        job = session.get(models.Job, job_id)
+        if job is None:
             raise JobNotFoundError(job_id)
+        if job.campaign_id != campaign_id:
+            raise InvalidCandidateError(
+                f"job {job_id} belongs to campaign {job.campaign_id}, not {campaign_id}"
+            )
         existing = session.scalars(
             select(models.ProposedCandidate).where(models.ProposedCandidate.job_id == job_id)
         ).all()
@@ -91,7 +96,7 @@ def stage_candidates(
             # these; this is the write-boundary defense for any caller.
             try:
                 json.dumps(payload, allow_nan=False)
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, RecursionError) as exc:
                 raise InvalidCandidateError(
                     f"candidate {index}: payload is not strict JSON ({exc})"
                 ) from exc
@@ -220,6 +225,7 @@ __all__ = [
     "PROPOSAL_KIND",
     "STATUS_PROPOSED",
     "InvalidCandidateError",
+    "discard_candidates",
     "list_candidates",
     "stage_candidates",
 ]

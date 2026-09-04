@@ -186,3 +186,11 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-1-plain-language-ask-returns-2-3-candidates.md`
   summary: Failure-path tests (FEWER_THAN_TWO / BAD_EDGE / INVALID_STATS / BUDGET_EXCEEDED / malformed output) assert job state + zero staged rows but never the world graph/revision unchanged (AC4); the runner-level delete-mid-job composition (world mutated between the provider call and stage_candidates; InvalidCandidateError propagating) is untested. Assertion-strength hardening for a later sweep.
   evidence: only test_happy_path_stages_three_candidates asserts _revision_count/world_entities/world_edges; the staged-window backstop is exercised only at the store level with a fabricated stray ULID. [backend/tests/test_generate_pipeline.py]
+## Deferred from: code review of spec-3-1-plain-language-ask-returns-2-3-candidates.md — round 3 (2026-09-04)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-plain-language-ask-returns-2-3-candidates.md`
+  summary: Staged edge counters are never validated against `edge_counter_semantic` — a non-positive or semantically invalid counter (`debt: -5`, `ally_of: 0`) stages and would surface on the accept screen although it can never commit.
+  evidence: `_valid_edge` checks endpoint/type/direction/int-ness only; the prompt embeds the semantics ("counter: <integer, default 1>") half-enforced at the stage boundary — the 2.3 counter-ranges deferral owns the bounds decision, extend the stage boundary when they land. [backend/app/pipeline/generate.py `_valid_edge`]
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-plain-language-ask-returns-2-3-candidates.md`
+  summary: The candidates read has no job/status scoping — rows from every generate job (old batches, superseded retries, crash-window cancelled-job rows) interleave oldest-first, so story 3.3 cannot fetch "the latest batch" atomically.
+  evidence: `list_candidates` filters by campaign + rowid only; the 3.3 accept screen needs a `job_id`/`status` filter or a newest-batch contract (this also subsumes the round-2 crash-window ghost-row deferral — GC by job state). [backend/app/store/candidates.py `list_candidates`]

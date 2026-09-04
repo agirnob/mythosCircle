@@ -11,13 +11,14 @@ revision chain never see a staged candidate).
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from sqlalchemy import func, select, text
 
+import app.store as store_module
 from app.core import ids
 from app.core.pagination import encode_cursor
 from app.core.settings import LLMSettings
@@ -49,6 +50,7 @@ from app.store import (
     undo,
 )
 from app.store.db import get_engine, session_scope
+from app.store.jobs import GENERATE_MAX_ASK_LENGTH
 from app.store.read import latest_revision, world_edges, world_entities
 
 SETTINGS = LLMSettings(endpoint="http://test/v1", model="test-model")
@@ -135,16 +137,18 @@ def _generate_output(total: int = 3) -> dict[str, Any]:
 
 def _enqueue(world: str, *, max_llm_calls: int | None = None, ask: str = "a rival for Mira") -> str:
     """Enqueue one generate job; returns its id."""
-    return enqueue_job(
-        world, "generate", {"ask": "a rival for Mira"}, max_llm_calls=max_llm_calls
-    ).id
+    return enqueue_job(world, "generate", {"ask": ask}, max_llm_calls=max_llm_calls).id
 
 
-def _run(world: str, provider: Any, *, max_llm_calls: int | None = None) -> str:
+def _run(
+    world: str,
+    provider: Any,
+    *,
+    max_llm_calls: int | None = None,
+    ask: str = "a rival for Mira",
+) -> str:
     """Enqueue one generate job and drain it with ``provider``."""
-    job_id = enqueue_job(
-        world, "generate", {"ask": "a rival for Mira"}, max_llm_calls=max_llm_calls
-    ).id
+    job_id = enqueue_job(world, "generate", {"ask": ask}, max_llm_calls=max_llm_calls).id
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
     return job_id
 
@@ -341,6 +345,66 @@ def test_migrate_job_kind_adds_generate(
         CREATE INDEX ix_job_campaign_id ON job (campaign_id);
         """
     )
+    # Pre-existing rows — the data the rebuild exists to preserve: a
+    # queued text job and a finished text job from the old schema (both
+    # kinds admitted by EITHER legacy CHECK — the rebuild cannot create
+    # kinds the old schema forbade).
+    legacy_account = "A" * 26
+    legacy_campaign = "C" * 26
+    raw.execute(
+        "INSERT INTO account (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+        (legacy_account, "legacy@example.com", "legacy-hash", "2026-01-01T00:00:00Z"),
+    )
+    raw.execute(
+        "INSERT INTO campaign (id, owner_id, title, description, theme,"
+        " custom_lore, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            legacy_campaign,
+            legacy_account,
+            "Legacy World",
+            "",
+            "High Fantasy",
+            "",
+            "2026-01-01T00:00:00Z",
+        ),
+    )
+    raw.executemany(
+        "INSERT INTO job (id, campaign_id, kind, payload, state, progress,"
+        " max_llm_calls, max_media_calls, error, result, created_at,"
+        " started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                "J" + "1" * 25,
+                legacy_campaign,
+                "text",
+                '{"prompt": "grow the world"}',
+                "queued",
+                0.0,
+                8,
+                0,
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+                None,
+                None,
+            ),
+            (
+                "J" + "2" * 25,
+                legacy_campaign,
+                "text",
+                '{"prompt": "hello"}',
+                "succeeded",
+                1.0,
+                5,
+                0,
+                None,
+                '{"text": "hello world"}',
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:01:00Z",
+                "2026-01-01T00:02:00Z",
+            ),
+        ],
+    )
     raw.commit()
     raw.close()
 
@@ -379,6 +443,14 @@ def test_migrate_job_kind_adds_generate(
                 .where(models.Job.campaign_id == campaign)
             )
         assert count == 1  # the generate job survived the re-init
+        with session_scope() as session:
+            legacy = {row.id: row for row in session.execute(select(models.Job)).scalars().all()}
+        first = legacy["J" + "1" * 25]
+        assert first.kind == "text" and first.state == "queued"
+        assert first.payload == {"prompt": "grow the world"}
+        text_job = legacy["J" + "2" * 25]
+        assert text_job.kind == "text" and text_job.state == "succeeded"
+        assert text_job.result == {"text": "hello world"}
     finally:
         init_db(previous)
 
@@ -427,6 +499,13 @@ def test_bad_edge_candidate_dropped_two_staged(world: str) -> None:
     assert job.state == "succeeded"
     rows = _staged(world)
     assert [row.payload["name"] for row in rows] == ["Corvin Ashe", "The Tallyman"]
+    # V6: the shape-drop rides the dropped summary on a PARTIAL success
+    # too (the stat-repair drop path was already pinned).
+    assert job.result is not None
+    dropped = job.result["dropped"]
+    assert [d["ref"] for d in dropped] == ["E1"]
+    assert dropped[0]["name"] == "Sister Yeva"
+    assert "BAD_EDGE" in dropped[0]["reason"]
 
 
 def test_bad_edge_all_candidates_fails(world: str) -> None:
@@ -1097,3 +1176,196 @@ def test_dropped_summary_absent_when_all_valid(world: str) -> None:
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert job.result is not None and job.result["dropped"] == []
+
+
+#
+# Review round 3 pins: runner payload re-validation, runner world-state
+# guards, transient status-read errors, duplicate candidates, retrieval
+# determinism, adversarial nesting, cross-campaign staging
+# ---------------------------------------------------------------------------
+
+
+def _raw_generate_job(campaign_id: str, ask: str) -> str:
+    """Insert a generate job row directly, bypassing the enqueue gate —
+    the runner-level re-validation is defense for exactly such rows."""
+    job_id = ids.new_id()
+    with session_scope() as session:
+        session.add(
+            models.Job(
+                id=job_id,
+                campaign_id=campaign_id,
+                kind="generate",
+                payload={"ask": ask},
+                state="queued",
+                progress=0.0,
+                max_llm_calls=5,
+                max_media_calls=0,
+                error=None,
+                result=None,
+                created_at="2026-01-01T00:00:00Z",
+                started_at=None,
+                finished_at=None,
+            )
+        )
+    return job_id
+
+
+def test_runner_revalidates_ask_on_claim(world: str) -> None:
+    """A generate job row written outside enqueue_job still meets the
+    payload contract at claim time: a blank or over-long ask fails the
+    job with a structured error, never a prompt with an empty or
+    truncated ask section."""
+    _commit_world(world)
+    blank = _raw_generate_job(world, "   ")
+    assert (
+        run_next_job(
+            provider=lambda prompt, settings: json.dumps(_generate_output()),
+            settings=SETTINGS,
+        )
+        == blank
+    )
+    job, _position = job_status(blank)
+    assert job.state == "failed"
+    assert "ask must be non-blank" in (job.error or "")
+
+    overlong = _raw_generate_job(world, "x" * (GENERATE_MAX_ASK_LENGTH + 1))
+    assert (
+        run_next_job(
+            provider=lambda prompt, settings: json.dumps(_generate_output()), settings=SETTINGS
+        )
+        == overlong
+    )
+    job, _position = job_status(overlong)
+    assert job.state == "failed"
+    assert "exceeds" in (job.error or "")
+
+
+def test_runner_guard_empty_world_at_claim(world: str) -> None:
+    """The runner re-checks world state between enqueue and claim (the
+    undo race): a world emptied after submit fails the job with a
+    structured error, never a crash. (A campaign deleted after submit is
+    unreachable on the wire — AR20 cascades its jobs away with it — so
+    the seed-missing guard stays defense-only.)"""
+    _commit_world(world)
+    emptied = enqueue_job(world, "generate", {"ask": "empty"}).id
+    with session_scope() as session:
+        latest = latest_revision(session, world)
+    assert latest is not None
+    undo(world, latest.id)
+    assert (
+        run_next_job(
+            provider=lambda prompt, settings: json.dumps(_generate_output()), settings=SETTINGS
+        )
+        == emptied
+    )
+    job, _position = job_status(emptied)
+    assert job.state == "failed"
+    assert "no committed entities" in (job.error or "")
+
+
+def test_status_read_error_does_not_wedge_job(world: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transient job_status read error on a cancel-race poll must not
+    wedge the queue: the poll treats it as 'still running' and the job
+    reaches a terminal state (round-1 patch, now pinned — flipping the
+    branch back to False passes every other test)."""
+
+    _commit_world(world)
+    job_id = _enqueue(world)
+    real_status: Callable[[str], tuple[models.Job, int | None]] = store_module.job_status
+    calls = {"n": 0}
+
+    def flaky_status(job_id_: str) -> tuple[models.Job, int | None]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient status read failure")
+        return real_status(job_id_)
+
+    monkeypatch.setattr(store_module, "job_status", flaky_status)
+    assert (
+        run_next_job(
+            provider=lambda prompt, settings: json.dumps(_generate_output()), settings=SETTINGS
+        )
+        == job_id
+    )
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert len(_staged(world)) == 3
+
+
+def test_duplicate_candidate_stages_once(world: str) -> None:
+    """'2-3 candidates' means distinct candidates: an echoed candidate
+    stages once and the duplicate lands in the dropped summary naming
+    the first occurrence."""
+    _commit_world(world)
+    output = _generate_output()  # Corvin Ashe, Sister Yeva, The Tallyman
+    output["candidates"][2] = json.loads(json.dumps(output["candidates"][1]))
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    rows = _staged(world)
+    assert [row.payload["name"] for row in rows] == ["Corvin Ashe", "Sister Yeva"]
+    assert job.result is not None
+    dropped = job.result["dropped"]
+    assert [d["ref"] for d in dropped] == ["E2"]
+    assert dropped[0]["name"] == "Sister Yeva"
+    assert "duplicate of E1" in dropped[0]["reason"]
+
+
+def test_all_duplicates_fail_fewer_than_two(world: str) -> None:
+    """An all-identical batch has <2 distinct survivors: FEWER_THAN_TWO
+    fails the job with the duplicate reason; nothing staged."""
+    _commit_world(world)
+
+    output = _generate_output()
+    dup = json.loads(json.dumps(output["candidates"][0]))
+    output["candidates"] = [dup, dup, dup]
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "1 valid candidate(s) survived validation, need 2" in (job.error or "")
+    assert "duplicate of E0" in (job.error or "")
+    assert _staged(world) == []
+
+
+def test_retrieval_order_pins_context_refs(world: str) -> None:
+    """The prompt is a pure function of the RETRIEVED context: two
+    retrievals of the same world give the same entity order (the C<index>
+    refs' semantics) and the same prompt bytes; a different ask changes
+    the prompt end-to-end."""
+    _commit_world(world)
+    first = retrieve_neighborhood(world, seed_ids=None)
+    second = retrieve_neighborhood(world, seed_ids=None)
+    assert [entity.id for entity in first[0]] == [entity.id for entity in second[0]]
+    with session_scope() as session:
+        seed = campaign_seed(session, world)
+    assert seed is not None
+    prompt_a = build_generate_prompt(seed, "a rival for Mira", first)
+    assert build_generate_prompt(seed, "a rival for Mira", second) == prompt_a
+    assert build_generate_prompt(seed, "another ask entirely", first) != prompt_a
+
+
+def test_pathologically_nested_output_fails_structured(world: str) -> None:
+    """An adversarially nested output (beyond CPython's JSON recursion
+    limit) fails the job with the structured malformed-output error, not
+    a raw RecursionError crash."""
+    _commit_world(world)
+    job_id = _run(
+        world,
+        lambda prompt, settings: '{"candidates": ' + "[" * 20000 + "]" * 20000 + "}",
+    )
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "output is not valid JSON" in (job.error or "")
+
+
+def test_stage_candidates_rejects_foreign_job(world: str) -> None:
+    """Staging ties rows to a campaign: a job of ANOTHER campaign is
+    rejected, never cross-staged."""
+    _commit_world(world)
+    other = create_campaign(
+        _owner_id(), title="Other World", description="", theme="High Fantasy", custom_lore=""
+    ).id
+    _commit_world(other)
+    job = enqueue_job(other, "generate", {"ask": "elsewhere"})
+    with pytest.raises(InvalidCandidateError, match="belongs to campaign"):
+        stage_candidates(world, job.id, [_candidate_record(world)])

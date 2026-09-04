@@ -41,6 +41,7 @@ import logging
 from collections.abc import Callable, Sequence
 from typing import Any
 
+import app.store as store
 from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
 from app.pipeline.fencing import strip_fence
@@ -61,12 +62,12 @@ from app.store import (
     complete_job,
     discard_candidates,
     edge_counter_semantic,
-    job_status,
     models,
     report_progress,
     stage_candidates,
 )
 from app.store.db import session_scope
+from app.store.jobs import GENERATE_MAX_ASK_LENGTH
 from app.store.read import campaign_seed, world_state
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,14 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
     ):
         raise JobPayloadError("generate: job payload must be exactly {'ask': str}")
     ask = payload["ask"].strip()
+    # The runner re-checks the enqueue-time payload contract (non-blank,
+    # length-capped): a generate job row written outside ``enqueue_job``
+    # (direct store write, test helper, future caller) must never build a
+    # prompt with an empty or truncated ask section (review round 3).
+    if not ask:
+        raise JobPayloadError("generate: ask must be non-blank")
+    if len(ask) > GENERATE_MAX_ASK_LENGTH:
+        raise JobPayloadError(f"generate: ask exceeds {GENERATE_MAX_ASK_LENGTH} chars")
 
     budget = CallBudget(job)
 
@@ -202,7 +211,7 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
     for index, candidate in valid:
         try:
             json.dumps(candidate, allow_nan=False)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             drops.append(
                 (
                     index,
@@ -213,6 +222,23 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
         else:
             strict.append((index, candidate))
     valid = strict
+    # Duplicate guard (review round 3): "2-3 candidates" means distinct
+    # candidates — a model echoing the same candidate twice stages as
+    # one row (the duplicate lands in the dropped summary naming the
+    # first occurrence), keeping the accept screen honest. Equality is
+    # exact and key-order-insensitive; two same-name but different
+    # candidates both survive.
+    seen: dict[str, int] = {}
+    deduped: list[tuple[int, dict[str, Any]]] = []
+    for index, candidate in valid:
+        key = json.dumps(candidate, sort_keys=True, allow_nan=False)
+        first = seen.get(key)
+        if first is None:
+            seen[key] = index
+            deduped.append((index, candidate))
+        else:
+            drops.append((index, candidate["name"], f"duplicate of E{first}"))
+    valid = deduped
 
     if len(valid) < MIN_CANDIDATES:
         detail = (
@@ -249,7 +275,10 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
         # Cancel raced the terminal write: the just-staged rows are
         # ghosts — discard them, then propagate so the worker records
         # nothing on a cancelled job.
-        discard_candidates(job.id)
+        try:
+            discard_candidates(job.id)
+        except Exception:  # noqa: BLE001 - the conflict is the error to surface
+            logger.exception("failed to discard ghost rows for job %s", job.id)
         raise
 
 
@@ -348,7 +377,7 @@ def _parse_candidates(text: str) -> list[Any]:
     stripped = strip_fence(text)
     try:
         parsed = json.loads(stripped)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise JobPayloadError(f"generate: output is not valid JSON ({exc})") from exc
     if not isinstance(parsed, dict):
         raise JobPayloadError("generate: output must be a JSON object")
@@ -490,7 +519,7 @@ def _job_still_running(job: models.Job) -> bool:
     ``claim_next_job`` refusing every claim.
     """
     try:
-        state, _position = job_status(job.id)
+        state, _position = store.job_status(job.id)
     except Exception:  # noqa: BLE001 - a status error must never wedge the queue
         logger.exception("worker state check failed for job %s", job.id)
         return True

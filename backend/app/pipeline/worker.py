@@ -29,7 +29,15 @@ from typing import Any
 from app.core.settings import LLMSettings, llm_settings
 from app.pipeline.budget import BudgetExceededError, CallBudget
 from app.providers.llm import ChatCompletion, ProviderError, chat_completion
-from app.store import claim_next_job, complete_job, discard_candidates, fail_job, job_status, models
+from app.store import (
+    JobStateConflictError,
+    claim_next_job,
+    complete_job,
+    discard_candidates,
+    fail_job,
+    job_status,
+    models,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +79,12 @@ def run_next_job(
         return None
     try:
         _run_job(job, provider, settings)
+    except JobStateConflictError:
+        # The job is terminal (cancelled) and the generate runner already
+        # discarded its ghost rows before re-raising the conflict — a
+        # second discard is a no-op and failing a cancelled job would
+        # raise a second conflict that only produces a spurious log.
+        pass
     except Exception as exc:  # noqa: BLE001 - a claimed job must never wedge the queue
         if job.kind == "generate":
             # A re-run of a crash-requeued generate job can fail before
