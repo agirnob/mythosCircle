@@ -362,6 +362,17 @@ def test_rules_text_carries_vocabularies() -> None:
     assert "Skill" in rules or "skill" in rules
 
 
+def test_rules_text_instructs_challenge_scaling() -> None:
+    """Stats must follow the declared level/CR: the model is told a tougher
+    declaration needs tougher combat numbers and scores (not a flat block).
+    This is generation guidance, not validation — the validator still only
+    enforces ranges and vocabulary."""
+    rules = stat_block_rules_text()
+    assert "CHALLENGE SCALING" in rules
+    assert "level" in rules and "CR" in rules
+    assert "hp" in rules and "ac" in rules
+
+
 def test_spells_reference_text_is_deterministic_and_subsettable() -> None:
     full = spells_reference_text()
     assert spells_reference_text() == full
