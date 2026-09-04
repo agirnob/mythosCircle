@@ -325,7 +325,11 @@ class EdgeInput:
 
     ``id=None``: new edge (store assigns a ULID). ``id=<existing ULID>``:
     counter update of that edge — src/dst/type are immutable (edge
-    re-targeting is forbidden, AD-2).
+    re-targeting is forbidden, AD-2) and the id MUST name an existing
+    edge of the campaign: an explicit id never creates (spec-3.4 —
+    creation under a caller-chosen id would let a stale update
+    resurrect a concurrently deleted edge); an unknown id is an
+    ``UnknownEdgeError``.
     """
 
     src: str

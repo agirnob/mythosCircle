@@ -219,6 +219,16 @@ class UnknownEntityError(StoreError):
         self.entity_id = entity_id
 
 
+class UnknownEdgeError(StoreError):
+    """A delete/update target edge does not exist in this campaign's world,
+    or names another campaign's edge (the two are indistinguishable, AD-9 —
+    no oracle)."""
+
+    def __init__(self, edge_id: str) -> None:
+        super().__init__(f"unknown edge: {edge_id}")
+        self.edge_id = edge_id
+
+
 class LiveEdgesError(StoreError):
     """A delete with live edges was requested without cascade confirm
     (FR4, AD-5). Carries the affected neighbor entities — id + name per
@@ -275,11 +285,12 @@ def commit_subgraph(
     Rejects (no state change) with ``UnknownCampaignError``,
     ``StaleRevisionError``, ``InvalidEdgeTypeError``,
     ``InvalidEdgeCounterError``, ``DanglingEdgeError``,
-    ``SelfLoopEdgeError``, ``DuplicateEntityError``,
     ``DuplicateEdgeError``, ``EdgeRetargetError``,
     ``CrossCampaignConflictError``, ``InvalidUlidError``,
-    ``EmptySubgraphError``, or ``OrphanEntityError`` (FR2: a newly
-    created entity with zero edges into staged or existing state).
+    ``UnknownEdgeError`` (an explicit edge id names no edge of this
+    campaign — explicit ids update, they never create), or
+    ``OrphanEntityError`` (FR2: a newly created entity with zero edges
+    into staged or existing state).
     """
     with session_scope() as session:
         return _commit(session, campaign_id, list(entities), list(edges), base_revision)
@@ -349,17 +360,21 @@ def _commit(
                 raise DuplicateEdgeError(f"edge staged twice: {edge.id}")
             seen_edge_ids.add(edge.id)
             existing_edge = edge_rows.get(edge.id)
-            if existing_edge is not None and (
+            if existing_edge is None:
+                # Strict contract (spec-3.4): an explicit edge id MUST name
+                # an existing edge of this campaign — creation is
+                # id=None only. Allowing an explicit id to create would let
+                # a PATCH staged against a concurrently deleted edge
+                # silently resurrect it under the same ULID (spec-3-4
+                # review round 1). Unknown ids are a structured rejection,
+                # never a guessed create.
+                raise UnknownEdgeError(edge.id)
+            if (
                 edge.src != existing_edge.src
                 or edge.dst != existing_edge.dst
                 or edge.type != existing_edge.type
             ):
                 raise EdgeRetargetError(edge, existing_edge)
-            # An explicit id staging a brand-new edge must still respect the
-            # (src, dst, type) uniqueness invariant (AD-23) — otherwise the
-            # raw unique-constraint IntegrityError escapes at flush.
-            if existing_edge is None:
-                _reject_duplicate_relationship(edge, relationship_rows, staged_relationships)
         else:
             _reject_duplicate_relationship(edge, relationship_rows, staged_relationships)
 
@@ -570,6 +585,78 @@ def _delete_entity(
         now,
     )
     session.delete(entity)
+    return revision
+
+
+def delete_edge(
+    campaign_id: str,
+    edge_id: str,
+    *,
+    base_revision: str | None = None,
+) -> models.Revision:
+    """Delete one edge through the commit path (FR9, AD-23).
+
+    Unlike ``delete_entity`` there is NO cascade/confirm gate: deleting a
+    single edge never dangles (edges are the connectors) and never orphans
+    an entity (the no-orphan rule is entity-create-only) — it is always
+    safe, one revision, all-or-nothing. The revision appends one
+    ``edge_deleted`` event whose ``before`` snapshot matches undo's
+    ``_EDGE_KEYS`` contract exactly — undoing the delete revision
+    recreates the edge with a stable ULID via the existing undo machinery
+    (already exercised by cascade delete), zero undo changes. Neighbors
+    survive.
+
+    Rejects (no state change) with ``UnknownCampaignError``,
+    ``UnknownEdgeError`` (unknown or foreign-campaign edge id), or
+    ``StaleRevisionError`` (a supplied ``base_revision`` must match the
+    head; ``None`` targets the current head, the DM wire default).
+    """
+    with session_scope() as session:
+        return _delete_edge(session, campaign_id, edge_id, base_revision)
+
+
+def _delete_edge(
+    session: Session,
+    campaign_id: str,
+    edge_id: str,
+    base_revision: str | None,
+) -> models.Revision:
+    if session.get(models.Campaign, campaign_id) is None:
+        raise UnknownCampaignError(campaign_id)
+    latest = latest_revision(session, campaign_id)
+    if base_revision is not None:
+        # Optimistic concurrency is opt-in at the store boundary: an
+        # omitted base targets the current head (the DM's DELETE carries
+        # none), a supplied base must match it (DELETE_STALE, AD-2).
+        _check_base(latest, base_revision)
+    edge = session.scalars(
+        select(models.Edge).where(
+            models.Edge.campaign_id == campaign_id,
+            models.Edge.id == edge_id,
+        )
+    ).first()
+    if edge is None:
+        # Foreign-campaign ULIDs are invisible to this campaign's world —
+        # unknown and foreign are indistinguishable (AD-9).
+        raise UnknownEdgeError(edge_id)
+
+    now = time.now()
+    revision = models.Revision(
+        id=ids.new_id(),
+        campaign_id=campaign_id,
+        base_revision=latest.id if latest is not None else None,
+        created_at=now,
+    )
+    session.add(revision)
+    _add_event(
+        session,
+        campaign_id,
+        revision.id,
+        "edge_deleted",
+        {"id": edge.id, "before": _edge_snapshot(edge), "after": None},
+        now,
+    )
+    session.delete(edge)
     return revision
 
 

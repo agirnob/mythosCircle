@@ -352,4 +352,110 @@ describe('CandidatesView', () => {
     expect(init?.method).toBe('POST')
     expect(wrapper.text()).not.toContain('gaunt, ink-stained fingers')
   })
+
+  // -------------------------------------------------------------------------
+  // Staged-edge editing before accept (spec-3-4, FR9)
+  // -------------------------------------------------------------------------
+
+  it('edit mode shows the edge draft; a counter edit makes the accept send the edited edges', async () => {
+    stubApi()
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Edit')[0]
+      .trigger('click')
+    await flushPromises()
+
+    // The staged edge renders as an editable draft line with its counter.
+    const counterInputs = wrapper.findAll('input[aria-label="Counter"]')
+    expect(counterInputs.length).toBeGreaterThan(0)
+    const edgeCounter = counterInputs[0]
+    expect((edgeCounter.element as HTMLInputElement).value).toBe('1')
+    await edgeCounter.setValue('4')
+
+    // Only the edge changed — Accept already reads "Accept edited".
+    const acceptEdited = wrapper.findAll('button').filter((b) => b.text() === 'Accept edited')[0]
+    await acceptEdited.trigger('click')
+    await flushPromises()
+
+    const acceptCall = apiFetchMock.mock.calls.find((call) => String(call[0]).includes('/accept'))
+    const body = JSON.parse((acceptCall?.[1]?.body as string) ?? '{}')
+    expect(body.payload.edges).toEqual([
+      { endpoint: 'E1', direction: 'outbound', type: 'rival_of', counter: 4 },
+    ])
+  })
+
+  it('deleting a draft edge and accepting sends the reduced edge set', async () => {
+    stubApi()
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Edit')[0]
+      .trigger('click')
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Delete')[0]
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('No relations staged')
+
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Accept edited')[0]
+      .trigger('click')
+    await flushPromises()
+    const acceptCall = apiFetchMock.mock.calls.find((call) => String(call[0]).includes('/accept'))
+    const body = JSON.parse((acceptCall?.[1]?.body as string) ?? '{}')
+    expect(body.payload.edges).toEqual([])
+  })
+
+  it('adding a draft edge to a committed entity and accepting sends the extended set', async () => {
+    stubApi()
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Edit')[0]
+      .trigger('click')
+    await flushPromises()
+
+    const type = wrapper.find('select[aria-label="Relation type"]')
+    const target = wrapper.find('select[aria-label="Target entity"]')
+    const counter = wrapper.find('form.add-relation input[aria-label="Counter"]')
+    await type.setValue('ally_of')
+    await target.setValue('E1')
+    await counter.setValue('2')
+    await wrapper.find('form.add-relation').trigger('submit')
+    await flushPromises()
+
+    // The new edge renders in the draft with its counter.
+    expect(wrapper.text()).toContain('Sable Rook --ally_of(2)--> Mira Vane')
+
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Accept edited')[0]
+      .trigger('click')
+    await flushPromises()
+    const acceptCall = apiFetchMock.mock.calls.find((call) => String(call[0]).includes('/accept'))
+    const body = JSON.parse((acceptCall?.[1]?.body as string) ?? '{}')
+    expect(body.payload.edges).toEqual([
+      { endpoint: 'E1', direction: 'outbound', type: 'rival_of', counter: 1 },
+      { endpoint: 'E1', direction: 'outbound', type: 'ally_of', counter: 2 },
+    ])
+  })
+
+  it('an edge-only edit outside edit mode changes nothing — read-only lines persist', async () => {
+    stubApi()
+    const wrapper = mountView()
+    await flushPromises()
+    // No edit toggled: no counter inputs, no add form, no delete buttons.
+    expect(wrapper.findAll('input[aria-label="Counter"]').length).toBe(0)
+    expect(wrapper.find('form.add-relation').exists()).toBe(false)
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Delete').length).toBe(0)
+    expect(wrapper.text()).toContain('Sable Rook --rival_of(1)--> Mira Vane')
+  })
 })

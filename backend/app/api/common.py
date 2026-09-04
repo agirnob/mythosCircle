@@ -37,6 +37,7 @@ from app.store import (
     SelfLoopEdgeError,
     StaleRevisionError,
     UnknownCampaignError,
+    UnknownEdgeError,
     UnknownEntityError,
 )
 
@@ -55,7 +56,14 @@ def store_error_as_http(exc: Exception) -> NoReturn:
     mistaken for a recoverable client mistake.
     """
     if isinstance(
-        exc, (JobNotFoundError, CandidateNotFoundError, UnknownCampaignError, UnknownEntityError)
+        exc,
+        (
+            JobNotFoundError,
+            CandidateNotFoundError,
+            UnknownCampaignError,
+            UnknownEntityError,
+            UnknownEdgeError,
+        ),
     ):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if isinstance(

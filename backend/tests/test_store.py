@@ -39,10 +39,12 @@ from app.store import (
     SelfLoopEdgeError,
     StaleRevisionError,
     UnknownCampaignError,
+    UnknownEdgeError,
     UnknownEntityError,
     app_db_url,
     commit_subgraph,
     create_campaign,
+    delete_edge,
     delete_entity,
     edge_counter_semantic,
     entity_live_edges,
@@ -1234,15 +1236,17 @@ def test_events_share_revision_timestamp(world: str) -> None:
     assert all(ev.created_at == row.created_at for ev in events)
 
 
-def test_explicit_id_new_edge_duplicate_relationship_rejected(world: str) -> None:
-    """A brand-new edge carrying an explicit id must still respect the
-    (src, dst, type) uniqueness invariant (AD-23) — a structured
-    DuplicateEdgeError, never a raw unique-constraint IntegrityError at
-    flush."""
+def test_explicit_id_unknown_edge_rejected(world: str) -> None:
+    """Spec-3.4 (strict explicit-id contract): an edge staged with an
+    explicit id that names no existing edge of the campaign is an
+    ``UnknownEdgeError`` — an explicit id NEVER creates. Allowing it
+    would let a PATCH staged against a concurrently deleted edge
+    resurrect that edge under the same ULID (review round 1)."""
     bar_id, mira_id = _seed_world(world)
     head = _head(world)
     state_before = _state(world)
-    with pytest.raises(DuplicateEdgeError):
+    fresh_id = ids.new_id()
+    with pytest.raises(UnknownEdgeError) as excinfo:
         commit_subgraph(
             world,
             [],
@@ -1250,13 +1254,14 @@ def test_explicit_id_new_edge_duplicate_relationship_rejected(world: str) -> Non
                 models.EdgeInput(
                     src=mira_id,
                     dst=bar_id,
-                    type="debt",  # already seeded (mira -> bar, debt)
+                    type="debt",
                     counter=1,
-                    id=ids.new_id(),
+                    id=fresh_id,
                 )
             ],
             base_revision=head,
         )
+    assert excinfo.value.edge_id == fresh_id
     assert _state(world) == state_before
 
 
@@ -1521,6 +1526,106 @@ def test_undo_of_cascade_delete_recreates_with_stable_ulids(world: str) -> None:
     entities_redone, _edges_redone = _state(world)
     assert mira_id not in entities_redone
     assert redo_revision.id == _head(world)
+
+
+def test_delete_edge_one_revision_no_confirm(world: str) -> None:
+    """Spec-3.4 EDGE_DELETE (store): a single-edge delete needs NO
+    cascade/confirm — it is always dangling-safe. One revision, one
+    ``edge_deleted`` event with an undo-compatible ``before`` snapshot;
+    both neighbor entities survive."""
+    bar_id, mira_id = _seed_world(world)
+    edge_id = _edge_id(world, mira_id, bar_id, "member_of")
+    before = _state(world)
+    head = _head(world)
+    assert head is not None
+    revision = delete_edge(world, edge_id, base_revision=head)
+    entities, edges = _state(world)
+    assert edge_id not in edges
+    assert bar_id in entities and mira_id in entities  # neighbors survive
+    dangling = [eid for e in edges.values() for eid in (e[0], e[1]) if eid not in entities]
+    assert dangling == []  # AD-23
+    with session_scope() as session:
+        events = list(revision_events(session, world, revision.id))
+        assert [ev.type for ev in events] == ["edge_deleted"]
+        assert events[0].payload["after"] is None
+        assert set(events[0].payload["before"]) == {"src", "dst", "type", "counter", "created_at"}
+        assert len(list(revision_chain(session, world))) == 2  # seed + delete
+    assert _state(world) != before
+
+
+def test_undo_of_delete_edge_recreates_with_stable_ulid(world: str) -> None:
+    """Spec-3.4 EDGE_DELETE (undo): undoing a standalone edge-delete
+    revision recreates the edge with its stable ULID via the existing
+    undo machinery — zero undo.py changes."""
+    bar_id, mira_id = _seed_world(world)
+    member_id = _edge_id(world, mira_id, bar_id, "member_of")
+    debt_id = _edge_id(world, mira_id, bar_id, "debt")
+    delete_edge(world, member_id, base_revision=_head(world))
+    _entities, edges_after = _state(world)
+    assert member_id not in edges_after
+    assert debt_id in edges_after  # other edges untouched
+    head = _head(world)
+    assert head is not None
+    undo_revision = undo(world, head)
+    _entities, edges = _state(world)
+    assert member_id in edges  # stable ULID
+    assert edges[member_id][:4] == (mira_id, bar_id, "member_of", 1)
+    with session_scope() as session:
+        events = list(revision_events(session, world, undo_revision.id))
+        assert [ev.type for ev in events] == ["edge_created"]
+        assert events[0].payload["before"] is None
+    # And it redoes: undoing the undo re-deletes (existing machinery).
+    redo_revision = undo(world, undo_revision.id)
+    _e2, edges_redone = _state(world)
+    assert member_id not in edges_redone
+    assert redo_revision.id == _head(world)
+
+
+def test_delete_edge_unknown_and_foreign_rejected(world: str) -> None:
+    """Spec-3.4: an unknown or foreign-campaign edge id is an
+    ``UnknownEdgeError`` (404-class) with no state change."""
+    bar_id, _mira_id = _seed_world(world)
+    before = _state(world)
+    with pytest.raises(UnknownEdgeError) as excinfo:
+        delete_edge(world, MISSING_ID, base_revision=_head(world))
+    assert excinfo.value.edge_id == MISSING_ID
+    # Foreign world: another campaign's edge ULID is invisible here.
+    other_campaign = create_campaign(
+        _owner_id(), title="Other World", description="", theme="High Fantasy", custom_lore=""
+    ).id
+    foreign_tavern_id, foreign_keep_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        other_campaign,
+        [
+            models.EntityInput(kind="place", name="Foreign Tavern", id=foreign_tavern_id),
+            models.EntityInput(kind="place", name="Foreign Keep", id=foreign_keep_id),
+        ],
+        [models.EdgeInput(src=foreign_keep_id, dst=foreign_tavern_id, type="located_in")],
+    )
+    foreign_edge_id = _edge_id(other_campaign, foreign_keep_id, foreign_tavern_id, "located_in")
+    with pytest.raises(UnknownEdgeError):
+        delete_edge(world, foreign_edge_id, base_revision=_head(world))
+    assert _state(world) == before
+
+
+def test_delete_edge_stale_base_rejected_no_state_change(world: str) -> None:
+    """Spec-3.4: a delete staged on a stale base is rejected with
+    ``StaleRevisionError`` — same semantics as ``delete_entity``."""
+    bar_id, mira_id = _seed_world(world)
+    stale_head = _head(world)
+    assert stale_head is not None
+    new_place_id = ids.new_id()
+    commit_subgraph(
+        world,
+        [models.EntityInput(kind="place", name="New Place", id=new_place_id)],
+        [models.EdgeInput(src=mira_id, dst=new_place_id, type="located_in")],
+        base_revision=_head(world),
+    )
+    before = _state(world)
+    member_id = _edge_id(world, mira_id, bar_id, "member_of")
+    with pytest.raises(StaleRevisionError):
+        delete_edge(world, member_id, base_revision=stale_head)
+    assert _state(world) == before
 
 
 def test_entity_live_edges_helper_rowid_ordered(world: str) -> None:

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import type { components } from '../api/schema'
+import { ApiError } from '../api/client'
 import StatBlock from '../components/StatBlock.vue'
 import { useAuthStore } from '../stores/auth'
 import { useWorldStore } from '../stores/world'
@@ -125,11 +126,29 @@ function edgeLabel(edge: EdgeExport): string {
   return COUNTER_TYPES.has(edge.type) ? `${edge.type}(${edge.counter})` : edge.type
 }
 
+/** The closed Phase-1 edge vocabulary (AD-5) — the add-relation picker. */
+const EDGE_VOCAB: readonly string[] = [
+  'relationship',
+  'debt',
+  'grudge',
+  'loyalty',
+  'member_of',
+  'located_in',
+  'rival_of',
+  'kin_of',
+  'ally_of',
+  'enemy_of',
+]
+
 interface RelationLine {
   edgeId: string
   srcName: string
   dstName: string
   label: string
+  type: string
+  counter: number
+  /** True when this card's entity is the edge's source (arrow direction). */
+  outbound: boolean
 }
 
 const relationsByEntity = computed(() => {
@@ -145,6 +164,9 @@ const relationsByEntity = computed(() => {
         srcName: nameById.value.get(edge.src) ?? '(unknown)',
         dstName: nameById.value.get(edge.dst) ?? '(unknown)',
         label: edgeLabel(edge),
+        type: edge.type,
+        counter: edge.counter,
+        outbound: endpoint === edge.src,
       }
       if (list) {
         list.push(line)
@@ -158,6 +180,104 @@ const relationsByEntity = computed(() => {
 
 function relationsFor(entityId: string): RelationLine[] {
   return relationsByEntity.value.get(entityId) ?? []
+}
+
+// ---------------------------------------------------------------------------
+// Inline relation editing (spec-3-4, FR9): every mutation goes through the
+// world store's edge actions (the backend commit path) and comes back as a
+// coalesced refetch. Errors render inline on the owning card.
+// ---------------------------------------------------------------------------
+
+const EDGE_DIRECTIONS = ['outbound', 'inbound'] as const
+
+const addingFor = ref<string | null>(null)
+const addType = ref<string>(EDGE_VOCAB[0])
+const addTargetId = ref<string>('')
+const addCounter = ref<number>(1)
+const addDirection = ref<(typeof EDGE_DIRECTIONS)[number]>('outbound')
+
+const editingEdgeId = ref<string | null>(null)
+const editCounter = ref<number>(1)
+
+const relationBusy = ref(false)
+const relationErrors = ref<Record<string, string>>({})
+
+function relationTargets(entityId: string): EntityExport[] {
+  // Any existing entity except the card's own — a self-loop is not an
+  // edge into existing world state (the store rejects it outright).
+  return entities.value.filter((entity) => entity.id !== entityId)
+}
+
+function startAdd(entityId: string) {
+  relationErrors.value[entityId] = '' // errors stay keyed per card
+  addingFor.value = entityId
+  addType.value = EDGE_VOCAB[0]
+  addTargetId.value = relationTargets(entityId)[0]?.id ?? ''
+  addCounter.value = 1
+  addDirection.value = 'outbound'
+}
+
+function cancelAdd() {
+  addingFor.value = null
+}
+
+async function submitAdd(entityId: string) {
+  if (!addTargetId.value || relationBusy.value) return
+  relationBusy.value = true
+  relationErrors.value[entityId] = ''
+  try {
+    // Outbound wires entity -> target; inbound wires target -> entity.
+    const [src, dst] =
+      addDirection.value === 'outbound'
+        ? [entityId, addTargetId.value]
+        : [addTargetId.value, entityId]
+    await world.addEdge(campaignId, { src, dst, type: addType.value, counter: addCounter.value })
+    addingFor.value = null
+  } catch (err) {
+    relationErrors.value[entityId] =
+      err instanceof ApiError ? err.message : 'Could not add the relation.'
+  } finally {
+    relationBusy.value = false
+  }
+}
+
+function startEdit(relation: RelationLine) {
+  relationErrors.value = {}
+  editingEdgeId.value = relation.edgeId
+  editCounter.value = relation.counter
+}
+
+function cancelEdit() {
+  editingEdgeId.value = null
+}
+
+async function saveCounter(entityId: string, relation: RelationLine) {
+  if (relationBusy.value) return
+  relationBusy.value = true
+  relationErrors.value[entityId] = ''
+  try {
+    await world.updateEdgeCounter(campaignId, relation.edgeId, editCounter.value)
+    editingEdgeId.value = null
+  } catch (err) {
+    relationErrors.value[entityId] =
+      err instanceof ApiError ? err.message : 'Could not update the relation.'
+  } finally {
+    relationBusy.value = false
+  }
+}
+
+async function removeEdge(entityId: string, relation: RelationLine) {
+  if (relationBusy.value) return
+  relationBusy.value = true
+  relationErrors.value[entityId] = ''
+  try {
+    await world.deleteEdge(campaignId, relation.edgeId)
+  } catch (err) {
+    relationErrors.value[entityId] =
+      err instanceof ApiError ? err.message : 'Could not delete the relation.'
+  } finally {
+    relationBusy.value = false
+  }
 }
 </script>
 
@@ -192,7 +312,7 @@ function relationsFor(entityId: string): RelationLine[] {
           {{ exportData.campaign.custom_lore }}
         </p>
         <p v-if="revision" class="muted small mono">Revision {{ revision.id }}</p>
-        <p class="muted small">Read-only view — the world updates live as build-in jobs commit.</p>
+        <p class="muted small">Relations are editable — the world updates live as jobs commit.</p>
         <p>
           <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }" class="cta secondary">
             Open build-in
@@ -226,11 +346,90 @@ function relationsFor(entityId: string): RelationLine[] {
               v-if="entity.data && entity.data['stat_block']"
               :block="entity.data['stat_block']"
             />
-            <div v-if="relationsFor(entity.id).length > 0" class="relations">
+            <div class="relations">
               <h4>Relations</h4>
+              <p v-if="relationsFor(entity.id).length === 0" class="muted">No relations yet.</p>
               <p v-for="relation in relationsFor(entity.id)" :key="relation.edgeId" class="mono">
-                {{ relation.srcName }} --{{ relation.label }}--&gt; {{ relation.dstName }}
+                <template v-if="editingEdgeId === relation.edgeId">
+                  <input
+                    v-model.number="editCounter"
+                    class="counter-input"
+                    type="number"
+                    aria-label="Counter"
+                  />
+                  <button
+                    type="button"
+                    :disabled="relationBusy"
+                    @click="saveCounter(entity.id, relation)"
+                  >
+                    Save
+                  </button>
+                  <button type="button" :disabled="relationBusy" @click="cancelEdit">Cancel</button>
+                </template>
+                <template v-else>
+                  {{ relation.srcName }} --{{ relation.label }}--&gt; {{ relation.dstName }}
+                  <button
+                    v-if="COUNTER_TYPES.has(relation.type)"
+                    type="button"
+                    class="link"
+                    :disabled="relationBusy"
+                    @click="startEdit(relation)"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    class="link"
+                    :disabled="relationBusy"
+                    @click="removeEdge(entity.id, relation)"
+                  >
+                    Delete
+                  </button>
+                </template>
               </p>
+              <form
+                v-if="addingFor === entity.id"
+                class="add-relation"
+                @submit.prevent="submitAdd(entity.id)"
+              >
+                <select v-model="addDirection" aria-label="Direction">
+                  <option v-for="direction in EDGE_DIRECTIONS" :key="direction" :value="direction">
+                    {{ direction }}
+                  </option>
+                </select>
+                <select v-model="addType" aria-label="Relation type">
+                  <option v-for="edgeType in EDGE_VOCAB" :key="edgeType" :value="edgeType">
+                    {{ edgeType }}
+                  </option>
+                </select>
+                <select v-model="addTargetId" aria-label="Target entity">
+                  <option
+                    v-for="target in relationTargets(entity.id)"
+                    :key="target.id"
+                    :value="target.id"
+                  >
+                    {{ target.name }}
+                  </option>
+                </select>
+                <input
+                  v-model.number="addCounter"
+                  class="counter-input"
+                  type="number"
+                  aria-label="Counter"
+                />
+                <button type="submit" :disabled="relationBusy || !addTargetId">Add</button>
+                <button type="button" :disabled="relationBusy" @click="cancelAdd">Cancel</button>
+              </form>
+              <button
+                v-else
+                type="button"
+                class="link"
+                :disabled="relationBusy"
+                @click="startAdd(entity.id)"
+              >
+                Add relation
+              </button>
+              <p v-if="relationErrors[entity.id]" class="error">{{ relationErrors[entity.id] }}</p>
             </div>
           </article>
         </section>
@@ -258,6 +457,35 @@ function relationsFor(entityId: string): RelationLine[] {
 }
 .relations p {
   margin: 0.1rem 0;
+  font-size: 0.85rem;
+}
+.link {
+  margin-left: 0.4rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #58a6ff;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.link:disabled {
+  color: #484f58;
+  cursor: default;
+}
+.counter-input {
+  width: 5rem;
+}
+.add-relation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+.add-relation select,
+.add-relation input {
+  font-size: 0.85rem;
+}
+.relations .error {
   font-size: 0.85rem;
 }
 .sync-failed {

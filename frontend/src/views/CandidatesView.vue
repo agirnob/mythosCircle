@@ -18,7 +18,6 @@ const route = useRoute()
 const router = useRouter()
 const campaignId = route.params.id as string
 
-
 const candidates = useCandidatesStore()
 const jobs = useJobsStore()
 const world = useWorldStore()
@@ -36,12 +35,25 @@ const editing = ref<Record<string, boolean>>({})
 const drafts = ref<Record<string, Record<string, string>>>({})
 /** candidateId -> the draft's starting values (isEdited/editedPayload compare against these). */
 const draftInitials = ref<Record<string, Record<string, string>>>({})
+/** candidateId -> the DM's working edge list while editing. */
+const edgeDrafts = ref<Record<string, StagedEdge[]>>({})
 /** candidateId -> the payload the draft was started from (mid-edit swap detection). */
 const draftBases = ref<Record<string, unknown>>({})
-/** candidateId -> the candidate changed server-side mid-edit; the draft was visibly discarded. */
-const staleEdits = ref<Record<string, boolean>>({})
+/** candidateId -> JSON of the initial edge list ("unchanged" reference). */
+const edgeInitials = ref<Record<string, string>>({})
+/** candidateId -> the add-relation form state. */
+const edgeAdds = ref<Record<string, EdgeAddForm>>({})
+
+interface EdgeAddForm {
+  endpoint: string
+  direction: string
+  type: string
+  counter: number
+}
 
 let disconnectSocket: (() => void) | null = null
+/** candidateId -> the candidate changed server-side mid-edit; the draft was visibly discarded. */
+const staleEdits = ref<Record<string, boolean>>({})
 
 onMounted(async () => {
   try {
@@ -98,8 +110,15 @@ async function onJobMessage(message: WsMessage) {
   }
 }
 
-/** Re-sync the candidates list, then reconcile any open edit drafts. */
+/**
+ * Re-sync the candidates list, then reconcile any open edit drafts.
+ * The world snapshot refetches too (coalesced, fire-and-forget): the
+ * edge-add picker and relation lines read committed entities, so a
+ * build-in or accept committing mid-session must land here or the
+ * picker omits just-committed entities (spec-3-4 review round 1).
+ */
 async function resync() {
+  world.requestRefetch(campaignId)
   await candidates.syncList(campaignId)
   pruneStaleEdits()
 }
@@ -127,6 +146,9 @@ function cancelEdit(id: string) {
   delete drafts.value[id]
   delete draftInitials.value[id]
   delete draftBases.value[id]
+  delete edgeDrafts.value[id]
+  delete edgeInitials.value[id]
+  delete edgeAdds.value[id]
 }
 
 const proposed = computed(() => candidates.proposed(campaignId))
@@ -273,10 +295,75 @@ function relationLine(candidate: Candidate, edge: StagedEdge): string {
 }
 
 // ---------------------------------------------------------------------------
+// Story 3.4: the DM's edge draft. Staged relations can be re-countered,
+// deleted, and new ones added — targeting COMMITTED world entities only
+// (a staged candidate's edge endpoint must resolve to committed state,
+// AR19). The draft rides the accept override; the backend validates the
+// final list and an invalid edge fails the whole accept (row stays
+// proposed).
+// ---------------------------------------------------------------------------
+
+/** The closed Phase-1 edge vocabulary (AD-5) — the add-relation picker. */
+const EDGE_VOCAB: readonly string[] = [
+  'relationship',
+  'debt',
+  'grudge',
+  'loyalty',
+  'member_of',
+  'located_in',
+  'rival_of',
+  'kin_of',
+  'ally_of',
+  'enemy_of',
+]
+const EDGE_DIRECTIONS = ['outbound', 'inbound'] as const
+
+/** Committed entities the candidate can wire into (world store snapshot). */
+const worldEntities = computed(() => world.entry(campaignId).world?.entities ?? [])
+
+/** The draft edge as a relation line (same convention as relationLine). */
+function draftEdgeLine(candidate: Candidate, edge: StagedEdge): string {
+  const label = typeof edge.counter === 'number' ? `${edge.type}(${edge.counter})` : edge.type
+  const name = nameById.value.get(edge.endpoint) ?? edge.endpoint
+  const self = asString(candidate.payload['name']) ?? '(candidate)'
+  return edge.direction === 'outbound'
+    ? `${self} --${label}--> ${name}`
+    : `${name} --${label}--> ${self}`
+}
+
+function removeEdgeDraft(candidateId: string, index: number) {
+  edgeDrafts.value[candidateId]?.splice(index, 1)
+}
+
+function addEdgeDraft(candidateId: string) {
+  const form = edgeAdds.value[candidateId]
+  if (!form || !form.endpoint || actingId.value !== null) return
+  edgeDrafts.value[candidateId] = [
+    ...(edgeDrafts.value[candidateId] ?? []),
+    {
+      endpoint: form.endpoint,
+      direction: form.direction,
+      type: form.type,
+      counter: Number.isFinite(form.counter) ? form.counter : 1,
+    },
+  ]
+  // Reset the form for a possible second add.
+  edgeAdds.value[candidateId] = {
+    endpoint: '',
+    direction: 'outbound',
+    type: EDGE_VOCAB[0],
+    counter: 1,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Edit-before-accept: per-section textareas; the edited payload is what
-// the accept commits (edges stay verbatim — not editable here). Every
-// known section gets a textarea; sections missing from the payload
-// (legacy AR19 rows) start empty so they can be filled before accept.
+// the accept commits. Story 3.4 adds the DM's edge set to the draft:
+// staged relations can be re-countered, deleted, and new ones added
+// (targeting committed world entities) — the edited list rides the
+// accept override and commits with the candidate. Every known section
+// gets a textarea; sections missing from the payload (legacy AR19 rows)
+// start empty so they can be filled before accept.
 // ---------------------------------------------------------------------------
 
 const EDITABLE_SECTIONS: Array<{
@@ -319,15 +406,26 @@ function toggleEdit(candidate: Candidate) {
   drafts.value[id] = { ...draft }
   draftInitials.value[id] = draft
   draftBases.value[id] = JSON.parse(JSON.stringify(candidate.payload))
+  // The DM's working edge list: a deep copy of the staged edges, edited
+  // inline (counter) and by add/delete. The initial JSON pins "unchanged".
+  edgeDrafts.value[id] = edgesOf(candidate).map((edge) => ({ ...edge }))
+  edgeInitials.value[id] = JSON.stringify(edgeDrafts.value[id])
+  edgeAdds.value[id] = { endpoint: '', direction: 'outbound', type: EDGE_VOCAB[0], counter: 1 }
   delete staleEdits.value[id]
 }
 
-/** True when any draft value differs from the draft's starting values. */
+/** True when any draft value OR the edge draft differs from its start. */
 function isEdited(candidate: Candidate): boolean {
   const draft = drafts.value[candidate.id]
   const initial = draftInitials.value[candidate.id]
-  if (!draft || !initial) return false
-  return Object.keys(draft).some((key) => draft[key] !== initial[key])
+  if (draft && initial) {
+    if (Object.keys(draft).some((key) => draft[key] !== initial[key])) return true
+  }
+  const edgeDraft = edgeDrafts.value[candidate.id]
+  if (edgeDraft !== undefined) {
+    if (JSON.stringify(edgeDraft) !== edgeInitials.value[candidate.id]) return true
+  }
+  return false
 }
 
 /** The staged payload with the draft edits applied (deep copy). Only
@@ -346,6 +444,13 @@ function editedPayload(candidate: Candidate): Record<string, unknown> {
     } else if (isObject(payload[head])) {
       ;(payload[head] as Record<string, unknown>)[nested] = value
     }
+  }
+  // Story 3.4: the DM's edge draft rides the override — the backend
+  // validates every edge against committed world state (verbatim list
+  // is no longer required; an unchanged draft is byte-equal anyway).
+  const edgeDraft = edgeDrafts.value[candidate.id]
+  if (edgeDraft !== undefined) {
+    payload['edges'] = edgeDraft
   }
   return payload
 }
@@ -522,12 +627,62 @@ async function rejectCandidate(candidate: Candidate) {
             </dl>
           </div>
 
-          <!-- Relations: staged edges, read-only (inline editing is story 3.4) -->
-          <div v-if="edgesOf(candidate).length > 0" class="relations">
+          <!-- Relations: the DM's edge draft in edit mode (3.4); read-only lines otherwise -->
+          <div v-if="editing[candidate.id] || edgesOf(candidate).length > 0" class="relations">
             <h4>Relations</h4>
-            <p v-for="(edge, index) in edgesOf(candidate)" :key="index" class="mono">
-              {{ relationLine(candidate, edge) }}
-            </p>
+            <template v-if="editing[candidate.id]">
+              <p v-if="(edgeDrafts[candidate.id] ?? []).length === 0" class="muted">
+                No relations staged — add at least one or the accept will fail (a new entity must
+                weave into the world).
+              </p>
+              <p v-for="(edge, index) in edgeDrafts[candidate.id] ?? []" :key="index" class="mono">
+                {{ draftEdgeLine(candidate, edge) }}
+                <input
+                  v-model.number="edge.counter"
+                  class="counter-input"
+                  type="number"
+                  aria-label="Counter"
+                />
+                <button
+                  type="button"
+                  class="link"
+                  :disabled="actingId !== null"
+                  @click="removeEdgeDraft(candidate.id, index)"
+                >
+                  Delete
+                </button>
+              </p>
+              <form class="add-relation" @submit.prevent="addEdgeDraft(candidate.id)">
+                <select v-model="edgeAdds[candidate.id].direction" aria-label="Direction">
+                  <option v-for="direction in EDGE_DIRECTIONS" :key="direction" :value="direction">
+                    {{ direction }}
+                  </option>
+                </select>
+                <select v-model="edgeAdds[candidate.id].type" aria-label="Relation type">
+                  <option v-for="edgeType in EDGE_VOCAB" :key="edgeType" :value="edgeType">
+                    {{ edgeType }}
+                  </option>
+                </select>
+                <select v-model="edgeAdds[candidate.id].endpoint" aria-label="Target entity">
+                  <option value="" disabled>Choose an entity…</option>
+                  <option v-for="target in worldEntities" :key="target.id" :value="target.id">
+                    {{ target.name }}
+                  </option>
+                </select>
+                <input
+                  v-model.number="edgeAdds[candidate.id].counter"
+                  class="counter-input"
+                  type="number"
+                  aria-label="Counter"
+                />
+                <button type="submit" :disabled="!edgeAdds[candidate.id].endpoint">Add</button>
+              </form>
+            </template>
+            <template v-else>
+              <p v-for="(edge, index) in edgesOf(candidate)" :key="index" class="mono">
+                {{ relationLine(candidate, edge) }}
+              </p>
+            </template>
           </div>
         </div>
 
@@ -638,5 +793,35 @@ dd {
   display: flex;
   gap: 0.75rem;
   margin-top: 0.75rem;
+}
+.link {
+  margin-left: 0.4rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #58a6ff;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.link:disabled {
+  color: #484f58;
+  cursor: default;
+}
+.counter-input {
+  width: 5rem;
+  margin-left: 0.4rem;
+}
+.add-relation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+.add-relation select,
+.add-relation input {
+  font-size: 0.85rem;
+}
+.relations .error {
+  font-size: 0.85rem;
 }
 </style>

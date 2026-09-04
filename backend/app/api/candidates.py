@@ -55,12 +55,13 @@ class CandidateResponse(BaseModel):
 
 
 class AcceptBody(BaseModel):
-    """Optional accept body (spec-3.3): the accept screen's edit-before-
-    accept override. ``payload`` is the full candidate record with the
-    DM's section edits; the store commits it minus ``edges``, which must
-    match the staged edges verbatim (relation editing is story 3.4) — a
-    mismatch is a 422 and the row stays ``proposed``. An omitted body is
-    the unedited accept (identical to the 3.2 behavior)."""
+    """Optional accept body (spec-3.3, relaxed by spec-3.4): the accept
+    screen's edit-before-accept override. ``payload`` is the full
+    candidate record with the DM's section edits AND the DM's own edge
+    set (added/edited/deleted staged edges); the store validates every
+    override edge against committed world state — an invalid edge is a
+    422 and the row stays ``proposed``. An omitted body is the unedited
+    accept (identical to the 3.2 behavior)."""
 
     payload: dict[str, Any] | None = None
 
@@ -142,12 +143,13 @@ def accept_campaign_candidate(
     campaign is the 404 before anything else is touched. Thin route:
     every decision (fresh-ULID entity, staged edges, base revision,
     one-transaction atomicity, dead-endpoint rejection) is the store's.
-    An optional ``{"payload": {...}}`` body (spec-3.3) carries the DM's
-    edited sections; the store validates the override against the
-    required AR24 section shape and the staged edges (verbatim or 422,
-    row stays ``proposed``). A body that is present WITHOUT a payload
-    (``{}`` or ``{"payload": null}``) is a 422 — only the OMITTED body
-    is the unedited accept.
+    An optional ``{"payload": {...}}`` body (spec-3.3, relaxed by
+    spec-3.4) carries the DM's edited sections and the DM's own edge
+    set; the store validates the override against the required AR24
+    section shape and validates every edge against committed world
+    state (invalid edge: 422, row stays ``proposed``). A body that is
+    present WITHOUT a payload (``{}`` or ``{"payload": null}``) is a
+    422 — only the OMITTED body is the unedited accept.
     """
     if get_campaign(current.id, campaign_id) is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")

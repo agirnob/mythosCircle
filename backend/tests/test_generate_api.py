@@ -487,12 +487,15 @@ def test_accept_route_with_edited_payload_commits_edits(
         assert len(list(revision_chain(session, campaign_id))) == 2  # seed + accept
 
 
-def test_accept_route_payload_override_edges_mismatch_422(
+def test_accept_route_payload_override_edges_edited_commit(
     client: TestClient, job_api: Callable[[], str]
 ) -> None:
-    """EDIT_THEN_ACCEPT error path: an override whose ``edges`` differ
-    from the staged record is a 422 envelope; no revision; the row stays
-    ``proposed`` (relation editing is story 3.4)."""
+    """Spec-3.4 over the wire: an override carrying the DM's OWN edge
+    set (edited counter + added edge) commits in the SAME one
+    transaction — +1 revision, the export shows the DM's edges. An
+    override WITHOUT the ``edges`` key keeps the staged set (3.3
+    compat); an override edge to a non-committed endpoint is a 422 with
+    the row staying ``proposed``."""
     campaign_id = _owned_campaign(client)
     _commit_world(campaign_id)
     with session_scope() as session:
@@ -505,25 +508,89 @@ def test_accept_route_payload_override_edges_mismatch_422(
     listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
     staged_payload = listed["candidates"][0]["payload"]
 
+    edited_edges = [
+        {"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 9},
+        {"endpoint": mira_id, "direction": "outbound", "type": "ally_of", "counter": 1},
+    ]
+    response = client.post(
+        f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept",
+        json={"payload": dict(staged_payload, edges=edited_edges)},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    export = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    sable = next(entity for entity in export["entities"] if entity["name"] == "Sable Rook")
+    sable_edges = [
+        (edge["src"], edge["dst"], edge["type"], edge["counter"])
+        for edge in export["edges"]
+        if sable["id"] in (edge["src"], edge["dst"])
+    ]
+    # The DM's set: the staged rival_of(1) is GONE — replaced by
+    # rival_of(9) plus a new ally_of(1) edge.
+    rival_edges = [edge for edge in sable_edges if edge[2] == "rival_of"]
+    assert rival_edges == [(sable["id"], mira_id, "rival_of", 9)]
+    assert (sable["id"], mira_id, "ally_of", 1) in sable_edges
+    with session_scope() as session:
+        assert len(list(revision_chain(session, campaign_id))) == 2  # seed + accept
+
+
+def test_accept_route_override_missing_edges_keeps_staged(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """Spec-3.4: an override WITHOUT the ``edges`` key keeps the staged
+    set (3.3 client compat) — the staged edge commits unchanged."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    candidate_id = _stage_one(campaign_id, mira_id)
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    staged_payload = listed["candidates"][0]["payload"]
+    missing = {key: value for key, value in staged_payload.items() if key != "edges"}
+
+    response = client.post(
+        f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept",
+        json={"payload": missing},
+    )
+    assert response.status_code == 200
+    export = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    sable = next(entity for entity in export["entities"] if entity["name"] == "Sable Rook")
+    assert any(
+        edge["type"] == "rival_of"
+        and edge["counter"] == 1
+        and sable["id"] in (edge["src"], edge["dst"])
+        for edge in export["edges"]
+    )
+
+
+def test_accept_route_override_dead_endpoint_422_row_stays_proposed(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """Spec-3.4: an override edge to a non-committed endpoint is a 422
+    envelope; no revision; the row stays ``proposed``."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    candidate_id = _stage_one(campaign_id, mira_id)
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    staged_payload = listed["candidates"][0]["payload"]
     altered = dict(
         staged_payload,
-        edges=[{"endpoint": mira_id, "direction": "outbound", "type": "ally_of", "counter": 1}],
+        edges=[{"endpoint": "Z" * 26, "direction": "outbound", "type": "ally_of", "counter": 1}],
     )
-    body = _assert_envelope(
-        client.post(
-            f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept",
-            json={"payload": altered},
-        ),
-        422,
-        "validation_error",
-    )
-    assert "edges" in body["message"]
-
-    missing = {key: value for key, value in staged_payload.items() if key != "edges"}
     _assert_envelope(
         client.post(
             f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept",
-            json={"payload": missing},
+            json={"payload": altered},
         ),
         422,
         "validation_error",

@@ -140,7 +140,7 @@ def payload_section_violations(payload: Any) -> list[str]:
 
     ``edges`` are deliberately NOT checked here — the staging path
     validates them against committed world state and the accept path
-    requires the override's edges to match the staged record verbatim.
+    (spec-3.4) validates the override's own edge set the same way.
     Shared by the generate runner (raw model output) and the accept
     override guard, so both layers enforce one shape.
     """
@@ -307,17 +307,21 @@ def accept_candidate(
     change. ``base_revision`` is the head read inside THIS transaction
     (``None`` on an empty world — the accept becomes revision 1).
 
-    ``payload_override`` (spec-3.3, the accept screen's edit-before-
-    accept): when given, it replaces the staged payload as the record
-    that commits — it must be a dict carrying the staged ``edges`` list
-    VERBATIM (relation editing is story 3.4) and must satisfy the same
-    required AR24 section shape as staging (``payload_section_violations``
-    — name/role, every identity/lore section, the world-integration
-    block, boss iff BBEG/Monster); a missing, altered, or non-dict
-    override, an override failing that shape, or a non-str name raises
-    ``InvalidCandidateError`` (422) and the row stays ``proposed`` with
-    no revision. ``None`` accepts the staged
-    payload unchanged.
+    ``payload_override`` (spec-3.3 edit-before-accept, relaxed by
+    spec-3.4): when given, it replaces the staged payload as the record
+    that commits. Its ``edges`` list is the DM's OWN edge set — added,
+    edited, or deleted staged edges are all legal; every edge must
+    resolve to committed world state (endpoint is a committed id,
+    direction in ``EDGE_DIRECTIONS``, type in the closed vocabulary) or
+    the accept raises ``InvalidCandidateError`` (422) with the row left
+    ``proposed`` and zero revisions. An override WITHOUT an ``edges``
+    key keeps the staged set (3.3 client compat). The override must
+    satisfy the same required AR24 section shape as staging
+    (``payload_section_violations`` — name/role, every identity/lore
+    section, the world-integration block, boss iff BBEG/Monster); a
+    non-dict override, an override failing that shape, or a non-str
+    name raises ``InvalidCandidateError`` (422) with no revision.
+    ``None`` accepts the staged payload unchanged.
 
     Returns ``(candidate row, new revision)``. Raises
     ``CandidateNotFoundError`` (unknown or foreign-campaign id),
@@ -350,11 +354,30 @@ def accept_candidate(
                     f"candidate {candidate_id}: payload override must be an object, "
                     f"got {payload_override!r}"
                 )
-            if payload_override.get("edges") != candidate.payload.get("edges"):
-                raise InvalidCandidateError(
-                    f"candidate {candidate_id}: payload override must carry the staged "
-                    "edges verbatim (relation editing is story 3.4)"
-                )
+            # Story 3.4: the override may carry the DM's OWN edge set —
+            # added, edited, or deleted staged edges (no longer verbatim).
+            # An absent ``edges`` keeps the staged set (3.3 client compat).
+            if "edges" in payload_override:
+                override_edges = payload_override.get("edges")
+                if not isinstance(override_edges, list):
+                    raise InvalidCandidateError(
+                        f"candidate {candidate_id}: payload override 'edges' must be a list, "
+                        f"got {override_edges!r}"
+                    )
+                entities, _ = world_state(session, campaign_id)
+                committed = {entity.id for entity in entities}
+                _check_candidate_edges(0, {"edges": override_edges}, committed)
+                # Counter int-ness is enforced at the commit wiring
+                # (_accept_edge); endpoint/vocab/direction resolved above.
+                payload = dict(payload_override)
+                payload["edges"] = override_edges
+            else:
+                # No ``edges`` key: keep the staged set (3.3 client
+                # compat) — the DM edited sections only.
+                payload = dict(payload_override)
+                staged_edges = candidate.payload.get("edges")
+                if staged_edges is not None:
+                    payload["edges"] = staged_edges
             # The override commits AS the record: it must satisfy the same
             # required AR24 section shape as staging — an override that
             # drops or blanks a section is a shape violation (spec-3.3),
@@ -365,7 +388,6 @@ def accept_candidate(
                     f"candidate {candidate_id}: payload override fails the required-section "
                     f"shape: {'; '.join(violations)}"
                 )
-            payload = dict(payload_override)
         else:
             payload = dict(candidate.payload)
         # A fresh ULID minted up front so the staged edges can name the

@@ -276,4 +276,154 @@ describe('WorldView', () => {
     expect(socketCalls).toHaveLength(1)
     wrapper.unmount()
   })
+
+  // -------------------------------------------------------------------------
+  // Inline relation editing (spec-3-4, FR9)
+  // -------------------------------------------------------------------------
+
+  it('add relation POSTs the edge and refetches the snapshot', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    const wrapper = mountView()
+    await flushPromises()
+
+    // Open the add form on Mira's card (the first entity card).
+    const addButtons = wrapper.findAll('button').filter((b) => b.text() === 'Add relation')
+    await addButtons[0].trigger('click')
+    await flushPromises()
+
+    // Shape the form: direction outbound, type debt, target E2, counter 5.
+    const card = wrapper.findAll('article')[0]
+    const direction = card.find('select[aria-label="Direction"]')
+    const type = card.find('select[aria-label="Relation type"]')
+    const target = card.find('select[aria-label="Target entity"]')
+    const counter = card.find('input[aria-label="Counter"]')
+    await direction.setValue('outbound')
+    await type.setValue('debt')
+    await target.setValue('E2')
+    await counter.setValue('5')
+    const callsBefore = apiFetchMock.mock.calls.length
+    await card.find('form.add-relation').trigger('submit')
+    await flushPromises()
+
+    const post = apiFetchMock.mock.calls[callsBefore]!
+    expect(String(post[0])).toBe('/api/campaigns/C1/edges')
+    expect(JSON.parse(String(post[1]!.body))).toEqual({
+      src: 'E1',
+      dst: 'E2',
+      type: 'debt',
+      counter: 5,
+    })
+    // The commit lands back as a coalesced snapshot refetch.
+    const refetch = apiFetchMock.mock.calls[callsBefore + 1]!
+    expect(String(refetch[0])).toBe('/api/campaigns/C1/export')
+    wrapper.unmount()
+  })
+
+  it('add relation posts inbound edges with the target as source', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    const wrapper = mountView()
+    await flushPromises()
+
+    const addButtons = wrapper.findAll('button').filter((b) => b.text() === 'Add relation')
+    await addButtons[0].trigger('click')
+    await flushPromises()
+
+    const card = wrapper.findAll('article')[0]
+    await card.find('select[aria-label="Direction"]').setValue('inbound')
+    await card.find('select[aria-label="Target entity"]').setValue('E2')
+    const callsBefore = apiFetchMock.mock.calls.length
+    await card.find('form.add-relation').trigger('submit')
+    await flushPromises()
+
+    const body = JSON.parse(String(apiFetchMock.mock.calls[callsBefore]![1]!.body))
+    expect(body.src).toBe('E2')
+    expect(body.dst).toBe('E1')
+    wrapper.unmount()
+  })
+
+  it('edit counter PATCHes the edge and refetches', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    const wrapper = mountView()
+    await flushPromises()
+
+    // Mira's card: the debt edge (counter-typed) carries an Edit button.
+    const card = wrapper.findAll('article')[0]
+    const editButtons = card.findAll('button').filter((b) => b.text() === 'Edit')
+    expect(editButtons.length).toBeGreaterThan(0)
+    await editButtons[0].trigger('click')
+    await flushPromises()
+
+    const counterInput = card.find('input[aria-label="Counter"]')
+    await counterInput.setValue('77')
+    const callsBefore = apiFetchMock.mock.calls.length
+    await card
+      .findAll('button')
+      .filter((b) => b.text() === 'Save')[0]
+      .trigger('click')
+    await flushPromises()
+
+    const patch = apiFetchMock.mock.calls[callsBefore]!
+    expect(String(patch[0])).toBe('/api/campaigns/C1/edges/ED1')
+    expect(patch[1]!.method).toBe('PATCH')
+    expect(JSON.parse(String(patch[1]!.body))).toEqual({ counter: 77 })
+    expect(String(apiFetchMock.mock.calls[callsBefore + 1]![0])).toBe('/api/campaigns/C1/export')
+    wrapper.unmount()
+  })
+
+  it('neutral-typed edges render no Edit button; every edge has Delete', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    const wrapper = mountView()
+    await flushPromises()
+
+    const card = wrapper.findAll('article')[0]
+    const text = card.text()
+    // Mira's lines: debt (counter), located_in (neutral, inbound), loyalty self-loop.
+    expect(text).toContain('Mira Vane --debt(50)--> The Gilded Bar')
+    expect(text).toContain('The Gilded Bar --located_in--> Mira Vane')
+    expect(text).toContain('Mira Vane --loyalty(7)--> Mira Vane')
+    // located_in is neutral: its line has no Edit; all lines have Delete.
+    const deleteButtons = card.findAll('button').filter((b) => b.text() === 'Delete')
+    expect(deleteButtons.length).toBe(3)
+    wrapper.unmount()
+  })
+
+  it('delete edge DELETEs and refetches', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    const wrapper = mountView()
+    await flushPromises()
+
+    const card = wrapper.findAll('article')[0]
+    const callsBefore = apiFetchMock.mock.calls.length
+    await card
+      .findAll('button')
+      .filter((b) => b.text() === 'Delete')[0]
+      .trigger('click')
+    await flushPromises()
+
+    const del = apiFetchMock.mock.calls[callsBefore]!
+    expect(String(del[0])).toBe('/api/campaigns/C1/edges/ED1')
+    expect(del[1]!.method).toBe('DELETE')
+    expect(String(apiFetchMock.mock.calls[callsBefore + 1]![0])).toBe('/api/campaigns/C1/export')
+    wrapper.unmount()
+  })
+
+  it('a failed edge mutation renders the error inline and does not refetch', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    const wrapper = mountView()
+    await flushPromises()
+
+    const card = wrapper.findAll('article')[0]
+    const callsBefore = apiFetchMock.mock.calls.length
+    apiFetchMock.mockRejectedValueOnce(new ApiError(409, 'conflict', 'stale base revision'))
+    await card
+      .findAll('button')
+      .filter((b) => b.text() === 'Delete')[0]
+      .trigger('click')
+    await flushPromises()
+
+    expect(card.text()).toContain('stale base revision')
+    // The failed mutation does not trigger a snapshot refetch.
+    expect(apiFetchMock.mock.calls.length).toBe(callsBefore + 1)
+    wrapper.unmount()
+  })
 })

@@ -1,10 +1,13 @@
 /**
- * Read-only world view store (spec-2-7).
+ * World view store (spec-2-7; write surface added in spec-3-4).
  *
  * Holds the export-JSON projection (`GET /api/campaigns/{id}/export`) per
  * campaign plus loading/error/not-found flags. Rendering decisions —
  * grouping, counter labels, stat-block sections — live in the view and
- * components; this store never writes world state.
+ * components. Story 3.4 adds the DM's relation-editing writes: every
+ * mutation goes through the edges REST surface (the store commit path on
+ * the backend) and lands back here as a coalesced snapshot refetch —
+ * the store still never mutates world state locally.
  *
  * Live updates (FR1, NFR9): WS frames only signal "the world changed", so
  * `handleJobMessage` re-fetches the snapshot — on a build-in
@@ -16,6 +19,7 @@
  * the entry dirty and one trailing fetch covers the delta, so parallel
  * fetches never stack.
  */
+
 import { defineStore } from 'pinia'
 
 import type { components } from '../api/schema'
@@ -75,6 +79,37 @@ export const useWorldStore = defineStore('world', {
     /** Fire-and-forget re-sync (WS frame / reconnect); coalesced. */
     requestRefetch(campaignId: string) {
       void this.fetchSnapshot(campaignId)
+    },
+    /**
+     * Relation editing (spec-3-4, FR9): add / edit-counter / delete a
+     * typed edge through the edges REST surface. Each call commits
+     * exactly one backend revision, then lands here as a coalesced
+     * snapshot refetch — the store never mutates world state locally.
+     * ApiError propagates to the caller (the view renders it inline).
+     */
+    async addEdge(
+      campaignId: string,
+      edge: { src: string; dst: string; type: string; counter: number },
+    ): Promise<void> {
+      await apiFetch(`/api/campaigns/${encodeURIComponent(campaignId)}/edges`, {
+        method: 'POST',
+        body: JSON.stringify(edge),
+      })
+      await this.fetchSnapshot(campaignId)
+    },
+    async updateEdgeCounter(campaignId: string, edgeId: string, counter: number): Promise<void> {
+      await apiFetch(
+        `/api/campaigns/${encodeURIComponent(campaignId)}/edges/${encodeURIComponent(edgeId)}`,
+        { method: 'PATCH', body: JSON.stringify({ counter }) },
+      )
+      await this.fetchSnapshot(campaignId)
+    },
+    async deleteEdge(campaignId: string, edgeId: string): Promise<void> {
+      await apiFetch(
+        `/api/campaigns/${encodeURIComponent(campaignId)}/edges/${encodeURIComponent(edgeId)}`,
+        { method: 'DELETE' },
+      )
+      await this.fetchSnapshot(campaignId)
     },
     /**
      * The single fetch path for an entry: never stacks — an overlapping

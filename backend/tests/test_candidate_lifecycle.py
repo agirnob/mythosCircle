@@ -27,6 +27,7 @@ from app.store import (
     CandidateSettledError,
     DanglingEdgeError,
     InvalidCandidateError,
+    OrphanEntityError,
     accept_candidate,
     app_db_url,
     commit_subgraph,
@@ -258,38 +259,107 @@ def test_accept_override_commits_edited_payload(world: str) -> None:
     assert _row(world, candidate.id).status == "accepted"
 
 
-def test_accept_override_edges_mismatch_rejected(world: str) -> None:
-    """An override whose ``edges`` differ from the staged record is an
-    ``InvalidCandidateError`` (422): zero revisions, the row stays
-    ``proposed`` (relation editing is story 3.4)."""
+def test_accept_override_edited_edges_commit(world: str) -> None:
+    """Spec-3.4: the override may carry the DM's OWN edge set — added,
+    edited, and deleted staged edges all commit in the same single
+    transaction; one revision; the row settles ``accepted``."""
+    bar_id, mira_id = _seed_world(world)
+    head_before = _head(world)
+    candidate = _stage(world, _payload(mira_id, bar_id))
+    # The DM's edited set: drop the inbound member_of, edit the rival_of
+    # counter 2 -> 7, add a new outbound ally_of to the bar.
+    override = dict(
+        candidate.payload,
+        edges=[
+            {"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 7},
+            {"endpoint": bar_id, "direction": "outbound", "type": "ally_of", "counter": 1},
+        ],
+    )
+
+    accepted, revision = accept_candidate(world, candidate.id, payload_override=override)
+
+    assert accepted.status == "accepted"
+    assert revision.base_revision == head_before
+    _entities, edges = _state(world)
+    sable = next(e for e in _entities if e[2] == "Sable Rook")
+    relationships = {(src, dst, type_, counter) for _id, src, dst, type_, counter, _at in edges}
+    assert (sable[0], mira_id, "rival_of", 7) in relationships  # edited counter
+    assert (sable[0], bar_id, "ally_of", 1) in relationships  # added edge
+    assert not any(
+        type_ == "member_of" and src == bar_id and dst == sable[0]
+        for _id, src, dst, type_, _c, _at in edges
+    )  # deleted staged edge
+    with session_scope() as session:
+        assert len(list(revision_chain(session, world))) == 2  # seed + accept
+    assert _row(world, candidate.id).status == "accepted"
+
+
+def test_accept_override_bad_edge_endpoint_rejected(world: str) -> None:
+    """Spec-3.4: an override edge whose endpoint is not committed world
+    state is an ``InvalidCandidateError`` (422): zero revisions, the row
+    stays ``proposed`` — never a partial commit."""
     bar_id, mira_id = _seed_world(world)
     state_before = _state(world)
     candidate = _stage(world, _payload(mira_id, bar_id))
     override = dict(
         candidate.payload,
-        edges=[{"endpoint": mira_id, "direction": "outbound", "type": "ally_of", "counter": 1}],
+        edges=[{"endpoint": "Z" * 26, "direction": "outbound", "type": "ally_of", "counter": 1}],
     )
 
-    with pytest.raises(InvalidCandidateError, match="edges"):
+    with pytest.raises(InvalidCandidateError, match="resolve to committed world"):
         accept_candidate(world, candidate.id, payload_override=override)
-
     assert _state(world) == state_before
     assert _row(world, candidate.id).status == "proposed"
 
 
-def test_accept_override_missing_edges_rejected(world: str) -> None:
-    """An override without the ``edges`` key does not carry the staged
-    edges verbatim — same rejection."""
+def test_accept_override_out_of_vocab_edge_rejected(world: str) -> None:
+    """Spec-3.4: an override edge type outside the closed vocabulary is an
+    ``InvalidCandidateError`` — the row stays ``proposed``."""
+    bar_id, mira_id = _seed_world(world)
+    candidate = _stage(world, _payload(mira_id, bar_id))
+    override = dict(
+        candidate.payload,
+        edges=[{"endpoint": mira_id, "direction": "outbound", "type": "friends", "counter": 1}],
+    )
+
+    with pytest.raises(InvalidCandidateError, match="closed vocabulary"):
+        accept_candidate(world, candidate.id, payload_override=override)
+
+    assert _row(world, candidate.id).status == "proposed"
+
+
+def test_accept_override_zero_edges_orphan_rejected(world: str) -> None:
+    """Spec-3.4: an override that strips every edge commits a fresh entity
+    with zero edges — the commit path's ``OrphanEntityError`` (422) rolls
+    back the whole accept; the row stays ``proposed``."""
     bar_id, mira_id = _seed_world(world)
     state_before = _state(world)
     candidate = _stage(world, _payload(mira_id, bar_id))
-    override = {key: value for key, value in candidate.payload.items() if key != "edges"}
+    override = dict(candidate.payload, edges=[])
 
-    with pytest.raises(InvalidCandidateError, match="edges"):
+    with pytest.raises(OrphanEntityError):
         accept_candidate(world, candidate.id, payload_override=override)
 
-    assert _row(world, candidate.id).status == "proposed"
     assert _state(world) == state_before
+    assert _row(world, candidate.id).status == "proposed"
+
+
+def test_accept_override_missing_edges_keeps_staged(world: str) -> None:
+    """Spec-3.4: an override WITHOUT the ``edges`` key keeps the staged
+    set (3.3 client compat) — the staged edges commit unchanged."""
+    bar_id, mira_id = _seed_world(world)
+    candidate = _stage(world, _payload(mira_id, bar_id))
+    override = {key: value for key, value in candidate.payload.items() if key != "edges"}
+
+    accepted, _revision = accept_candidate(world, candidate.id, payload_override=override)
+
+    assert accepted.status == "accepted"
+    _entities, edges = _state(world)
+    sable = next(e for e in _entities if e[2] == "Sable Rook")
+    relationships = {(src, dst, type_, counter) for _id, src, dst, type_, counter, _at in edges}
+    assert (sable[0], mira_id, "rival_of", 2) in relationships
+    assert (bar_id, sable[0], "member_of", 1) in relationships
+    assert _row(world, candidate.id).status == "accepted"
 
 
 def test_accept_non_dict_override_rejected(world: str) -> None:

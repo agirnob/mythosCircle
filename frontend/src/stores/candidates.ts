@@ -81,11 +81,12 @@ export const useCandidatesStore = defineStore('candidates', {
     },
     /**
      * Accept, optionally with the edit-before-accept payload override
-     * (spec-3-3): the override is the full candidate record with the
-     * DM's section edits — its `edges` must match the staged record
-     * verbatim AND it must satisfy the required AR24 section shape, or
-     * the API rejects with 4xx and the row stays proposed. No body =
-     * accept unedited.
+     * (spec-3-3, relaxed by spec-3-4): the override is the full
+     * candidate record with the DM's section edits AND the DM's own
+     * edge set (added/edited/deleted staged edges). The store validates
+     * every override edge against committed world state AND the
+     * required AR24 section shape — any violation rejects with 4xx and
+     * the row stays proposed. No body = accept unedited.
      */
     async accept(
       campaignId: string,

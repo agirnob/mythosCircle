@@ -254,6 +254,68 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/campaigns/{campaign_id}/edges': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Create Edge
+     * @description Create a new typed, directed edge in one atomic commit (AR3).
+     *
+     *     Thin route: type/vocabulary, self-loop, duplicate-relationship, and
+     *     counter checks are the store's. The no-orphan rule is entity-create-
+     *     only (spec-2.5), so a new edge between committed entities is always
+     *     legal and never orphans anyone. The store assigns the edge's ULID
+     *     (creation is id=None — explicit ids never create).
+     */
+    post: operations['create_edge_api_campaigns__campaign_id__edges_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/campaigns/{campaign_id}/edges/{edge_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Campaign Edge
+     * @description Delete one edge in one atomic commit (FR9).
+     *
+     *     No cascade/confirm gate — deleting a single edge is always
+     *     dangling-safe (never orphans an entity; the store's no-orphan rule is
+     *     entity-create-only). Unknown/foreign edge id is the indistinguishable
+     *     404. ``base_revision`` is query-param opt-in optimistic concurrency
+     *     (omitted targets the current head — ``delete_edge`` implements that
+     *     None-means-head semantics internally, like ``delete_entity``).
+     */
+    delete: operations['delete_campaign_edge_api_campaigns__campaign_id__edges__edge_id__delete']
+    options?: never
+    head?: never
+    /**
+     * Update Edge
+     * @description Update one edge's counter in one atomic commit (counter-only, AD-2).
+     *
+     *     src/dst/type are immutable; re-targeting is forbidden, so the PATCH
+     *     body carries only the new counter. Unknown/foreign edge id is the
+     *     indistinguishable 404; a stale ``base_revision`` is a 409
+     *     (StaleRevisionError).
+     */
+    patch: operations['update_edge_api_campaigns__campaign_id__edges__edge_id__patch']
+    trace?: never
+  }
   '/api/campaigns/{campaign_id}/export': {
     parameters: {
       query?: never
@@ -318,9 +380,13 @@ export interface paths {
      *     campaign is the 404 before anything else is touched. Thin route:
      *     every decision (fresh-ULID entity, staged edges, base revision,
      *     one-transaction atomicity, dead-endpoint rejection) is the store's.
-     *     An optional ``{"payload": {...}}`` body (spec-3.3) carries the DM's
-     *     edited sections; the store validates the override's edges against
-     *     the staged record (verbatim or 422, row stays ``proposed``).
+     *     An optional ``{"payload": {...}}`` body (spec-3.3, relaxed by
+     *     spec-3.4) carries the DM's edited sections and the DM's own edge
+     *     set; the store validates the override against the required AR24
+     *     section shape and validates every edge against committed world
+     *     state (invalid edge: 422, row stays ``proposed``). A body that is
+     *     present WITHOUT a payload (``{}`` or ``{"payload": null}``) is a
+     *     422 — only the OMITTED body is the unedited accept.
      */
     post: operations['accept_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__accept_post']
     delete?: never
@@ -358,12 +424,13 @@ export interface components {
   schemas: {
     /**
      * AcceptBody
-     * @description Optional accept body (spec-3.3): the accept screen's edit-before-
-     *     accept override. ``payload`` is the full candidate record with the
-     *     DM's section edits; the store commits it minus ``edges``, which must
-     *     match the staged edges verbatim (relation editing is story 3.4) — a
-     *     mismatch is a 422 and the row stays ``proposed``. An omitted body is
-     *     the unedited accept (identical to the 3.2 behavior).
+     * @description Optional accept body (spec-3.3, relaxed by spec-3.4): the accept
+     *     screen's edit-before-accept override. ``payload`` is the full
+     *     candidate record with the DM's section edits AND the DM's own edge
+     *     set (added/edited/deleted staged edges); the store validates every
+     *     override edge against committed world state — an invalid edge is a
+     *     422 and the row stays ``proposed``. An omitted body is the unedited
+     *     accept (identical to the 3.2 behavior).
      */
     AcceptBody: {
       /** Payload */
@@ -483,6 +550,22 @@ export interface components {
     }
     /** EdgeExport */
     EdgeExport: {
+      /** Id */
+      id: string
+      /** Src */
+      src: string
+      /** Dst */
+      dst: string
+      /** Type */
+      type: string
+      /** Counter */
+      counter: number
+    }
+    /**
+     * EdgeResponse
+     * @description The wire shape of one committed edge (mirrors EdgeExport).
+     */
+    EdgeResponse: {
       /** Id */
       id: string
       /** Src */
@@ -1109,6 +1192,107 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  create_edge_api_campaigns__campaign_id__edges_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        campaign_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['EdgeResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_campaign_edge_api_campaigns__campaign_id__edges__edge_id__delete: {
+    parameters: {
+      query?: {
+        base_revision?: string | null
+      }
+      header?: never
+      path: {
+        campaign_id: string
+        edge_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  update_edge_api_campaigns__campaign_id__edges__edge_id__patch: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        campaign_id: string
+        edge_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['EdgeResponse']
+        }
       }
       /** @description Validation Error */
       422: {
