@@ -91,6 +91,7 @@ def init_db(url: str = DEFAULT_DB_URL) -> Engine:
     _migrate_job_result(_engine)
     _migrate_campaign_seed(_engine)
     _migrate_job_kind(_engine)
+    _migrate_proposed_candidate_status(_engine)
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 
@@ -163,6 +164,57 @@ def _migrate_job_kind(engine: Engine) -> None:
         connection.execute(text("INSERT INTO job_new SELECT * FROM job"))
         connection.execute(text("DROP TABLE job"))
         connection.execute(text("ALTER TABLE job_new RENAME TO job"))
+        for (index_sql,) in index_rows:
+            connection.execute(text(index_sql))
+
+
+def _migrate_proposed_candidate_status(engine: Engine) -> None:
+    """Widen the proposed-candidate status CHECK on a pre-current database.
+
+    Spec-3.2 counterpart of ``_migrate_job_kind`` (same constraint-rebuild
+    recipe — SQLite cannot ALTER a CHECK): capture the table DDL plus the
+    proposed_candidate table's explicit index DDLs, create
+    ``proposed_candidate_new`` with the full lifecycle status list, copy
+    the rows, drop the old table, rename, then re-create the indexes.
+    Both the canonical status list and the idempotency test derive from
+    ``models.PROPOSAL_STATUS``: a table whose DDL already admits every
+    current status is left untouched; otherwise the IN-list is
+    substituted with the full set. One pass therefore migrates the
+    pre-3.2 single-status shape and any future widening — and
+    ``create_all`` on a fresh database already emits the widened
+    constraint. Belt-and-braces: the repo ships no persistent deploy DB,
+    so this only matters for long-lived developer databases.
+    """
+    import re
+
+    from sqlalchemy import text
+
+    status_list = ",".join(f"'{status}'" for status in sorted(models.PROPOSAL_STATUS))
+    with engine.begin() as connection:
+        row = connection.execute(
+            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='proposed_candidate'")
+        ).first()
+        table_sql = row[0] if row is not None else None
+        if table_sql is None or all(f"'{s}'" in table_sql for s in models.PROPOSAL_STATUS):
+            return
+        index_rows = connection.execute(
+            text(
+                "SELECT sql FROM sqlite_master WHERE type='index'"
+                " AND tbl_name='proposed_candidate' AND sql IS NOT NULL"
+            )
+        ).fetchall()
+        new_table_sql = re.sub(
+            r"status IN \([^)]*\)",
+            f"status IN ({status_list})",
+            table_sql,
+            count=1,
+        ).replace("CREATE TABLE proposed_candidate ", "CREATE TABLE proposed_candidate_new ", 1)
+        connection.execute(text(new_table_sql))
+        connection.execute(
+            text("INSERT INTO proposed_candidate_new SELECT * FROM proposed_candidate")
+        )
+        connection.execute(text("DROP TABLE proposed_candidate"))
+        connection.execute(text("ALTER TABLE proposed_candidate_new RENAME TO proposed_candidate"))
         for (index_sql,) in index_rows:
             connection.execute(text(index_sql))
 

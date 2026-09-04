@@ -33,9 +33,14 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 #: store.candidates) so the table CHECKs and the staging writer share one
 #: definition; story 3.2 extends the lists in place.
 PROPOSAL_KIND = "entity"
-#: The only staged status this story writes; accept/reject (3.2) owns the
-#: remaining states.
+#: The closed proposal-status lifecycle (spec-3.2): staging writes only
+#: ``proposed``; the DM's accept/reject transitions own the two terminal
+#: states. Defined here (not in store.candidates) so the table CHECK,
+#: the staging writer, and the lifecycle functions share one definition.
 STATUS_PROPOSED = "proposed"
+STATUS_ACCEPTED = "accepted"
+STATUS_REJECTED = "rejected"
+PROPOSAL_STATUS: tuple[str, ...] = (STATUS_PROPOSED, STATUS_ACCEPTED, STATUS_REJECTED)
 
 
 class Base(DeclarativeBase):
@@ -214,9 +219,12 @@ class ProposedCandidate(Base):
     __table_args__ = (
         # DB-level enforcement of the closed proposal-kind and staging-
         # status sets, mirroring ck_job_kind/ck_job_state; story 3.2
-        # extends these same lists.
+        # extends these same lists (the status set to the full lifecycle).
         CheckConstraint(f"kind IN ('{PROPOSAL_KIND}')", name="ck_proposed_candidate_kind"),
-        CheckConstraint(f"status IN ('{STATUS_PROPOSED}')", name="ck_proposed_candidate_status"),
+        CheckConstraint(
+            f"status IN ({', '.join(f"'{status}'" for status in PROPOSAL_STATUS)})",
+            name="ck_proposed_candidate_status",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True)

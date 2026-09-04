@@ -980,7 +980,9 @@ def test_retry_after_undo_is_duplicate_not_422(world: str) -> None:
 def test_candidate_kind_status_check_constraints(world: str) -> None:
     """The staged table pins its closed kind/status sets at the DB level
     (mirroring ck_job_kind/ck_job_state): anything outside is an
-    IntegrityError."""
+    IntegrityError. Spec-3.2 widened the status set to the full
+    lifecycle — ``accepted``/``rejected`` are now legal, junk still is
+    not."""
     _commit_world(world)
     job = enqueue_job(world, "generate", {"ask": "check me"})
     stage_candidates(world, job.id, [_candidate_record(world)])
@@ -994,11 +996,18 @@ def test_candidate_kind_status_check_constraints(world: str) -> None:
                 " 'proposed', '{}', 'now')",
                 (ids.new_id(), world, job.id),
             )
+        for status in ("proposed", "accepted", "rejected"):
+            raw.execute(
+                "INSERT INTO proposed_candidate (id, campaign_id, job_id, kind,"
+                f" status, payload, created_at) VALUES (?, ?, ?, 'entity',"
+                f" '{status}', '{{}}', 'now')",
+                (ids.new_id(), world, job.id),
+            )
         with pytest.raises(sqlite3.IntegrityError):
             raw.execute(
                 "INSERT INTO proposed_candidate (id, campaign_id, job_id, kind,"
                 " status, payload, created_at) VALUES (?, ?, ?, 'entity',"
-                " 'accepted', '{}', 'now')",
+                " 'settled', '{}', 'now')",
                 (ids.new_id(), world, job.id),
             )
     finally:

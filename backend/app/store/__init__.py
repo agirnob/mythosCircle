@@ -16,6 +16,8 @@ Public API:
     enqueue_job / claim_next_job / complete_job / fail_job /
         report_progress / cancel_job / job_status / list_jobs /
         set_change_listener                 -- generation queue (jobs)
+    stage_candidates / accept_candidate / reject_candidate /
+        list_candidates                     -- proposed candidates (candidates)
 """
 
 from app.store.auth import (
@@ -38,10 +40,17 @@ from app.store.campaigns import (
 )
 from app.store.candidates import (
     PROPOSAL_KIND,
+    PROPOSAL_STATUS,
+    STATUS_ACCEPTED,
     STATUS_PROPOSED,
+    STATUS_REJECTED,
+    CandidateNotFoundError,
+    CandidateSettledError,
     InvalidCandidateError,
+    accept_candidate,
     discard_candidates,
     list_candidates,
+    reject_candidate,
     stage_candidates,
 )
 from app.store.commit import (
@@ -137,6 +146,8 @@ __all__ = [
     "Base",
     "Campaign",
     "CampaignInputError",
+    "CandidateNotFoundError",
+    "CandidateSettledError",
     "CorruptEventError",
     "CrossCampaignConflictError",
     "DB_ENV_VAR",
@@ -174,21 +185,25 @@ __all__ = [
     "JobNotFoundError",
     "JobStateConflictError",
     "LiveEdgesError",
-    "OrphanEntityError",
-    "SelfLoopEdgeError",
     "Media",
+    "OrphanEntityError",
     "PENDING_STATES",
     "PROPOSAL_KIND",
+    "PROPOSAL_STATUS",
     "ProposedCandidate",
     "QueueFullError",
     "Revision",
     "Session",
+    "STATUS_ACCEPTED",
     "STATUS_PROPOSED",
+    "STATUS_REJECTED",
+    "SelfLoopEdgeError",
     "StaleRevisionError",
     "StoreError",
     "TERMINAL_STATES",
     "UnknownCampaignError",
     "UnknownEntityError",
+    "accept_candidate",
     "app_db_url",
     "campaign_seed",
     "cancel_job",
@@ -199,6 +214,7 @@ __all__ = [
     "create_session",
     "delete_campaign",
     "delete_entity",
+    "discard_candidates",
     "edge_counter_semantic",
     "entity_live_edges",
     "enqueue_job",
@@ -216,13 +232,13 @@ __all__ = [
     "normalize_theme",
     "recover_stale_running",
     "register_account",
+    "reject_candidate",
     "report_progress",
     "revision_chain",
     "revision_events",
     "revoke_session",
     "session_scope",
     "set_change_listener",
-    "discard_candidates",
     "stage_candidates",
     "undo",
     "update_campaign",

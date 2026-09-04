@@ -28,7 +28,25 @@ from app.store import (
     enqueue_job,
     init_db,
     register_account,
+    session_scope,
 )
+from app.store.read import latest_revision, revision_chain, world_entities
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter() -> Iterator[None]:
+    """The auth limiters are module-global and keyed on the TestClient's
+    fixed host ('testclient') — the lifecycle tests each register an
+    owner, so without a reset the per-IP registration cap trips mid-run
+    (test_auth_api's fixture, same rationale)."""
+    from app.api.auth import _login_limiter, _register_limiter
+
+    _login_limiter.reset()
+    _register_limiter.reset()
+    yield
+    _login_limiter.reset()
+    _register_limiter.reset()
+
 
 SETTINGS = LLMSettings(endpoint="http://test/v1", model="test-model")
 
@@ -321,3 +339,372 @@ def test_candidates_invisible_in_export(client: TestClient, job_api: Callable[[]
     names = {entity["name"] for entity in export["entities"]}
     assert names == {"The Gilded Bar", "Mira Vane"}
     assert len(export["edges"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Candidate lifecycle routes (spec-3.2): accept / reject / status filter
+# ---------------------------------------------------------------------------
+
+
+def _stage_one(campaign_id: str, mira_id: str, name: str = "Sable Rook") -> str:
+    """Stage one candidate directly through the store; returns its id."""
+    from app.store import stage_candidates
+
+    payload = {
+        "name": name,
+        "role": "NPC",
+        "personality": "dry",
+        "secret": "s",
+        "rumor": "r",
+        "party_hook": "p",
+        "stat_block": _VALID_STAT_BLOCK,
+        "edges": [{"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 1}],
+    }
+    job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
+    (row,) = stage_candidates(campaign_id, job.id, [payload])
+    return row.id
+
+
+def test_accept_route_commits_and_settles(client: TestClient, job_api: Callable[[], str]) -> None:
+    """ACCEPT_HAPPY over the wire: 200 with the settled row; the world
+    gains the new entity (+1 revision); the default list hides it."""
+
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    candidate_id = _stage_one(campaign_id, mira_id)
+
+    response = client.post(f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == candidate_id and body["status"] == "accepted"
+
+    export = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    assert "Sable Rook" in {entity["name"] for entity in export["entities"]}
+    with session_scope() as session:
+        assert len(list(revision_chain(session, campaign_id))) == 2  # seed + accept
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    assert listed["candidates"] == []  # default filter keeps the accept screen clean
+
+
+def test_accept_route_stale_endpoint_422_row_stays_proposed(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """ACCEPT_STALE_ENDPOINT: 422 validation_error envelope; no revision;
+    the row stays ``proposed`` (rebase-or-reject, AD-2)."""
+    from app.store import delete_entity
+
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+        head = latest_revision(session, campaign_id)
+        assert head is not None
+    candidate_id = _stage_one(campaign_id, mira_id)
+    delete_entity(campaign_id, mira_id, cascade=True, base_revision=head.id)
+
+    body = _assert_envelope(
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept"),
+        422,
+        "validation_error",
+    )
+    assert "dangling" in body["message"].lower()
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    assert [row["id"] for row in listed["candidates"]] == [candidate_id]
+    assert listed["candidates"][0]["status"] == "proposed"
+    with session_scope() as session:
+        assert len(list(revision_chain(session, campaign_id))) == 2  # seed + delete
+
+
+def test_accept_route_unknown_candidate_404(client: TestClient, job_api: Callable[[], str]) -> None:
+    """ACCEPT_UNKNOWN: an unknown candidate id under an owned campaign is
+    the single 404 (the campaign itself existing keeps it off the
+    campaign-404 path)."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    _assert_envelope(
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{ids.new_id()}/accept"),
+        404,
+        "not_found",
+    )
+
+
+def test_accept_route_already_settled_409(client: TestClient, job_api: Callable[[], str]) -> None:
+    """ACCEPT_ALREADY_SETTLED: a second accept is a 409 conflict."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    candidate_id = _stage_one(campaign_id, mira_id)
+    assert (
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept").status_code
+        == 200
+    )
+    _assert_envelope(
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept"),
+        409,
+        "conflict",
+    )
+
+
+def test_reject_route_settles_world_untouched(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """REJECT_STANDALONE: 200 rejected; no new revision; the row shows
+    up only under ``?status=rejected``."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    candidate_id = _stage_one(campaign_id, mira_id)
+
+    response = client.post(f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/reject")
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+    assert client.get(f"/api/campaigns/{campaign_id}/candidates").json()["candidates"] == []
+    rejected = client.get(
+        f"/api/campaigns/{campaign_id}/candidates", params={"status": "rejected"}
+    ).json()
+    assert [row["id"] for row in rejected["candidates"]] == [candidate_id]
+    export = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    assert "Sable Rook" not in {entity["name"] for entity in export["entities"]}
+    with session_scope() as session:
+        assert len(list(revision_chain(session, campaign_id))) == 1  # seed only
+
+
+def test_reject_route_already_settled_409(client: TestClient, job_api: Callable[[], str]) -> None:
+    """REJECT_ALREADY_SETTLED: a second reject is a 409 conflict."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    candidate_id = _stage_one(campaign_id, mira_id)
+    assert (
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/reject").status_code
+        == 200
+    )
+    _assert_envelope(
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/reject"),
+        409,
+        "conflict",
+    )
+
+
+def test_candidates_status_filter_rejected_shows_accepted_hides(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """The closed-set status filter: ``accepted`` and ``rejected`` pages
+    show exactly the settled rows; the default stays ``proposed``."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    accepted_id = _stage_one(campaign_id, mira_id, name="Sable Rook")
+    rejected_id = _stage_one(campaign_id, mira_id, name="Vex Marlow")
+    assert (
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{accepted_id}/accept").status_code
+        == 200
+    )
+    assert (
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{rejected_id}/reject").status_code
+        == 200
+    )
+
+    accepted = client.get(
+        f"/api/campaigns/{campaign_id}/candidates", params={"status": "accepted"}
+    ).json()
+    assert [row["id"] for row in accepted["candidates"]] == [accepted_id]
+    rejected = client.get(
+        f"/api/campaigns/{campaign_id}/candidates", params={"status": "rejected"}
+    ).json()
+    assert [row["id"] for row in rejected["candidates"]] == [rejected_id]
+    default = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    assert default["candidates"] == []
+
+
+def test_candidates_status_filter_junk_422(client: TestClient, job_api: Callable[[], str]) -> None:
+    """STATUS_FILTER_BAD: junk status is a 422 validation envelope."""
+    campaign_id = _owned_campaign(client)
+    _assert_envelope(
+        client.get(f"/api/campaigns/{campaign_id}/candidates", params={"status": "junk"}),
+        422,
+        "validation_error",
+    )
+
+
+def test_accept_route_bad_counter_422(client: TestClient, job_api: Callable[[], str]) -> None:
+    """ACCEPT_BAD_COUNTER over the wire: a staged non-int counter (the
+    staging validation does not check counter shape) is a 422 validation
+    envelope; no revision; the row stays ``proposed``."""
+    from app.store import stage_candidates
+
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    payload = {
+        "name": "Sable Rook",
+        "role": "NPC",
+        "personality": "dry",
+        "secret": "s",
+        "rumor": "r",
+        "party_hook": "p",
+        "stat_block": _VALID_STAT_BLOCK,
+        "edges": [
+            {"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": "three"}
+        ],
+    }
+    job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
+    (row,) = stage_candidates(campaign_id, job.id, [payload])
+
+    body = _assert_envelope(
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{row.id}/accept"),
+        422,
+        "validation_error",
+    )
+    assert "counter" in body["message"].lower()
+    with session_scope() as session:
+        assert len(list(revision_chain(session, campaign_id))) == 1  # seed only
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    assert [candidate["id"] for candidate in listed["candidates"]] == [row.id]
+    assert listed["candidates"][0]["status"] == "proposed"
+
+
+def test_accept_route_malformed_payload_422(client: TestClient, job_api: Callable[[], str]) -> None:
+    """A staged row whose payload lost its name (only possible by
+    bypassing the staging contract) is a 422 ``InvalidCandidateError``
+    envelope via POST accept — never a 500."""
+    from app.store import models, stage_candidates
+
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    payload = {
+        "name": "Sable Rook",
+        "role": "NPC",
+        "personality": "dry",
+        "secret": "s",
+        "rumor": "r",
+        "party_hook": "p",
+        "stat_block": _VALID_STAT_BLOCK,
+        "edges": [{"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 1}],
+    }
+    job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
+    (row,) = stage_candidates(campaign_id, job.id, [payload])
+    with session_scope() as session:
+        staged = session.get(models.ProposedCandidate, row.id)
+        assert staged is not None
+        staged.payload = {key: value for key, value in staged.payload.items() if key != "name"}
+
+    body = _assert_envelope(
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{row.id}/accept"),
+        422,
+        "validation_error",
+    )
+    assert "name" in body["message"].lower()
+
+
+def test_status_filter_paging_ignores_anchor_status(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """Status filter x cursor pagination: the rowid anchor is resolved
+    regardless of the settled/active status split — settling the page's
+    anchor row and paging ``?status=proposed`` from it continues with the
+    remaining proposed rows, skipping the anchor itself."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    first_id = _stage_one(campaign_id, mira_id, name="Sable Rook")
+    second_id = _stage_one(campaign_id, mira_id, name="Vex Marlow")
+    third_id = _stage_one(campaign_id, mira_id, name="Iseult Kray")
+
+    page_one = client.get(f"/api/campaigns/{campaign_id}/candidates", params={"limit": 2}).json()
+    assert [row["id"] for row in page_one["candidates"]] == [first_id, second_id]
+    anchor = page_one["next_cursor"]
+    assert anchor is not None
+
+    # Settle the anchor row (second); its rowid must still anchor the
+    # next proposed-only page.
+    assert (
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{second_id}/reject").status_code
+        == 200
+    )
+    page_two = client.get(
+        f"/api/campaigns/{campaign_id}/candidates",
+        params={"status": "proposed", "cursor": anchor, "limit": 2},
+    ).json()
+    assert [row["id"] for row in page_two["candidates"]] == [third_id]
+    assert page_two["next_cursor"] is None
+
+
+def test_lifecycle_routes_unauthed_401(client: TestClient, job_api: Callable[[], str]) -> None:
+    """FOREIGN_OWNER (auth half): unauthenticated accept/reject are the
+    generic 401 (AR29)."""
+    campaign_id = job_api()
+    _commit_world(campaign_id)
+    for suffix in ("accept", "reject"):
+        _assert_envelope(
+            client.post(f"/api/campaigns/{campaign_id}/candidates/{ids.new_id()}/{suffix}"),
+            401,
+            "unauthorized",
+        )
+
+
+def test_lifecycle_routes_foreign_campaign_404_indistinguishable(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """FOREIGN_OWNER (ownership half): another account's campaign (and an
+    unknown one) are the single indistinguishable 404 — never a 403."""
+    campaign_id = job_api()
+    _commit_world(campaign_id)
+    _register(client)  # account B (not the owner) now holds the cookie
+    foreign = _assert_envelope(
+        client.post(f"/api/campaigns/{campaign_id}/candidates/{ids.new_id()}/accept"),
+        404,
+        "not_found",
+    )
+    unknown = _assert_envelope(
+        client.post(f"/api/campaigns/{ids.new_id()}/candidates/{ids.new_id()}/reject"),
+        404,
+        "not_found",
+    )
+    assert foreign["message"] == unknown["message"]

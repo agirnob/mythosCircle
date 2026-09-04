@@ -14,6 +14,8 @@ from app.core.errors import StoreHTTPException
 from app.core.pagination import InvalidCursorError
 from app.store import (
     CampaignInputError,
+    CandidateNotFoundError,
+    CandidateSettledError,
     CrossCampaignConflictError,
     DanglingEdgeError,
     DuplicateEdgeError,
@@ -52,12 +54,15 @@ def store_error_as_http(exc: Exception) -> NoReturn:
     user error — re-raising surfaces it as a 500 so it can never be
     mistaken for a recoverable client mistake.
     """
-    if isinstance(exc, (JobNotFoundError, UnknownCampaignError, UnknownEntityError)):
+    if isinstance(
+        exc, (JobNotFoundError, CandidateNotFoundError, UnknownCampaignError, UnknownEntityError)
+    ):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if isinstance(
         exc,
         (
             JobStateConflictError,
+            CandidateSettledError,
             DuplicateJobError,
             QueueFullError,
             StaleRevisionError,
