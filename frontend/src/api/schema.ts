@@ -274,10 +274,103 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/campaigns/{campaign_id}/candidates': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List Campaign Candidates
+     * @description The campaign's staged proposed candidates, oldest first (AR7).
+     *
+     *     Owner-only: unauthenticated is a 401; a foreign or unknown campaign
+     *     is the single indistinguishable 404. Cursor-paginated per the list
+     *     conventions; a fabricated cursor is a 422 (epic-1 retro item 2).
+     *     ``status`` filters the closed lifecycle set and defaults to
+     *     ``proposed`` — settled rows must not regress the accept-screen read.
+     */
+    get: operations['list_campaign_candidates_api_campaigns__campaign_id__candidates_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Accept Campaign Candidate
+     * @description Commit the candidate's subgraph as one atomic transaction and
+     *     settle the row ``accepted`` (spec-3.2, FR11/AD-15).
+     *
+     *     Owner-first, mirroring ``delete_entity``: a foreign or unknown
+     *     campaign is the 404 before anything else is touched. Thin route:
+     *     every decision (fresh-ULID entity, staged edges, base revision,
+     *     one-transaction atomicity, dead-endpoint rejection) is the store's.
+     *     An optional ``{"payload": {...}}`` body (spec-3.3) carries the DM's
+     *     edited sections; the store validates the override's edges against
+     *     the staged record (verbatim or 422, row stays ``proposed``).
+     */
+    post: operations['accept_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__accept_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/campaigns/{campaign_id}/candidates/{candidate_id}/reject': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Reject Campaign Candidate
+     * @description Settle the candidate ``rejected`` — the world is untouched (AR7).
+     *
+     *     Owner-first like the accept route; the store flips the status in one
+     *     transaction with no revision, no event, and no world read.
+     */
+    post: operations['reject_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__reject_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
   schemas: {
+    /**
+     * AcceptBody
+     * @description Optional accept body (spec-3.3): the accept screen's edit-before-
+     *     accept override. ``payload`` is the full candidate record with the
+     *     DM's section edits; the store commits it minus ``edges``, which must
+     *     match the staged edges verbatim (relation editing is story 3.4) — a
+     *     mismatch is a 422 and the row stays ``proposed``. An omitted body is
+     *     the unedited accept (identical to the 3.2 behavior).
+     */
+    AcceptBody: {
+      /** Payload */
+      payload?: {
+        [key: string]: unknown
+      } | null
+    }
     /** AccountResponse */
     AccountResponse: {
       /** Id */
@@ -352,6 +445,38 @@ export interface components {
       /** Custom Lore */
       custom_lore?: string | null
     }
+    /**
+     * CandidateListResponse
+     * @description Cursor-paginated, campaign-scoped candidate list.
+     */
+    CandidateListResponse: {
+      /** Candidates */
+      candidates: components['schemas']['CandidateResponse'][]
+      /** Next Cursor */
+      next_cursor: string | null
+    }
+    /**
+     * CandidateResponse
+     * @description One staged proposed-candidate row.
+     */
+    CandidateResponse: {
+      /** Id */
+      id: string
+      /** Campaign Id */
+      campaign_id: string
+      /** Job Id */
+      job_id: string
+      /** Kind */
+      kind: string
+      /** Status */
+      status: string
+      /** Payload */
+      payload: {
+        [key: string]: unknown
+      }
+      /** Created At */
+      created_at: string
+    }
     /** EdgeExport */
     EdgeExport: {
       /** Id */
@@ -396,7 +521,7 @@ export interface components {
        * Kind
        * @enum {string}
        */
-      kind: 'text' | 'image' | 'video' | 'build_in'
+      kind: 'text' | 'image' | 'video' | 'build_in' | 'generate'
       /** Payload */
       payload: {
         [key: string]: unknown
@@ -1014,6 +1139,115 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['WorldExport']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  list_campaign_candidates_api_campaigns__campaign_id__candidates_get: {
+    parameters: {
+      query?: {
+        cursor?: string | null
+        limit?: number
+        status?: string
+      }
+      header?: never
+      path: {
+        campaign_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CandidateListResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  accept_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__accept_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        campaign_id: string
+        candidate_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: {
+      content: {
+        'application/json': components['schemas']['AcceptBody'] | null
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CandidateResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  reject_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__reject_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        campaign_id: string
+        candidate_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CandidateResponse']
         }
       }
       /** @description Validation Error */

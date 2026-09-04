@@ -112,7 +112,8 @@ def _commit_world(campaign_id: str) -> tuple[list[models.Entity], list[models.Ed
 
 
 def _generate_output(total: int = 3) -> dict[str, Any]:
-    """A valid generate output: ``total`` candidates, each anchored to the
+    """A valid AR24 generate output (spec-3.3): ``total`` NPC candidates,
+    each carrying the full sectioned profile and anchored to the
     committed context (C0/C1)."""
     names = ["Corvin Ashe", "Sister Yeva", "The Tallyman"]
     return {
@@ -124,7 +125,24 @@ def _generate_output(total: int = 3) -> dict[str, Any]:
                 "secret": "owes the Guild a debt",
                 "rumor": "seen at the docks at night",
                 "party_hook": "hires the party to guard a shipment",
+                "level_cr": "level 5",
+                "race_type": "Human",
+                "class_profession": "Fence",
+                "alignment": "NE",
+                "appearance": "gaunt, ink-stained fingers, a coat too fine for the quarter",
+                "background": "ex-Guild scribe turned broker of favors",
+                "goals": "buy back a name the Guild still owns",
+                "relationships": "pays protection to the Gilded Bar; rivals Mira Vane",
+                "voice_style": "clipped, low, never repeats an offer",
+                "catchphrases": '"Everything has a price."',
                 "stat_block": _VALID_STAT_BLOCK,
+                "world_integration": {
+                    "reputation": "the fixer of the docks",
+                    "factions": "The Guild (in good standing, barely)",
+                    "current_location": "the back booth of the Gilded Bar",
+                    "reaction_matrix": "buys drinks for strangers, sells favors dearer",
+                    "on_defeat": "flees, leaving the ledger behind",
+                },
                 "edges": [
                     {"endpoint": "C0", "direction": "outbound", "type": "rival_of", "counter": 1},
                     {"endpoint": "C1", "direction": "inbound", "type": "member_of"},
@@ -203,10 +221,29 @@ def test_happy_path_stages_three_candidates(world: str) -> None:
             "secret",
             "rumor",
             "party_hook",
+            "level_cr",
+            "race_type",
+            "class_profession",
+            "alignment",
+            "appearance",
+            "background",
+            "goals",
+            "relationships",
+            "voice_style",
+            "catchphrases",
+            "world_integration",
             "stat_block",
             "edges",
         }
-        assert payload["role"] in {"NPC", "BBEG", "Monster"}
+        assert payload["role"] == "NPC"  # the fixture's role — no boss section (spec-3.3)
+        assert "boss" not in payload
+        assert set(payload["world_integration"]) == {
+            "reputation",
+            "factions",
+            "current_location",
+            "reaction_matrix",
+            "on_defeat",
+        }
         assert payload["stat_block"] == _VALID_STAT_BLOCK
         assert len(payload["edges"]) == 2
         for edge in payload["edges"]:
@@ -233,6 +270,150 @@ def test_candidate_extra_keys_pass_through(world: str) -> None:
     rows = _staged(world)
     assert len(rows) == 3
     assert rows[0].payload["ambient_detail"] == {"cloak": "grey"}
+
+
+# ---------------------------------------------------------------------------
+# AR24 sectioned profile (spec-3.3): required sections + boss conditionality
+# ---------------------------------------------------------------------------
+
+
+def test_missing_ar24_section_drops_candidate(world: str) -> None:
+    """A candidate missing an AR24 narrative section (appearance) is a
+    shape violation: with two clean ones the job still stages 2 and the
+    drop summary names the missing section."""
+    _commit_world(world)
+    output = _generate_output()
+    del output["candidates"][0]["appearance"]
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["candidate_count"] == 2
+    dropped = job.result["dropped"]
+    assert len(dropped) == 1 and "appearance" in dropped[0]["reason"]
+
+
+def test_missing_ar24_sections_fail_below_two(world: str) -> None:
+    """A candidate missing substance must not reach the accept screen
+    silent-empty: when every candidate misses an AR24 section the job
+    fails per the <2-survivors rule; nothing staged."""
+    _commit_world(world)
+    output = _generate_output()
+    for candidate in output["candidates"]:
+        del candidate["goals"]
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "failed" and job.result is None
+    assert "goals must be a non-blank string" in (job.error or "")
+    assert _staged(world) == []
+
+
+def test_world_integration_block_validated(world: str) -> None:
+    """The world-integration block must be an object with all five
+    non-blank fields; a blank or missing field is a shape violation."""
+    _commit_world(world)
+    output = _generate_output()
+    output["candidates"][0]["world_integration"]["reaction_matrix"] = "   "
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["candidate_count"] == 2
+    reasons = " | ".join(drop["reason"] for drop in job.result["dropped"])
+    assert "world_integration.reaction_matrix must be a non-blank string" in reasons
+
+
+def test_boss_section_required_for_bbeg_and_monster(world: str) -> None:
+    """BBEG/Monster candidates MUST carry the boss section: a Monster
+    with a complete boss stages with it; a BBEG without one is dropped
+    (boss must be an object)."""
+    _commit_world(world)
+    output = _generate_output()
+    output["candidates"][0]["role"] = "Monster"
+    output["candidates"][0]["boss"] = {
+        "lair_actions": "none — it hunts",
+        "legendary_actions": "3 per round",
+        "immunities": "charmed",
+        "vulnerabilities": "fire",
+    }
+    output["candidates"][1]["role"] = "BBEG"
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["candidate_count"] == 2
+    rows = _staged(world)
+    assert rows[0].payload["role"] == "Monster"
+    assert set(rows[0].payload["boss"]) == {
+        "lair_actions",
+        "legendary_actions",
+        "immunities",
+        "vulnerabilities",
+    }
+    assert "boss must be an object" in job.result["dropped"][0]["reason"]
+
+
+def test_boss_section_partial_fields_violation(world: str) -> None:
+    """A boss section with a blank field is a shape violation naming the
+    field — substance, not an empty shell."""
+    _commit_world(world)
+    output = _generate_output()
+    output["candidates"][0]["role"] = "BBEG"
+    output["candidates"][0]["boss"] = {
+        "lair_actions": "the hall floods with shadows",
+        "legendary_actions": "3 per round",
+        "immunities": "charmed",
+        "vulnerabilities": "",
+    }
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["candidate_count"] == 2
+    assert "boss.vulnerabilities must be a non-blank string" in job.result["dropped"][0]["reason"]
+
+
+def test_bbeg_happy_path_stages_with_boss(world: str) -> None:
+    """A BBEG candidate through the whole happy path: staged with the
+    complete boss section (and no boss on the NPC rows)."""
+    _commit_world(world)
+    output = _generate_output()
+    output["candidates"][0]["role"] = "BBEG"
+    output["candidates"][0]["level_cr"] = "level 20"
+    output["candidates"][0]["boss"] = {
+        "lair_actions": "the hall floods with shadows",
+        "legendary_actions": "3 per round",
+        "immunities": "charmed, frightened",
+        "vulnerabilities": "radiant",
+    }
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded" and job.result is not None
+    assert job.result["candidate_count"] == 3 and job.result["dropped"] == []
+    rows = _staged(world)
+    assert rows[0].payload["role"] == "BBEG"
+    assert rows[0].payload["level_cr"] == "level 20"
+    assert rows[0].payload["boss"] == {
+        "lair_actions": "the hall floods with shadows",
+        "legendary_actions": "3 per round",
+        "immunities": "charmed, frightened",
+        "vulnerabilities": "radiant",
+    }
+    assert "boss" not in rows[1].payload and "boss" not in rows[2].payload
+
+
+def test_boss_section_forbidden_for_npc(world: str) -> None:
+    """An NPC with a boss object is a shape violation — never an empty
+    boss section (spec-3.3 Design Notes)."""
+    _commit_world(world)
+    output = _generate_output()
+    output["candidates"][0]["boss"] = {
+        "lair_actions": "",
+        "legendary_actions": "",
+        "immunities": "",
+        "vulnerabilities": "",
+    }
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["candidate_count"] == 2
+    assert "boss section is only allowed" in job.result["dropped"][0]["reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -1025,6 +1206,28 @@ def test_prompt_pins_context_refs(world: str) -> None:
     prompt = build_generate_prompt(seed, "an ask", (context_entities, context_edges))
     assert "CONTEXT REFS" in prompt
     assert "C0..C1" in prompt and "entity[<i>] = C<i>" in prompt
+
+
+def test_prompt_pins_ar24_sections(world: str) -> None:
+    """The OUTPUT CONTRACT pins the AR24 sectioned profile: the
+    world-integration block, the boss section's conditional rule
+    (required for BBEG/Monster, omitted for NPC — annotated inline in
+    the template itself, never self-contradictory), and both level/CR
+    formats."""
+    _commit_world(world)
+    context_entities, context_edges = retrieve_neighborhood(world, seed_ids=None)
+    with session_scope() as session:
+        seed = campaign_seed(session, world)
+    assert seed is not None
+    prompt = build_generate_prompt(seed, "an ask", (context_entities, context_edges))
+    assert '"world_integration": {"reputation": "...", "factions": "...",' in prompt
+    assert '"current_location": "...", "reaction_matrix": "...",' in prompt
+    assert '"on_defeat": "..."' in prompt
+    assert "CONDITIONAL" in prompt
+    assert "REQUIRED" in prompt and "when the role is BBEG or Monster" in prompt
+    assert "OMITTED entirely for NPC" in prompt
+    assert "empty boss object" in prompt
+    assert '"level_cr": "level <n>" for NPC/BBEG or "CR <n>" for Monster,' in prompt
 
 
 #

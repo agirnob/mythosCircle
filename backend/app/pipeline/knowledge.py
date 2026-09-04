@@ -28,9 +28,13 @@ model to use listed spells only.
 from types import MappingProxyType
 from typing import Any
 
+from app.store.candidates import ROLES as ROLES
+
 #: Roles in the AR24 identity anchor; NPC/BBEG carry ``level``, Monster
-#: carries ``cr`` (AD-18: level for NPCs, CR for monsters).
-ROLES: frozenset[str] = frozenset({"NPC", "BBEG", "Monster"})
+#: carries ``cr`` (AD-18: level for NPCs, CR for monsters). The closed
+#: set lives in ``store.candidates`` (the staged-record contract) and is
+#: re-exported here so the reference data and the candidate shape stay
+#: ONE vocabulary — never two literals to keep in sync.
 
 #: NPC/BBEG level bound (SRD 5.1: 1-20).
 LEVEL_MAX = 20

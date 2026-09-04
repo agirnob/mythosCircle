@@ -197,6 +197,12 @@ function relationsFor(entityId: string): RelationLine[] {
           <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }" class="cta secondary">
             Open build-in
           </RouterLink>
+          <RouterLink
+            :to="{ name: 'candidates', params: { id: campaignId } }"
+            class="cta secondary"
+          >
+            Open candidates
+          </RouterLink>
         </p>
       </div>
 

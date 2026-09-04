@@ -143,6 +143,7 @@ def _register(client: TestClient) -> str:
 
 
 def _fake_generate_output() -> dict[str, Any]:
+    """Three AR24-complete NPC candidates (spec-3.3)."""
     return {
         "candidates": [
             {
@@ -152,7 +153,24 @@ def _fake_generate_output() -> dict[str, Any]:
                 "secret": "s",
                 "rumor": "r",
                 "party_hook": "p",
+                "level_cr": "level 5",
+                "race_type": "Human",
+                "class_profession": "Fence",
+                "alignment": "NE",
+                "appearance": "gaunt, ink-stained fingers",
+                "background": "ex-Guild scribe",
+                "goals": "buy back her name",
+                "relationships": "owes Mira a debt",
+                "voice_style": "clipped, low",
+                "catchphrases": '"Everything has a price."',
                 "stat_block": _VALID_STAT_BLOCK,
+                "world_integration": {
+                    "reputation": "the fixer of the docks",
+                    "factions": "The Guild",
+                    "current_location": "the Gilded Bar",
+                    "reaction_matrix": "buys drinks, sells favors",
+                    "on_defeat": "flees, leaving the ledger behind",
+                },
                 "edges": [{"endpoint": "C0", "direction": "outbound", "type": "rival_of"}],
             }
             for i in range(3)
@@ -249,9 +267,21 @@ def test_candidates_owner_reads_staged_rows(client: TestClient, job_api: Callabl
             "secret",
             "rumor",
             "party_hook",
+            "level_cr",
+            "race_type",
+            "class_profession",
+            "alignment",
+            "appearance",
+            "background",
+            "goals",
+            "relationships",
+            "voice_style",
+            "catchphrases",
+            "world_integration",
             "stat_block",
             "edges",
         } <= set(payload)
+        assert "boss" not in payload  # NPC — no boss section (spec-3.3)
         assert payload["stat_block"] == _VALID_STAT_BLOCK
         assert payload["edges"][0]["type"] == "rival_of"
 
@@ -357,7 +387,24 @@ def _stage_one(campaign_id: str, mira_id: str, name: str = "Sable Rook") -> str:
         "secret": "s",
         "rumor": "r",
         "party_hook": "p",
+        "level_cr": "level 5",
+        "race_type": "Human",
+        "class_profession": "Fence",
+        "alignment": "NE",
+        "appearance": "gaunt, ink-stained fingers",
+        "background": "ex-Guild scribe",
+        "goals": "buy back her name",
+        "relationships": "owes Mira a debt",
+        "voice_style": "clipped, low",
+        "catchphrases": '"Everything has a price."',
         "stat_block": _VALID_STAT_BLOCK,
+        "world_integration": {
+            "reputation": "the fixer of the docks",
+            "factions": "The Guild",
+            "current_location": "the Gilded Bar",
+            "reaction_matrix": "buys drinks, sells favors",
+            "on_defeat": "flees, leaving the ledger behind",
+        },
         "edges": [{"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 1}],
     }
     job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
@@ -390,6 +437,163 @@ def test_accept_route_commits_and_settles(client: TestClient, job_api: Callable[
         assert len(list(revision_chain(session, campaign_id))) == 2  # seed + accept
     listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
     assert listed["candidates"] == []  # default filter keeps the accept screen clean
+
+
+def test_accept_route_with_edited_payload_commits_edits(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """EDIT_THEN_ACCEPT over the wire (spec-3.3): an optional body
+    ``{"payload": {...}}`` commits the edited sections in the SAME one
+    transaction with the staged edges verbatim — +1 revision, the export
+    shows the edited appearance."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    candidate_id = _stage_one(campaign_id, mira_id)
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    staged_payload = listed["candidates"][0]["payload"]
+    edited = dict(staged_payload, appearance="redone by the DM's hand")
+
+    response = client.post(
+        f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept",
+        json={"payload": edited},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+
+    export = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    sable = next(entity for entity in export["entities"] if entity["name"] == "Sable Rook")
+    assert sable["data"]["appearance"] == "redone by the DM's hand"
+    assert sable["data"]["goals"] == "buy back her name"  # unedited sections pass through
+    assert [edge["dst"] for edge in export["edges"] if edge["type"] == "rival_of"] == [mira_id]
+    with session_scope() as session:
+        assert len(list(revision_chain(session, campaign_id))) == 2  # seed + accept
+
+
+def test_accept_route_payload_override_edges_mismatch_422(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """EDIT_THEN_ACCEPT error path: an override whose ``edges`` differ
+    from the staged record is a 422 envelope; no revision; the row stays
+    ``proposed`` (relation editing is story 3.4)."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    candidate_id = _stage_one(campaign_id, mira_id)
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    staged_payload = listed["candidates"][0]["payload"]
+
+    altered = dict(
+        staged_payload,
+        edges=[{"endpoint": mira_id, "direction": "outbound", "type": "ally_of", "counter": 1}],
+    )
+    body = _assert_envelope(
+        client.post(
+            f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept",
+            json={"payload": altered},
+        ),
+        422,
+        "validation_error",
+    )
+    assert "edges" in body["message"]
+
+    missing = {key: value for key, value in staged_payload.items() if key != "edges"}
+    _assert_envelope(
+        client.post(
+            f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept",
+            json={"payload": missing},
+        ),
+        422,
+        "validation_error",
+    )
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    assert [row["id"] for row in listed["candidates"]] == [candidate_id]
+    assert listed["candidates"][0]["status"] == "proposed"
+    with session_scope() as session:
+        assert len(list(revision_chain(session, campaign_id))) == 1  # seed only
+
+
+def test_accept_route_body_without_payload_422(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """A body that is present WITHOUT a payload ({} or {"payload": null})
+    is a 422 — only the OMITTED body is the unedited accept; the row
+    stays ``proposed`` and nothing commits."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    candidate_id = _stage_one(campaign_id, mira_id)
+    url = f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept"
+
+    _assert_envelope(client.post(url, json={}), 422, "validation_error")
+    _assert_envelope(client.post(url, json={"payload": None}), 422, "validation_error")
+
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    assert [row["id"] for row in listed["candidates"]] == [candidate_id]
+    with session_scope() as session:
+        assert len(list(revision_chain(session, campaign_id))) == 1  # seed only
+
+
+def test_accept_route_payload_override_shape_violation_422(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """An override failing the required AR24 section shape (a blanked
+    section) is a 422 naming the field; zero revisions; the row stays
+    ``proposed`` (spec-3.3 Always)."""
+    campaign_id = _owned_campaign(client)
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        mira_id = next(
+            entity.id
+            for entity in world_entities(session, campaign_id)
+            if entity.name == "Mira Vane"
+        )
+    candidate_id = _stage_one(campaign_id, mira_id)
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    staged_payload = listed["candidates"][0]["payload"]
+
+    blanked = dict(staged_payload, appearance="   ")
+    body = _assert_envelope(
+        client.post(
+            f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept",
+            json={"payload": blanked},
+        ),
+        422,
+        "validation_error",
+    )
+    assert "appearance must be a non-blank string" in body["message"]
+
+    dropped = {k: v for k, v in staged_payload.items() if k != "world_integration"}
+    body = _assert_envelope(
+        client.post(
+            f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept",
+            json={"payload": dropped},
+        ),
+        422,
+        "validation_error",
+    )
+    assert "world_integration must be an object" in body["message"]
+
+    listed = client.get(f"/api/campaigns/{campaign_id}/candidates").json()
+    assert [row["id"] for row in listed["candidates"]] == [candidate_id]
+    assert listed["candidates"][0]["status"] == "proposed"
+    with session_scope() as session:
+        assert len(list(revision_chain(session, campaign_id))) == 1  # seed only
 
 
 def test_accept_route_stale_endpoint_422_row_stays_proposed(

@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core import ids
 from app.store import (
+    BOSS_FIELDS,
     CandidateNotFoundError,
     CandidateSettledError,
     DanglingEdgeError,
@@ -86,7 +87,7 @@ def _seed_world(campaign_id: str) -> tuple[str, str]:
 
 
 def _payload(mira_id: str, bar_id: str, **overrides: Any) -> dict[str, Any]:
-    """A staged AR19 payload wired to the seeded world."""
+    """A staged AR24-complete payload wired to the seeded world."""
     payload: dict[str, Any] = {
         "name": "Sable Rook",
         "role": "NPC",
@@ -94,7 +95,24 @@ def _payload(mira_id: str, bar_id: str, **overrides: Any) -> dict[str, Any]:
         "secret": "s",
         "rumor": "r",
         "party_hook": "p",
+        "level_cr": "level 5",
+        "race_type": "Human",
+        "class_profession": "Fence",
+        "alignment": "NE",
+        "appearance": "gaunt, ink-stained fingers",
+        "background": "ex-Guild scribe",
+        "goals": "buy back her name",
+        "relationships": "owes Mira a debt",
+        "voice_style": "clipped, low",
+        "catchphrases": '"Everything has a price."',
         "stat_block": {"identity": {"role": "NPC"}},
+        "world_integration": {
+            "reputation": "the fixer of the docks",
+            "factions": "The Guild",
+            "current_location": "the Gilded Bar",
+            "reaction_matrix": "buys drinks, sells favors",
+            "on_defeat": "flees, leaving the ledger behind",
+        },
         "edges": [
             {"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 2},
             {"endpoint": bar_id, "direction": "inbound", "type": "member_of", "counter": 1},
@@ -198,6 +216,169 @@ def test_accept_creates_new_entity_never_mutates_existing(world: str) -> None:
         events = list(revision_events(session, world, revision.id))
     assert "entity_updated" not in {ev.type for ev in events}
     assert "edge_updated" not in {ev.type for ev in events}
+
+
+# ---------------------------------------------------------------------------
+# EDIT_THEN_ACCEPT (spec-3.3): payload override
+# ---------------------------------------------------------------------------
+
+
+def test_accept_override_commits_edited_payload(world: str) -> None:
+    """EDIT_THEN_ACCEPT: the override's edited sections commit in the
+    same single transaction with the staged edges verbatim; one new
+    revision; the row settles ``accepted``."""
+    bar_id, mira_id = _seed_world(world)
+    head_before = _head(world)
+    candidate = _stage(world, _payload(mira_id, bar_id))
+    override = dict(candidate.payload, personality="edited by the DM's hand")
+
+    accepted, revision = accept_candidate(world, candidate.id, payload_override=override)
+
+    assert accepted.status == "accepted"
+    assert revision.base_revision == head_before
+    entities, edges = _state(world)
+    sable = next(e for e in entities if e[2] == "Sable Rook")
+    data = json.loads(sable[4])
+    assert data["personality"] == "edited by the DM's hand"
+    assert data["secret"] == "s"  # unedited sections pass through
+    # The staged edges commit verbatim, counters included (relation editing is 3.4).
+    relationships = {(src, dst, type_, counter) for _id, src, dst, type_, counter, _at in edges}
+    assert (sable[0], mira_id, "rival_of", 2) in relationships  # outbound, counter intact
+    assert (bar_id, sable[0], "member_of", 1) in relationships  # inbound, counter intact
+    with session_scope() as session:
+        assert len(list(revision_chain(session, world))) == 2  # seed + accept
+    assert _row(world, candidate.id).status == "accepted"
+
+
+def test_accept_override_edges_mismatch_rejected(world: str) -> None:
+    """An override whose ``edges`` differ from the staged record is an
+    ``InvalidCandidateError`` (422): zero revisions, the row stays
+    ``proposed`` (relation editing is story 3.4)."""
+    bar_id, mira_id = _seed_world(world)
+    state_before = _state(world)
+    candidate = _stage(world, _payload(mira_id, bar_id))
+    override = dict(
+        candidate.payload,
+        edges=[{"endpoint": mira_id, "direction": "outbound", "type": "ally_of", "counter": 1}],
+    )
+
+    with pytest.raises(InvalidCandidateError, match="edges"):
+        accept_candidate(world, candidate.id, payload_override=override)
+
+    assert _state(world) == state_before
+    assert _row(world, candidate.id).status == "proposed"
+
+
+def test_accept_override_missing_edges_rejected(world: str) -> None:
+    """An override without the ``edges`` key does not carry the staged
+    edges verbatim — same rejection."""
+    bar_id, mira_id = _seed_world(world)
+    state_before = _state(world)
+    candidate = _stage(world, _payload(mira_id, bar_id))
+    override = {key: value for key, value in candidate.payload.items() if key != "edges"}
+
+    with pytest.raises(InvalidCandidateError, match="edges"):
+        accept_candidate(world, candidate.id, payload_override=override)
+
+    assert _row(world, candidate.id).status == "proposed"
+    assert _state(world) == state_before
+
+
+def test_accept_non_dict_override_rejected(world: str) -> None:
+    """A non-dict override (a corrupted client) is an
+    ``InvalidCandidateError``, never a silent commit."""
+    bar_id, mira_id = _seed_world(world)
+    candidate = _stage(world, _payload(mira_id, bar_id))
+
+    with pytest.raises(InvalidCandidateError, match="override"):
+        accept_candidate(world, candidate.id, payload_override="nope")  # type: ignore[arg-type]
+
+    assert _row(world, candidate.id).status == "proposed"
+
+
+def test_accept_override_equal_to_staged_accepts(world: str) -> None:
+    """An override identical to the staged payload is the edit-screen
+    no-op: it commits exactly like the unedited accept."""
+    bar_id, mira_id = _seed_world(world)
+    candidate = _stage(world, _payload(mira_id, bar_id))
+
+    accepted, _revision = accept_candidate(
+        world, candidate.id, payload_override=dict(candidate.payload)
+    )
+
+    assert accepted.status == "accepted"
+    assert _row(world, candidate.id).status == "accepted"
+
+
+def test_accept_override_shape_violations_rejected(world: str) -> None:
+    """An override must satisfy the same required AR24 section shape as
+    staging (spec-3.3): dropping or blanking a section is an
+    ``InvalidCandidateError`` — zero revisions, the row stays
+    ``proposed``, never a partial commit."""
+    bar_id, mira_id = _seed_world(world)
+    state_before = _state(world)
+    candidate = _stage(world, _payload(mira_id, bar_id))
+    staged = candidate.payload
+
+    def reject(override: Any, match: str) -> None:
+        with pytest.raises(InvalidCandidateError, match=match):
+            accept_candidate(world, candidate.id, payload_override=override)
+        assert _row(world, candidate.id).status == "proposed"
+
+    # name: non-str (P3) / absent (P3) / blank
+    reject(dict(staged, name=42), "name must be a non-blank string")
+    reject({k: v for k, v in staged.items() if k != "name"}, "name must be a non-blank string")
+    reject(dict(staged, name="   "), "name must be a non-blank string")
+    # role / identity + lore sections
+    reject(dict(staged, role="Wizard"), "role must be one of")
+    reject({k: v for k, v in staged.items() if k != "goals"}, "goals must be a non-blank string")
+    reject(dict(staged, appearance=""), "appearance must be a non-blank string")
+    # world-integration block
+    reject({k: v for k, v in staged.items() if k != "world_integration"}, "world_integration")
+    partial = dict(staged, world_integration={"reputation": "dread"})
+    reject(partial, "factions must be a non-blank string")
+    # boss conditional: NPC must not carry one; Monster must
+    reject(dict(staged, boss=dict.fromkeys(BOSS_FIELDS, "x")), "boss section is only allowed")
+    reject(
+        dict(staged, role="Monster"),
+        "boss must be an object",
+    )
+    reject(
+        dict(
+            staged,
+            role="Monster",
+            boss={
+                "lair_actions": "",
+                "legendary_actions": "x",
+                "immunities": "x",
+                "vulnerabilities": "x",
+            },
+        ),
+        "boss.lair_actions must be a non-blank string",
+    )
+
+    assert _state(world) == state_before
+
+
+def test_accept_override_boss_stages_for_monster(world: str) -> None:
+    """The conditional path through the guard: a Monster override with a
+    complete boss section passes the shape and commits it."""
+    bar_id, mira_id = _seed_world(world)
+    candidate = _stage(world, _payload(mira_id, bar_id))
+    override = dict(
+        candidate.payload,
+        role="Monster",
+        boss=dict.fromkeys(BOSS_FIELDS, "details"),
+    )
+
+    accepted, _revision = accept_candidate(world, candidate.id, payload_override=override)
+
+    assert accepted.status == "accepted"
+    entities, _edges = _state(world)
+    sable = next(e for e in entities if e[2] == "Sable Rook")
+    data = json.loads(sable[4])
+    assert data["role"] == "Monster"
+    assert set(data["boss"]) == set(BOSS_FIELDS)
 
 
 # ---------------------------------------------------------------------------

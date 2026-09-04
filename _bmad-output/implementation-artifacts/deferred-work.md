@@ -197,3 +197,12 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-2-candidate-lifecycle-and-atomic-commit.md`
   summary: Settled candidate rows carry no provenance to what they became — no accepted entity id or accept revision id is recorded, and the accept route discards the store's returned revision.
   evidence: Review finding (blind hunter, story 3-2 round 1): the audit-trail rationale ("only what I accept became real") cannot trace row -> entity/revision except by name matching, and story 3.3's accept screen gets no new-entity/revision reference from the 200 response. Store accept_candidate already returns (candidate, revision); the API route drops it. Fix belongs with 3.3's accept screen (return the new entity id + revision id, or persist them on the row).
+
+## Deferred from: review of spec-3-3-accept-screen-on-substance.md (2026-09-04)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-3-accept-screen-on-substance.md`
+  summary: The generate prompt advertises a `level_cr` format ("level <n>" for NPC/BBEG, "CR <n>" for Monster) but `_candidate_violations` enforces only non-blank — a wrong-format or role-mismatched `level_cr` stages and commits.
+  evidence: Strict format validation would drop otherwise-fine candidates against a real LLM (false-drop risk vs contract purity); the prompt advertises the format, the mechanics block is independently AR25-validated, and `level_cr` is display-only today. Enforce or loosen the prompt wording when the AR24 record gets a real consumer (Epic 4 portrait prompts, Epic 5 exports). [backend/app/pipeline/generate.py `_candidate_violations`, OUTPUT CONTRACT]
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-3-accept-screen-on-substance.md`
+  summary: WorldView duplicates the backend counter-type set as a local COUNTER_TYPES copy (same forward-compat gap CandidatesView had) — a new counter-typed edge type renders without its counter in world-view relation lines.
+  evidence: WorldView.vue's copy predates 3.3 (2.7 surface); only CandidatesView's copy was fixed in the 3-3 review round. Align both with a shared counter-rendering helper or a generated contract when the vocabulary next changes. [frontend/src/views/WorldView.vue:116-126]

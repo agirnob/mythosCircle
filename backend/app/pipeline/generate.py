@@ -66,6 +66,14 @@ from app.store import (
     report_progress,
     stage_candidates,
 )
+from app.store.candidates import (
+    BOSS_FIELDS,
+    BOSS_ROLES,
+    IDENTITY_FIELDS,
+    LORE_FIELDS,
+    WORLD_INTEGRATION_FIELDS,
+    payload_section_violations,
+)
 from app.store.db import session_scope
 from app.store.jobs import GENERATE_MAX_ASK_LENGTH
 from app.store.read import campaign_seed, world_state
@@ -313,9 +321,10 @@ def build_generate_prompt(
     A function of the campaign seed fields, the ask, and the retrieved
     neighborhood's serialized hard truths only — no ids, timestamps, or
     job state, ever. Embeds the closed edge vocabulary + counter
-    semantics (spec-2.2), the AR19 output contract, and the AR25
-    stat-block rules with the full spells reference (the same shared
-    blocks the wave-1 prompt and repair prompt embed).
+    semantics (spec-2.2), the AR19+AR24 sectioned output contract
+    (spec-3.3), and the AR25 stat-block rules with the full spells
+    reference (the same shared blocks the wave-1 prompt and repair
+    prompt embed).
     """
     entities, edges = context
     lines = [
@@ -351,9 +360,23 @@ def build_generate_prompt(
         "",
         "OUTPUT CONTRACT",
         'Respond with one JSON object: {"candidates": [...]} — exactly 3 entries.',
-        'Each candidate: {"name": "...", "role": "NPC|BBEG|Monster",',
+        "Each candidate is the full sectioned profile — every section below is",
+        "required and must be a non-blank string (or an object whose fields are",
+        'all non-blank strings): {"name": "...", "role": "NPC|BBEG|Monster",',
+        '  "level_cr": "level <n>" for NPC/BBEG or "CR <n>" for Monster,',
+        '  "race_type": "...", "class_profession": "...", "alignment": "...",',
         '  "personality": "...", "secret": "...", "rumor": "...", "party_hook": "...",',
+        '  "appearance": "painter-grade prose: face, body, clothing, scars, marks",',
+        '  "background": "...", "goals": "...", "relationships": "...",',
+        '  "voice_style": "...", "catchphrases": "...",',
         '  "stat_block": {...per the STAT BLOCK RULES above...},',
+        '  "world_integration": {"reputation": "...", "factions": "...",',
+        '                        "current_location": "...", "reaction_matrix": "...",',
+        '                        "on_defeat": "..."},',
+        '  "boss": {"lair_actions": "...", "legendary_actions": "...", "immunities": "...",',
+        '           "vulnerabilities": "..."}  — CONDITIONAL: this one section is REQUIRED',
+        "           when the role is BBEG or Monster and OMITTED entirely for NPC (never",
+        "           an empty boss object); every other section above is always required,",
         '  "edges": [{"endpoint": "C<index>", "direction": "outbound"|"inbound",',
         '             "type": "<vocabulary member>", "counter": <integer, default 1>}]}.',
         "Every edge connects the candidate to exactly one committed entity: endpoint",
@@ -413,24 +436,24 @@ def _parse_context_ref(ref: Any, context_entities: Sequence[models.Entity]) -> i
 
 
 def _candidate_violations(raw: Any, context_entities: Sequence[models.Entity]) -> list[str]:
-    """The AR19 shape violations of one raw candidate (``[]`` = valid).
+    """The AR19+AR24 shape violations of one raw candidate (``[]`` = valid).
 
-    Checks the required fields (name, role, personality, the
-    secret/rumor/party-hook triple) and the anchor rule (>=1 typed edge
-    into the committed world). Individual malformed edges are dropped —
-    a candidate is invalid only when NO edge survives (BAD_EDGE is the
-    all-edges-bad case). Unknown keys pass through unvalidated (AR24
-    forward compatibility; no full AR24 sectioned-profile validation).
+    Checks the AR19 required fields (name, role, personality, the
+    secret/rumor/party-hook triple), the AR24 sectioned profile
+    (spec-3.3: identity anchor, narrative-lore, world-integration, and
+    the boss section required iff the role is BBEG/Monster), and the
+    anchor rule (>=1 typed edge into the committed world). A candidate
+    missing substance fails here — it never reaches the accept screen
+    silent-empty. Individual malformed edges are dropped — a candidate
+    is invalid only when NO edge survives (BAD_EDGE is the
+    all-edges-bad case). The section shape itself is
+    ``store.candidates.payload_section_violations`` — ONE validator
+    shared with the accept-override guard. Unknown keys pass through
+    unvalidated (AR24 forward compatibility).
     """
     if not isinstance(raw, dict):
         return ["candidate must be an object"]
-    violations: list[str] = []
-    for field in ("name", "personality", "secret", "rumor", "party_hook"):
-        if not _non_blank_str(raw.get(field)):
-            violations.append(f"{field} must be a non-blank string")
-    role = raw.get("role")
-    if not isinstance(role, str) or role.strip() not in ROLES:
-        violations.append(f"role must be one of {sorted(ROLES)}")
+    violations = payload_section_violations(raw)
     anchor_violations = _edge_violations(raw.get("edges"), context_entities)
     if anchor_violations:
         violations.extend(anchor_violations)
@@ -485,9 +508,13 @@ def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[st
 def _candidate_payload(
     raw: dict[str, Any], context_entities: Sequence[models.Entity]
 ) -> dict[str, Any]:
-    """The staged AR19 record for a shape-valid candidate: the required
-    fields (trimmed) plus the edges resolved to committed endpoint ids.
-    Extra keys pass through unvalidated (AR24 forward compatibility)."""
+    """The staged AR24 record for a shape-valid candidate: the AR19
+    required fields and AR24 sections (trimmed strings; the
+    world-integration and boss blocks re-assembled field by field) plus
+    the edges resolved to committed endpoint ids. The boss section is
+    included iff the role is BBEG/Monster (spec-3.3). Assembly is
+    deterministic — same raw candidate, same staged key order. Extra
+    keys pass through unvalidated (AR24 forward compatibility)."""
     staged = {
         "name": raw["name"].strip(),
         "role": raw["role"].strip(),
@@ -495,13 +522,20 @@ def _candidate_payload(
         "secret": raw["secret"].strip(),
         "rumor": raw["rumor"].strip(),
         "party_hook": raw["party_hook"].strip(),
-        "stat_block": raw.get("stat_block"),
-        "edges": [
-            resolved
-            for edge in raw.get("edges", [])
-            if (resolved := _valid_edge(edge, context_entities)) is not None
-        ],
     }
+    for field in IDENTITY_FIELDS + LORE_FIELDS:
+        staged[field] = raw[field].strip()
+    staged["world_integration"] = {
+        field: raw["world_integration"][field].strip() for field in WORLD_INTEGRATION_FIELDS
+    }
+    if staged["role"] in BOSS_ROLES:
+        staged["boss"] = {field: raw["boss"][field].strip() for field in BOSS_FIELDS}
+    staged["stat_block"] = raw.get("stat_block")
+    staged["edges"] = [
+        resolved
+        for edge in raw.get("edges", [])
+        if (resolved := _valid_edge(edge, context_entities)) is not None
+    ]
     for key, value in raw.items():
         if key not in staged:
             staged[key] = value

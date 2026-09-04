@@ -55,6 +55,122 @@ from app.store.read import latest_revision, world_state
 EDGE_DIRECTIONS: frozenset[str] = frozenset({"outbound", "inbound"})
 
 
+# ---------------------------------------------------------------------------
+# The AR24 sectioned-record shape (spec-3.3) — shared by the generate
+# runner's staging validation and the accept-override guard. Pure data +
+# functions: no DB access and no pipeline imports (the dependency
+# direction is pipeline -> store), so both layers validate ONE shape.
+# ---------------------------------------------------------------------------
+
+#: The AR24 identity-anchor fields beyond the AR19 ``name``/``role``:
+#: level/CR, race/type, class/profession, alignment.
+IDENTITY_FIELDS: tuple[str, ...] = ("level_cr", "race_type", "class_profession", "alignment")
+
+#: The AR24 narrative-lore sections the AR19 core does not already carry.
+#: ``personality``, ``secret``, ``rumor`` and ``party_hook`` keep their
+#: AR19 names — add, never rename.
+LORE_FIELDS: tuple[str, ...] = (
+    "appearance",
+    "background",
+    "goals",
+    "relationships",
+    "voice_style",
+    "catchphrases",
+)
+
+#: The AR24 world-integration block: one non-blank prose string per
+#: field, weaving the candidate into the committed world.
+WORLD_INTEGRATION_FIELDS: tuple[str, ...] = (
+    "reputation",
+    "factions",
+    "current_location",
+    "reaction_matrix",
+    "on_defeat",
+)
+
+#: The conditional boss section's fields (AR24): lair actions, legendary
+#: actions, immunities, vulnerabilities.
+BOSS_FIELDS: tuple[str, ...] = (
+    "lair_actions",
+    "legendary_actions",
+    "immunities",
+    "vulnerabilities",
+)
+
+#: Roles that MUST carry the boss section; every other role must NOT
+#: have one (spec-3.3: boss present iff role is BBEG/Monster — never an
+#: empty boss object).
+BOSS_ROLES: frozenset[str] = frozenset({"BBEG", "Monster"})
+
+
+def _required_str_violations(value: Any, label: str) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return []
+    return [f"{label} must be a non-blank string"]
+
+
+def _section_violations(value: Any, fields: tuple[str, ...], label: str) -> list[str]:
+    """One AR24 block section: an object whose named fields are all
+    non-blank strings."""
+    if not isinstance(value, dict):
+        return [f"{label} must be an object"]
+    violations: list[str] = []
+    for field in fields:
+        violations.extend(_required_str_violations(value.get(field), f"{label}.{field}"))
+    return violations
+
+
+def _boss_violations(role: Any, boss: Any) -> list[str]:
+    """The AR24 boss section's conditionality (spec-3.3): required when
+    the role is BBEG or Monster, and must be ABSENT otherwise — an NPC
+    never carries a (possibly empty) boss object."""
+    if isinstance(role, str) and role.strip() in BOSS_ROLES:
+        return _section_violations(boss, BOSS_FIELDS, "boss")
+    if boss is not None:
+        return ["boss section is only allowed for BBEG or Monster roles"]
+    return []
+
+
+def payload_section_violations(payload: Any) -> list[str]:
+    """The required-section shape violations of one AR24 candidate
+    payload (``[]`` = valid): the AR19 core (non-blank name, role in the
+    closed set, personality, the secret/rumor/party-hook triple), every
+    AR24 identity/narrative-lore section, the world-integration block,
+    and the boss section required iff the role is BBEG/Monster.
+
+    ``edges`` are deliberately NOT checked here — the staging path
+    validates them against committed world state and the accept path
+    requires the override's edges to match the staged record verbatim.
+    Shared by the generate runner (raw model output) and the accept
+    override guard, so both layers enforce one shape.
+    """
+    if not isinstance(payload, dict):
+        return ["candidate must be an object"]
+    violations: list[str] = []
+    violations.extend(_required_str_violations(payload.get("name"), "name"))
+    for field in ("personality", "secret", "rumor", "party_hook"):
+        violations.extend(_required_str_violations(payload.get(field), field))
+    role = payload.get("role")
+    if not isinstance(role, str) or role.strip() not in ROLES:
+        violations.append(f"role must be one of {sorted(ROLES)}")
+    for field in IDENTITY_FIELDS + LORE_FIELDS:
+        violations.extend(_required_str_violations(payload.get(field), field))
+    violations.extend(
+        _section_violations(
+            payload.get("world_integration"), WORLD_INTEGRATION_FIELDS, "world_integration"
+        )
+    )
+    violations.extend(_boss_violations(role, payload.get("boss")))
+    return violations
+
+
+#: The closed role set of the AR24 identity anchor (AD-18: NPC/BBEG
+#: carry level, Monster carries CR). Literal contract, like
+#: ``EDGE_DIRECTIONS`` above; ``pipeline.knowledge`` re-exports it so
+#: the reference data and this shape stay one vocabulary.
+ROLES: frozenset[str] = frozenset({"NPC", "BBEG", "Monster"})
+
+
 class InvalidCandidateError(StoreError):
     """A staged candidate's edge endpoints do not resolve to committed
     world state (or an edge type is outside the closed vocabulary).
@@ -175,6 +291,7 @@ def discard_candidates(job_id: str) -> int:
 def accept_candidate(
     campaign_id: str,
     candidate_id: str,
+    payload_override: dict[str, Any] | None = None,
 ) -> tuple[models.ProposedCandidate, models.Revision]:
     """Make a staged candidate real: commit its subgraph, settle the row.
 
@@ -189,15 +306,28 @@ def accept_candidate(
     ``DanglingEdgeError`` (422, rebase-or-reject, AD-2) with no state
     change. ``base_revision`` is the head read inside THIS transaction
     (``None`` on an empty world — the accept becomes revision 1).
+
+    ``payload_override`` (spec-3.3, the accept screen's edit-before-
+    accept): when given, it replaces the staged payload as the record
+    that commits — it must be a dict carrying the staged ``edges`` list
+    VERBATIM (relation editing is story 3.4) and must satisfy the same
+    required AR24 section shape as staging (``payload_section_violations``
+    — name/role, every identity/lore section, the world-integration
+    block, boss iff BBEG/Monster); a missing, altered, or non-dict
+    override, an override failing that shape, or a non-str name raises
+    ``InvalidCandidateError`` (422) and the row stays ``proposed`` with
+    no revision. ``None`` accepts the staged
+    payload unchanged.
+
     Returns ``(candidate row, new revision)``. Raises
     ``CandidateNotFoundError`` (unknown or foreign-campaign id),
     ``CandidateSettledError`` (already accepted/rejected),
     ``InvalidCandidateError`` (payload shape the staging contract does
-    not guarantee: non-dict payload, non-str name, non-int or missing
-    edge counter, edge outside the closed vocabulary — and a staged row
-    with zero edges commits nothing and fails with the commit path's
-    ``OrphanEntityError``), or whatever else the commit path rejects
-    with (``InvalidEdgeCounterError``/``DanglingEdgeError``/...).
+    not guarantee: non-int or missing edge counter, edge outside the
+    closed vocabulary — and a staged row with zero edges commits nothing
+    and fails with the commit path's ``OrphanEntityError``), or whatever
+    else the commit path rejects with
+    (``InvalidEdgeCounterError``/``DanglingEdgeError``/...).
     """
     with session_scope() as session:
         candidate = session.get(models.ProposedCandidate, candidate_id)
@@ -214,16 +344,39 @@ def accept_candidate(
             )
         if not isinstance(candidate.payload, dict):
             raise InvalidCandidateError(f"candidate {candidate_id}: payload must be an object")
-        payload = dict(candidate.payload)
-        name = payload.get("name")
-        if not isinstance(name, str):
-            raise InvalidCandidateError(f"candidate {candidate_id}: payload has no name")
+        if payload_override is not None:
+            if not isinstance(payload_override, dict):
+                raise InvalidCandidateError(
+                    f"candidate {candidate_id}: payload override must be an object, "
+                    f"got {payload_override!r}"
+                )
+            if payload_override.get("edges") != candidate.payload.get("edges"):
+                raise InvalidCandidateError(
+                    f"candidate {candidate_id}: payload override must carry the staged "
+                    "edges verbatim (relation editing is story 3.4)"
+                )
+            # The override commits AS the record: it must satisfy the same
+            # required AR24 section shape as staging — an override that
+            # drops or blanks a section is a shape violation (spec-3.3),
+            # never a partial commit.
+            violations = payload_section_violations(payload_override)
+            if violations:
+                raise InvalidCandidateError(
+                    f"candidate {candidate_id}: payload override fails the required-section "
+                    f"shape: {'; '.join(violations)}"
+                )
+            payload = dict(payload_override)
+        else:
+            payload = dict(candidate.payload)
         # A fresh ULID minted up front so the staged edges can name the
         # new entity: the commit path needs concrete ids to wire edges,
         # and this id is not any existing entity's — ``_commit`` finds no
         # row for it and creates (never updates). The spec's "id=None"
         # wording describes the invariant (fresh ULID, never an existing
         # entity), not the minting site.
+        name = payload.get("name")
+        if not isinstance(name, str):
+            raise InvalidCandidateError(f"candidate {candidate_id}: payload has no name")
         new_entity_id = ids.new_id()
         entity = models.EntityInput(
             kind="character",

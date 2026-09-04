@@ -208,11 +208,17 @@ class ProposedCandidate(Base):
     export, and every world read are untouched until the DM accepts
     (story 3.2 owns the accept/reject lifecycle and the commit path; the
     generate runner never calls ``commit_subgraph``). ``payload`` is the
-    candidate's structured AR19 record (name, role, personality, the
-    secret/rumor/party-hook triple, an AR25 stat block, typed edges into
-    the committed world) and tolerates extra keys (AR24 forward
-    compatibility). Written only through the store's staging function
-    (AD-1) — one row per staged candidate, no revision, no event.
+    candidate's structured AR24 sectioned record (spec-3.3): identity
+    anchor (name, role, level/CR, race/type, class/profession,
+    alignment), narrative-lore (appearance, personality, background,
+    goals, relationships, the secret/rumor/party-hook triple, voice
+    style, catchphrases), an AR25 stat block, a conditional boss section
+    (role BBEG/Monster only), a world-integration block (reputation,
+    factions, current location, reaction matrix, on_defeat), and typed
+    edges into the committed world — tolerating extra keys (AR24
+    forward compatibility). Written only through the store's staging
+    function (AD-1) — one row per staged candidate, no revision, no
+    event.
     """
 
     __tablename__ = "proposed_candidate"
