@@ -64,14 +64,24 @@ onMounted(async () => {
       </label>
       <label>
         Description
-        <textarea v-model="description" rows="2" placeholder="What kind of world is this?"></textarea>
+        <textarea
+          v-model="description"
+          rows="2"
+          placeholder="What kind of world is this?"
+        ></textarea>
       </label>
       <label>
         Custom lore
-        <textarea v-model="customLore" rows="3" placeholder="Secrets, history, hooks to seed the world."></textarea>
+        <textarea
+          v-model="customLore"
+          rows="3"
+          placeholder="Secrets, history, hooks to seed the world."
+        ></textarea>
       </label>
       <p v-if="createError" class="error">{{ createError }}</p>
-      <button type="submit" :disabled="creating">{{ creating ? 'Creating…' : 'Create world' }}</button>
+      <button type="submit" :disabled="creating">
+        {{ creating ? 'Creating…' : 'Create world' }}
+      </button>
     </form>
 
     <p v-if="campaigns.loading" class="muted">Loading…</p>
