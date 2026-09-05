@@ -732,7 +732,14 @@ describe('CandidatesView', () => {
       if (url.includes('/candidates')) return { candidates: [regen], next_cursor: null }
       if (url.includes('/export')) {
         return {
-          campaign: { id: 'C1', title: 'Greymarch', theme: 'dread', description: '', custom_lore: '', created_at: 'x' },
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: 'x',
+          },
           revision: { id: 'R1', created_at: 'x' },
           entities: [{ id: 'E1', kind: 'character', name: 'Mira Vane', text: '', data: {} }],
           edges: [],
@@ -742,13 +749,21 @@ describe('CandidatesView', () => {
     })
     const wrapper = mountView()
     await flushPromises()
-    await wrapper.findAll('button').filter((b) => b.text() === 'Accept')[0]!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Accept')[0]!
+      .trigger('click')
     await flushPromises()
     const text = wrapper.text()
     expect(text).toContain('changed since this candidate was generated')
     expect(text).toContain('Mira Vane') // the dialog names the edited target
-    expect(wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length).toBe(1)
-    expect(wrapper.findAll('button').filter((b) => b.text() === 'Accept generated version anyway').length).toBe(1)
+    expect(
+      wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length,
+    ).toBe(1)
+    expect(
+      wrapper.findAll('button').filter((b) => b.text() === 'Accept generated version anyway')
+        .length,
+    ).toBe(1)
     expect(wrapper.findAll('button').filter((b) => b.text() === 'Cancel').length).toBe(1)
   })
 
@@ -762,7 +777,14 @@ describe('CandidatesView', () => {
       if (url.includes('/candidates')) return { candidates: [regen], next_cursor: null }
       if (url.includes('/export')) {
         return {
-          campaign: { id: 'C1', title: 'Greymarch', theme: 'dread', description: '', custom_lore: '', created_at: 'x' },
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: 'x',
+          },
           revision: { id: 'R1', created_at: 'x' },
           entities: [{ id: 'E1', kind: 'character', name: 'Mira Vane', text: '', data: {} }],
           edges: [],
@@ -772,10 +794,15 @@ describe('CandidatesView', () => {
     })
     const wrapper = mountView()
     await flushPromises()
-    await wrapper.findAll('button').filter((b) => b.text() === 'Accept')[0]!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Accept')[0]!
+      .trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('candidate CA2 is already accepted')
-    expect(wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length).toBe(0)
+    expect(
+      wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length,
+    ).toBe(0)
   })
 
   it('the conflict dialog Re-roll posts a candidate-target regenerate job and closes', async () => {
@@ -792,7 +819,14 @@ describe('CandidatesView', () => {
       if (url.includes('/candidates')) return { candidates: [regen], next_cursor: null }
       if (url.includes('/export')) {
         return {
-          campaign: { id: 'C1', title: 'Greymarch', theme: 'dread', description: '', custom_lore: '', created_at: 'x' },
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: 'x',
+          },
           revision: { id: 'R1', created_at: 'x' },
           entities: [{ id: 'E1', kind: 'character', name: 'Mira Vane', text: '', data: {} }],
           edges: [],
@@ -803,19 +837,28 @@ describe('CandidatesView', () => {
     })
     const wrapper = mountView()
     await flushPromises()
-    await wrapper.findAll('button').filter((b) => b.text() === 'Accept')[0]!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Accept')[0]!
+      .trigger('click')
     await flushPromises()
-    await wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world')[0]!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Re-roll against latest world')[0]!
+      .trigger('click')
     await flushPromises()
     const regenCall = apiFetchMock.mock.calls.find(
-      (call) => String(call[0]) === '/api/jobs' && (call[1] as RequestInit | undefined)?.method === 'POST',
+      (call) =>
+        String(call[0]) === '/api/jobs' && (call[1] as RequestInit | undefined)?.method === 'POST',
     )
     expect(regenCall).toBeDefined()
     const body = JSON.parse((regenCall![1] as RequestInit).body as string)
     expect(body).toMatchObject({ campaign_id: 'C1', kind: 'regenerate' })
     expect(body.payload.target).toEqual({ kind: 'candidate', id: 'CA2' })
     // Dialog closed after enqueue.
-    expect(wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length).toBe(0)
+    expect(
+      wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length,
+    ).toBe(0)
   })
 
   it('a failed dialog re-roll keeps the dialog open and shows the error', async () => {
@@ -832,7 +875,14 @@ describe('CandidatesView', () => {
       if (url.includes('/candidates')) return { candidates: [regen], next_cursor: null }
       if (url.includes('/export')) {
         return {
-          campaign: { id: 'C1', title: 'Greymarch', theme: 'dread', description: '', custom_lore: '', created_at: 'x' },
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: 'x',
+          },
           revision: { id: 'R1', created_at: 'x' },
           entities: [{ id: 'E1', kind: 'character', name: 'Mira Vane', text: '', data: {} }],
           edges: [],
@@ -843,12 +893,20 @@ describe('CandidatesView', () => {
     })
     const wrapper = mountView()
     await flushPromises()
-    await wrapper.findAll('button').filter((b) => b.text() === 'Accept')[0]!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Accept')[0]!
+      .trigger('click')
     await flushPromises()
-    await wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world')[0]!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Re-roll against latest world')[0]!
+      .trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('queue is down')
-    expect(wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length).toBe(1)
+    expect(
+      wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length,
+    ).toBe(1)
   })
 
   it('Accept generated version anyway is two-step and sends confirm_overwrite: true', async () => {
@@ -867,7 +925,14 @@ describe('CandidatesView', () => {
       if (url.includes('/candidates')) return { candidates: [regen], next_cursor: null }
       if (url.includes('/export')) {
         return {
-          campaign: { id: 'C1', title: 'Greymarch', theme: 'dread', description: '', custom_lore: '', created_at: 'x' },
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: 'x',
+          },
           revision: { id: 'R1', created_at: 'x' },
           entities: [{ id: 'E1', kind: 'character', name: 'Mira Vane', text: '', data: {} }],
           edges: [],
@@ -877,23 +942,164 @@ describe('CandidatesView', () => {
     })
     const wrapper = mountView()
     await flushPromises()
-    await wrapper.findAll('button').filter((b) => b.text() === 'Accept')[0]!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Accept')[0]!
+      .trigger('click')
     await flushPromises()
     // First click arms — the label flips, nothing is posted yet.
-    expect(wrapper.findAll('button').filter((b) => b.text() === 'Accept generated version anyway').length).toBe(1)
-    await wrapper.findAll('button').filter((b) => b.text() === 'Accept generated version anyway')[0]!.trigger('click')
+    expect(
+      wrapper.findAll('button').filter((b) => b.text() === 'Accept generated version anyway')
+        .length,
+    ).toBe(1)
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Accept generated version anyway')[0]!
+      .trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('Confirm overwrite')
     expect(wrapper.findAll('button').filter((b) => b.text() === 'Confirm overwrite').length).toBe(1)
-    const acceptCalls = apiFetchMock.mock.calls.filter((call) => String(call[0]).includes('/accept'))
+    const acceptCalls = apiFetchMock.mock.calls.filter((call) =>
+      String(call[0]).includes('/accept'),
+    )
     expect(acceptCalls).toHaveLength(1) // armed only — no second accept yet
     // Second click confirms: the accept carries confirm_overwrite.
-    await wrapper.findAll('button').filter((b) => b.text() === 'Confirm overwrite')[0]!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Confirm overwrite')[0]!
+      .trigger('click')
     await flushPromises()
     const confirmed = apiFetchMock.mock.calls.filter((call) => String(call[0]).includes('/accept'))
     expect(confirmed).toHaveLength(2)
     const body = JSON.parse((confirmed[1][1] as RequestInit).body as string)
     expect(body).toEqual({ confirm_overwrite: true })
-    expect(wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length).toBe(0)
+    expect(
+      wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length,
+    ).toBe(0)
+  })
+
+  it('the dialog Cancel closes with the row still proposed and zero extra requests', async () => {
+    const regen = { ...SABLE, id: 'CA2', regenerates_entity_id: 'E1' }
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/accept')) {
+        throw new ApiError(
+          409,
+          'conflict',
+          'entity E1 changed since this candidate was generated — re-roll (rebase), accept anyway (overwrite), or cancel (reject)',
+        )
+      }
+      if (url.includes('/candidates')) return { candidates: [regen], next_cursor: null }
+      if (url.includes('/export')) {
+        return {
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: 'x',
+          },
+          revision: { id: 'R1', created_at: 'x' },
+          entities: [{ id: 'E1', kind: 'character', name: 'Mira Vane', text: '', data: {} }],
+          edges: [],
+        }
+      }
+      return { jobs: [GENERATE_JOB], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Accept')[0]!
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Cancel').length).toBe(1)
+    const requestsBefore = apiFetchMock.mock.calls.length
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Cancel')[0]!
+      .trigger('click')
+    await flushPromises()
+    // The dialog closes; the row stays proposed (Accept is offered again)
+    // and the cancel itself posted nothing.
+    expect(
+      wrapper.findAll('button').filter((b) => b.text() === 'Re-roll against latest world').length,
+    ).toBe(0)
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Accept')[0]).toBeDefined()
+    expect(apiFetchMock.mock.calls.length).toBe(requestsBefore)
+  })
+
+  it('the dialog Re-roll is disabled while a regenerate for the row is queued or running', async () => {
+    const regen = { ...SABLE, id: 'CA2', regenerates_entity_id: 'E1' }
+    // A non-terminal regenerate for THIS candidate row is in the cache.
+    const inFlight = {
+      ...GENERATE_JOB,
+      id: 'JR1',
+      kind: 'regenerate',
+      state: 'queued',
+      payload: { target: { kind: 'candidate', id: 'CA2' } },
+    }
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/candidates')) return { candidates: [regen], next_cursor: null }
+      if (url.includes('/export')) {
+        return {
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: 'x',
+          },
+          revision: { id: 'R1', created_at: 'x' },
+          entities: [{ id: 'E1', kind: 'character', name: 'Mira Vane', text: '', data: {} }],
+          edges: [],
+        }
+      }
+      return { jobs: [inFlight], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    // The dialog can open (the 409 conflict got it here in the real flow —
+    // open it directly via the accept error path).
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/accept')) {
+        throw new ApiError(
+          409,
+          'conflict',
+          'entity E1 changed since this candidate was generated — re-roll (rebase), accept anyway (overwrite), or cancel (reject)',
+        )
+      }
+      if (url.includes('/candidates')) return { candidates: [regen], next_cursor: null }
+      if (url.includes('/export')) {
+        return {
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: 'x',
+          },
+          revision: { id: 'R1', created_at: 'x' },
+          entities: [{ id: 'E1', kind: 'character', name: 'Mira Vane', text: '', data: {} }],
+          edges: [],
+        }
+      }
+      return { jobs: [inFlight], next_cursor: null }
+    })
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Accept')[0]!
+      .trigger('click')
+    await flushPromises()
+    const reroll = wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Re-roll against latest world')[0]
+    expect(reroll).toBeDefined()
+    expect(reroll!.attributes('disabled')).toBeDefined() // in-flight discipline
   })
 })

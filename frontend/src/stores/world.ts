@@ -180,6 +180,24 @@ export const useWorldStore = defineStore('world', {
       }
     },
     /**
+     * Resolves once no snapshot fetch is in flight or pending (the
+     * coalesced trailing fetch included). Callers that must act on the
+     * SETTLED outcome of their own refetch (the WorldView 409 rebase)
+     * await this: fetchSnapshot's early return resolves before any data
+     * lands, so a decision made right after it would read the previous
+     * fetch's error.
+     */
+    async waitUntilQuiet(campaignId: string): Promise<void> {
+      const deadline = Date.now() + 5000
+      while (Date.now() < deadline) {
+        const entry = this.byCampaign[campaignId]
+        if (!entry || (!entry.fetching && !entry.dirty)) return
+        // Promise.withResolvers needs lib es2024 (tsconfig target is
+        // older) — executor form is the only type-safe delay here.
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+    },
+    /**
      * WS dispatch for the world view. Mirrors the jobs-store pattern:
      * let the jobs store absorb the frame first (it also REST-recovers an
      * uncached job id), then decide by the cached job's kind — the wire

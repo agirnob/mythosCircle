@@ -14,12 +14,14 @@ IMMEDIATE`` (see ``store.db._begin_immediate``) before the base check, so
 check-then-act is atomic with the write even under concurrency.
 """
 
+import json
 from collections.abc import Sequence
 from types import MappingProxyType
 from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core import ids, time
 from app.store import models
@@ -460,6 +462,12 @@ def _commit(
             existing.name = entity.name
             existing.text = entity.text
             existing.data = entity.data
+            # Force the UPDATE even when the new data compares ``==`` to
+            # the old (SQLAlchemy skips a flush when the assigned value
+            # equals the stored one — ``1 == True``), which would leave
+            # the row stale while the event log records the edit; the
+            # event log and the materialized row must never diverge.
+            flag_modified(existing, "data")
             # Snapshot the row after mutation: the payload's created_at must
             # match the materialized row's (the event log is the truth).
             after = _entity_snapshot(existing)
@@ -795,6 +803,17 @@ def _update_entity(
         else:
             merged[key] = value
 
+    # Strict-JSON write boundary — the same one candidate staging enforces
+    # (candidates.py ``allow_nan=False``): ``json.loads`` (the PATCH route's
+    # body parser) accepts ``NaN``/``Infinity`` literals, and a data payload
+    # carrying one would 500 every later world/snapshot read (Starlette
+    # refuses to render out-of-range floats). The store is the last line of
+    # defense (AD-1): reject here with zero revisions.
+    try:
+        json.dumps(merged, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise InvalidEntityRecordError(f"data must be strict JSON: {exc}") from exc
+
     # Conditional AR24 validation (owner decision 2026-09-05): only a
     # record that ALREADY satisfies the character shape must keep
     # satisfying it after the merge (one shared validator for every
@@ -821,7 +840,16 @@ def _update_entity(
             )
 
     latest = latest_revision(session, campaign_id)
-    if merged == current_data and new_text == entity.text:
+    # Canonical-JSON compare, not Python ``==``: ``==`` conflates
+    # ``1 == True == 1.0`` although they serialize differently on the
+    # wire — a real ``1`` → ``true`` edit would be silently swallowed
+    # here (204, edit dropped). ``allow_nan=False`` cannot raise: the
+    # strict-JSON boundary above already rejected non-serializable data.
+    if (
+        json.dumps(merged, sort_keys=True, allow_nan=False)
+        == json.dumps(current_data, sort_keys=True, allow_nan=False)
+        and new_text == entity.text
+    ):
         # A value-identical PATCH is an idempotent retry: 204, no
         # revision, no history pollution (NOOP_PATCH). An EXPLICIT
         # stale base still rejects — ``_check_base`` is unconditional

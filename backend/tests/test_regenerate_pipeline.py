@@ -46,7 +46,7 @@ from app.store import (
     update_entity,
 )
 from app.store.db import session_scope
-from app.store.read import revision_chain, world_state
+from app.store.read import latest_revision, revision_chain, world_state
 
 SETTINGS = LLMSettings(endpoint="http://test/v1", model="test-model")
 
@@ -550,6 +550,59 @@ def test_mid_call_edit_survives_in_staged_payload(
         by_id = {e.id: e for e in ents}
     assert by_id[mira_id].data["personality"] == "re-rolled by the model"
     assert by_id[mira_id].data["background"] == "DM's mid-call edit"
+
+
+def test_mid_call_role_unboss_edit_gates_spliced_boss(
+    world: tuple[str, str, str],
+) -> None:
+    """MID_CALL_EDIT x EDIT_ROLE_UNBOSS interplay: a whole-record re-roll
+    of a BBEG whose DM hand edit moves the role off BOSS_ROLES between
+    the prompt-build read and staging. The model's boss section was
+    requested at run start from the BBEG record, but splicing it onto
+    the fresh NPC record would stage (and accepting would commit) an
+    AR24-invalid payload — the splice drops it: the DM's edit wins, the
+    committed record stays shape-valid (re-rollable, exportable)."""
+    campaign_id, mira_id, guild_id = world
+    bbeg_id = ids.new_id()
+    bbeg_record = _record(name="Vorgath", role="BBEG")
+    bbeg_record["boss"] = {
+        "lair_actions": "the bar itself turns on intruders",
+        "legendary_actions": "two per round",
+        "immunities": "charmed",
+        "vulnerabilities": "holy water",
+    }
+    with session_scope() as session:
+        head = latest_revision(session, campaign_id)
+    commit_subgraph(
+        campaign_id,
+        [EntityInput(kind="character", name="Vorgath", data=bbeg_record, id=bbeg_id)],
+        [EdgeInput(src=bbeg_id, dst=guild_id, type="rival_of", counter=1)],
+        base_revision=head.id,
+    )
+    job_id = _enqueue(campaign_id, {"kind": "entity", "id": bbeg_id}, None)
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        # The DM's mid-call edit: role off BOSS_ROLES (with the boss
+        # section removed in the same PATCH — the AR24-valid way).
+        update_entity(campaign_id, bbeg_id, patch={"role": "NPC", "boss": None})
+        out = json.loads(json.dumps(bbeg_record))  # the run-start record
+        out["personality"] = "re-rolled by the model"
+        return json.dumps({"candidates": [out]})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    (row,) = _staged(campaign_id)
+    assert row.regenerates_entity_id == bbeg_id
+    assert row.payload["role"] == "NPC"  # the DM's mid-call edit
+    assert row.payload["personality"] == "re-rolled by the model"
+    assert "boss" not in row.payload  # the model's boss section was gated
+    accepted, _revision = accept_candidate(campaign_id, row.id)
+    assert accepted.status == "accepted"
+    with session_scope() as session:
+        ents, _edges = world_state(session, campaign_id)
+    committed = next(e for e in ents if e.id == bbeg_id)
+    from app.store.candidates import payload_section_violations
+
+    assert payload_section_violations(committed.data) == []  # still AR24-valid
 
 
 def test_candidate_target_reroll_preserves_staged_edges_and_refreshes_base(

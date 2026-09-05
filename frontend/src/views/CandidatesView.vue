@@ -588,6 +588,10 @@ function conflictTargetName(candidate: Candidate): string {
  * base refresh makes the row accept-able again. */
 async function conflictReroll(candidate: Candidate) {
   if (actingId.value !== null) return
+  // The jobs-store in-flight discipline (spec-3-6): a regenerate for
+  // this row still queued/running blocks a second enqueue (the second
+  // replace_candidate_payload would win, burning a generation).
+  if (jobs.regenerateInFlight(campaignId, 'candidate', candidate.id)) return
   actionError.value = null
   actingId.value = candidate.id
   rollingId.value[candidate.id] = 'whole'
@@ -900,21 +904,25 @@ function rollLabel(candidateId: string, section: string): string {
 
         <div v-if="acceptConflictFor[candidate.id]" class="conflict-dialog">
           <p class="error">
-            <strong>{{ conflictTargetName(candidate) }}</strong> changed since this candidate
-            was generated. Re-roll against the latest world, accept the generated version
-            anyway (overwriting your edit), or cancel.
+            <strong>{{ conflictTargetName(candidate) }}</strong> changed since this candidate was
+            generated. Re-roll against the latest world, accept the generated version anyway
+            (overwriting your edit), or cancel.
           </p>
           <p v-if="acceptArmed[candidate.id]" class="muted confirm-hint">
-            Accepting overwrites your edit. This is undoable via the previous revision.
-            Click again to confirm.
+            Accepting overwrites your edit. This is undoable via the previous revision. Click again
+            to confirm.
           </p>
           <div class="actions">
             <button
               type="button"
-              :disabled="actingId !== null"
+              :disabled="
+                actingId !== null || jobs.regenerateInFlight(campaignId, 'candidate', candidate.id)
+              "
               @click="conflictReroll(candidate)"
             >
-              {{ rollingId[candidate.id] === 'whole' ? 'Re-rolling…' : 'Re-roll against latest world' }}
+              {{
+                rollingId[candidate.id] === 'whole' ? 'Re-rolling…' : 'Re-roll against latest world'
+              }}
             </button>
             <button
               type="button"
@@ -922,9 +930,7 @@ function rollLabel(candidateId: string, section: string): string {
               @click="conflictAcceptAnyway(candidate)"
             >
               {{
-                acceptArmed[candidate.id]
-                  ? 'Confirm overwrite'
-                  : 'Accept generated version anyway'
+                acceptArmed[candidate.id] ? 'Confirm overwrite' : 'Accept generated version anyway'
               }}
             </button>
             <button
@@ -1100,5 +1106,4 @@ dd {
   font-size: 0.8rem;
   margin: 0.4rem 0 0;
 }
-
 </style>

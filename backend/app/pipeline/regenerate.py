@@ -205,6 +205,17 @@ def _splice(
     for section in requested:
         if section in raw:
             payload[section] = _trim_section(raw[section])
+    # Boss gating at splice time mirrors ``_requested_sections`` at run
+    # start (spec-3.6 MID_CALL_EDIT): the requested list is frozen from
+    # the RUN-START record, but a mid-call hand edit can move the fresh
+    # record's role off BOSS_ROLES — splicing the model's boss section
+    # onto it would stage (and accept would commit) an AR24-invalid
+    # payload (role NPC with a boss section). The DM's edit wins: drop
+    # the model's boss. Only a spliced boss is dropped — a preserved
+    # boss on an already-invalid record is never touched (no shape
+    # forcing, spec-3.6 Never list).
+    if "boss" in requested and payload.get("role") not in BOSS_ROLES:
+        payload.pop("boss", None)
     return payload
 
 

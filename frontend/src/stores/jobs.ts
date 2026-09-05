@@ -42,6 +42,20 @@ export const useJobsStore = defineStore('jobs', {
       Object.values(state.byId)
         .filter((job) => job.campaign_id === campaignId && job.kind === 'build_in')
         .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null,
+    /** A regenerate for this target (entity or candidate row) still
+     * queued/running — the in-flight discipline (spec-3-6): a second
+     * enqueue for the same target must not burn a second generation;
+     * the second replace_candidate_payload would win, stranding the
+     * first. */
+    regenerateInFlight:
+      (state) =>
+      (campaignId: string, kind: 'entity' | 'candidate', id: string): boolean =>
+        Object.values(state.byId).some((job) => {
+          if (job.campaign_id !== campaignId || job.kind !== 'regenerate') return false
+          if (TERMINAL_STATES.has(job.state)) return false
+          const payload = job.payload as { target?: { kind?: string; id?: string } } | null
+          return payload?.target?.kind === kind && payload?.target?.id === id
+        }),
   },
   actions: {
     /**

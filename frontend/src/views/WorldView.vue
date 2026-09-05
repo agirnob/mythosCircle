@@ -376,6 +376,12 @@ const profileBusy = ref(false)
 const profileErrors = ref<Record<string, string>>({})
 const profileConflict = ref<Record<string, string>>({})
 const profileReloading = ref<Record<string, boolean>>({})
+/** entityId -> the revision id the editor was OPENED against (the
+ * optimistic-concurrency base). Captured at seed time, never re-read:
+ * a WS refetch landing mid-edit moves the live snapshot's head, and
+ * sending THAT would defeat the stale-base 409 — the seed-time drafts
+ * would merge silently over the moved head (spec-3-6 Never list). */
+const profileBases = ref<Record<string, string | null>>({})
 
 function rawString(value: unknown): string {
   if (value === null || value === undefined) return ''
@@ -397,6 +403,7 @@ function startProfileEdit(entity: EntityExport) {
   editingProfileId.value = entity.id
   profileDrafts.value[entity.id] = drafts
   profileInitials.value[entity.id] = { ...drafts }
+  profileBases.value[entity.id] = revision.value?.id ?? null
   profileErrors.value[entity.id] = ''
   profileConflict.value[entity.id] = ''
 }
@@ -407,6 +414,7 @@ function cancelProfileEdit() {
   if (id) {
     delete profileDrafts.value[id]
     delete profileInitials.value[id]
+    delete profileBases.value[id]
     delete profileErrors.value[id]
     delete profileConflict.value[id]
   }
@@ -446,11 +454,19 @@ async function saveProfile(entity: EntityExport) {
   }
   if (drafts['__extras'] !== initials['__extras']) {
     try {
-      const extras = JSON.parse(drafts['__extras']) as Record<string, unknown>
+      const extras = JSON.parse(drafts['__extras']) as unknown
       const initialExtras = JSON.parse(initials['__extras'] ?? '{}') as Record<string, unknown>
-      for (const key of Object.keys(extras)) patch[key] = extras[key]
+      // The box edits ONE object of unknown keys: a non-object parse
+      // (`5`, `"s"`, a list) would either vanish into an empty patch
+      // (Save closing with zero feedback) or land numeric-string keys
+      // in the entity's data — reject it like the JSON_FIELDS branch.
+      if (extras === null || typeof extras !== 'object' || Array.isArray(extras)) {
+        profileErrors.value[entity.id] = 'Additional data must be a JSON object.'
+        return
+      }
+      for (const key of Object.keys(extras)) patch[key] = (extras as Record<string, unknown>)[key]
       for (const key of Object.keys(initialExtras)) {
-        if (!(key in extras)) patch[key] = null // removed -> delete the data key
+        if (!(key in (extras as Record<string, unknown>))) patch[key] = null // removed -> delete the data key
       }
     } catch {
       profileErrors.value[entity.id] = 'Additional data is not valid JSON.'
@@ -475,7 +491,7 @@ async function saveProfile(entity: EntityExport) {
   }
   profileBusy.value = true
   try {
-    await world.updateEntity(campaignId, entity.id, patch, revision.value?.id)
+    await world.updateEntity(campaignId, entity.id, patch, profileBases.value[entity.id])
     cancelProfileEdit()
   } catch (err) {
     const message = err instanceof ApiError ? err.message : 'Could not save the edit.'
@@ -495,6 +511,12 @@ async function rebaseAndClose(entityId: string) {
   profileReloading.value[entityId] = true
   try {
     await world.fetchSnapshot(campaignId)
+    // fetchSnapshot coalesces: when another fetch is in flight the call
+    // returns before any data lands. Wait for quiescence so the error
+    // read below is OUR rebase's settled outcome, not a previous
+    // fetch's — otherwise a stale null closes (discarding the draft)
+    // through a fetch that then fails.
+    await world.waitUntilQuiet(campaignId)
     // fetchSnapshot never throws — it records failures in entry.error.
     // Close only on a SUCCESSFUL rebase: on failure the DM's draft and
     // the conflict context survive for a retry (never a silent wipe).
@@ -509,10 +531,7 @@ function dataKeys(entity: EntityExport): string[] {
   const data = (entity.data ?? {}) as Record<string, unknown>
   const RESERVED = new Set(['kind', 'edges', 'text', 'base_revision'])
   return Object.keys(data).filter(
-    (key) =>
-      !(SCALAR_FIELDS as readonly string[]).includes(key) &&
-      !(JSON_FIELDS as readonly string[]).includes(key) &&
-      !RESERVED.has(key),
+    (key) => !(JSON_FIELDS as readonly string[]).includes(key) && !RESERVED.has(key),
   )
 }
 
@@ -542,7 +561,6 @@ function extrasObject(entity: EntityExport): Record<string, unknown> {
 function additionalDataBlock(entity: EntityExport): string {
   return JSON.stringify(extrasObject(entity), null, 2)
 }
-
 </script>
 
 <template>
@@ -678,10 +696,7 @@ function additionalDataBlock(entity: EntityExport): string {
               </label>
               <label class="field">
                 <span>Text</span>
-                <textarea
-                  v-model="profileDrafts[entity.id].text"
-                  aria-label="Text"
-                ></textarea>
+                <textarea v-model="profileDrafts[entity.id].text" aria-label="Text"></textarea>
               </label>
               <label v-for="field in JSON_FIELDS" :key="field" class="field">
                 <span>{{ FIELD_LABELS[field] ?? field }} (JSON)</span>
@@ -702,12 +717,18 @@ function additionalDataBlock(entity: EntityExport): string {
               <p class="actions">
                 <button
                   type="button"
-                  :disabled="profileBusy || !isProfileEdited(entity.id)"
+                  :disabled="
+                    profileBusy || profileReloading[entity.id] || !isProfileEdited(entity.id)
+                  "
                   @click="saveProfile(entity)"
                 >
                   {{ profileBusy ? 'Saving…' : 'Save' }}
                 </button>
-                <button type="button" :disabled="profileBusy" @click="cancelProfileEdit">
+                <button
+                  type="button"
+                  :disabled="profileBusy || profileReloading[entity.id]"
+                  @click="cancelProfileEdit"
+                >
                   Cancel
                 </button>
               </p>
@@ -721,7 +742,11 @@ function additionalDataBlock(entity: EntityExport): string {
                 >
                   {{ profileReloading[entity.id] ? 'Reloading…' : 'Reload' }}
                 </button>
-                <button type="button" :disabled="profileReloading[entity.id]" @click="cancelProfileEdit">
+                <button
+                  type="button"
+                  :disabled="profileReloading[entity.id]"
+                  @click="cancelProfileEdit"
+                >
                   Discard
                 </button>
               </p>

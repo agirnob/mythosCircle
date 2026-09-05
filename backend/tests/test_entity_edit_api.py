@@ -599,6 +599,56 @@ def test_patch_noop_zero_revisions(client: Any) -> None:
     assert len(_chain(mine["id"])) == 1  # zero revisions across all three
 
 
+def test_patch_nan_infinity_422_zero_revisions(client: Any) -> None:
+    """Strict-JSON write boundary (the staging ``allow_nan=False``
+    precedent): ``json.loads`` (the PATCH route's body parser) accepts
+    ``NaN``/``Infinity`` literals, but a data payload carrying one would
+    500 every later world/snapshot read (Starlette refuses to render
+    out-of-range floats). The store rejects with a 422 and ZERO
+    revisions; world reads stay healthy."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    _bar_id, mira_id = _seed_world(mine["id"])
+    # httpx refuses to serialize non-finite floats client-side, so the
+    # NaN/Infinity bodies go as raw bytes — json.loads (the route's
+    # Request-based body parse) accepts them, the store must not.
+    for body in (b'{"notes": NaN}', b'{"notes": Infinity}', b'{"notes": -Infinity}'):
+        response = _patch(
+            client,
+            mine["id"],
+            mira_id,
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 422
+        assert "strict json" in response.json()["message"].lower()
+    assert len(_chain(mine["id"])) == 1  # zero revisions
+    # The poisoned payload never landed: the campaign's world still reads.
+    assert client.get(f"/api/campaigns/{mine['id']}").status_code == 200
+
+
+def test_patch_bool_int_flip_is_not_a_noop(client: Any) -> None:
+    """The no-op guard compares canonical JSON, not Python ``==``:
+    ``1`` and ``True`` serialize differently on the wire (``1`` vs
+    ``true``), so flipping a committed ``1`` to ``true`` is a REAL edit
+    that must commit — silently swallowing it would drop the DM's change
+    while the UI reports it saved (NOOP_PATCH precision)."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    _bar_id, mira_id = _seed_world(mine["id"])
+    assert _patch(client, mine["id"], mira_id, json={"hit_points": 1}).status_code == 204
+    assert len(_chain(mine["id"])) == 2
+    assert _patch(client, mine["id"], mira_id, json={"hit_points": True}).status_code == 204
+    assert len(_chain(mine["id"])) == 3  # committed, not swallowed as a no-op
+    assert _entity(mine["id"], mira_id).data["hit_points"] is True
+    # The reverse direction: ``true`` → ``1`` is equally a real edit.
+    assert _patch(client, mine["id"], mira_id, json={"hit_points": 1}).status_code == 204
+    assert len(_chain(mine["id"])) == 4
+    # And a genuinely value-identical retry is still a no-op.
+    assert _patch(client, mine["id"], mira_id, json={"hit_points": 1}).status_code == 204
+    assert len(_chain(mine["id"])) == 4
+
+
 # ---------------------------------------------------------------------------
 # STALE_BASE / OMITTED_BASE (optimistic concurrency)
 # ---------------------------------------------------------------------------
