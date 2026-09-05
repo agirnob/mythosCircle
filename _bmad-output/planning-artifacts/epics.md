@@ -132,6 +132,7 @@ Epic 5: Take It to the Table — Export & VTT
 Epic 6: Protect the Table — Backup, Restore & Ownership (BETA LAUNCH GATE)
 Epic 7: See the Web — Relationship Graph (Phase 2, boundary-level)
 Epic 8: The World Reacts — Simulate History (Phase 3, boundary-level)
+Epic 9: Polish the Table — UI Uplift (hardening; planned after Epic 7, post-beta)
 ```
 
 ## Value Checkpoints
@@ -826,3 +827,62 @@ So that the barkeep's secret pays off in act three.
 **Given** the Phase-3 gate
 **When** stories for this capability are to be written
 **Then** a Phase-3 spec exists first (boundary gate).
+
+## Epic 9: Polish the Table — UI Uplift *(hardening; planned after Epic 7, post-beta)*
+
+**Value:** the world already feels real — the UI should stop getting in its way. A consistent, readable, accessible interface for the surfaces the DM lives in daily.
+**FRs covered:** none — owner-added hardening epic (no PRD FR; AR22's dogfooding stance holds through beta; this epic exists because the dogfooding evidence is collected by then).
+**Sequencing (owner decision 2026-09-05):** strictly AFTER Epic 7 (relationship graph). Rationale: the beta pipeline (Epic 4 media → Epic 6 gate) stays undiverted, dogfooding through beta + Phase 2 graph use produces the friction evidence that scopes this epic, and the consistency sweep then covers every surface — including the fresh graph view — exactly once, instead of styling it twice.
+**Notes:** the frontend is deliberately framework-free with per-view scoped CSS (8 views, 1 shared component); the uplift introduces a token scale (color/type/spacing) and migrates views onto it — no UI framework adoption is implied. Stories are written only when this epic enters planning (boundary stub).
+
+### Story 9.1: Design Tokens and View Migration *(boundary stub)*
+
+As a **DM**,
+I want a single token scale for color, type, and spacing across every view,
+So that the app reads as one product, not eight pages.
+
+**Acceptance Criteria:**
+
+**Given** the token scale
+**When** it lands
+**Then** every view (including the Epic 7 graph view) consumes the shared scale, and per-view scoped-CSS one-off values are retired.
+
+**Given** a visual regression
+**When** the migration runs
+**Then** no view loses information or function — this is restyling, not redesign (no layout re-architecture, no navigation changes).
+
+### Story 9.2: Dark Mode *(boundary stub)*
+
+As a **DM**,
+I want a dark theme for late-night prep and the table,
+So that long sessions don't glare.
+
+**Acceptance Criteria:**
+
+**Given** the token scale from 9.1
+**When** dark mode ships
+**Then** every view renders correctly in both themes from one set of tokens — no per-view dark overrides.
+
+### Story 9.3: Consistency Sweep — Layout, Spacing, Empty States *(boundary stub)*
+
+As a **DM**,
+I want consistent layout, spacing, and empty states across views,
+So that every screen behaves like its siblings.
+
+**Acceptance Criteria:**
+
+**Given** any view
+**When** the sweep completes
+**Then** spacing/rhythm matches the token scale, and every empty state (no entities, no candidates, no media, no exports) communicates what to do next — informed by the dogfooding friction notes collected through beta and Phase 2.
+
+### Story 9.4: Accessibility Pass *(boundary stub)*
+
+As a **DM**,
+I want the interface accessible — contrast, focus, keyboard,
+So that the table is open to every DM.
+
+**Acceptance Criteria:**
+
+**Given** any view
+**When** the pass completes
+**Then** contrast meets WCAG AA on both themes, all interactive elements are keyboard-reachable with visible focus, and form fields carry programmatic labels (a11y was explicitly out of beta scope — AR22 — and lands here).
