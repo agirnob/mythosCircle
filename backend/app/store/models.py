@@ -255,6 +255,17 @@ class ProposedCandidate(Base):
     #: existing edges preserved, one revision — AD-2/AR4) instead of
     #: minting a fresh ULID (which would orphan or duplicate edges).
     regenerates_entity_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    #: The regenerate target's committed ``data`` snapshotted at staging
+    #: (spec-3.6, the accept-conflict guard; regenerate rows only, NULL
+    #: for every generate-staged row). The DM's PATCH surface commits
+    #: through the same store, so an accept whose target record no longer
+    #: matches this snapshot would silently overwrite a hand edit — the
+    #: accept compares ``target.data`` against it in the same BEGIN
+    #: IMMEDIATE transaction and raises ``EntityEditConflictError`` (409)
+    #: on mismatch (NULL fails closed: a pre-3.6 row cannot be verified).
+    #: Refreshed to the current target by a re-roll's in-place payload
+    #: replacement, so a re-rolled row is never stranded.
+    entity_base_data: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 class Media(Base):

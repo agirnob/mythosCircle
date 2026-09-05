@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 08:25
-last_updated: 09-04-2026
+last_updated: 09-05-2026
 project: mythosCircle
 project_key: NOKEY
 tracking_system: file-system
@@ -62,7 +62,7 @@ development_status:
   3-3-accept-screen-on-substance: done
   3-4-inline-relation-editing: done
   3-5-regeneration-whole-and-per-section: done
-  3-6-hand-editing-the-dm-is-the-final-author: backlog
+  3-6-hand-editing-the-dm-is-the-final-author: review
   epic-3-retrospective: optional
 
   epic-4: backlog

@@ -297,4 +297,87 @@ describe('world store', () => {
     await world.handleJobMessage('C1', wsMessage({ type: 'job_done', state: 'succeeded' }))
     await vi.waitFor(() => expect(exportCalls).toHaveLength(2))
   })
+
+  it('updateEntity PATCHes the changed fields plus the snapshot base_revision and refetches', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      if (url.includes('/entities/E1')) {
+        return new Response(null, { status: 204 })
+      }
+      if (url.includes('/export')) {
+        exportCalls.push(url)
+        return jsonResponse(worldExport())
+      }
+      if (url.includes('/api/jobs')) {
+        return jsonResponse({ jobs: [], next_cursor: null })
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    const world = useWorldStore()
+    await world.load('C1')
+    expect(exportCalls).toHaveLength(1)
+
+    await world.updateEntity('C1', 'E1', { personality: 'rewritten by hand' }, '01JZZZZZZZZZZZZZZZZZZZZZZZ')
+
+    const patchCall = fetchSpy.mock.calls.find((call) => String(call[0]).includes('/entities/E1'))!
+    expect(patchCall[1]?.method).toBe('PATCH')
+    expect(JSON.parse((patchCall[1]?.body as string) ?? '{}')).toEqual({
+      personality: 'rewritten by hand',
+      base_revision: '01JZZZZZZZZZZZZZZZZZZZZZZZ',
+    })
+    // Success lands a snapshot refetch.
+    await vi.waitFor(() => expect(exportCalls).toHaveLength(2))
+  })
+
+  it('updateEntity omits base_revision when none is supplied', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      if (url.includes('/entities/E1')) {
+        return new Response(null, { status: 204 })
+      }
+      if (url.includes('/export')) {
+        exportCalls.push(url)
+        return jsonResponse(worldExport())
+      }
+      if (url.includes('/api/jobs')) {
+        return jsonResponse({ jobs: [], next_cursor: null })
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    const world = useWorldStore()
+    await world.load('C1')
+
+    await world.updateEntity('C1', 'E1', { secret: 'oh no' }, undefined)
+
+    const patchCall = fetchSpy.mock.calls.find((call) => String(call[0]).includes('/entities/E1'))!
+    const body = JSON.parse((patchCall[1]?.body as string) ?? '{}')
+    expect(body).toEqual({ secret: 'oh no' })
+    expect('base_revision' in body).toBe(false)
+  })
+
+  it('updateEntity propagates the ApiError and does not refetch', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      if (url.includes('/entities/E1')) {
+        return jsonResponse({ code: 'stale', message: 'stale base revision' }, 409)
+      }
+      if (url.includes('/export')) {
+        exportCalls.push(url)
+        return jsonResponse(worldExport())
+      }
+      if (url.includes('/api/jobs')) {
+        return jsonResponse({ jobs: [], next_cursor: null })
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    const world = useWorldStore()
+    await world.load('C1')
+    expect(exportCalls).toHaveLength(1)
+
+    await expect(world.updateEntity('C1', 'E1', { secret: 'x' }, 'stale')).rejects.toMatchObject({
+      status: 409,
+    })
+    // No refetch after a rejected PATCH.
+    expect(exportCalls).toHaveLength(1)
+  })
 })

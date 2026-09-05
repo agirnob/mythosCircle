@@ -26,6 +26,7 @@ from app.pipeline.worker import run_next_job
 from app.store import (
     EdgeInput,
     EntityInput,
+    accept_candidate,
     app_db_url,
     cancel_job,
     claim_next_job,
@@ -42,9 +43,10 @@ from app.store import (
     reject_candidate,
     report_progress,
     stage_candidates,
+    update_entity,
 )
 from app.store.db import session_scope
-from app.store.read import revision_chain
+from app.store.read import revision_chain, world_state
 
 SETTINGS = LLMSettings(endpoint="http://test/v1", model="test-model")
 
@@ -499,3 +501,110 @@ def test_build_regenerate_prompt_deterministic() -> None:
     assert "SRD SPELLS BY CLASS" in stat_prompt
     # The canonical order is the sorted REGEN_SECTIONS order.
     assert tuple(sorted(SECTION_ORDER)) == SECTION_ORDER
+
+
+# ---------------------------------------------------------------------------
+# Spec-3.6 staging-window closures: MID_CALL_EDIT (the runner re-reads at
+# staging) + candidate-target re-rolls (RE_ROLL_AFTER_EDIT: preserved
+# sections from the CURRENT target, staged edges kept, base refreshed)
+# ---------------------------------------------------------------------------
+
+
+def test_mid_call_edit_survives_in_staged_payload(
+    world: tuple[str, str, str],
+) -> None:
+    """MID_CALL_EDIT: a DM hand edit landing between the runner's
+    prompt-build read and the staging write is carried into the staged
+    payload — preserved sections splice from the FRESH record (the
+    re-rolled section keeps the generation), ``entity_base_data``
+    snapshots the same edited record, and the accept proceeds cleanly:
+    never silently overwritten, never stranded."""
+    campaign_id, mira_id, _guild_id = world
+    job_id = _enqueue(campaign_id, {"kind": "entity", "id": mira_id}, ["personality"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        # The provider call sits between the runner's resolve (prompt-
+        # build read) and the staging write — the DM's edit lands there.
+        update_entity(campaign_id, mira_id, patch={"background": "DM's mid-call edit"})
+        out = json.loads(json.dumps(_record()))  # the run-start record
+        out["personality"] = "re-rolled by the model"
+        return json.dumps({"candidates": [out]})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _ = job_status(job_id)
+    assert job.state == "succeeded"
+    (row,) = _staged(campaign_id)
+    assert row.regenerates_entity_id == mira_id
+    # The re-rolled section is the model's; the DM's edited preserved
+    # section survives in the staged payload.
+    assert row.payload["personality"] == "re-rolled by the model"
+    assert row.payload["background"] == "DM's mid-call edit"
+    # Payload and accept-conflict base reference the same edited record.
+    assert row.entity_base_data is not None
+    assert row.entity_base_data["background"] == "DM's mid-call edit"
+    # The row is accept-able after the mid-call edit — clean accept.
+    accepted, _revision = accept_candidate(campaign_id, row.id)
+    assert accepted.status == "accepted"
+    with session_scope() as session:
+        ents, _edges = world_state(session, campaign_id)
+        by_id = {e.id: e for e in ents}
+    assert by_id[mira_id].data["personality"] == "re-rolled by the model"
+    assert by_id[mira_id].data["background"] == "DM's mid-call edit"
+
+
+def test_candidate_target_reroll_preserves_staged_edges_and_refreshes_base(
+    world: tuple[str, str, str],
+) -> None:
+    """RE_ROLL_AFTER_EDIT (pipeline): re-rolling an entity-regen CANDIDATE
+    row after a DM hand edit on the target — preserved sections splice
+    from the CURRENT target record, the row's staged 3-4 edge edits
+    survive verbatim, ``entity_base_data`` refreshes to the same edited
+    record, and the refreshed row accepts cleanly (never stranded)."""
+    campaign_id, mira_id, guild_id = world
+    staged_edges = [
+        {"endpoint": guild_id, "direction": "outbound", "type": "rival_of", "counter": 2},
+    ]
+    record = _record()
+    record["edges"] = staged_edges
+    job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
+    candidate = stage_candidates(campaign_id, job.id, [record], target_entity_id=mira_id)[0]
+    claimed = claim_next_job()
+    assert claimed is not None and claimed.id == job.id
+    complete_job(job.id)
+
+    # The DM's hand edit lands on the committed target after staging.
+    update_entity(campaign_id, mira_id, patch={"secret": "DM's hand edit"})
+    staged_payload = dict(candidate.payload)  # the run-start record
+
+    regen_job_id = _enqueue(campaign_id, {"kind": "candidate", "id": candidate.id}, ["personality"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        out = json.loads(json.dumps(staged_payload))  # byte-identical echo
+        out["personality"] = "clipped, cold"
+        return json.dumps({"candidates": [out]})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == regen_job_id
+    job2, _ = job_status(regen_job_id)
+    assert job2.state == "succeeded"
+    (row,) = _staged(campaign_id)
+    assert row.id == candidate.id  # one row per intent
+    # The requested section is re-rolled…
+    assert row.payload["personality"] == "clipped, cold"
+    # …preserved sections splice from the CURRENT target — the DM's edit
+    # survives the re-roll…
+    assert row.payload["secret"] == "DM's hand edit"
+    # …the row's staged 3-4 edge edits survive verbatim (not the
+    # committed graph's edges)…
+    assert row.payload["edges"] == staged_edges
+    # …and the accept-conflict base refreshes to the same edited record.
+    assert row.entity_base_data is not None
+    assert row.entity_base_data["secret"] == "DM's hand edit"
+    accepted, _revision = accept_candidate(campaign_id, row.id)
+    assert accepted.status == "accepted"
+    assert accepted.accepted_entity_id == mira_id
+    with session_scope() as session:
+        ents, edges = world_state(session, campaign_id)
+        by_id = {e.id: e for e in ents}
+    assert by_id[mira_id].data["secret"] == "DM's hand edit"
+    assert by_id[mira_id].data["personality"] == "clipped, cold"
+    assert (mira_id, guild_id, "rival_of") in {(ed.src, ed.dst, ed.type) for ed in edges}

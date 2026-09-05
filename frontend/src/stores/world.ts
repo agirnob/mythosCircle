@@ -112,6 +112,28 @@ export const useWorldStore = defineStore('world', {
       await this.fetchSnapshot(campaignId)
     },
     /**
+     * Hand editing (spec-3-6, FR10): PATCH partial AR24 fields (or
+     * ``text``) of a committed entity through the store commit path.
+     * ``base_revision`` is the snapshot the editor was opened against —
+     * optimistic concurrency (409 StaleRevisionError / rebase-or-reject
+     * if the head moved). ApiError propagates to the caller (the view
+     * renders 409 inline); on success the snapshot refetches.
+     */
+    async updateEntity(
+      campaignId: string,
+      entityId: string,
+      patch: Record<string, unknown>,
+      baseRevision: string | null | undefined,
+    ): Promise<void> {
+      const body: Record<string, unknown> = { ...patch }
+      if (baseRevision) body.base_revision = baseRevision
+      await apiFetch(
+        `/api/campaigns/${encodeURIComponent(campaignId)}/entities/${encodeURIComponent(entityId)}`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+      )
+      await this.fetchSnapshot(campaignId)
+    },
+    /**
      * The single fetch path for an entry: never stacks — an overlapping
      * call marks `dirty` and one trailing fetch runs after the current
      * one settles, so a frame mid-fetch still lands its delta.

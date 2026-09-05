@@ -537,4 +537,284 @@ describe('WorldView', () => {
     await flushPromises()
     wrapper.unmount()
   })
+
+/** The spec-3.6 AR24 profile fixture: full sectioned record + unknown keys. */
+function ar24World(): WorldExport {
+  return {
+    campaign: {
+      id: 'C1',
+      title: 'Greymarch',
+      theme: 'frontier dread',
+      description: '',
+      custom_lore: '',
+      created_at: '2026-09-03T20:00:00Z',
+    },
+    revision: { id: '01JZZZZZZZZZZZZZZZZZZZZZZZ', created_at: '2026-09-03T20:05:00Z' },
+    entities: [
+      {
+        id: 'E1',
+        kind: 'character',
+        name: 'Mira Vane',
+        text: 'The barkeep.',
+        data: {
+          name: 'Mira Vane',
+          role: 'NPC',
+          level_cr: 'level 5',
+          race_type: 'Human',
+          class_profession: 'Barkeep',
+          alignment: 'NG',
+          personality: 'cold, exacting',
+          secret: 'owes the Guild a debt',
+          rumor: 'seen at the docks',
+          party_hook: 'hires the party',
+          appearance: 'gaunt, ink-stained fingers',
+          background: 'ex-Guild scribe',
+          goals: 'buy back her name',
+          relationships: 'pays the Guild',
+          voice_style: 'clipped',
+          catchphrases: '"Fair price."',
+          stat_block: {
+            identity: { role: 'NPC', level: 5, race: 'Human', alignment: 'NG' },
+            attributes: { str: 13, dex: 12, con: 14, int: 10, wis: 9, cha: 15 },
+            combat: { ac: 16, hp: 44 },
+          },
+          world_integration: {
+            reputation: 'the fixer of the docks',
+            factions: 'The Guild',
+            current_location: 'the Gilded Bar',
+            reaction_matrix: 'buys drinks',
+            on_defeat: 'flees',
+          },
+          // AR24 forward compat: unknown keys render in the additional block.
+          notes: 'owes a favor to Old Wren',
+          coin: 42,
+        },
+      },
+    ],
+    edges: [],
+  }
+}
+
+  it('renders the full AR24 profile plus the additional-data block', async () => {
+    apiFetchMock.mockResolvedValue(ar24World())
+    const wrapper = mountView()
+    await flushPromises()
+    const text = wrapper.text()
+    for (const marker of ['Level/CR', 'level 5', 'Personality', 'cold, exacting', 'Secret', 'World integration', 'the fixer of the docks', 'Additional data', 'owes a favor to Old Wren']) {
+      expect(text).toContain(marker)
+    }
+  })
+
+  it('Edit profile sends only the changed fields plus base_revision and refetches', async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/entities/E1')) return undefined // 204, no body
+      if (url.includes('/export')) return ar24World()
+      return { jobs: [], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const editButton = wrapper.findAll('button').filter((b) => b.text() === 'Edit profile')[0]
+    expect(editButton).toBeDefined()
+    await editButton!.trigger('click')
+    await flushPromises()
+    const personality = wrapper.find('textarea[aria-label="Personality"]')
+    await personality.setValue('rewritten by hand')
+    await wrapper.findAll('button').filter((b) => b.text() === 'Save')[0]!.trigger('click')
+    await flushPromises()
+    const patchCall = apiFetchMock.mock.calls.find((call) => String(call[0]).includes('/entities/E1'))
+    expect(patchCall).toBeDefined()
+    const [path, init] = patchCall!
+    expect(String(path)).toContain('/entities/E1')
+    expect(init?.method).toBe('PATCH')
+    expect(JSON.parse((init?.body as string) ?? '{}')).toEqual({
+      personality: 'rewritten by hand',
+      base_revision: '01JZZZZZZZZZZZZZZZZZZZZZZZ',
+    })
+    // The editor closes after a successful save (Edit profile re-appears).
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Edit profile').length).toBe(1)
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Save').length).toBe(0)
+    // Snapshot refetch happened (the PATCH call plus a fresh export call).
+    expect(apiFetchMock.mock.calls.filter((call) => String(call[0]).includes('/export'))).toHaveLength(2)
+  })
+
+  it('a bare record without AR24 shape saves a text edit unconstrained', async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/entities/E1')) return undefined
+      if (url.includes('/export')) return populatedWorld() // E1 data has only stat_block
+      return { jobs: [], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const editButton = wrapper.findAll('button').filter((b) => b.text() === 'Edit profile')[0]
+    await editButton!.trigger('click')
+    await flushPromises()
+    const textArea = wrapper.find('textarea[aria-label="Text"]')
+    await textArea.setValue('The barkeep with a secret ledger.')
+    await wrapper.findAll('button').filter((b) => b.text() === 'Save')[0]!.trigger('click')
+    await flushPromises()
+    const patchCall = apiFetchMock.mock.calls.find((call) => String(call[0]).includes('/entities/E1'))
+    const body = JSON.parse((patchCall![1]?.body as string) ?? '{}')
+    expect(body).toEqual({ text: 'The barkeep with a secret ledger.', base_revision: '01JZZZZZZZZZZZZZZZZZZZZZZZ' })
+  })
+
+  it('a 409 renders the inline conflict notice with Reload/Discard and does not refetch', async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/entities/E1')) {
+        throw new ApiError(409, 'conflict', 'stale base revision')
+      }
+      if (url.includes('/export')) return ar24World()
+      return { jobs: [], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').filter((b) => b.text() === 'Edit profile')[0]!.trigger('click')
+    await flushPromises()
+    const personality = wrapper.find('textarea[aria-label="Personality"]')
+    await personality.setValue('conflicted edit')
+    const exportCallsBefore = apiFetchMock.mock.calls.filter((call) => String(call[0]).includes('/export')).length
+    await wrapper.findAll('button').filter((b) => b.text() === 'Save')[0]!.trigger('click')
+    await flushPromises()
+    // Conflict notice with both escape buttons; NO refetch after the 409.
+    expect(wrapper.text()).toContain('stale base revision')
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Reload').length).toBe(1)
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Discard').length).toBe(1)
+    expect(apiFetchMock.mock.calls.filter((call) => String(call[0]).includes('/export')).length).toBe(exportCallsBefore)
+  })
+
+  it('Reload awaits the fresh snapshot, then closes the editor', async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/entities/E1')) throw new ApiError(409, 'conflict', 'stale base revision')
+      if (url.includes('/export')) return ar24World()
+      return { jobs: [], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').filter((b) => b.text() === 'Edit profile')[0]!.trigger('click')
+    await flushPromises()
+    await wrapper.find('textarea[aria-label="Personality"]').setValue('conflicted edit')
+    await wrapper.findAll('button').filter((b) => b.text() === 'Save')[0]!.trigger('click')
+    await flushPromises()
+    // Reload refetches and closes the editor (Edit profile visible again).
+    await wrapper.findAll('button').filter((b) => b.text() === 'Reload')[0]!.trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Edit profile').length).toBe(1)
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Reload').length).toBe(0)
+  })
+
+  it('clearing the Text box sends text: null, not an empty string', async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/entities/E1')) return undefined
+      if (url.includes('/export')) return ar24World()
+      return { jobs: [], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').filter((b) => b.text() === 'Edit profile')[0]!.trigger('click')
+    await flushPromises()
+    await wrapper.find('textarea[aria-label="Text"]').setValue('   ')
+    await wrapper.findAll('button').filter((b) => b.text() === 'Save')[0]!.trigger('click')
+    await flushPromises()
+    const patchCall = apiFetchMock.mock.calls.find((call) => String(call[0]).includes('/entities/E1'))
+    const body = JSON.parse((patchCall![1]?.body as string) ?? '{}')
+    expect(body).toMatchObject({ text: null })
+  })
+
+  it('editing a boss-bearing record and switching role to NPC sends boss: null', async () => {
+    const bossWorld = ar24World()
+    bossWorld.entities[0].data = {
+      ...bossWorld.entities[0].data,
+      role: 'BBEG',
+      boss: {
+        lair_actions: 'villainous',
+        legendary_actions: 'two per round',
+        immunities: 'fire',
+        vulnerabilities: 'radiant',
+      },
+    }
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/entities/E1')) return undefined
+      if (url.includes('/export')) return bossWorld
+      return { jobs: [], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').filter((b) => b.text() === 'Edit profile')[0]!.trigger('click')
+    await flushPromises()
+    // Flip the role select to NPC (the only changed field).
+    const roleSelect = wrapper.find('select[aria-label="Role"]')
+    await roleSelect.setValue('NPC')
+    await wrapper.findAll('button').filter((b) => b.text() === 'Save')[0]!.trigger('click')
+    await flushPromises()
+    const patchCall = apiFetchMock.mock.calls.find((call) => String(call[0]).includes('/entities/E1'))
+    const body = JSON.parse((patchCall![1]?.body as string) ?? '{}')
+    expect(body.role).toBe('NPC')
+    expect(body.boss).toBe(null)
+  })
+
+  it('custom keys edit through the additional-data JSON box (added + removed)', async () => {
+    const notesWorld = ar24World()
+    notesWorld.entities[0].data = { ...notesWorld.entities[0].data, notes: 'keep an eye on Wren' }
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/entities/E1')) return undefined
+      if (url.includes('/export')) return notesWorld
+      return { jobs: [], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').filter((b) => b.text() === 'Edit profile')[0]!.trigger('click')
+    await flushPromises()
+    const box = wrapper.find('textarea[aria-label="Additional data (JSON)"]')
+    await box.setValue(JSON.stringify({ notes: 'updated note', new_marker: 'the turncloak' }, null, 2))
+    await wrapper.findAll('button').filter((b) => b.text() === 'Save')[0]!.trigger('click')
+    await flushPromises()
+    const patchCall = apiFetchMock.mock.calls.find((call) => String(call[0]).includes('/entities/E1'))
+    const body = JSON.parse((patchCall![1]?.body as string) ?? '{}')
+    expect(body.notes).toBe('updated note')
+    expect(body.new_marker).toBe('the turncloak')
+  })
+
+  it('a bare card with only custom keys renders the additional-data block (no scalar gate)', async () => {
+    const bareWorld = ar24World()
+    bareWorld.entities[0].data = { location: 'Dockside', patron: 'Old Wren' }
+    apiFetchMock.mockResolvedValue(bareWorld)
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Additional data')
+    expect(wrapper.text()).toContain('Dockside')
+    expect(wrapper.text()).toContain('Old Wren')
+  })
+
+  it('a failed Reload keeps the editor and the conflict notice', async () => {
+    let exportCalls = 0
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/entities/E1')) throw new ApiError(409, 'conflict', 'stale base revision')
+      if (url.includes('/export')) {
+        exportCalls += 1
+        if (exportCalls === 1) return ar24World()
+        throw new ApiError(500, 'server_error', 'Database unavailable.')
+      }
+      return { jobs: [], next_cursor: null }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').filter((b) => b.text() === 'Edit profile')[0]!.trigger('click')
+    await flushPromises()
+    await wrapper.find('textarea[aria-label="Personality"]').setValue('still typing')
+    await wrapper.findAll('button').filter((b) => b.text() === 'Save')[0]!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').filter((b) => b.text() === 'Reload')[0]!.trigger('click')
+    await flushPromises()
+    // Fetch failed: the editor stays open with the draft + conflict intact.
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Save').length).toBe(1)
+    expect(wrapper.findAll('button').filter((b) => b.text() === 'Reload').length).toBe(1)
+    expect((wrapper.find('textarea[aria-label="Personality"]').element as HTMLTextAreaElement).value).toBe('still typing')
+  })
 })

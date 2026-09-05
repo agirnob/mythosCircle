@@ -251,7 +251,32 @@ export interface paths {
     delete: operations['delete_entity_api_campaigns__campaign_id__entities__entity_id__delete']
     options?: never
     head?: never
-    patch?: never
+    /**
+     * Update Entity
+     * @description FR10/spec-3.6: hand-edit one committed entity through the store's
+     *     commit path — the DM is the final author.
+     *
+     *     Partial fields (identity anchor, lore sections, ``stat_block``,
+     *     ``world_integration``, ``boss``, ``text``, unknown keys) merge onto
+     *     the current record and commit as exactly one ``entity_updated``
+     *     revision; a value-identical PATCH commits none (204, idempotent).
+     *     ``base_revision`` is opt-in optimistic concurrency (omitted targets
+     *     the current head, resolved inside the store call; a moved head is a
+     *     409 ``StaleRevisionError`` — rebase-or-reject). Shape validation is
+     *     conditional (owner decision 2026-09-05): shape-valid records must
+     *     stay shape-valid (422 naming the break, zero revisions); bare
+     *     records merge unconstrained.
+     *
+     *     Ownership-404-first, mirroring ``delete_entity``: the campaign check
+     *     runs BEFORE any body is read, so a foreign/unknown campaign is the
+     *     single indistinguishable 404 even with a malformed body. The body is
+     *     therefore hand-parsed (pydantic body parameters would validate — and
+     *     422 — before the handler ran); malformed/non-object/absent body is a
+     *     400, ``base_revision`` non-string is a 400, and a body whose only
+     *     key is ``base_revision`` is a 400 (at least one content key is
+     *     required). 204 body-less, the DELETE precedent.
+     */
+    patch: operations['update_entity_api_campaigns__campaign_id__entities__entity_id__patch']
     trace?: never
   }
   '/api/campaigns/{campaign_id}/edges': {
@@ -386,7 +411,10 @@ export interface paths {
      *     section shape and validates every edge against committed world
      *     state (invalid edge: 422, row stays ``proposed``). A body that is
      *     present WITHOUT a payload (``{}`` or ``{"payload": null}``) is a
-     *     422 — only the OMITTED body is the unedited accept.
+     *     422 — only the OMITTED body is the unedited accept, unless it is the
+     *     spec-3.6 confirm flag alone (``{"confirm_overwrite": true}`` — the
+     *     three-way accept-conflict escape must not force resending the
+     *     payload).
      */
     post: operations['accept_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__accept_post']
     delete?: never
@@ -424,19 +452,30 @@ export interface components {
   schemas: {
     /**
      * AcceptBody
-     * @description Optional accept body (spec-3.3, relaxed by spec-3.4): the accept
-     *     screen's edit-before-accept override. ``payload`` is the full
-     *     candidate record with the DM's section edits AND the DM's own edge
-     *     set (added/edited/deleted staged edges); the store validates every
-     *     override edge against committed world state — an invalid edge is a
-     *     422 and the row stays ``proposed``. An omitted body is the unedited
-     *     accept (identical to the 3.2 behavior).
+     * @description Optional accept body (spec-3.3, relaxed by spec-3.4, extended by
+     *     spec-3.6): the accept screen's edit-before-accept override.
+     *     ``payload`` is the full candidate record with the DM's section edits
+     *     AND the DM's own edge set (added/edited/deleted staged edges); the
+     *     store validates every override edge against committed world state —
+     *     an invalid edge is a 422 and the row stays ``proposed``. An omitted
+     *     body is the unedited accept (identical to the 3.2 behavior).
+     *     ``confirm_overwrite`` (spec-3.6 ACCEPT_ANYWAY): the DM's explicit
+     *     confirmation that a regenerate-entity accept may overwrite a hand
+     *     edit that landed on the target since staging — a body carrying ONLY
+     *     this flag is legal (the three-way escape must not force resending
+     *     the payload); the flag alone is NEVER enough for a client to skip a
+     *     human confirmation step.
      */
     AcceptBody: {
       /** Payload */
       payload?: {
         [key: string]: unknown
       } | null
+      /**
+       * Confirm Overwrite
+       * @default false
+       */
+      confirm_overwrite: boolean
     }
     /** AccountResponse */
     AccountResponse: {
@@ -547,6 +586,8 @@ export interface components {
       accepted_entity_id?: string | null
       /** Accept Revision Id */
       accept_revision_id?: string | null
+      /** Regenerates Entity Id */
+      regenerates_entity_id?: string | null
     }
     /** EdgeExport */
     EdgeExport: {
@@ -1173,6 +1214,38 @@ export interface operations {
     }
   }
   delete_entity_api_campaigns__campaign_id__entities__entity_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        campaign_id: string
+        entity_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  update_entity_api_campaigns__campaign_id__entities__entity_id__patch: {
     parameters: {
       query?: never
       header?: never

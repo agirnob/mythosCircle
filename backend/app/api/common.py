@@ -23,9 +23,11 @@ from app.store import (
     DuplicateJobError,
     EdgeRetargetError,
     EmptySubgraphError,
+    EntityEditConflictError,
     InvalidCandidateError,
     InvalidEdgeCounterError,
     InvalidEdgeTypeError,
+    InvalidEntityRecordError,
     InvalidJobInputError,
     InvalidThemeError,
     InvalidUlidError,
@@ -77,6 +79,7 @@ def store_error_as_http(exc: Exception) -> NoReturn:
             CrossCampaignConflictError,
             DuplicateEdgeError,
             LiveEdgesError,
+            EntityEditConflictError,
         ),
     ):
         if isinstance(exc, LiveEdgesError):
@@ -111,6 +114,7 @@ def store_error_as_http(exc: Exception) -> NoReturn:
             EmptySubgraphError,
             OrphanEntityError,
             SelfLoopEdgeError,
+            InvalidEntityRecordError,
         ),
     ):
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -102,6 +102,31 @@ class StaleRevisionError(StoreError):
         self.latest_revision_id = latest_revision_id
 
 
+class InvalidEntityRecordError(StoreError):
+    """A hand edit (spec-3.6 PATCH) would break the AR24 shape of a
+    shape-valid record — or violates the name/text wire contracts. The
+    owner's conditional-validation rule (2026-09-05): only records that
+    already satisfy the character shape must keep satisfying it after
+    the merge (they stay re-rollable and exportable); bare records are
+    written unconstrained. 422, zero revisions."""
+
+
+class EntityEditConflictError(StoreError):
+    """A regenerate-entity accept would overwrite a DM hand edit that
+    landed on the target since staging: the staged ``entity_base_data``
+    no longer matches the committed record (or is NULL — a pre-3.6 row
+    that cannot be verified). Fail closed (spec-3.6): never a silent
+    merge — the caller surfaces the three-way escape (re-roll / accept
+    anyway with explicit confirm / cancel)."""
+
+    def __init__(self, entity_id: str) -> None:
+        super().__init__(
+            f"entity {entity_id} changed since this candidate was generated — "
+            "re-roll (rebase), accept anyway (overwrite), or cancel (reject)"
+        )
+        self.target_id = entity_id
+
+
 class DanglingEdgeError(StoreError):
     """An edge endpoint is in neither the current revision nor the staged subgraph."""
 
@@ -658,6 +683,184 @@ def _delete_edge(
     )
     session.delete(edge)
     return revision
+
+
+def update_entity(
+    campaign_id: str,
+    entity_id: str,
+    *,
+    patch: dict[str, Any],
+    base_revision: str | None = None,
+) -> models.Revision:
+    """Hand-edit one committed entity through the commit path
+    (spec-3.6, FR10) — the store's first direct committed-entity content
+    write.
+
+    Partial fields (identity anchor, lore sections, ``stat_block``,
+    ``world_integration``, ``boss``, ``text``, unknown keys) are merged
+    onto the current record and committed as exactly ONE
+    ``entity_updated`` revision via ``EntityInput(id=entity_id)`` — the
+    existing in-place machinery (ULID stable, edges untouched, undo
+    restores the prior revision). An explicit ``null`` value DELETES
+    the data key (removal is the delete semantic); on an absent key that
+    is a no-op. ``name`` edits sync both ``data["name"]`` and the
+    ``Entity.name`` column in the same transaction.
+
+    Shape validation is CONDITIONAL (owner decision 2026-09-05): only a
+    record that already satisfies the AR24 sectioned shape must still
+    satisfy it after the merge (``InvalidEntityRecordError`` 422, zero
+    revisions, naming the break) — it stays re-rollable and exportable;
+    a bare record (faction/place/build-in character, data fails the
+    shape) is written unconstrained — no shape forcing, no fabricated
+    sections. ``text`` must be ``str`` or ``null`` (the wire contract
+    every write surface guarantees) and ``name``, when present, a
+    non-blank string. A merge byte-identical to the current record
+    (``text`` included) commits NOTHING — the route still answers 204,
+    idempotent, zero history pollution (a value-identical PATCH is a
+    legal REST retry).
+
+    ``base_revision`` is optimistic concurrency: ``None`` (the DM wire
+    default) is resolved to the current head INSIDE the store call, so
+    ``_check_base`` still guards the race (a commit landing between the
+    resolution and this transaction rejects with ``StaleRevisionError``).
+    Rejects (no state change) with ``UnknownCampaignError``,
+    ``UnknownEntityError`` (unknown or foreign-campaign entity),
+    ``StaleRevisionError``, or ``InvalidEntityRecordError``.
+    """
+    with session_scope() as session:
+        return _update_entity(session, campaign_id, entity_id, patch, base_revision)
+
+
+def _update_entity(
+    session: Session,
+    campaign_id: str,
+    entity_id: str,
+    patch: dict[str, Any],
+    base_revision: str | None,
+) -> models.Revision:
+    if session.get(models.Campaign, campaign_id) is None:
+        raise UnknownCampaignError(campaign_id)
+    entity = session.scalars(
+        select(models.Entity).where(
+            models.Entity.campaign_id == campaign_id,
+            models.Entity.id == entity_id,
+        )
+    ).first()
+    if entity is None:
+        # Foreign-campaign ULIDs are invisible to this campaign's world —
+        # unknown and foreign are indistinguishable (AD-9).
+        raise UnknownEntityError(entity_id)
+
+    if not isinstance(patch, dict):
+        # Every other store boundary guards structured input — a store
+        # caller handing update_entity a non-dict patch must get a
+        # structured rejection, never an AttributeError (AD-1 discipline).
+        raise InvalidEntityRecordError("patch must be an object")
+
+    # ``text`` and ``base_revision`` are column/wire concerns, not data
+    # keys: everything else in the patch is content merged onto ``data``.
+    content = {key: value for key, value in patch.items() if key not in ("text", "base_revision")}
+
+    # Reserved names (spec-3.6 Never list): ``kind`` is the entity's
+    # identity column — a data-level shadow kind would lie next to the
+    # real one; ``edges`` are 3-4 territory and a data-level edges key
+    # would be silently replaced by regeneration staging. Neither is an
+    # unknown key — both are 422 with zero revisions.
+    reserved = {"kind", "edges"} & content.keys()
+    if reserved:
+        raise InvalidEntityRecordError(
+            f"patch may not carry the reserved keys: {', '.join(sorted(reserved))}"
+        )
+
+    # The str|None text contract every other write surface guarantees: an
+    # explicit ``text`` must be a string or null (removal) — anything else
+    # is a 422 with zero revisions, never a driver error.
+    new_text = patch.get("text", entity.text)
+    if new_text is not None and not isinstance(new_text, str):
+        raise InvalidEntityRecordError("text must be a string or null")
+
+    # ``name`` edits sync both ``data["name"]`` and the ``Entity.name``
+    # column; the column is non-null, so blank/absent names are a 422
+    # (EDIT_IDENTITY_NAME, spec-3.6 I/O matrix).
+    if "name" in content and (not isinstance(content["name"], str) or not content["name"].strip()):
+        raise InvalidEntityRecordError("name must be a non-blank string")
+
+    # Merge: ``{**data, **content}`` with explicit null DELETING the data
+    # key — a NOOP_PATCH null-deleting an absent key stays a no-op.
+    current_data = entity.data if isinstance(entity.data, dict) else {}
+    merged = dict(current_data)
+    for key, value in content.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+
+    # Conditional AR24 validation (owner decision 2026-09-05): only a
+    # record that ALREADY satisfies the character shape must keep
+    # satisfying it after the merge (one shared validator for every
+    # record that can ever be staged/regenerated/exported); a record
+    # that already fails the shape (faction/place/bare build-in) is
+    # written unconstrained. Function-local import: candidates.py
+    # imports this module, so a module-level import would cycle.
+    from app.store.candidates import payload_section_violations
+
+    if payload_section_violations(current_data) == []:
+        violations = payload_section_violations(merged)
+        # AR24's required-section set does not audit ``stat_block``
+        # (AR25 does, and only regeneration is AR25-audited — DM
+        # override), but a shape-valid record whose stat block renders
+        # through StatBlock.vue must keep an object there: a non-object
+        # replacement is a shape break on the record's own contract
+        # (EDIT_STATBLOCK, spec-3.6 I/O matrix).
+        stat_block = merged.get("stat_block")
+        if stat_block is not None and not isinstance(stat_block, dict):
+            violations.append("stat_block must be an object")
+        if violations:
+            raise InvalidEntityRecordError(
+                "edit would break the required sectioned shape: " + "; ".join(violations)
+            )
+
+    latest = latest_revision(session, campaign_id)
+    if merged == current_data and new_text == entity.text:
+        # A value-identical PATCH is an idempotent retry: 204, no
+        # revision, no history pollution (NOOP_PATCH). An EXPLICIT
+        # stale base still rejects — ``_check_base`` is unconditional
+        # when a caller names a base (spec-3.6 Always bullet; the
+        # omitted-base DM default is a fresh in-tx resolution, so a
+        # no-op with no named base is a clean idempotent 204).
+        if base_revision is not None:
+            _check_base(latest, base_revision)
+        # The entity itself was committed, so its world holds >= 1
+        # revision — this guard exists only to keep the return type
+        # honest (mypy cannot see the invariant).
+        if latest is None:
+            raise CorruptEventError(entity_id, f"entity {entity_id} exists without any revision")
+        return latest
+
+    # Resolve the optimistic-concurrency base before the commit: a None
+    # base targets the CURRENT head (the DM wire default), resolved here
+    # so ``_commit``'s ``_check_base`` still guards the race — a commit
+    # landing between this read and the transaction rejects with
+    # StaleRevisionError (edges.py ``_resolved_base`` semantics).
+    if base_revision is None:
+        base_revision = latest.id if latest is not None else None
+
+    name_value = content.get("name", current_data.get("name"))
+    return _commit(
+        session,
+        campaign_id,
+        [
+            models.EntityInput(
+                kind=entity.kind,
+                name=name_value if isinstance(name_value, str) else entity.name,
+                text=new_text,
+                data=merged,
+                id=entity_id,
+            )
+        ],
+        [],
+        base_revision,
+    )
 
 
 # ---------------------------------------------------------------------------

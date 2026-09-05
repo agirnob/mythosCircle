@@ -317,6 +317,232 @@ async function removeEdge(entityId: string, relation: RelationLine) {
     relationBusy.value = false
   }
 }
+
+// ---------------------------------------------------------------------------
+// Profile hand editing (spec-3.6, FR10): inline per-field editing of a
+// committed entity's AR24 record + text, saved as ONE committed revision
+// through the world store's updateEntity PATCH. Drafts seed from RAW
+// committed values (numbers/objects stringify — a present value never
+// renders blank). Structured blocks (stat_block / world_integration /
+// boss) edit as pretty JSON. Bare records (factions, places, build-in
+// shells) stay editable: only changed fields are sent, and the backend's
+// conditional validation never forces a shape they lack.
+// ---------------------------------------------------------------------------
+
+const IDENTITY_FIELDS = ['level_cr', 'race_type', 'class_profession', 'alignment'] as const
+const LORE_FIELDS = [
+  'appearance',
+  'background',
+  'goals',
+  'relationships',
+  'voice_style',
+  'catchphrases',
+] as const
+const BOSS_ROLES = new Set(['BBEG', 'Monster'])
+
+const FIELD_LABELS: Record<string, string> = {
+  text: 'Text',
+  name: 'Name',
+  role: 'Role',
+  level_cr: 'Level/CR',
+  race_type: 'Race/Type',
+  class_profession: 'Class / Profession',
+  alignment: 'Alignment',
+  personality: 'Personality',
+  secret: 'Secret',
+  rumor: 'Rumor',
+  party_hook: 'Party hook',
+  appearance: 'Appearance',
+  background: 'Background',
+  goals: 'Goals',
+  relationships: 'Relationships',
+  voice_style: 'Voice style',
+  catchphrases: 'Catchphrases',
+}
+
+/** Editable scalar string fields (identity anchor + narrative lore). */
+const CORE_FIELDS = ['personality', 'secret', 'rumor', 'party_hook'] as const
+
+/** Editable scalar string fields (AR19 core + identity anchor + narrative lore). */
+const SCALAR_FIELDS = ['name', 'role', ...CORE_FIELDS, ...IDENTITY_FIELDS, ...LORE_FIELDS] as const
+
+/** Structured blocks edited as pretty JSON. */
+const JSON_FIELDS = ['stat_block', 'world_integration', 'boss'] as const
+
+const editingProfileId = ref<string | null>(null)
+const profileDrafts = ref<Record<string, Record<string, string>>>({})
+const profileInitials = ref<Record<string, Record<string, string>>>({})
+const profileBusy = ref(false)
+const profileErrors = ref<Record<string, string>>({})
+const profileConflict = ref<Record<string, string>>({})
+const profileReloading = ref<Record<string, boolean>>({})
+
+function rawString(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'object') return JSON.stringify(value, null, 2)
+  return String(value)
+}
+
+function startProfileEdit(entity: EntityExport) {
+  const data = (entity.data ?? {}) as Record<string, unknown>
+  const drafts: Record<string, string> = {}
+  for (const field of SCALAR_FIELDS) drafts[field] = rawString(data[field])
+  drafts['text'] = entity.text ?? ''
+  for (const field of JSON_FIELDS) drafts[field] = rawString(data[field])
+  // Unknown keys edit as one "additional data" JSON object (spec-2.7
+  // deferral resolution): keys added/changed land in the PATCH; keys
+  // removed send null (delete).
+  drafts['__extras'] = rawString(extrasObject(entity))
+  editingProfileId.value = entity.id
+  profileDrafts.value[entity.id] = drafts
+  profileInitials.value[entity.id] = { ...drafts }
+  profileErrors.value[entity.id] = ''
+  profileConflict.value[entity.id] = ''
+}
+
+function cancelProfileEdit() {
+  const id = editingProfileId.value
+  editingProfileId.value = null
+  if (id) {
+    delete profileDrafts.value[id]
+    delete profileInitials.value[id]
+    delete profileErrors.value[id]
+    delete profileConflict.value[id]
+  }
+}
+
+function isProfileEdited(entityId: string): boolean {
+  const drafts = profileDrafts.value[entityId]
+  const initials = profileInitials.value[entityId]
+  if (!drafts || !initials) return false
+  return Object.keys(drafts).some((field) => drafts[field] !== initials[field])
+}
+
+async function saveProfile(entity: EntityExport) {
+  if (profileBusy.value) return
+  profileErrors.value[entity.id] = ''
+  profileConflict.value[entity.id] = ''
+  const drafts = profileDrafts.value[entity.id]
+  const initials = profileInitials.value[entity.id]
+  if (!drafts || !initials) return
+  const patch: Record<string, unknown> = {}
+  for (const field of SCALAR_FIELDS) {
+    if (drafts[field] !== initials[field]) patch[field] = drafts[field]
+  }
+  for (const field of JSON_FIELDS) {
+    if (drafts[field] === initials[field]) continue
+    const trimmed = drafts[field].trim()
+    if (trimmed === '') {
+      patch[field] = null // explicit delete (EDIT_ROLE_UNBOSS / removing a block)
+      continue
+    }
+    try {
+      patch[field] = JSON.parse(trimmed)
+    } catch {
+      profileErrors.value[entity.id] = `${FIELD_LABELS[field] ?? field} is not valid JSON.`
+      return
+    }
+  }
+  if (drafts['__extras'] !== initials['__extras']) {
+    try {
+      const extras = JSON.parse(drafts['__extras']) as Record<string, unknown>
+      const initialExtras = JSON.parse(initials['__extras'] ?? '{}') as Record<string, unknown>
+      for (const key of Object.keys(extras)) patch[key] = extras[key]
+      for (const key of Object.keys(initialExtras)) {
+        if (!(key in extras)) patch[key] = null // removed -> delete the data key
+      }
+    } catch {
+      profileErrors.value[entity.id] = 'Additional data is not valid JSON.'
+      return
+    }
+  }
+  if (drafts['text'] !== initials['text']) {
+    // Clear = null (the str|null wire contract): an empty string would
+    // mint a revision changing None->'' while rendering identically.
+    patch['text'] = drafts['text'].trim() === '' ? null : drafts['text']
+  }
+  // Role flip away from BBEG/Monster with a boss block present: strip it in
+  // the same PATCH (the spec EDIT_ROLE_UNBOSS row — a boss section would
+  // otherwise 422 the merge).
+  if ('role' in patch && typeof patch.role === 'string' && !BOSS_ROLES.has(patch.role)) {
+    const data = (entity.data ?? {}) as Record<string, unknown>
+    if ('boss' in data && !('boss' in patch)) patch['boss'] = null
+  }
+  if (Object.keys(patch).length === 0) {
+    cancelProfileEdit()
+    return
+  }
+  profileBusy.value = true
+  try {
+    await world.updateEntity(campaignId, entity.id, patch, revision.value?.id)
+    cancelProfileEdit()
+  } catch (err) {
+    const message = err instanceof ApiError ? err.message : 'Could not save the edit.'
+    if (err instanceof ApiError && err.status === 409) {
+      profileConflict.value[entity.id] = message
+    } else {
+      profileErrors.value[entity.id] = message
+    }
+  } finally {
+    profileBusy.value = false
+  }
+}
+
+/** Reload (rebase) after a 409: await the fresh snapshot, THEN close — a
+ * fast re-edit must not send the stale base_revision again. */
+async function rebaseAndClose(entityId: string) {
+  profileReloading.value[entityId] = true
+  try {
+    await world.fetchSnapshot(campaignId)
+    // fetchSnapshot never throws — it records failures in entry.error.
+    // Close only on a SUCCESSFUL rebase: on failure the DM's draft and
+    // the conflict context survive for a retry (never a silent wipe).
+    if (world.entry(campaignId).error !== null) return
+    cancelProfileEdit()
+  } finally {
+    profileReloading.value[entityId] = false
+  }
+}
+
+function dataKeys(entity: EntityExport): string[] {
+  const data = (entity.data ?? {}) as Record<string, unknown>
+  const RESERVED = new Set(['kind', 'edges', 'text', 'base_revision'])
+  return Object.keys(data).filter(
+    (key) =>
+      !(SCALAR_FIELDS as readonly string[]).includes(key) &&
+      !(JSON_FIELDS as readonly string[]).includes(key) &&
+      !RESERVED.has(key),
+  )
+}
+
+function profileFieldValue(entity: EntityExport, field: string): string {
+  const data = (entity.data ?? {}) as Record<string, unknown>
+  const value = data[field]
+  return typeof value === 'string' ? value : rawString(value)
+}
+
+function profileScalarFields(entity: EntityExport): string[] {
+  const data = (entity.data ?? {}) as Record<string, unknown>
+  return SCALAR_FIELDS.filter((field) => data[field] !== undefined && data[field] !== null)
+}
+
+function jsonBlockPresent(entity: EntityExport, field: string): boolean {
+  const data = (entity.data ?? {}) as Record<string, unknown>
+  return data[field] !== undefined && data[field] !== null
+}
+
+function extrasObject(entity: EntityExport): Record<string, unknown> {
+  const data = (entity.data ?? {}) as Record<string, unknown>
+  const extras: Record<string, unknown> = {}
+  for (const key of dataKeys(entity)) extras[key] = data[key]
+  return extras
+}
+
+function additionalDataBlock(entity: EntityExport): string {
+  return JSON.stringify(extrasObject(entity), null, 2)
+}
+
 </script>
 
 <template>
@@ -388,12 +614,118 @@ async function removeEdge(entityId: string, relation: RelationLine) {
               >
                 {{ regeneratingId === entity.id ? 'Regenerating…' : 'Regenerate' }}
               </button>
+              <button
+                v-if="editingProfileId !== entity.id"
+                type="button"
+                class="link"
+                :disabled="profileBusy"
+                @click="startProfileEdit(entity)"
+              >
+                Edit profile
+              </button>
             </h3>
             <p v-if="entity.text" class="text">{{ entity.text }}</p>
             <p v-else class="muted">No description.</p>
             <p v-if="regenerateErrors[entity.id]" class="error">
               {{ regenerateErrors[entity.id] }}
             </p>
+            <div
+              v-if="
+                editingProfileId !== entity.id &&
+                (profileScalarFields(entity).length > 0 || dataKeys(entity).length > 0)
+              "
+              class="profile"
+            >
+              <h4>Profile</h4>
+              <dl>
+                <template v-for="field in profileScalarFields(entity)" :key="field">
+                  <dt>{{ FIELD_LABELS[field] ?? field }}</dt>
+                  <dd>{{ profileFieldValue(entity, field) }}</dd>
+                </template>
+              </dl>
+              <div v-if="jsonBlockPresent(entity, 'world_integration')" class="profile-block">
+                <h4>World integration</h4>
+                <pre>{{ profileFieldValue(entity, 'world_integration') }}</pre>
+              </div>
+              <div v-if="jsonBlockPresent(entity, 'boss')" class="profile-block">
+                <h4>Boss</h4>
+                <pre>{{ profileFieldValue(entity, 'boss') }}</pre>
+              </div>
+              <div v-if="dataKeys(entity).length > 0" class="profile-block additional">
+                <h4>Additional data</h4>
+                <pre>{{ additionalDataBlock(entity) }}</pre>
+              </div>
+            </div>
+            <div v-else-if="editingProfileId === entity.id" class="profile-editor">
+              <h4>Edit profile</h4>
+              <label v-for="field in SCALAR_FIELDS" :key="field" class="field">
+                <span>{{ FIELD_LABELS[field] ?? field }}</span>
+                <select
+                  v-if="field === 'role'"
+                  v-model="profileDrafts[entity.id].role"
+                  aria-label="Role"
+                >
+                  <option value="">—</option>
+                  <option v-for="role in ['NPC', 'BBEG', 'Monster']" :key="role" :value="role">
+                    {{ role }}
+                  </option>
+                </select>
+                <textarea
+                  v-else
+                  v-model="profileDrafts[entity.id][field]"
+                  :aria-label="FIELD_LABELS[field] ?? field"
+                ></textarea>
+              </label>
+              <label class="field">
+                <span>Text</span>
+                <textarea
+                  v-model="profileDrafts[entity.id].text"
+                  aria-label="Text"
+                ></textarea>
+              </label>
+              <label v-for="field in JSON_FIELDS" :key="field" class="field">
+                <span>{{ FIELD_LABELS[field] ?? field }} (JSON)</span>
+                <textarea
+                  v-model="profileDrafts[entity.id][field]"
+                  class="json"
+                  :aria-label="`${field} (JSON)`"
+                ></textarea>
+              </label>
+              <label class="field">
+                <span>Additional data (JSON)</span>
+                <textarea
+                  v-model="profileDrafts[entity.id].__extras"
+                  class="json"
+                  aria-label="Additional data (JSON)"
+                ></textarea>
+              </label>
+              <p class="actions">
+                <button
+                  type="button"
+                  :disabled="profileBusy || !isProfileEdited(entity.id)"
+                  @click="saveProfile(entity)"
+                >
+                  {{ profileBusy ? 'Saving…' : 'Save' }}
+                </button>
+                <button type="button" :disabled="profileBusy" @click="cancelProfileEdit">
+                  Cancel
+                </button>
+              </p>
+              <p v-if="profileErrors[entity.id]" class="error">{{ profileErrors[entity.id] }}</p>
+              <p v-if="profileConflict[entity.id]" class="error conflict">
+                {{ profileConflict[entity.id] }}
+                <button
+                  type="button"
+                  :disabled="profileReloading[entity.id]"
+                  @click="rebaseAndClose(entity.id)"
+                >
+                  {{ profileReloading[entity.id] ? 'Reloading…' : 'Reload' }}
+                </button>
+                <button type="button" :disabled="profileReloading[entity.id]" @click="cancelProfileEdit">
+                  Discard
+                </button>
+              </p>
+            </div>
             <StatBlock
               v-if="entity.data && entity.data['stat_block']"
               :block="entity.data['stat_block']"
@@ -540,6 +872,75 @@ async function removeEdge(entityId: string, relation: RelationLine) {
 .relations .error {
   font-size: 0.85rem;
 }
+
+.profile h4,
+.profile-editor h4 {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.85rem;
+  color: #9aa0a6;
+}
+.profile dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.75rem;
+  font-size: 0.85rem;
+}
+.profile dt {
+  color: #9aa0a6;
+  font-weight: 600;
+}
+.profile dd {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.profile pre {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  background: #14171c;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+.profile-editor .field {
+  display: block;
+  margin: 0.4rem 0;
+}
+.profile-editor .field span {
+  display: block;
+  font-size: 0.8rem;
+  color: #9aa0a6;
+  margin-bottom: 0.15rem;
+}
+.profile-editor textarea {
+  width: 100%;
+  min-height: 3.2rem;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+.profile-editor textarea.json {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.profile-editor select {
+  font-size: 0.85rem;
+}
+.profile-editor .actions {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0.3rem;
+}
+.conflict {
+  border: 1px solid #2c3038;
+  border-left: 3px solid #d29922;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  display: grid;
+  gap: 0.4rem;
+}
+.conflict button {
+  justify-self: start;
+}
+
 .sync-failed {
   border: 1px solid #2c3038;
   border-left: 3px solid #ff7b72;

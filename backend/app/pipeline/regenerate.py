@@ -62,12 +62,18 @@ from app.store import (
     discard_candidates,
     edge_counter_semantic,
     models,
-    replace_candidate_payload,
     report_progress,
-    stage_candidates,
 )
+
+# One call site (the candidate-target re-roll's same-transaction splice —
+# spec-3.6 RE_ROLL_AFTER_EDIT) justifies the private import: the public
+# ``replace_candidate_payload`` owns its own session, and payload + base
+# snapshot must reference the same moment (accept_candidate -> _commit
+# precedent).
 from app.store.candidates import (
     REGEN_SECTIONS,
+    _replace_candidate_payload,
+    _stage_candidates,
     payload_section_violations,
 )
 from app.store.db import session_scope
@@ -137,26 +143,32 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
         raise JobPayloadError("regenerate: candidate must be an object")
     _validate_output(raw, record, requested)
 
-    # Assemble by construction: the target record with only the requested
-    # sections overwritten (trimmed) — preserved sections, unknown keys,
-    # and edges come from the target, never from the model (byte-identical
-    # is an assembly invariant, not a model promise).
-    payload = dict(record)
-    for section in requested:
-        if section in raw:
-            payload[section] = _trim_section(raw[section])
-    if target_kind == "entity":
-        payload["edges"] = []
-
     # Cancel-race poll before the write: a cancel during the call/validation
     # must not stage nor replace anything.
     if not _job_still_running(job):
         return
     if target_kind == "candidate":
-        row = replace_candidate_payload(job.campaign_id, target_id, payload)
+        # Spec-3.6 RE_ROLL_AFTER_EDIT: splice + replace the row's payload
+        # in ONE transaction — preserved sections come from the CURRENT
+        # record (the row's own payload, or the live entity for a
+        # regenerate-entity row), the row's staged ``edges`` survive (3-4),
+        # and ``entity_base_data`` refreshes to the SAME record the payload
+        # was spliced from — the row is accept-able after a hand edit,
+        # never stranded (the staging window closes by construction).
+        row = _roll_candidate_payload(job.campaign_id, target_id, raw, requested)
         rows = [row]
     else:
-        rows = stage_candidates(job.campaign_id, job.id, [payload], target_entity_id=target_id)
+        # Spec-3.6 MID_CALL_EDIT: the splice source moves to staging time
+        # and SHARES ONE TRANSACTION with the staging write — the staged
+        # payload's preserved sections and the ``entity_base_data``
+        # conflict base reference the same committed moment, so a DM hand
+        # edit landing between the prompt-build read and this write is
+        # carried into BOTH (never silently overwritten at accept; the
+        # two-transaction variant would put the edit in the base but not
+        # the payload — the exact AR4/NFR2 failure this story exists to
+        # prevent). Prompt/retrieval keep reading the run-start record
+        # (AR6 determinism untouched); only the splice source moves.
+        rows = _stage_entity_payload(job.campaign_id, job.id, target_id, raw, requested)
     try:
         report_progress(job.id, 1.0)
         complete_job(
@@ -179,6 +191,102 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
         except Exception:  # noqa: BLE001 - the conflict is the error to surface
             logger.exception("failed to discard ghost rows for job %s", job.id)
         raise
+
+
+def _splice(
+    base_record: dict[str, Any], raw: dict[str, Any], requested: Sequence[str]
+) -> dict[str, Any]:
+    """One staged payload assembled by construction: the target record
+    with only the requested sections overwritten (trimmed) — preserved
+    sections, unknown keys, and edges come from the base record, never
+    from the model (byte-identical is an assembly invariant, not a model
+    promise)."""
+    payload = dict(base_record)
+    for section in requested:
+        if section in raw:
+            payload[section] = _trim_section(raw[section])
+    return payload
+
+
+def _stage_entity_payload(
+    campaign_id: str,
+    job_id: str,
+    target_id: str,
+    raw: dict[str, Any],
+    requested: Sequence[str],
+) -> list[models.ProposedCandidate]:
+    """The entity-target regenerated candidate, staged in ONE transaction
+    (spec-3.6 MID_CALL_EDIT): the target record is read fresh, the
+    preserved sections are spliced from THAT record, and the row is
+    staged with ``entity_base_data`` = the same record — payload, base,
+    and their source share one committed moment, so an accept after a
+    mid-generation hand edit never silently overwrites it (accept
+    compare, payload, and base all reference the staging moment). A
+    target deleted since the prompt-build read fails the job with zero
+    rows (the runner never commits — AD-1)."""
+    with session_scope() as session:
+        entities, _edges = world_state(session, campaign_id)
+        entity = next((e for e in entities if e.id == target_id), None)
+        if entity is None or not isinstance(entity.data, dict):
+            raise JobPayloadError(
+                f"regenerate: target entity {target_id} is no longer committed "
+                f"world state of campaign {campaign_id}"
+            )
+        fresh_record = copy.deepcopy(entity.data)
+        payload = _splice(fresh_record, raw, requested)
+        payload["edges"] = []
+        return _stage_candidates(
+            session,
+            campaign_id,
+            job_id,
+            [payload],
+            target_entity_id=target_id,
+            target_base_data=fresh_record,
+        )
+
+
+def _roll_candidate_payload(
+    campaign_id: str, target_id: str, raw: dict[str, Any], requested: Sequence[str]
+) -> models.ProposedCandidate:
+    """A candidate-target re-roll, spliced and replaced in ONE transaction
+    (spec-3.6 RE_ROLL_AFTER_EDIT): the row is re-resolved fresh; for a
+    regenerate-entity row the preserved sections splice from the CURRENT
+    target entity record and the row's staged ``edges`` survive (3-4);
+    the replacement refreshes ``entity_base_data`` to the SAME record the
+    payload was spliced from — payload, base, and their source share one
+    moment, so the row is accept-able after a hand edit, never stranded.
+    A settled/vanished row fails the job (never replaced)."""
+    with session_scope() as session:
+        row = session.get(models.ProposedCandidate, target_id)
+        if row is None or row.campaign_id != campaign_id:
+            raise JobPayloadError(
+                f"regenerate: target candidate {target_id} does not exist in campaign {campaign_id}"
+            )
+        if row.status != "proposed":
+            raise JobPayloadError(
+                f"regenerate: target candidate {target_id} is already {row.status}"
+            )
+        staged_payload = row.payload
+        if not isinstance(staged_payload, dict):
+            raise JobPayloadError(f"regenerate: target candidate {target_id} has no record")
+        if row.regenerates_entity_id is not None:
+            target = session.get(models.Entity, row.regenerates_entity_id)
+            if (
+                target is None
+                or target.campaign_id != campaign_id
+                or not isinstance(target.data, dict)
+            ):
+                raise JobPayloadError(
+                    f"regenerate: target entity {row.regenerates_entity_id} is no longer "
+                    f"committed world state of campaign {campaign_id}"
+                )
+            base_record = copy.deepcopy(target.data)
+            # The DM's staged edge edits (3-4) survive the re-roll verbatim.
+            base_record["edges"] = staged_payload.get("edges", [])
+        else:
+            base_record = copy.deepcopy(staged_payload)
+        payload = _splice(base_record, raw, requested)
+        return _replace_candidate_payload(session, campaign_id, target_id, payload)
 
 
 def _resolve_record(

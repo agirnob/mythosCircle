@@ -23,12 +23,14 @@ from sqlalchemy.exc import IntegrityError
 from app.core import ids
 from app.store import (
     BOSS_FIELDS,
+    STATUS_ACCEPTED,
     STATUS_PROPOSED,
     CandidateNotFoundError,
     CandidateSettledError,
     DanglingEdgeError,
     DuplicateEdgeError,
     EdgeInput,
+    EntityEditConflictError,
     EntityInput,
     InvalidCandidateError,
     OrphanEntityError,
@@ -47,6 +49,7 @@ from app.store import (
     session_scope,
     stage_candidates,
     undo,
+    update_entity,
 )
 from app.store.read import latest_revision, revision_chain, revision_events, world_state
 
@@ -1300,5 +1303,327 @@ def test_migrate_proposed_candidate_status_widens_check(tmp_path: Path) -> None:
             count_after = conn.exec_driver_sql("SELECT COUNT(*) FROM proposed_candidate").scalar()
         assert ddl_after == ddl
         assert count_after == 3
+    finally:
+        init_db(previous)
+
+
+# ---------------------------------------------------------------------------
+# Spec-3.6 accept-conflict guard: entity_base_data capture, ACCEPT_CONFLICT,
+# ACCEPT_ANYWAY, NULL_BASE, RE_ROLL_AFTER_EDIT + the additive migration
+# ---------------------------------------------------------------------------
+
+
+def _entity_data(campaign_id: str, entity_id: str) -> dict[str, Any]:
+    """The committed ``data`` of one entity (dict copy)."""
+    with session_scope() as session:
+        row = session.get(models.Entity, entity_id)
+        assert row is not None
+        assert row.campaign_id == campaign_id
+        return dict(row.data)
+
+
+def _revision_count(campaign_id: str) -> int:
+    with session_scope() as session:
+        return len(list(revision_chain(session, campaign_id)))
+
+
+def _stage_regen(
+    campaign_id: str, mira_id: str, bar_id: str, payload: dict[str, Any] | None = None
+) -> models.ProposedCandidate:
+    """Stage ONE regenerate-entity proposal for mira (spec-3.5 path)."""
+    job = enqueue_job(campaign_id, "generate", {"ask": "regen"})
+    return stage_candidates(
+        campaign_id,
+        job.id,
+        [_regen_entity_payload(mira_id, bar_id) if payload is None else payload],
+        target_entity_id=mira_id,
+    )[0]
+
+
+def test_stage_captures_entity_base_only_for_regen_rows(world: str) -> None:
+    """The accept-conflict guard's snapshot: ``entity_base_data`` is
+    captured IN THE STAGING TRANSACTION only for regenerate-entity rows
+    (a deep copy of the target's committed data); generate-kind rows
+    carry NULL — and a later committed change never mutates the staging
+    snapshot (that mismatch IS the conflict the guard detects)."""
+    bar_id, mira_id = _seed_world(world)
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(
+                kind="character",
+                name="Mira Vane",
+                data={"personality": "warm", "secret": "s"},
+                id=mira_id,
+            )
+        ],
+        [],
+        base_revision=_head(world),
+    )
+    # A generate-kind row (fresh ULID, no overwrite risk): no base.
+    job = enqueue_job(world, "generate", {"ask": "a rival"})
+    plain = stage_candidates(world, job.id, [_payload(mira_id, bar_id)])[0]
+    assert plain.regenerates_entity_id is None
+    assert plain.entity_base_data is None
+    # A regenerate-entity row snapshots the target's data at staging.
+    regen = _stage_regen(world, mira_id, bar_id)
+    assert regen.regenerates_entity_id == mira_id
+    assert regen.entity_base_data == {"personality": "warm", "secret": "s"}
+    # The snapshot is a copy: a later hand edit does not mutate it.
+    update_entity(world, mira_id, patch={"personality": "DM edit"})
+    assert _row(world, regen.id).entity_base_data == {"personality": "warm", "secret": "s"}
+
+
+def test_accept_conflict_on_hand_edit_row_stays_proposed_zero_revisions(world: str) -> None:
+    """ACCEPT_CONFLICT: a DM hand edit landing on the regenerate target
+    after staging makes the accept fail closed with
+    ``EntityEditConflictError`` (409) — the row stays ``proposed`` and
+    the failed accept adds ZERO revisions; the DM's edit is never
+    silently overwritten."""
+    bar_id, mira_id = _seed_world(world)
+    candidate = _stage_regen(world, mira_id, bar_id)
+    update_entity(world, mira_id, patch={"personality": "DM's hand edit"})
+    assert _revision_count(world) == 2  # seed + the hand edit
+
+    with pytest.raises(EntityEditConflictError, match="changed since this candidate was generated"):
+        accept_candidate(world, candidate.id)
+
+    assert _row(world, candidate.id).status == STATUS_PROPOSED
+    assert _revision_count(world) == 2  # zero added by the 409
+    assert _entity_data(world, mira_id)["personality"] == "DM's hand edit"  # untouched
+
+
+def test_accept_anyway_confirms_one_revision_undo_restores_edit(world: str) -> None:
+    """ACCEPT_ANYWAY: with ``confirm_overwrite=True`` the in-place accept
+    proceeds — ONE ``entity_updated`` revision, the row settles with
+    provenance, and the PREVIOUS revision (the DM's edit) is the undo:
+    undoing the accept restores the edited record byte-identical (the
+    confirmed overwrite stays recoverable, AD-2)."""
+    bar_id, mira_id = _seed_world(world)
+    candidate = _stage_regen(world, mira_id, bar_id)
+    update_entity(world, mira_id, patch={"personality": "DM's hand edit"})
+    with pytest.raises(EntityEditConflictError):
+        accept_candidate(world, candidate.id)  # unconfirmed — the conflict says no
+
+    accepted, revision = accept_candidate(world, candidate.id, confirm_overwrite=True)
+
+    assert accepted.status == "accepted"
+    assert accepted.accepted_entity_id == mira_id
+    assert accepted.accept_revision_id == revision.id
+    entities, _edges = _state(world)
+    mira = [e for e in entities if e[0] == mira_id][0]
+    assert json.loads(mira[4])["personality"] == "dry"  # the staged version won
+    assert _revision_count(world) == 3  # seed + edit + accept — exactly one revision
+    with session_scope() as session:
+        events = list(revision_events(session, world, revision.id))
+    assert [event.type for event in events] == ["entity_updated"]
+    assert _row(world, candidate.id).status == STATUS_ACCEPTED
+
+    # The previous revision is the undo: revert the overwrite.
+    undo(world, revision.id)
+    entities_after, _edges_after = _state(world)
+    mira_after = [e for e in entities_after if e[0] == mira_id][0]
+    assert json.loads(mira_after[4])["personality"] == "DM's hand edit"
+    assert _row(world, candidate.id).status == STATUS_ACCEPTED  # lifecycle fact
+
+
+def test_null_entity_base_fails_closed_then_confirm_proceeds(world: str) -> None:
+    """NULL_BASE: a regenerate row whose ``entity_base_data`` is NULL
+    (staged pre-3.6 — unverifiable) fails CLOSED with
+    ``EntityEditConflictError`` even when the target was NEVER edited;
+    with ``confirm_overwrite=True`` the accept proceeds (one revision,
+    row accepted)."""
+    bar_id, mira_id = _seed_world(world)
+    untouched = _stage_regen(world, mira_id, bar_id)
+    with session_scope() as session:
+        row = session.get(models.ProposedCandidate, untouched.id)
+        assert row is not None
+        row.entity_base_data = None  # simulate a pre-3.6 staged row
+    with pytest.raises(EntityEditConflictError):
+        accept_candidate(world, untouched.id)  # target untouched, still fails closed
+    assert _row(world, untouched.id).status == STATUS_PROPOSED
+    assert _revision_count(world) == 1  # zero revisions from the 409
+
+    # Same NULL base, now with an edited target + explicit confirm.
+    edited = _stage_regen(world, mira_id, bar_id)
+    with session_scope() as session:
+        row = session.get(models.ProposedCandidate, edited.id)
+        assert row is not None
+        row.entity_base_data = None
+    update_entity(world, mira_id, patch={"personality": "edited"})
+    with pytest.raises(EntityEditConflictError):
+        accept_candidate(world, edited.id)
+    accepted, _revision = accept_candidate(world, edited.id, confirm_overwrite=True)
+    assert accepted.status == "accepted"
+    assert _row(world, edited.id).status == STATUS_ACCEPTED
+    assert _row(world, edited.id).accept_revision_id is not None
+
+
+def test_re_roll_after_edit_refreshes_base_and_accepts(world: str) -> None:
+    """RE_ROLL_AFTER_EDIT (store path): after a conflict, the dialog's
+    Re-roll replaces the row in place against the CURRENT target — the
+    staged 3-4 edge edits survive verbatim, ``entity_base_data``
+    refreshes to the same record, and the row is accept-able again,
+    never stranded (the three-way escape's rebase arm)."""
+    bar_id, mira_id = _seed_world(world)
+    staged_edges = [
+        {"endpoint": bar_id, "direction": "outbound", "type": "rival_of", "counter": 2},
+    ]
+    candidate = _stage_regen(
+        world,
+        mira_id,
+        bar_id,
+        _regen_entity_payload(mira_id, bar_id, personality="new", edges=staged_edges),
+    )
+    update_entity(world, mira_id, patch={"secret": "DM's hand edit"})
+    with pytest.raises(EntityEditConflictError):
+        accept_candidate(world, candidate.id)
+
+    rerolled = _regen_entity_payload(
+        mira_id, bar_id, personality="re-rerolled", secret="DM's hand edit", edges=staged_edges
+    )
+    replaced = replace_candidate_payload(world, candidate.id, rerolled)
+    assert replaced.id == candidate.id  # one row per intent
+    assert replaced.payload["edges"] == staged_edges  # the DM's staged edges kept
+    assert replaced.entity_base_data is not None
+    assert replaced.entity_base_data["secret"] == "DM's hand edit"  # base refreshed
+
+    # Clean accept now: the re-rolled record commits with the edge set.
+    accepted, revision = accept_candidate(world, candidate.id)
+    assert accepted.status == "accepted"
+    assert accepted.accepted_entity_id == mira_id
+    entities, edges = _state(world)
+    mira = [e for e in entities if e[0] == mira_id][0]
+    data = json.loads(mira[4])
+    assert data["personality"] == "re-rerolled"
+    assert data["secret"] == "DM's hand edit"
+    relationships = {(src, dst, type_, counter) for _id, src, dst, type_, counter, _at in edges}
+    assert (mira_id, bar_id, "rival_of", 2) in relationships
+    assert _row(world, candidate.id).accept_revision_id == revision.id
+
+
+def test_migrate_entity_base_adds_column_and_staging_writes_it(tmp_path: Path) -> None:
+    """A 3.5-era database (``regenerates_entity_id`` present, NO
+    ``entity_base_data``) is upgraded in place: the new column exists
+    (PRAGMA table_info), generate-staged rows write NULL, regen-staged
+    rows snapshot the target's data — and a second migration pass is a
+    no-op (the additive per-name ALTER provenance pattern)."""
+    db_path = tmp_path / "pre36.db"
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        CREATE TABLE account (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            email VARCHAR(320) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        CREATE TABLE campaign (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            owner_id VARCHAR(26) NOT NULL REFERENCES account(id),
+            title VARCHAR(300) NOT NULL,
+            description TEXT NOT NULL,
+            theme VARCHAR(100) NOT NULL,
+            custom_lore TEXT NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        CREATE TABLE job (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            campaign_id VARCHAR(26) NOT NULL REFERENCES campaign(id),
+            kind VARCHAR(64) NOT NULL,
+            payload JSON NOT NULL,
+            state VARCHAR(32) NOT NULL,
+            progress FLOAT NOT NULL,
+            max_llm_calls INTEGER NOT NULL,
+            max_media_calls INTEGER NOT NULL,
+            error TEXT,
+            result JSON,
+            created_at VARCHAR(40) NOT NULL,
+            started_at VARCHAR(40),
+            finished_at VARCHAR(40),
+            CONSTRAINT ck_job_kind CHECK (kind IN
+                ('text','image','video','build_in','generate'))
+        );
+        CREATE TABLE proposed_candidate (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            campaign_id VARCHAR(26) NOT NULL REFERENCES campaign(id),
+            job_id VARCHAR(26) NOT NULL REFERENCES job(id),
+            kind VARCHAR(64) NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            payload JSON NOT NULL,
+            created_at VARCHAR(40) NOT NULL,
+            accepted_entity_id VARCHAR(26),
+            accept_revision_id VARCHAR(26),
+            regenerates_entity_id VARCHAR(26),
+            CONSTRAINT ck_proposed_candidate_kind CHECK (kind IN ('entity')),
+            CONSTRAINT ck_proposed_candidate_status CHECK (
+                status IN ('proposed','accepted','rejected'))
+        );
+        """
+    )
+    owner_id = _owner_id()
+    campaign_id = ids.new_id()
+    raw.execute("INSERT INTO account VALUES (?, 'dm@example.com', 'x', 'now')", (owner_id,))
+    raw.execute(
+        "INSERT INTO campaign VALUES (?, ?, 'Old World', '', 'High Fantasy', '', 'now')",
+        (campaign_id, owner_id),
+    )
+    raw.commit()
+    raw.close()
+
+    previous = app_db_url()
+    init_db(f"sqlite:///{db_path}")
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            columns = {
+                row[1]
+                for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('proposed_candidate')"
+                ).fetchall()
+            }
+        assert "entity_base_data" in columns
+        assert {"regenerates_entity_id", "accepted_entity_id", "accept_revision_id"} <= columns
+
+        # Staging writes the snapshot for regen rows and NULL otherwise.
+        mira_id, bar_id = ids.new_id(), ids.new_id()
+        commit_subgraph(
+            campaign_id,
+            [
+                EntityInput(
+                    kind="character",
+                    name="Mira Vane",
+                    data={"personality": "warm"},
+                    id=mira_id,
+                ),
+                EntityInput(kind="faction", name="The Guild", id=bar_id),
+            ],
+            [EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
+            base_revision=None,
+        )
+        job = enqueue_job(campaign_id, "generate", {"ask": "regen"})
+        (regen,) = stage_candidates(
+            campaign_id,
+            job.id,
+            [_regen_entity_payload(mira_id, bar_id)],
+            target_entity_id=mira_id,
+        )
+        assert regen.entity_base_data == {"personality": "warm"}
+        job2 = enqueue_job(campaign_id, "generate", {"ask": "another"})
+        (plain,) = stage_candidates(campaign_id, job2.id, [_payload(mira_id, bar_id)])
+        assert plain.entity_base_data is None
+
+        # A second migration pass is a no-op.
+        from app.store.db import _migrate_proposed_candidate_entity_base
+
+        _migrate_proposed_candidate_entity_base(engine)
+        with engine.connect() as conn:
+            columns_after = {
+                row[1]
+                for row in conn.exec_driver_sql(
+                    "PRAGMA table_info('proposed_candidate')"
+                ).fetchall()
+            }
+        assert columns_after == columns
     finally:
         init_db(previous)

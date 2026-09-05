@@ -11,6 +11,7 @@ transaction; ``reject_candidate`` settles the row without touching the
 world. Terminal statuses are final — rows are kept for the audit trail.
 """
 
+import copy
 import json
 from typing import Any
 
@@ -28,6 +29,7 @@ from app.core.pagination import anchor_rowid, paging
 from app.store import models
 from app.store.commit import (
     EDGE_TYPES,
+    EntityEditConflictError,
     StoreError,
     UnknownCampaignError,
     _commit,
@@ -236,6 +238,14 @@ def stage_candidates(
 ) -> list[models.ProposedCandidate]:
     """Stage candidate records atomically — one transaction, all-or-nothing.
 
+    Public wrapper over ``_stage_candidates`` owning the session; the
+    session-taking private variant exists so the regenerate runner can
+    splice and stage in ONE transaction (spec-3.6: the staged payload's
+    preserved sections and the ``entity_base_data`` conflict base must
+    reference the same committed moment — a hand edit landing between
+    two transactions would be absent from the payload yet present in the
+    base, silently overwriting it at accept).
+
     Re-validates inside the write transaction (the race backstop): every
     edge endpoint must resolve to a committed ``world_state`` id and
     every edge type must be a string in the closed vocabulary; otherwise
@@ -259,55 +269,93 @@ def stage_candidates(
     job, they are returned unchanged and nothing new is written.
     """
     with session_scope() as session:
-        if session.get(models.Campaign, campaign_id) is None:
-            raise UnknownCampaignError(campaign_id)
-        job = session.get(models.Job, job_id)
-        if job is None:
-            raise JobNotFoundError(job_id)
-        if job.campaign_id != campaign_id:
+        return _stage_candidates(
+            session, campaign_id, job_id, payloads, target_entity_id=target_entity_id
+        )
+
+
+def _stage_candidates(
+    session: Session,
+    campaign_id: str,
+    job_id: str,
+    payloads: list[dict[str, Any]],
+    *,
+    target_entity_id: str | None = None,
+    target_base_data: dict[str, Any] | None = None,
+) -> list[models.ProposedCandidate]:
+    """The session-taking staging body (see ``stage_candidates``).
+
+    ``target_base_data`` (spec-3.6): the regenerate runner passes the
+    SAME record the staged payload was spliced from, so the payload and
+    the accept-conflict base share one committed moment by construction.
+    When omitted, the target's committed ``data`` is re-read and
+    snapshotted in this transaction (correct for callers with no spliced
+    payload — the runner's path uses the explicit base).
+    """
+    if session.get(models.Campaign, campaign_id) is None:
+        raise UnknownCampaignError(campaign_id)
+    job = session.get(models.Job, job_id)
+    if job is None:
+        raise JobNotFoundError(job_id)
+    if job.campaign_id != campaign_id:
+        raise InvalidCandidateError(
+            f"job {job_id} belongs to campaign {job.campaign_id}, not {campaign_id}"
+        )
+    existing = session.scalars(
+        select(models.ProposedCandidate).where(models.ProposedCandidate.job_id == job_id)
+    ).all()
+    if existing:
+        return list(existing)
+    entities, _edges = world_state(session, campaign_id)
+    committed = {entity.id for entity in entities}
+    if target_entity_id is not None and target_entity_id not in committed:
+        raise InvalidCandidateError(
+            f"target entity {target_entity_id} is not committed world state "
+            f"of campaign {campaign_id}"
+        )
+    for index, payload in enumerate(payloads):
+        # Strict-JSON backstop (review round 2): Python's json.loads
+        # accepts NaN/Infinity and 1e999 overflows to inf, which the
+        # SQLAlchemy JSON column stores but Starlette refuses to
+        # re-serialize (allow_nan=False) — such a staged payload
+        # would 500 the candidates read. The runner already drops
+        # these; this is the write-boundary defense for any caller.
+        try:
+            json.dumps(payload, allow_nan=False)
+        except (TypeError, ValueError, RecursionError) as exc:
             raise InvalidCandidateError(
-                f"job {job_id} belongs to campaign {job.campaign_id}, not {campaign_id}"
-            )
-        existing = session.scalars(
-            select(models.ProposedCandidate).where(models.ProposedCandidate.job_id == job_id)
-        ).all()
-        if existing:
-            return list(existing)
-        entities, _edges = world_state(session, campaign_id)
-        committed = {entity.id for entity in entities}
-        if target_entity_id is not None and target_entity_id not in committed:
-            raise InvalidCandidateError(
-                f"target entity {target_entity_id} is not committed world state "
-                f"of campaign {campaign_id}"
-            )
-        for index, payload in enumerate(payloads):
-            # Strict-JSON backstop (review round 2): Python's json.loads
-            # accepts NaN/Infinity and 1e999 overflows to inf, which the
-            # SQLAlchemy JSON column stores but Starlette refuses to
-            # re-serialize (allow_nan=False) — such a staged payload
-            # would 500 the candidates read. The runner already drops
-            # these; this is the write-boundary defense for any caller.
-            try:
-                json.dumps(payload, allow_nan=False)
-            except (TypeError, ValueError, RecursionError) as exc:
-                raise InvalidCandidateError(
-                    f"candidate {index}: payload is not strict JSON ({exc})"
-                ) from exc
-            _check_candidate_edges(index, payload, committed)
-        rows = [
-            models.ProposedCandidate(
-                id=ids.new_id(),
-                campaign_id=campaign_id,
-                job_id=job_id,
-                kind=PROPOSAL_KIND,
-                status=STATUS_PROPOSED,
-                payload=payload,
-                created_at=time.now(),
-                regenerates_entity_id=target_entity_id,
-            )
-            for payload in payloads
-        ]
-        session.add_all(rows)
+                f"candidate {index}: payload is not strict JSON ({exc})"
+            ) from exc
+        _check_candidate_edges(index, payload, committed)
+    # Spec-3.6: a regenerate-entity row snapshots its target's committed
+    # ``data`` (deep copy — the JSON column's object must outlive the
+    # session). ``target_base_data`` is the runner's splice source (ONE
+    # transaction — payload and base share a moment); otherwise the
+    # target is re-read in this transaction. The accept compares the
+    # current target against this base and fails closed on mismatch.
+    base_data: dict[str, Any] | None = None
+    if target_entity_id is not None:
+        if target_base_data is not None:
+            base_data = copy.deepcopy(target_base_data)
+        else:
+            target = next((e for e in entities if e.id == target_entity_id), None)
+            if target is not None:
+                base_data = copy.deepcopy(target.data)
+    rows = [
+        models.ProposedCandidate(
+            id=ids.new_id(),
+            campaign_id=campaign_id,
+            job_id=job_id,
+            kind=PROPOSAL_KIND,
+            status=STATUS_PROPOSED,
+            payload=payload,
+            created_at=time.now(),
+            regenerates_entity_id=target_entity_id,
+            entity_base_data=base_data,
+        )
+        for payload in payloads
+    ]
+    session.add_all(rows)
     return rows
 
 
@@ -351,34 +399,66 @@ def replace_candidate_payload(
     edges were validated at staging; a delete since is the accept-time
     commit path's authority) — shape and JSON only, mirroring the
     staging contract's write-boundary guards.
+
+    Spec-3.6: when the row is a regenerate-entity proposal
+    (``regenerates_entity_id`` set), the replacement ALSO refreshes
+    ``entity_base_data`` to the CURRENT committed ``data`` of that
+    target, in the same transaction — a re-rolled row is accept-able
+    after a DM hand edit on the target, never stranded (the fresh base
+    makes the accept's conflict compare pass).
     """
     with session_scope() as session:
-        candidate = session.get(models.ProposedCandidate, candidate_id)
-        if candidate is None or candidate.campaign_id != campaign_id:
-            raise CandidateNotFoundError(candidate_id)
-        if candidate.status != STATUS_PROPOSED:
-            raise CandidateSettledError(candidate_id, candidate.status)
-        if candidate.kind != PROPOSAL_KIND:
-            raise InvalidCandidateError(
-                f"candidate {candidate_id}: kind must be {PROPOSAL_KIND!r}, got {candidate.kind!r}"
-            )
-        if not isinstance(payload, dict):
-            raise InvalidCandidateError(
-                f"candidate {candidate_id}: replacement payload must be an object, got {payload!r}"
-            )
-        try:
-            json.dumps(payload, allow_nan=False)
-        except (TypeError, ValueError, RecursionError) as exc:
-            raise InvalidCandidateError(
-                f"candidate {candidate_id}: replacement payload is not strict JSON ({exc})"
-            ) from exc
-        violations = payload_section_violations(payload)
-        if violations:
-            raise InvalidCandidateError(
-                f"candidate {candidate_id}: replacement payload fails the required-section "
-                f"shape: {'; '.join(violations)}"
-            )
-        candidate.payload = payload
+        return _replace_candidate_payload(session, campaign_id, candidate_id, payload)
+
+
+def _replace_candidate_payload(
+    session: Session,
+    campaign_id: str,
+    candidate_id: str,
+    payload: dict[str, Any],
+) -> models.ProposedCandidate:
+    """The session-taking core of ``replace_candidate_payload`` — the
+    regenerate runner uses it to splice its staging-time re-read and the
+    payload replacement inside ONE transaction (spec-3.6 Design Notes:
+    payload, base snapshot, and the record they came from all reference
+    the same moment; the public wrapper owns the session for one-shot
+    callers)."""
+    candidate = session.get(models.ProposedCandidate, candidate_id)
+    if candidate is None or candidate.campaign_id != campaign_id:
+        raise CandidateNotFoundError(candidate_id)
+    if candidate.status != STATUS_PROPOSED:
+        raise CandidateSettledError(candidate_id, candidate.status)
+    if candidate.kind != PROPOSAL_KIND:
+        raise InvalidCandidateError(
+            f"candidate {candidate_id}: kind must be {PROPOSAL_KIND!r}, got {candidate.kind!r}"
+        )
+    if not isinstance(payload, dict):
+        raise InvalidCandidateError(
+            f"candidate {candidate_id}: replacement payload must be an object, got {payload!r}"
+        )
+    try:
+        json.dumps(payload, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise InvalidCandidateError(
+            f"candidate {candidate_id}: replacement payload is not strict JSON ({exc})"
+        ) from exc
+    violations = payload_section_violations(payload)
+    if violations:
+        raise InvalidCandidateError(
+            f"candidate {candidate_id}: replacement payload fails the required-section "
+            f"shape: {'; '.join(violations)}"
+        )
+    candidate.payload = payload
+    if candidate.regenerates_entity_id is not None:
+        # Re-snapshot the regenerate target's CURRENT committed data so
+        # the re-rolled row is accept-able after a DM hand edit (spec-3.6
+        # RE_ROLL_AFTER_EDIT): a target deleted since staging stays NULL
+        # (the accept-time target-exists check owns that rejection).
+        target = session.get(models.Entity, candidate.regenerates_entity_id)
+        if target is not None and target.campaign_id == campaign_id:
+            candidate.entity_base_data = copy.deepcopy(target.data)
+        else:
+            candidate.entity_base_data = None
     return candidate
 
 
@@ -386,6 +466,8 @@ def accept_candidate(
     campaign_id: str,
     candidate_id: str,
     payload_override: dict[str, Any] | None = None,
+    *,
+    confirm_overwrite: bool = False,
 ) -> tuple[models.ProposedCandidate, models.Revision]:
     """Make a staged candidate real: commit its subgraph, settle the row.
 
@@ -422,8 +504,16 @@ def accept_candidate(
     (``payload_section_violations`` — name/role, every identity/lore
     section, the world-integration block, boss iff BBEG/Monster); a
     non-dict override, an override failing that shape, or a non-str
-    name raises ``InvalidCandidateError`` (422) with no revision.
-    ``None`` accepts the staged payload unchanged.
+    ``confirm_overwrite`` (spec-3.6 ACCEPT_ANYWAY): the three-way escape
+    from an accept-conflict. For a regenerate-entity row whose target
+    was hand-edited since staging (``entity_base_data`` mismatch — or a
+    NULL base that cannot be verified), the accept FAILS CLOSED with
+    ``EntityEditConflictError`` (409) unless the confirm flag is set;
+    with it, the in-place accept proceeds as ONE ``entity_updated``
+    revision whose previous revision is the undo (the DM may still
+    undo). The flag is NOT enough for a client to skip a human
+    confirmation step — it mirrors the destructive-confirmation
+    precedent (campaign delete).
 
     Returns ``(candidate row, new revision)``. Raises
     ``CandidateNotFoundError`` (unknown or foreign-campaign id),
@@ -511,6 +601,20 @@ def accept_candidate(
                     f"candidate {candidate_id}: regenerates_entity_id names no committed "
                     f"entity of this campaign: {target_id}"
                 )
+            # Spec-3.6 accept-conflict guard (data-level, precise; runs in
+            # the accept's BEGIN IMMEDIATE transaction — no race): a DM
+            # hand edit committed on the target since staging would be
+            # silently overwritten by the in-place accept. The staged
+            # ``entity_base_data`` snapshot is the compare authority: a
+            # mismatch (or a NULL base — a pre-3.6 row that cannot be
+            # verified) fails closed with ``EntityEditConflictError``
+            # (409) UNLESS the DM explicitly confirms the overwrite —
+            # then the in-place accept proceeds as one ``entity_updated``
+            # revision whose previous revision is the undo. Never a
+            # silent merge.
+            base = candidate.entity_base_data
+            if (base is None or target.data != base) and not confirm_overwrite:
+                raise EntityEditConflictError(target_id)
             entity_id = target_id
             # The DM asked to re-roll SECTIONS, not the row's shell: the
             # target's kind and prose text pass through untouched — only

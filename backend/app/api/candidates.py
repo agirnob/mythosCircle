@@ -52,18 +52,31 @@ class CandidateResponse(BaseModel):
     #: a world artifact, so only an accepted row carries them.
     accepted_entity_id: str | None = None
     accept_revision_id: str | None = None
+    #: For a regenerate-entity proposal (spec-3.5): the committed entity
+    #: ULID this candidate was regenerated FROM — null for every
+    #: generate-staged row. Spec-3.6: the accept-conflict dialog's
+    #: re-roll target (the DM re-rolls the CANDIDATE in place against
+    #: the latest world).
+    regenerates_entity_id: str | None = None
 
 
 class AcceptBody(BaseModel):
-    """Optional accept body (spec-3.3, relaxed by spec-3.4): the accept
-    screen's edit-before-accept override. ``payload`` is the full
-    candidate record with the DM's section edits AND the DM's own edge
-    set (added/edited/deleted staged edges); the store validates every
-    override edge against committed world state — an invalid edge is a
-    422 and the row stays ``proposed``. An omitted body is the unedited
-    accept (identical to the 3.2 behavior)."""
+    """Optional accept body (spec-3.3, relaxed by spec-3.4, extended by
+    spec-3.6): the accept screen's edit-before-accept override.
+    ``payload`` is the full candidate record with the DM's section edits
+    AND the DM's own edge set (added/edited/deleted staged edges); the
+    store validates every override edge against committed world state —
+    an invalid edge is a 422 and the row stays ``proposed``. An omitted
+    body is the unedited accept (identical to the 3.2 behavior).
+    ``confirm_overwrite`` (spec-3.6 ACCEPT_ANYWAY): the DM's explicit
+    confirmation that a regenerate-entity accept may overwrite a hand
+    edit that landed on the target since staging — a body carrying ONLY
+    this flag is legal (the three-way escape must not force resending
+    the payload); the flag alone is NEVER enough for a client to skip a
+    human confirmation step."""
 
     payload: dict[str, Any] | None = None
+    confirm_overwrite: bool = False
 
 
 class CandidateListResponse(BaseModel):
@@ -86,6 +99,7 @@ def _candidate_response(candidate: models.ProposedCandidate) -> CandidateRespons
         created_at=candidate.created_at,
         accepted_entity_id=candidate.accepted_entity_id,
         accept_revision_id=candidate.accept_revision_id,
+        regenerates_entity_id=candidate.regenerates_entity_id,
     )
 
 
@@ -149,11 +163,14 @@ def accept_campaign_candidate(
     section shape and validates every edge against committed world
     state (invalid edge: 422, row stays ``proposed``). A body that is
     present WITHOUT a payload (``{}`` or ``{"payload": null}``) is a
-    422 — only the OMITTED body is the unedited accept.
+    422 — only the OMITTED body is the unedited accept, unless it is the
+    spec-3.6 confirm flag alone (``{"confirm_overwrite": true}`` — the
+    three-way accept-conflict escape must not force resending the
+    payload).
     """
     if get_campaign(current.id, campaign_id) is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")
-    if body is not None and body.payload is None:
+    if body is not None and body.payload is None and not body.confirm_overwrite:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -163,7 +180,10 @@ def accept_campaign_candidate(
         )
     try:
         candidate, _revision = accept_candidate(
-            campaign_id, candidate_id, payload_override=body.payload if body else None
+            campaign_id,
+            candidate_id,
+            payload_override=body.payload if body else None,
+            confirm_overwrite=body.confirm_overwrite if body else False,
         )
     except StoreError as exc:
         store_error_as_http(exc)

@@ -467,6 +467,12 @@ function editedPayload(candidate: Candidate): Record<string, unknown> {
 
 async function acceptCandidate(candidate: Candidate) {
   actionError.value = null
+  if (acceptConflictFor.value[candidate.id]) {
+    // A stale accept attempt while the dialog is open must not stack a
+    // second rejection — close the dialog instead (either the conflict
+    // resolved or the row settled).
+    closeConflictDialog(candidate.id)
+  }
   actingId.value = candidate.id
   try {
     await candidates.accept(
@@ -476,9 +482,14 @@ async function acceptCandidate(candidate: Candidate) {
     )
     cancelEdit(candidate.id)
   } catch (err) {
-    actionError.value = {
-      id: candidate.id,
-      message: err instanceof ApiError ? err.message : 'Could not accept the candidate.',
+    if (isEditConflict(err) && candidate.regenerates_entity_id) {
+      // spec-3.6: the target moved since staging — three-way dialog.
+      openConflictDialog(candidate.id)
+    } else {
+      actionError.value = {
+        id: candidate.id,
+        message: err instanceof ApiError ? err.message : 'Could not accept the candidate.',
+      }
     }
   } finally {
     actingId.value = null
@@ -530,6 +541,107 @@ async function rollCandidate(candidate: Candidate, sections: string[] | null, la
   } finally {
     delete rollingId.value[candidate.id]
     actingId.value = null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Accept-conflict dialog (spec-3.6 ACCEPT_CONFLICT / ACCEPT_ANYWAY): a
+// regenerate-entity accept rejected because the target's committed record
+// moved since staging opens a three-way choice — re-roll (the candidate
+// re-roll in place, preserving staged edge edits), accept the generated
+// version anyway (TWO-STEP confirm, then confirm_overwrite: true), or
+// cancel (row stays proposed). The dialog keys on the edit-conflict
+// message, NEVER on a bare conflict code — a CandidateSettledError from
+// a double submit renders the plain card error instead.
+// ---------------------------------------------------------------------------
+
+const EDIT_CONFLICT_MARKER = 'changed since this candidate was generated'
+
+/** candidateId -> the conflict dialog is open for this row. */
+const acceptConflictFor = ref<Record<string, boolean>>({})
+/** candidateId -> the accept-anyway two-step confirm is armed. */
+const acceptArmed = ref<Record<string, boolean>>({})
+
+function isEditConflict(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409 && err.message.includes(EDIT_CONFLICT_MARKER)
+}
+
+function openConflictDialog(candidateId: string) {
+  acceptConflictFor.value[candidateId] = true
+  acceptArmed.value[candidateId] = false
+}
+
+function closeConflictDialog(candidateId: string) {
+  delete acceptConflictFor.value[candidateId]
+  delete acceptArmed.value[candidateId]
+}
+
+function conflictTargetName(candidate: Candidate): string {
+  const targetId = candidate.regenerates_entity_id
+  if (!targetId) return 'The entity'
+  return nameById.value.get(targetId) ?? 'The entity'
+}
+
+/** Three-way escape 1: re-roll the CANDIDATE in place against the latest
+ * world (spec-3.6 RE_ROLL_AFTER_EDIT) — the row's staged edge edits
+ * survive (3-4), the runner re-reads the target at staging, and the
+ * base refresh makes the row accept-able again. */
+async function conflictReroll(candidate: Candidate) {
+  if (actingId.value !== null) return
+  actionError.value = null
+  actingId.value = candidate.id
+  rollingId.value[candidate.id] = 'whole'
+  try {
+    await jobs.submitRegenerate(campaignId, { kind: 'candidate', id: candidate.id }, null)
+    await jobs.syncList(campaignId)
+    // The row's payload was replaced server-side: discard any open edit
+    // draft VISIBLY (the 3-3 rollCandidate precedent) — a draft seeded
+    // from the pre-roll payload must never silently re-apply old section
+    // values onto the re-rolled row at a later accept.
+    if (editing.value[candidate.id]) {
+      cancelEdit(candidate.id)
+      staleEdits.value[candidate.id] = false
+    }
+    closeConflictDialog(candidate.id)
+  } catch (err) {
+    actionError.value = {
+      id: candidate.id,
+      message: err instanceof ApiError ? err.message : 'Could not re-roll the candidate.',
+    }
+  } finally {
+    delete rollingId.value[candidate.id]
+    actingId.value = null
+  }
+}
+
+/** Three-way escape 2: accept the generated version anyway. Two-step
+ * confirm (the destructive confirmation precedent): the first click
+ * arms, the second sends confirm_overwrite. */
+async function conflictAcceptAnyway(candidate: Candidate) {
+  if (actingId.value !== null) return
+  if (!acceptArmed.value[candidate.id]) {
+    acceptArmed.value[candidate.id] = true
+    return
+  }
+  actionError.value = null
+  actingId.value = candidate.id
+  try {
+    await candidates.accept(
+      campaignId,
+      candidate.id,
+      isEdited(candidate) ? editedPayload(candidate) : undefined,
+      true,
+    )
+    cancelEdit(candidate.id)
+    closeConflictDialog(candidate.id)
+  } catch (err) {
+    actionError.value = {
+      id: candidate.id,
+      message: err instanceof ApiError ? err.message : 'Could not accept the candidate.',
+    }
+  } finally {
+    actingId.value = null
+    acceptArmed.value[candidate.id] = false
   }
 }
 
@@ -786,6 +898,45 @@ function rollLabel(candidateId: string, section: string): string {
           {{ actionError.message }}
         </p>
 
+        <div v-if="acceptConflictFor[candidate.id]" class="conflict-dialog">
+          <p class="error">
+            <strong>{{ conflictTargetName(candidate) }}</strong> changed since this candidate
+            was generated. Re-roll against the latest world, accept the generated version
+            anyway (overwriting your edit), or cancel.
+          </p>
+          <p v-if="acceptArmed[candidate.id]" class="muted confirm-hint">
+            Accepting overwrites your edit. This is undoable via the previous revision.
+            Click again to confirm.
+          </p>
+          <div class="actions">
+            <button
+              type="button"
+              :disabled="actingId !== null"
+              @click="conflictReroll(candidate)"
+            >
+              {{ rollingId[candidate.id] === 'whole' ? 'Re-rolling…' : 'Re-roll against latest world' }}
+            </button>
+            <button
+              type="button"
+              :disabled="actingId !== null"
+              @click="conflictAcceptAnyway(candidate)"
+            >
+              {{
+                acceptArmed[candidate.id]
+                  ? 'Confirm overwrite'
+                  : 'Accept generated version anyway'
+              }}
+            </button>
+            <button
+              type="button"
+              :disabled="actingId !== null"
+              @click="closeConflictDialog(candidate.id)"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+
         <!-- Reject / Edit / Re-roll / Accept: one tap each, equal prominence —
              accept is never the path of least resistance (inversion #2). -->
         <div class="actions">
@@ -931,4 +1082,23 @@ dd {
 .relations .error {
   font-size: 0.85rem;
 }
+
+.conflict-dialog {
+  border: 1px solid #2c3038;
+  border-left: 3px solid #d29922;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  margin: 0.5rem 0;
+}
+.conflict-dialog .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.conflict-dialog .confirm-hint {
+  font-size: 0.8rem;
+  margin: 0.4rem 0 0;
+}
+
 </style>

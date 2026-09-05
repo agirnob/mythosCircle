@@ -87,17 +87,29 @@ export const useCandidatesStore = defineStore('candidates', {
      * every override edge against committed world state AND the
      * required AR24 section shape — any violation rejects with 4xx and
      * the row stays proposed. No body = accept unedited.
+     * ``confirmOverwrite`` (spec-3.6 ACCEPT_ANYWAY): the DM's explicit
+     * confirmation that a regenerate-entity accept may overwrite a hand
+     * edit that landed on the target since staging; a body carrying
+     * ONLY this flag is legal (the three-way escape must not force
+     * resending the payload).
      */
     async accept(
       campaignId: string,
       candidateId: string,
       payload?: Record<string, unknown>,
+      confirmOverwrite?: boolean,
     ): Promise<Candidate> {
+      let body: string | undefined
+      if (payload !== undefined && confirmOverwrite) {
+        body = JSON.stringify({ payload, confirm_overwrite: true })
+      } else if (payload !== undefined) {
+        body = JSON.stringify({ payload })
+      } else if (confirmOverwrite) {
+        body = JSON.stringify({ confirm_overwrite: true })
+      }
       const candidate = await apiFetch<Candidate>(
         `/api/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/accept`,
-        payload === undefined
-          ? { method: 'POST' }
-          : { method: 'POST', body: JSON.stringify({ payload }) },
+        body === undefined ? { method: 'POST' } : { method: 'POST', body },
       )
       this.byId[candidate.id] = candidate
       return candidate

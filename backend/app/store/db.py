@@ -93,6 +93,7 @@ def init_db(url: str = DEFAULT_DB_URL) -> Engine:
     _migrate_job_kind(_engine)
     _migrate_proposed_candidate_status(_engine)
     _migrate_proposed_candidate_provenance(_engine)
+    _migrate_proposed_candidate_entity_base(_engine)
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 
@@ -318,6 +319,31 @@ def _migrate_proposed_candidate_provenance(engine: Engine) -> None:
             connection.execute(
                 text(f"ALTER TABLE proposed_candidate ADD COLUMN {name} VARCHAR(26)")
             )
+
+
+def _migrate_proposed_candidate_entity_base(engine: Engine) -> None:
+    """Add ``proposed_candidate.entity_base_data`` to a pre-3.6 database.
+
+    Spec-3.6's accept-conflict guard snapshots the regenerate target's
+    committed ``data`` at staging (``JSON`` column, regenerate rows
+    only). ``create_all`` never ALTERs an existing table, so rows staged
+    before the column existed carry NULL — and a NULL base on a LIVE
+    regenerate target fails closed at accept (``EntityEditConflictError``
+    409 unless the DM explicitly confirms overwrite). One idempotent
+    additive column, per-name ALTER (the provenance-migration pattern):
+    a half-migrated database finishes on the next init; a fresh database
+    already has the column from ``create_all``.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "proposed_candidate" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("proposed_candidate")}
+    if "entity_base_data" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE proposed_candidate ADD COLUMN entity_base_data JSON"))
 
 
 def _migrate_campaign_seed(engine: Engine) -> None:

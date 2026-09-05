@@ -29,6 +29,7 @@ from app.api.auth import get_current_account
 from app.api.common import store_error_as_http
 from app.store import StoreError, get_campaign, models
 from app.store.commit import delete_entity as store_delete_entity
+from app.store.commit import update_entity as store_update_entity
 
 router = APIRouter()
 
@@ -89,6 +90,85 @@ async def delete_entity(
         store_delete_entity(campaign_id, entity_id, cascade=cascade, base_revision=base_revision)
     except StoreError as exc:
         store_error_as_http(exc)
+
+
+@router.patch(
+    "/api/campaigns/{campaign_id}/entities/{entity_id}",
+    status_code=204,
+)
+async def update_entity(
+    campaign_id: str,
+    entity_id: str,
+    request: Request,
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> None:
+    """FR10/spec-3.6: hand-edit one committed entity through the store's
+    commit path — the DM is the final author.
+
+    Partial fields (identity anchor, lore sections, ``stat_block``,
+    ``world_integration``, ``boss``, ``text``, unknown keys) merge onto
+    the current record and commit as exactly one ``entity_updated``
+    revision; a value-identical PATCH commits none (204, idempotent).
+    ``base_revision`` is opt-in optimistic concurrency (omitted targets
+    the current head, resolved inside the store call; a moved head is a
+    409 ``StaleRevisionError`` — rebase-or-reject). Shape validation is
+    conditional (owner decision 2026-09-05): shape-valid records must
+    stay shape-valid (422 naming the break, zero revisions); bare
+    records merge unconstrained.
+
+    Ownership-404-first, mirroring ``delete_entity``: the campaign check
+    runs BEFORE any body is read, so a foreign/unknown campaign is the
+    single indistinguishable 404 even with a malformed body. The body is
+    therefore hand-parsed (pydantic body parameters would validate — and
+    422 — before the handler ran); malformed/non-object/absent body is a
+    400, ``base_revision`` non-string is a 400, and a body whose only
+    key is ``base_revision`` is a 400 (at least one content key is
+    required). 204 body-less, the DELETE precedent.
+    """
+    if get_campaign(current.id, campaign_id) is None:
+        # Foreign or unknown — indistinguishable 404 even without a body.
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    payload = await _object_body(request)
+    if not payload:
+        raise HTTPException(
+            status_code=400,
+            detail="Request body must be a JSON object with at least one content key.",
+        )
+    if not any(key != "base_revision" for key in payload):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A PATCH needs at least one content key (a body of only base_revision is a 400)."
+            ),
+        )
+    base_revision = payload.get("base_revision")
+    if base_revision is not None and not isinstance(base_revision, str):
+        raise HTTPException(status_code=400, detail="base_revision must be a revision id string.")
+    try:
+        store_update_entity(campaign_id, entity_id, patch=payload, base_revision=base_revision)
+    except StoreError as exc:
+        store_error_as_http(exc)
+
+
+async def _object_body(request: Request) -> dict[str, Any]:
+    """The request body as a JSON object (edges.py body precedent).
+
+    An absent body is an empty object (which the PATCH then rejects as
+    keyless — a PATCH must carry content); malformed JSON or a non-dict
+    body is a client 400 — this ordering is why the body is hand-parsed
+    instead of declared as a pydantic parameter (which would 422 before
+    the ownership check and before the 400-vs-422 distinction).
+    """
+    raw = await request.body()
+    if not raw:
+        return {}
+    try:
+        payload = _json.loads(raw)
+    except (ValueError, _json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    return payload
 
 
 __all__ = ["router"]
