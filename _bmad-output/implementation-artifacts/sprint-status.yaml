@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 08:25
-last_updated: 09-05-2026-3-6-review-done
+last_updated: 09-05-2026-epic-3-retro-done
 project: mythosCircle
 project_key: NOKEY
 tracking_system: file-system
@@ -61,8 +61,9 @@ development_status:
   3-2-candidate-lifecycle-and-atomic-commit: done
   3-3-accept-screen-on-substance: done
   3-4-inline-relation-editing: done
+  3-5-regeneration-whole-and-per-section: done
   3-6-hand-editing-the-dm-is-the-final-author: done
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
 
   epic-4: backlog
   4-1-portrait-generation-for-accepted-entities: backlog
@@ -144,3 +145,28 @@ action_items:
     owner: "test-hardening story"
     status: done
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
+  - id: "epic-3-retro-item-2-extract-shared-ar24-profile-component"
+    epic: 3
+    action: "Extract shared AR24 profile component from CandidatesView.vue (1109
+      lines) and WorldView.vue (975 lines): LORE_FIELDS / FIELD_LABELS / EDGE_VOCAB
+      / COUNTER_TYPES / profile-render duplication; land before Epic 7 graph
+      visualizer"
+    owner: "frontend-refactor story"
+    status: open
+    ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-3-retro-2026-09-05.md"
+  - id: "epic-3-retro-item-3-counter-semantic-bounds-enforcement"
+    epic: 3
+    action: "Decide + enforce range bounds on staged edge counters (debt, grudge,
+      loyalty, ally/enemy intensity); subsumes 2-3 counter-ranges deferral; front-load
+      in Epic 4 or 6"
+    owner: "pipeline-tuning story"
+    status: open
+    ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-3-retro-2026-09-05.md"
+  - id: "epic-3-retro-item-4-retrieval-cap-truncation-diagnostic"
+    epic: 3
+    action: "Surface retrieval-cap truncation in generate job result + ask-target
+      seeding for worlds beyond the 24-entity cap; same root as the 3-1 round 1
+      deferral; subsumes the candidates-read no job/state scoping"
+    owner: "retrieval-tuning story"
+    status: open
+    ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-3-retro-2026-09-05.md"
