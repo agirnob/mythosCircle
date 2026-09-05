@@ -135,7 +135,8 @@ action_items:
     action: "Propose spine AD-1 exception: campaign seed is identity/config, not a
       graph delta"
     owner: "owner (contract)"
-    status: open
+    status: done
+
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-1-retro-2026-08-30.md"
   - id: "epic-1-retro-item-7-prefer-fixture-scoped-app-import-over-co"
     epic: 1

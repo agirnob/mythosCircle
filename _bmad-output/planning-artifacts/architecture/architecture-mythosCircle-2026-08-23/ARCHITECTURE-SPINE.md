@@ -7,7 +7,7 @@ paradigm: 'event-sourced graph-of-record + FIFO generation pipeline'
 scope: 'mythosCircle Phase 1 (beta) system — Vue SPA, FastAPI service, versioned world-state graph, single-FIFO generation pipeline, local LLM/image providers on the owner''s single RTX-3090 server; Phase 2/3 governed at boundary level'
 status: final
 created: '2026-08-23'
-updated: '2026-08-23'
+updated: '2026-09-05'
 binds:
   - 'PRD §3 A–G (capabilities)'
   - 'PRD §4 NFR 1–12'
@@ -42,6 +42,7 @@ Layers → namespaces:
 - **Binds:** PRD §3 A, §4 NFR 2
 - **Prevents:** two builders picking different world-state shapes (graph vs. per-entity documents) or letting DM edits and generation write by separate mechanisms.
 - **Rule:** the world is one versioned graph (entities + typed edges) per campaign. Every world-state change — guided build-in, generation accept, DM edit, cascade delete, future import — lands through the store's commit path, which appends events and produces exactly one new revision. No component outside `store/` writes world state.
+- **Exception (campaign creation):** a campaign is a private, owner-bound identity record with seed content; it commits no revision/event because the campaign is identity/config, not a graph delta (spec-1-6 Design Notes). All subsequent world-state changes inside a campaign still land through the commit path and produce one revision each.
 
 ### AD-2 — Atomic subgraph commits; per-transaction undo
 
