@@ -446,6 +446,62 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/campaigns/{campaign_id}/media': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        campaign_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    put?: never
+    /**
+     * List Campaign Media
+     * @description The campaign's media manifest (FOREIGN_CAMPAIGN: owner-only, the
+     *     single indistinguishable 404).
+     */
+    get: operations['list_campaign_media_api_campaigns__campaign_id__media_get']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/campaigns/{campaign_id}/media/{entity_id}/{filename}': {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        campaign_id: string
+        entity_id: string
+        filename: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    put?: never
+    /**
+     * Get File
+     * @description One portrait file — ownership + manifest row + disk checks, all 404.
+     *
+     *     The row lookup is store-side (AD-9) and the disk check is the
+     *     ROW_WITHOUT_FILE row: a manifest row whose file was removed is the
+     *     same 404, never a server error. The filename is a manifest row's
+     *     runner-minted ``<ulid>.png``; the row lookup is the traversal guard
+     *     (a non-row name can never reach the filesystem), and separators are
+     *     rejected outright.
+     */
+    get: operations['get_file_api_campaigns__campaign_id__media__entity_id___filename__get']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -718,6 +774,32 @@ export interface components {
       email: string
       /** Password */
       password: string
+    }
+    /**
+     * MediaListResponse
+     * @description The campaign's media manifest, rowid (insertion) order.
+     */
+    MediaListResponse: {
+      /** Media */
+      media: components['schemas']['MediaResponse'][]
+    }
+    /**
+     * MediaResponse
+     * @description One media manifest row (AD-10) — the entity card's portrait index.
+     */
+    MediaResponse: {
+      /** Id */
+      id: string
+      /** Campaign Id */
+      campaign_id: string
+      /** Entity Id */
+      entity_id: string
+      /** Filename */
+      filename: string
+      /** Kind */
+      kind: string
+      /** Created At */
+      created_at: string
     }
     /** RegisterRequest */
     RegisterRequest: {
@@ -1509,6 +1591,74 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['CandidateResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  list_campaign_media_api_campaigns__campaign_id__media_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        campaign_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['MediaListResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_file_api_campaigns__campaign_id__media__entity_id___filename__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        campaign_id: string
+        entity_id: string
+        filename: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/octet-stream': string
         }
       }
       /** @description Validation Error */

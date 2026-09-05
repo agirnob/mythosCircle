@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 import pytest
 
-from app.core.settings import LLMSettings
+from app.core.settings import ImageSettings, LLMSettings
 from app.pipeline.budget import BudgetExceededError, CallBudget
 from app.pipeline.worker import (
     JobPayloadError,
@@ -171,14 +171,113 @@ def test_run_connection_error_fails_job(world: str) -> None:
     assert "connection" in (job.error or "")
 
 
-def test_run_image_job_fails_kind_boundary(world: str) -> None:
-    """RUN_IMAGE_JOB: a non-text kind fails with the Epic-4 boundary error
-    so the FIFO never stalls on it (a skip would leave it running forever)."""
-    job_id = enqueue_job(world, "image", {"prompt": "a portrait"}).id
+def test_run_image_job_runs_portrait_runner(
+    world: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec-4.1 image dispatch: a valid image job runs the media runner —
+    entity re-read, prompt from the committed appearance, provider call,
+    file under media_dir/{campaign}/{entity}/, manifest row, completed
+    job with {entity_id, filename} (HAPPY_PATH)."""
+    from app.core import ids
+    from app.store import commit_subgraph, list_media, session_scope, world_entities
+
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(
+                kind="character",
+                name="Mira Vane",
+                data={"appearance": {"face": "sharp features", "body": "lean"}},
+                id=entity_id,
+            ),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    seen_prompts: list[str] = []
+
+    def image_provider(prompt: str, settings: ImageSettings) -> bytes:
+        seen_prompts.append(prompt)
+        return b"\x89PNG\r\n\x1a\n" + b"portrait-payload"
+
+    job_id = enqueue_job(world, "image", {"entity_id": entity_id}).id
+    processed = run_next_job(
+        provider=_ok_provider, settings=SETTINGS, image_provider=image_provider
+    )
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["entity_id"] == entity_id
+    filename = str(job.result["filename"])
+    assert filename.endswith(".png")
+    with session_scope() as session:
+        entities = {e.id: e for e in world_entities(session, world)}
+    rows = list_media(world)
+    assert entities[entity_id].name == "Mira Vane"
+    assert len(rows) == 1 and rows[0].entity_id == entity_id and rows[0].filename == filename
+    image_bytes = b"\x89PNG\r\n\x1a\n" + b"portrait-payload"
+    assert (tmp_path / "media" / world / entity_id / filename).read_bytes() == image_bytes
+    # The prompt is the committed appearance projection (never free text).
+    assert seen_prompts == ["face: sharp features\nbody: lean"]
+
+
+def test_run_video_job_fails_kind_boundary(world: str) -> None:
+    """A video job (story 4.2) still fails at the kind boundary so the
+    FIFO never stalls on it — video dispatch lands with the media
+    service's next story."""
+    job_id = enqueue_job(world, "video", {"entity_id": "x"}).id
     run_next_job(provider=_ok_provider, settings=SETTINGS)
     job, _position = job_status(job_id)
     assert job.state == "failed"
-    assert "Epic 4" in (job.error or "")
+    assert "4.2" in (job.error or "")
+
+
+def test_run_image_job_provider_failure_fails_job_cleanly(
+    world: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PROVIDER_FAIL through the WORKER: an image job whose injected
+    provider raises fails the job with the image-flavored error, and no
+    file/row lands. ``run_next_job`` resolves the production-default
+    media_dir via env, covering the default-settings resolution path."""
+    from app.core import ids
+    from app.store import commit_subgraph, list_media
+
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(
+                kind="character",
+                name="Mira Vane",
+                data={"appearance": {"face": "sharp features"}},
+                id=entity_id,
+            ),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+
+    def failing_image_provider(prompt: str, settings: ImageSettings) -> bytes:
+        assert "face" in prompt
+        raise ProviderError("http", status_code=502)
+
+    job_id = enqueue_job(world, "image", {"entity_id": entity_id}).id
+    processed = run_next_job(
+        provider=_ok_provider,
+        settings=SETTINGS,
+        image_provider=failing_image_provider,
+    )
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "image generation failed" in (job.error or "")
+    assert "502" in (job.error or "")
+    assert "llm call failed" not in (job.error or "")  # the image dialect, not the LLM's
+    assert list_media(world) == []
+    assert not (tmp_path / "media" / world / entity_id).exists()
 
 
 def test_result_persisted_and_ws_shape_unchanged(world: str) -> None:

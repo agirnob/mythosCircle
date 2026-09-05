@@ -298,6 +298,113 @@ describe('world store', () => {
     await vi.waitFor(() => expect(exportCalls).toHaveLength(2))
   })
 
+  // -------------------------------------------------------------------------
+  // Spec-4.1: the WS drives the media manifest refetch (no manual refresh)
+  // -------------------------------------------------------------------------
+
+  /** Route mocks counting /media calls; job frames land on the jobs store. */
+  function mockMediaFetch() {
+    const mediaCalls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      if (url.includes('/media')) {
+        mediaCalls.push(url)
+        return jsonResponse({ media: [] })
+      }
+      if (url.includes('/export')) {
+        exportCalls.push(url)
+        return jsonResponse(worldExport())
+      }
+      if (url.includes('/api/jobs')) {
+        return jsonResponse({ jobs: [], next_cursor: null })
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    return mediaCalls
+  }
+
+  function imageJob(id: string, overrides: Partial<Job> = {}): Job {
+    return {
+      id,
+      campaign_id: 'C1',
+      kind: 'image',
+      payload: { entity_id: 'E1' },
+      state: 'queued',
+      progress: 0,
+      max_llm_calls: 64,
+      max_media_calls: 8,
+      error: null,
+      result: null,
+      created_at: '2026-09-06T10:00:00Z',
+      started_at: null,
+      finished_at: null,
+      queue_position: 1,
+      ...overrides,
+    } as Job
+  }
+
+  it('a job_done frame for a cached image job fetches the media list exactly once', async () => {
+    const mediaCalls = mockMediaFetch()
+    const jobs = useJobsStore()
+    jobs.upsert(imageJob('JI1', { state: 'running' }))
+    const world = useWorldStore()
+    await world.load('C1')
+    expect(mediaCalls).toHaveLength(0)
+
+    await world.handleJobMessage(
+      'C1',
+      wsMessage({ type: 'job_done', job_id: 'JI1', state: 'succeeded' }),
+    )
+    await vi.waitFor(() => expect(mediaCalls).toHaveLength(1))
+    expect(mediaCalls[0]).toBe('/api/campaigns/C1/media')
+    // The snapshot is untouched by an image frame.
+    expect(exportCalls).toHaveLength(1)
+  })
+
+  it('an image job_failed frame fetches the media list (re-trigger state)', async () => {
+    const mediaCalls = mockMediaFetch()
+    const jobs = useJobsStore()
+    jobs.upsert(imageJob('JI1', { state: 'running' }))
+    const world = useWorldStore()
+    await world.load('C1')
+
+    await world.handleJobMessage(
+      'C1',
+      wsMessage({ type: 'job_failed', job_id: 'JI1', state: 'failed' }),
+    )
+    await vi.waitFor(() => expect(mediaCalls).toHaveLength(1))
+  })
+
+  it('running/progress frames for an image job do NOT fetch media', async () => {
+    const mediaCalls = mockMediaFetch()
+    const jobs = useJobsStore()
+    jobs.upsert(imageJob('JI1', { state: 'running' }))
+    const world = useWorldStore()
+    await world.load('C1')
+
+    await world.handleJobMessage(
+      'C1',
+      wsMessage({ type: 'job_progress', job_id: 'JI1', progress: 0.5 }),
+    )
+    await world.handleJobMessage(
+      'C1',
+      wsMessage({ type: 'queue_changed', job_id: 'JI1', state: 'running' }),
+    )
+    expect(mediaCalls).toHaveLength(0)
+  })
+
+  it('a terminal frame for an UNCACHED image job (kind unresolved) fetches media too', async () => {
+    const mediaCalls = mockMediaFetch()
+    const world = useWorldStore()
+    await world.load('C1')
+
+    // No cached job; REST recovery drains empty — the kind stays unknown,
+    // and the unresolved-kind terminal fallback refetches both surfaces.
+    await world.handleJobMessage('C1', wsMessage({ type: 'job_done', state: 'succeeded' }))
+    await vi.waitFor(() => expect(mediaCalls).toHaveLength(1))
+    await vi.waitFor(() => expect(exportCalls).toHaveLength(2))
+  })
+
   it('updateEntity PATCHes the changed fields plus the snapshot base_revision and refetches', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = requestUrl(input)

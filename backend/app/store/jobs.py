@@ -186,7 +186,11 @@ def enqueue_job(
     non-ULID ``job_id``, negative budgets, non-dict payload, a
     ``build_in`` payload violating the spec-2.1 contract, a ``generate``
     payload that is not exactly ``{"ask": str}`` or a campaign with zero
-    committed entities — spec-3.1 ASK_EMPTY_WORLD),
+    committed entities — spec-3.1 ASK_EMPTY_WORLD, an ``image`` payload
+    that is not exactly ``{"entity_id": <ULID>}`` for a committed entity
+    of this campaign with a non-blank AR24 appearance — spec-4.1
+    NO_APPEARANCE), ``UnknownEntityError`` (404 — an image payload
+    naming a missing or foreign entity),
     ``DuplicateJobError`` (409, idempotent by job-id), or
     ``QueueFullError`` (409, AR28 pending cap). Budgets default from
     env; enforcement is Story 1.4 (AR21).
@@ -396,6 +400,11 @@ def _enqueue(
         _validate_build_in_payload(payload)
     elif kind == "generate":
         _validate_generate_payload(payload)
+    elif kind == "image":
+        # Spec-4.1: the portrait payload is validated inside the enqueue
+        # transaction (like regenerate) — the entity must exist in this
+        # campaign and its committed AR24 appearance must be non-blank.
+        _validate_image_payload(payload, session, campaign_id)
     if not isinstance(payload, dict):
         raise InvalidJobInputError("job payload must be a JSON object")
     _check_json_serializable(payload)
@@ -545,6 +554,37 @@ def _validate_generate_payload(payload: dict[str, Any]) -> None:
         raise InvalidJobInputError("generate ask must be non-blank")
     if len(ask.strip()) > GENERATE_MAX_ASK_LENGTH:
         raise InvalidJobInputError(f"generate ask exceeds {GENERATE_MAX_ASK_LENGTH} chars")
+
+
+def _validate_image_payload(payload: dict[str, Any], session: Session, campaign_id: str) -> None:
+    """Enforce the spec-4.1 image payload contract (422/404, zero rows).
+
+    The payload is exactly ``{"entity_id": <ULID>}`` — the committed
+    entity whose AR24 ``appearance`` is the portrait prompt source (FR12;
+    a portrait is a projection of the committed character, never free
+    text). The entity must exist in this campaign (404
+    ``UnknownEntityError``) and its committed ``appearance`` must be
+    non-blank (422 ``InvalidJobInputError`` — the NO_APPEARANCE matrix
+    row: a forced enqueue for an appearance-less entity is a 422, never
+    a queued job). The blank check runs the SAME ``appearance_prompt``
+    the runner uses, so the enqueue gate and the run-time fail
+    condition can never disagree (function-local import: the media
+    service imports this package).
+    """
+    from app.media.service import appearance_prompt
+
+    if not isinstance(payload, dict) or set(payload) != {"entity_id"}:
+        raise InvalidJobInputError("image payload must be exactly {'entity_id': <ULID>}")
+    entity_id = payload["entity_id"]
+    if not isinstance(entity_id, str) or not ids.is_valid_ulid(entity_id):
+        raise InvalidJobInputError(f"image payload entity_id is not a ULID: {entity_id!r}")
+    entity = session.get(models.Entity, entity_id)
+    if entity is None or entity.campaign_id != campaign_id:
+        raise UnknownEntityError(entity_id)
+    if appearance_prompt((entity.data or {}).get("appearance")) is None:
+        raise InvalidJobInputError(
+            f"image payload entity {entity_id} has no non-blank AR24 appearance"
+        )
 
 
 def _validate_regenerate_payload(

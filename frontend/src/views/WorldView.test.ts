@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
 import type { components } from '../api/schema'
@@ -58,7 +58,10 @@ vi.mock('../api/client', () => ({
 
 import { ApiError } from '../api/client'
 import { useAuthStore } from '../stores/auth'
+import { useJobsStore } from '../stores/jobs'
 import WorldView from './WorldView.vue'
+
+type Job = components['schemas']['JobResponse']
 
 function worldExport(): WorldExport {
   return {
@@ -155,12 +158,13 @@ describe('WorldView', () => {
     apiFetchMock.mockResolvedValue(worldExport())
     const wrapper = mountView()
     await flushPromises()
-    expect(apiFetchMock).toHaveBeenCalledTimes(1)
+    // Mount: the export snapshot PLUS the media manifest fetch (spec-4.1).
+    expect(apiFetchMock).toHaveBeenCalledTimes(2)
 
     socketCalls[0]!.options?.onReconnect?.()
     await flushPromises()
-    expect(apiFetchMock).toHaveBeenCalledTimes(2)
-    expect(apiFetchMock.mock.calls[1]![0]).toBe('/api/campaigns/C1/export')
+    expect(apiFetchMock).toHaveBeenCalledTimes(3)
+    expect(apiFetchMock.mock.calls[2]![0]).toBe('/api/campaigns/C1/export')
     wrapper.unmount()
   })
 
@@ -190,8 +194,21 @@ describe('WorldView', () => {
   })
 
   it('keeps the last synced world visible when a live refetch fails', async () => {
-    apiFetchMock.mockResolvedValueOnce(worldExport())
-    apiFetchMock.mockRejectedValueOnce(new ApiError(500, 'server_error', 'Database unavailable.'))
+    // Deterministic choreography: the FIRST export succeeds; the media
+    // fetch (spec-4.1) and every later export refetch fail with 500.
+    let exportCalls = 0
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/export')) {
+        exportCalls += 1
+        if (exportCalls === 1) return worldExport()
+        throw new ApiError(500, 'server_error', 'Database unavailable.')
+      }
+      if (url.includes('/media')) {
+        throw new ApiError(500, 'server_error', 'Database unavailable.')
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
     const wrapper = mountView()
     await flushPromises()
     expect(wrapper.text()).toContain('Mira Vane')
@@ -949,5 +966,249 @@ describe('WorldView', () => {
     expect(
       (wrapper.find('textarea[aria-label="Personality"]').element as HTMLTextAreaElement).value,
     ).toBe('still typing')
+  })
+
+  // -------------------------------------------------------------------------
+  // Portraits (spec-4.1, FR12/AD-10)
+  // -------------------------------------------------------------------------
+
+  const PORTRAIT_FILENAME = '01JZZZZZZZZZZZZZZZZZZZZZZX.png'
+
+  function portraitWorld(appearance: unknown): WorldExport {
+    return {
+      campaign: {
+        id: 'C1',
+        title: 'Greymarch',
+        theme: 'frontier dread',
+        description: '',
+        custom_lore: '',
+        created_at: '2026-09-03T20:00:00Z',
+      },
+      revision: { id: '01JZZZZZZZZZZZZZZZZZZZZZZZ', created_at: '2026-09-03T20:05:00Z' },
+      entities: [
+        {
+          id: 'E1',
+          kind: 'character',
+          name: 'Mira Vane',
+          text: 'The barkeep.',
+          data: { appearance },
+        },
+      ],
+      edges: [],
+    }
+  }
+
+  function portraitMedia(entityId = 'E1'): { media: components['schemas']['MediaResponse'][] } {
+    return {
+      media: [
+        {
+          id: 'M1',
+          campaign_id: 'C1',
+          entity_id: entityId,
+          filename: PORTRAIT_FILENAME,
+          kind: 'image',
+          created_at: '2026-09-06T10:00:00Z',
+        },
+      ],
+    }
+  }
+
+  function imageJob(id: string, entityId: string, overrides: Partial<Job> = {}): Job {
+    return {
+      id,
+      campaign_id: 'C1',
+      kind: 'image',
+      payload: { entity_id: entityId },
+      state: 'queued',
+      progress: 0,
+      max_llm_calls: 64,
+      max_media_calls: 8,
+      error: null,
+      result: null,
+      created_at: '2026-09-06T10:00:00Z',
+      started_at: null,
+      finished_at: null,
+      queue_position: 1,
+      ...overrides,
+    } as Job
+  }
+
+  /** Route mocks for the portrait surface: export + media + jobs POST. */
+  function stubPortraitApi(world: WorldExport, media: { media: components['schemas']['MediaResponse'][] }) {
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url.includes('/media')) return media
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        return imageJob('JP1', 'E1', { state: 'queued', queue_position: 1 })
+      }
+      return world
+    })
+  }
+
+  function generatePortraitButton(wrapper: VueWrapper) {
+    return wrapper.findAll('button').filter((b) => b.text().startsWith('Generate portrait'))[0]
+  }
+
+  it('portrait: the latest manifest row renders as the card image with a visible re-generate button', async () => {
+    stubPortraitApi(portraitWorld({ face: 'sharp features', body: 'lean' }), portraitMedia())
+    const wrapper = mountView()
+    await flushPromises()
+    const img = wrapper.find('.portrait-img')
+    expect(img.exists()).toBe(true)
+    expect(img.attributes('src')).toBe(`/api/campaigns/C1/media/E1/${PORTRAIT_FILENAME}`)
+    expect(wrapper.text()).not.toContain('No portrait.')
+    expect(generatePortraitButton(wrapper)).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('portrait: an entity with an appearance but no media shows "No portrait" with an enabled button', async () => {
+    stubPortraitApi(portraitWorld({ face: 'sharp features' }), { media: [] })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('No portrait.')
+    const button = generatePortraitButton(wrapper)
+    expect(button).toBeDefined()
+    expect(button.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('portrait: an entity without an appearance gets a disabled button and a hint (enqueue gate mirrored)', async () => {
+    stubPortraitApi(portraitWorld(''), { media: [] })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Add an appearance to generate a portrait.')
+    const button = generatePortraitButton(wrapper)
+    expect(button).toBeDefined()
+    expect(button.attributes('disabled')).toBeDefined()
+    // A whitespace-only string appearance is blank the same way.
+    wrapper.unmount()
+
+    stubPortraitApi(portraitWorld('   \n\t '), { media: [] })
+    const wrapper2 = mountView()
+    await flushPromises()
+    expect(wrapper2.text()).toContain('Add an appearance to generate a portrait.')
+    expect(generatePortraitButton(wrapper2).attributes('disabled')).toBeDefined()
+    wrapper2.unmount()
+  })
+
+  it('portrait: a queued image job shows its queue position and disables the button while pending', async () => {
+    stubPortraitApi(portraitWorld({ face: 'sharp' }), { media: [] })
+    const jobs = useJobsStore()
+    jobs.upsert(imageJob('JI1', 'E1', { state: 'queued', queue_position: 2 }))
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Portrait queued — position 2')
+    // The in-flight discipline swaps the button label and disables it.
+    const button = wrapper.findAll('button').filter((b) => b.text().startsWith('Portrait queued'))[0]
+    expect(button).toBeDefined()
+    expect(button.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toContain('Generate portrait')
+    wrapper.unmount()
+  })
+
+  it('portrait: a running image job shows the generating status', async () => {
+    stubPortraitApi(portraitWorld({ face: 'sharp' }), { media: [] })
+    const jobs = useJobsStore()
+    jobs.upsert(imageJob('JI1', 'E1', { state: 'running', progress: 0.5 }))
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Generating portrait…')
+    wrapper.unmount()
+  })
+
+  it('portrait: a failed job shows the failure and re-enables the button (DM re-triggers)', async () => {
+    stubPortraitApi(portraitWorld({ face: 'sharp' }), { media: [] })
+    const jobs = useJobsStore()
+    jobs.upsert(
+      imageJob('JI1', 'E1', {
+        state: 'failed',
+        error: 'image generation failed: provider returned HTTP 502',
+      }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Portrait failed: image generation failed: provider returned HTTP 502')
+    const button = generatePortraitButton(wrapper)
+    expect(button.attributes('disabled')).toBeUndefined() // failed releases the button
+    wrapper.unmount()
+  })
+
+  it('portrait: a failed re-generation is visible even when an older portrait renders', async () => {
+    stubPortraitApi(portraitWorld({ face: 'sharp' }), portraitMedia())
+    const jobs = useJobsStore()
+    jobs.upsert(
+      imageJob('JI1', 'E1', {
+        state: 'failed',
+        error: 'image generation failed: provider returned HTTP 502',
+      }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+    // The old portrait still renders…
+    expect(wrapper.find('.portrait-img').exists()).toBe(true)
+    // …but the failed re-generation is NOT hidden behind it (acceptance
+    // criterion 4: the DM sees the failure and re-triggers).
+    expect(wrapper.text()).toContain('Portrait failed: image generation failed: provider returned HTTP 502')
+    wrapper.unmount()
+  })
+
+  it('portrait: a stale enqueue error clears when the entity job reaches a terminal state', async () => {
+    // Enqueue fails (network/4xx): the inline error renders.
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url.includes('/media')) return { media: [] }
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        throw new ApiError(409, 'queue_full', 'pending jobs at the cap')
+      }
+      return portraitWorld({ face: 'sharp' })
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await generatePortraitButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('pending jobs at the cap')
+
+    // A terminal image job arrives (e.g. the auto-enqueue from the accept
+    // screen, or a later retry): the stale red text clears.
+    const jobs = useJobsStore()
+    jobs.upsert(imageJob('JI1', 'E1', { state: 'succeeded', result: { filename: 'x.png' } }))
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('pending jobs at the cap')
+    wrapper.unmount()
+  })
+
+  it('portrait: a later VIDEO row does not displace the portrait as the image src', async () => {
+    const imageRow = portraitMedia().media[0]!
+    const videoRow: components['schemas']['MediaResponse'] = {
+      id: 'M2',
+      campaign_id: 'C1',
+      entity_id: 'E1',
+      filename: '01JZZZZZZZZZZZZZZZZZZZZZZY.mp4',
+      kind: 'video',
+      created_at: '2026-09-06T11:00:00Z', // NEWER than the portrait row
+    }
+    stubPortraitApi(portraitWorld({ face: 'sharp' }), { media: [imageRow, videoRow] })
+    const wrapper = mountView()
+    await flushPromises()
+    const img = wrapper.find('.portrait-img')
+    expect(img.exists()).toBe(true)
+    expect(img.attributes('src')).toBe(`/api/campaigns/C1/media/E1/${PORTRAIT_FILENAME}`)
+    wrapper.unmount()
+  })
+
+  it('portrait: a failed media-list fetch renders "Portrait list unavailable", not "No portrait."', async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/media')) {
+        throw new ApiError(500, 'server_error', 'Database unavailable.')
+      }
+      return portraitWorld({ face: 'sharp' })
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    // The failure is tracked: absence is NOT assumed from a broken list.
+    expect(wrapper.text()).toContain('Portrait list unavailable.')
+    expect(wrapper.text()).not.toContain('No portrait.')
+    wrapper.unmount()
   })
 })

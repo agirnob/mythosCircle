@@ -32,6 +32,17 @@ timeout = 900
 max_llm_calls_per_job = 64
 max_media_calls_per_job = 8
 
+[image]
+# OpenAI-compatible image endpoint (spec-4.1). PLACEHOLDER DEFAULTS — the
+# dev image server + model choice is a pending owner decision (ask-first
+# item); until confirmed these are inert and portrait tests inject a mock
+# provider. The key, if any, is an environment variable
+# (MYTHOSCIRCLE_IMAGE_API_KEY).
+endpoint = "http://127.0.0.1:8081/v1"
+model = "mythos-portrait-v1"
+# HTTP timeout for one images/generations call (seconds).
+timeout = 120
+
 [queue]
 # One persistent FIFO; exactly one job at a time (AD-3). The pending cap
 # (in-flight + queued, AR28) — consumed by the runtime as

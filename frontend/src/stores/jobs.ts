@@ -56,6 +56,20 @@ export const useJobsStore = defineStore('jobs', {
           const payload = job.payload as { target?: { kind?: string; id?: string } } | null
           return payload?.target?.kind === kind && payload?.target?.id === id
         }),
+    /** A portrait job for this entity still queued/running (spec-4.1) —
+     * the in-flight discipline mirroring ``regenerateInFlight``: a second
+     * enqueue for the same entity must not burn a second generation
+     * while the first is still pending; a FAILED job releases the button
+     * so the DM can re-trigger. */
+    portraitInFlight:
+      (state) =>
+      (campaignId: string, entityId: string): boolean =>
+        Object.values(state.byId).some((job) => {
+          if (job.campaign_id !== campaignId || job.kind !== 'image') return false
+          if (TERMINAL_STATES.has(job.state)) return false
+          const payload = job.payload as { entity_id?: string } | null
+          return payload?.entity_id === entityId
+        }),
   },
   actions: {
     /**
@@ -109,6 +123,24 @@ export const useJobsStore = defineStore('jobs', {
           campaign_id: campaignId,
           kind: 'regenerate',
           payload,
+        }),
+      })
+      this.upsert(job)
+      return job
+    },
+    /**
+     * Spec-4.1 portrait: one image job whose payload names the committed
+     * entity — the portrait is a projection of the entity's committed
+     * AR24 appearance, never free text (the backend validates the
+     * payload + appearance at enqueue).
+     */
+    async submitPortrait(campaignId: string, entityId: string) {
+      const job = await apiFetch<Job>('/api/jobs', {
+        method: 'POST',
+        body: JSON.stringify({
+          campaign_id: campaignId,
+          kind: 'image',
+          payload: { entity_id: entityId },
         }),
       })
       this.upsert(job)

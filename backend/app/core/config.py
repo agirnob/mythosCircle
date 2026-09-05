@@ -24,8 +24,12 @@ MAX_PENDING_ENV = "MYTHOSCIRCLE_MAX_PENDING_PER_CAMPAIGN"
 LLM_ENDPOINT_ENV = "MYTHOSCIRCLE_LLM_ENDPOINT"
 LLM_MODEL_ENV = "MYTHOSCIRCLE_LLM_MODEL"
 LLM_TIMEOUT_ENV = "MYTHOSCIRCLE_LLM_TIMEOUT"
+IMAGE_ENDPOINT_ENV = "MYTHOSCIRCLE_IMAGE_ENDPOINT"
+IMAGE_MODEL_ENV = "MYTHOSCIRCLE_IMAGE_MODEL"
+IMAGE_TIMEOUT_ENV = "MYTHOSCIRCLE_IMAGE_TIMEOUT"
 DB_ENV = "MYTHOSCIRCLE_DB"
 LOG_FILE_ENV = "MYTHOSCIRCLE_LOG_FILE"
+MEDIA_DIR_ENV = "MYTHOSCIRCLE_MEDIA_DIR"
 
 
 def env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -66,6 +70,14 @@ DEFAULT_MAX_PENDING = 10
 DEFAULT_LLM_ENDPOINT = "http://127.0.0.1:8080/v1"
 DEFAULT_LLM_MODEL = "mythos-14b-q5"
 DEFAULT_LLM_TIMEOUT = 120.0
+#: Documented PLACEHOLDER defaults (spec-4.1 ask-first item): the dev
+#: image server + model choice is an owner decision at build — until
+#: confirmed, these are inert placeholders and tests inject a mock
+#: provider. Swapping engines is a config change, never a code change.
+DEFAULT_IMAGE_ENDPOINT = "http://127.0.0.1:8081/v1"
+DEFAULT_IMAGE_MODEL = "mythos-portrait-v1"
+DEFAULT_IMAGE_TIMEOUT = 120.0
+DEFAULT_MEDIA_DIR = "/var/lib/mythoscircle/media"
 DEFAULT_THEMES = ["High Fantasy", "Grimdark", "Steampunk", "Planar"]
 DEFAULT_DB_URL = "sqlite:////var/lib/mythoscircle/mythoscircle.db"
 
@@ -80,9 +92,13 @@ class RuntimeConfig:
     llm_timeout: float = DEFAULT_LLM_TIMEOUT
     max_llm_calls_per_job: int = 64
     max_media_calls_per_job: int = 8
+    image_endpoint: str = DEFAULT_IMAGE_ENDPOINT
+    image_model: str = DEFAULT_IMAGE_MODEL
+    image_timeout: float = DEFAULT_IMAGE_TIMEOUT
     themes: list[str] = field(default_factory=lambda: list(DEFAULT_THEMES))
     db_url: str | None = None
     log_file: str | None = None
+    media_dir: str = DEFAULT_MEDIA_DIR
 
 
 def config_path() -> Path:
@@ -114,6 +130,7 @@ def runtime_config() -> RuntimeConfig:
     world = data.get("world", {})
     queue = data.get("queue", {})
     llm = data.get("llm", {})
+    image = data.get("image", {})
     campaigns = data.get("campaigns", {})
 
     def _config_int(value: Any, name: str, default: int) -> int:
@@ -153,6 +170,14 @@ def runtime_config() -> RuntimeConfig:
         LLM_TIMEOUT_ENV,
         _config_float(llm.get("timeout"), "llm.timeout", DEFAULT_LLM_TIMEOUT),
     )
+    image_endpoint = os.environ.get(IMAGE_ENDPOINT_ENV) or str(
+        image.get("endpoint", DEFAULT_IMAGE_ENDPOINT)
+    )
+    image_model = os.environ.get(IMAGE_MODEL_ENV) or str(image.get("model", DEFAULT_IMAGE_MODEL))
+    image_timeout = env_float(
+        IMAGE_TIMEOUT_ENV,
+        _config_float(image.get("timeout"), "image.timeout", DEFAULT_IMAGE_TIMEOUT),
+    )
     themes_raw = campaigns.get("themes", DEFAULT_THEMES)
     if not isinstance(themes_raw, list) or not all(isinstance(t, str) for t in themes_raw):
         raise ValueError("config campaigns.themes must be a list of strings")
@@ -171,17 +196,22 @@ def runtime_config() -> RuntimeConfig:
     log_file = os.environ.get(LOG_FILE_ENV) or world.get("log_file")
     max_llm = _config_int(llm.get("max_llm_calls_per_job"), "llm.max_llm_calls_per_job", 64)
     max_media = _config_int(llm.get("max_media_calls_per_job"), "llm.max_media_calls_per_job", 8)
+    media_dir = os.environ.get(MEDIA_DIR_ENV) or world.get("media_dir") or DEFAULT_MEDIA_DIR
 
     return RuntimeConfig(
         queue_max_pending=pending,
         llm_endpoint=endpoint,
         llm_model=model,
         llm_timeout=timeout,
+        image_endpoint=image_endpoint,
+        image_model=image_model,
+        image_timeout=image_timeout,
         max_llm_calls_per_job=max_llm,
         max_media_calls_per_job=max_media,
         themes=themes,
         db_url=db_url,
         log_file=log_file,
+        media_dir=media_dir,
     )
 
 

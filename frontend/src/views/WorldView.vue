@@ -6,6 +6,7 @@ import type { components } from '../api/schema'
 import { ApiError } from '../api/client'
 import StatBlock from '../components/StatBlock.vue'
 import { useAuthStore } from '../stores/auth'
+import { hasNonBlankAppearance } from '../lib/appearance'
 import { useJobsStore } from '../stores/jobs'
 import { useWorldStore } from '../stores/world'
 import { connectJobSocket } from '../ws'
@@ -40,6 +41,9 @@ async function start() {
   if (disposed) return
   const entry = world.entry(campaignId)
   if (entry.notFound || entry.error) return
+  // Spec-4.1: the media manifest is fetched separately from the snapshot
+  // (export stays media-free). Decorative — failures never break the view.
+  void world.fetchMedia(campaignId)
   if (connectedCampaign === campaignId) return
   connectedCampaign = campaignId
   disconnectSocket = connectJobSocket(
@@ -237,6 +241,111 @@ async function regenerateEntity(entityId: string) {
       err instanceof ApiError ? err.message : 'Could not regenerate the entity.'
   } finally {
     regeneratingId.value = null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Portraits (spec-4.1, FR12/AD-10): the committed entity's AR24
+// `appearance` is the prompt source — the backend rejects any enqueue
+// whose appearance is blank, and the card's button mirrors that gate (a
+// forced enqueue would 422, so the button is disabled until an
+// appearance exists). The manifest renders the latest portrait; image
+// jobs show their queue position / progress / failure inline.
+// ---------------------------------------------------------------------------
+
+const portraitErrors = ref<Record<string, string>>({})
+
+/** Terminal image-job states (the jobs store's TERMINAL_STATES, mirrored
+ * locally — the store does not export it). */
+const PORTRAIT_TERMINAL: ReadonlySet<string> = new Set(['succeeded', 'failed', 'cancelled'])
+
+/** A failed ENQUEUE leaves stale red text; it is cleared when the
+ * entity's latest image job reaches a terminal state (a re-trigger
+ * landed one way or another) or when the media manifest changes (a new
+ * portrait arrived). Watches the whole campaign's signature — cheap and
+ * covers every entity card at once. */
+watch(
+  () => [
+    jobs
+      .forCampaign(campaignId)
+      .filter((job) => job.kind === 'image' && PORTRAIT_TERMINAL.has(job.state))
+      .map((job) => `${job.id}:${job.state}`)
+      .join('|'),
+    world.mediaFor(campaignId)
+      .map((row) => row.id)
+      .join('|'),
+  ],
+  () => {
+    portraitErrors.value = {}
+  },
+)
+
+/** The entity's latest manifest row (newest created_at), or null. */
+function portraitFor(entity: EntityExport) {
+  return world.portraitFor(campaignId, entity.id)
+}
+
+/** The same-origin file URL — the session cookie (path /api) authenticates it. */
+function portraitUrl(entity: EntityExport): string {
+  const row = portraitFor(entity)
+  return row
+    ? `/api/campaigns/${encodeURIComponent(campaignId)}/media/${encodeURIComponent(row.entity_id)}/${row.filename}`
+    : ''
+}
+
+function entityHasAppearance(entity: EntityExport): boolean {
+  const data = entity.data
+  if (typeof data !== 'object' || data === null) return false
+  return hasNonBlankAppearance((data as Record<string, unknown>)['appearance'])
+}
+
+/** The latest image job for this entity (newest first) — status source. */
+function portraitJobFor(entityId: string) {
+  return (
+    jobs
+      .forCampaign(campaignId)
+      .filter((job) => {
+        if (job.kind !== 'image') return false
+        const payload = job.payload as { entity_id?: string } | null
+        return payload?.entity_id === entityId
+      })
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
+  )
+}
+
+/** The card's portrait status line: queue position while pending, the
+ * failure/queue/running message — RENDERED whenever the latest image
+ * job is failed, even when an older portrait exists (the DM must see a
+ * failed re-generation; acceptance criterion 4). */
+function portraitStatus(entity: EntityExport): string | null {
+  const job = portraitJobFor(entity.id)
+  if (!job) {
+    return entityHasAppearance(entity) ? null : 'Add an appearance to generate a portrait.'
+  }
+  if (job.state === 'queued') return `Portrait queued — position ${job.queue_position ?? '…'}`
+  if (job.state === 'running') return 'Generating portrait…'
+  if (job.state === 'failed') return `Portrait failed: ${job.error ?? 'unknown error'}`
+  return null
+}
+
+/** The failed-generation message alone — shown even when a portrait
+ * renders (a failed re-generation must not be hidden by the old image). */
+function portraitFailure(entity: EntityExport): string | null {
+  const job = portraitJobFor(entity.id)
+  if (job?.state !== 'failed') return null
+  return `Portrait failed: ${job.error ?? 'unknown error'}`
+}
+
+async function generatePortrait(entity: EntityExport) {
+  if (jobs.portraitInFlight(campaignId, entity.id)) return
+  if (!entityHasAppearance(entity)) return // the backend gate, mirrored
+  portraitErrors.value[entity.id] = ''
+  try {
+    await jobs.submitPortrait(campaignId, entity.id)
+    await jobs.syncList(campaignId)
+  } catch (err) {
+    portraitErrors.value[entity.id] =
+      err instanceof ApiError ? err.message : 'Could not generate the portrait.'
   }
 }
 
@@ -642,6 +751,49 @@ function additionalDataBlock(entity: EntityExport): string {
                 Edit profile
               </button>
             </h3>
+            <div class="portrait">
+              <img
+                v-if="portraitFor(entity)"
+                :src="portraitUrl(entity)"
+                :alt="`${entity.name} portrait`"
+                class="portrait-img"
+              />
+              <p v-else-if="world.mediaFetchFailed(campaignId)" class="muted">
+                Portrait list unavailable.
+              </p>
+              <p v-else class="muted">No portrait.</p>
+              <p class="portrait-actions">
+                <button
+                  type="button"
+                  class="link"
+                  :disabled="
+                    jobs.portraitInFlight(campaignId, entity.id) || !entityHasAppearance(entity)
+                  "
+                  @click="generatePortrait(entity)"
+                >
+                  {{
+                    jobs.portraitInFlight(campaignId, entity.id)
+                      ? (portraitJobFor(entity.id)?.state === 'running'
+                          ? 'Generating portrait…'
+                          : 'Portrait queued…')
+                      : 'Generate portrait'
+                  }}
+                </button>
+              </p>
+              <!-- The failed-generation message renders REGARDLESS of an
+                   existing portrait (a failed re-generation must not hide
+                   behind the old image); queue/running progress renders
+                   only while no portrait exists yet. -->
+              <p v-if="portraitFailure(entity)" class="error">
+                {{ portraitFailure(entity) }}
+              </p>
+              <p v-else-if="portraitStatus(entity) && !portraitFor(entity)" class="muted small status">
+                {{ portraitStatus(entity) }}
+              </p>
+              <p v-if="portraitErrors[entity.id]" class="error">
+                {{ portraitErrors[entity.id] }}
+              </p>
+            </div>
             <p v-if="entity.text" class="text">{{ entity.text }}</p>
             <p v-else class="muted">No description.</p>
             <p v-if="regenerateErrors[entity.id]" class="error">
@@ -858,6 +1010,28 @@ function additionalDataBlock(entity: EntityExport): string {
 }
 .text {
   white-space: pre-wrap;
+}
+.portrait {
+  margin: 0.5rem 0;
+}
+.portrait-img {
+  max-width: 12rem;
+  max-height: 12rem;
+  border-radius: 0.5rem;
+  display: block;
+}
+.portrait p {
+  margin: 0.15rem 0;
+}
+.portrait-actions {
+  margin-top: 0.25rem;
+}
+.portrait-actions .link:disabled {
+  color: #484f58;
+  cursor: default;
+}
+.portrait .status {
+  font-size: 0.8rem;
 }
 .relations h4 {
   margin: 0.5rem 0 0.25rem;

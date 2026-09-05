@@ -90,6 +90,65 @@ def llm_settings() -> LLMSettings:
     )
 
 
+#: Environment variables for the portrait-image adapter (spec-4.1; keys
+#: and defaults canonical in config.py — documented placeholders until the
+#: owner resolves the dev image server + model ask-first item).
+IMAGE_ENDPOINT = config_mod.IMAGE_ENDPOINT_ENV
+IMAGE_MODEL = config_mod.IMAGE_MODEL_ENV
+IMAGE_API_KEY = "MYTHOSCIRCLE_IMAGE_API_KEY"
+IMAGE_TIMEOUT = config_mod.IMAGE_TIMEOUT_ENV
+MEDIA_DIR = config_mod.MEDIA_DIR_ENV
+
+#: Code defaults (spec-4.1; config.toml [image] overrides in 1.7).
+DEFAULT_IMAGE_ENDPOINT = config_mod.DEFAULT_IMAGE_ENDPOINT
+DEFAULT_IMAGE_MODEL = config_mod.DEFAULT_IMAGE_MODEL
+DEFAULT_IMAGE_TIMEOUT = config_mod.DEFAULT_IMAGE_TIMEOUT
+DEFAULT_MEDIA_DIR = config_mod.DEFAULT_MEDIA_DIR
+
+
+@dataclass(frozen=True)
+class ImageSettings:
+    """The OpenAI-compatible image endpoint the adapter talks to (AR9/AD-14).
+
+    Same shape as ``LLMSettings`` — endpoint/model/api_key/timeout — so
+    the portrait adapter mirrors the chat adapter 1:1 (spec-4.1 Code Map).
+    """
+
+    endpoint: str = DEFAULT_IMAGE_ENDPOINT
+    model: str = DEFAULT_IMAGE_MODEL
+    api_key: str | None = None
+    timeout: float = DEFAULT_IMAGE_TIMEOUT
+
+
+def image_settings() -> ImageSettings:
+    """Read the image adapter's settings (env > config > default).
+
+    The API key stays environment-only (AD-22) — never config.toml.
+    """
+    resolved = runtime_config()
+    endpoint_env = os.environ.get(IMAGE_ENDPOINT)
+    model_env = os.environ.get(IMAGE_MODEL)
+    return ImageSettings(
+        endpoint=(endpoint_env if endpoint_env else resolved.image_endpoint).strip()
+        or resolved.image_endpoint,
+        model=(model_env if model_env else resolved.image_model).strip() or resolved.image_model,
+        api_key=os.environ.get(IMAGE_API_KEY) or None,
+        timeout=env_float(IMAGE_TIMEOUT, resolved.image_timeout),
+    )
+
+
+def configured_media_dir() -> str:
+    """The media storage root — env > config > default (spec-4.1).
+
+    The media service writes portrait files under
+    ``{media_dir}/{campaign_id}/{entity_id}/`` and the API serves them
+    from the same root, so both resolve through this one helper.
+    """
+    if config_mod.MEDIA_DIR_ENV in os.environ:
+        return os.environ[config_mod.MEDIA_DIR_ENV]
+    return runtime_config().media_dir
+
+
 #: Environment variable for the session lifetime (spec-1.5).
 SESSION_TTL_DAYS = "MYTHOSCIRCLE_SESSION_TTL_DAYS"
 #: Default session lifetime in days (AR14/AR29).

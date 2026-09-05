@@ -30,9 +30,11 @@ from app.store import (
     JobStateConflictError,
     QueueFullError,
     UnknownCampaignError,
+    UnknownEntityError,
     app_db_url,
     cancel_job,
     claim_next_job,
+    commit_subgraph,
     complete_job,
     create_campaign,
     enqueue_job,
@@ -135,11 +137,125 @@ def test_enqueue_first_job_queued_position_one(world: str) -> None:
 
 
 def test_enqueue_budgets_come_from_env(world: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Per-job call budgets default from env, validated >= 0 (AR21 stores them)."""
+    """Per-job call budgets default from env, validated >= 0 (AR21 stores them).
+
+    The image job rides the spec-4.1 payload contract: a committed entity
+    with a non-blank AR24 appearance (the portrait prompt source, FR12).
+    """
     monkeypatch.setenv(MAX_LLM_CALLS_PER_JOB, "5")
     monkeypatch.setenv(MAX_MEDIA_CALLS_PER_JOB, "2")
-    job = enqueue_job(world, "image", {"prompt": "a tavern at dusk"})
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="Anchor", id=anchor_id),
+            models.EntityInput(
+                kind="character", name="Mira", data={"appearance": "sharp"}, id=entity_id
+            ),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    job = enqueue_job(world, "image", {"entity_id": entity_id})
     assert job.max_llm_calls == 5 and job.max_media_calls == 2
+
+
+# ---------------------------------------------------------------------------
+# Spec-4.1 image payload contract (the portrait enqueue gate)
+# ---------------------------------------------------------------------------
+
+
+def test_enqueue_image_requires_exact_entity_payload(world: str) -> None:
+    """IMAGE_BAD_PAYLOAD: anything but exactly ``{"entity_id": <ULID>}``
+    is a 422, zero rows written."""
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "image", {"prompt": "a tavern at dusk"})
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "image", {"entity_id": "not-a-ulid"})
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "image", {"entity_id": "0" * 26, "extra": 1})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_image_unknown_entity_is_404(world: str) -> None:
+    """ENTITY_MISSING at enqueue: a fabricated entity id is a
+    ``UnknownEntityError`` (404), zero rows written."""
+    with pytest.raises(UnknownEntityError):
+        enqueue_job(world, "image", {"entity_id": MISSING_ID})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_image_foreign_entity_is_404(world: str) -> None:
+    """An entity of ANOTHER campaign is the same indistinguishable 404
+    (AD-9 — no oracle), zero rows written."""
+    other = create_campaign(
+        _owner_id(), title="Other World", description="", theme="High Fantasy", custom_lore=""
+    ).id
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        other,
+        [
+            models.EntityInput(kind="place", name="Anchor", id=anchor_id),
+            models.EntityInput(
+                kind="character", name="Stranger", data={"appearance": "x"}, id=entity_id
+            ),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    with pytest.raises(UnknownEntityError):
+        enqueue_job(world, "image", {"entity_id": entity_id})
+    assert _count_jobs() == 0
+
+
+@pytest.mark.parametrize(
+    "appearance",
+    [
+        "",
+        "   \n\t ",
+        {},
+        {"clothing": "  "},
+        {"face": "", "unknown_key": "not a known key"},
+    ],
+    ids=["blank-string", "whitespace-string", "empty-dict", "blank-known-key", "only-unknown-keys"],
+)
+def test_enqueue_image_blank_appearance_is_422(world: str, appearance: object) -> None:
+    """NO_APPEARANCE: a forced enqueue for an entity without a non-blank
+    AR24 appearance is a 422 (the runner's fail condition mirrored at the
+    enqueue gate), zero rows written."""
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="Anchor", id=anchor_id),
+            models.EntityInput(
+                kind="character", name="Faceless", data={"appearance": appearance}, id=entity_id
+            ),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "image", {"entity_id": entity_id})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_image_dict_appearance_accepted(world: str) -> None:
+    """The dict shape with at least one non-blank KNOWN key enqueues (the
+    prompt projection's gate — unknown keys never rescue a blank dict)."""
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="Anchor", id=anchor_id),
+            models.EntityInput(
+                kind="character",
+                name="Inkwell",
+                data={"appearance": {"face": "hollow eyes", "unknown_key": "x"}},
+                id=entity_id,
+            ),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    job = enqueue_job(world, "image", {"entity_id": entity_id})
+    assert job.kind == "image" and job.state == "queued"
 
 
 # ---------------------------------------------------------------------------

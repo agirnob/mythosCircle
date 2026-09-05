@@ -1102,4 +1102,181 @@ describe('CandidatesView', () => {
     expect(reroll).toBeDefined()
     expect(reroll!.attributes('disabled')).toBeDefined() // in-flight discipline
   })
+
+  // -------------------------------------------------------------------------
+  // Portrait auto-enqueue after accept (spec-4.1)
+  // -------------------------------------------------------------------------
+
+  /** A portrait-aware accept stub: the accepted row carries an
+   * ``accepted_entity_id`` (schema.ts:642); the image-POST route records
+   * the enqueue. The accepted appearance reflects the EDIT OVERRIDE when
+   * one was sent (the gating decision uses what actually committed). */
+  function stubPortraitAcceptApi(options: {
+    list?: Candidate[]
+    failPortraitWith?: string
+    portraitPending?: boolean
+  } = {}) {
+    const candidate = options.list?.[0] ?? SABLE
+    const portraitPosts: Array<{ kind: string; payload?: unknown }> = []
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url.includes('/accept')) {
+        const body = (init?.body as string) ?? '{}'
+        const parsed = JSON.parse(body) as { payload?: Record<string, unknown> }
+        return {
+          ...candidate,
+          status: 'accepted',
+          accepted_entity_id: 'ACC1',
+          payload: (parsed.payload ?? candidate.payload) as Record<string, unknown>,
+        }
+      }
+      if (url.includes('/reject')) return { ...SABLE, status: 'rejected' }
+      if (url.includes('/candidates')) {
+        return { candidates: options.list ?? [candidate], next_cursor: null }
+      }
+      if (url.includes('/export')) {
+        return {
+          campaign: {
+            id: 'C1',
+            title: 'Greymarch',
+            theme: 'dread',
+            description: '',
+            custom_lore: '',
+            created_at: 'x',
+          },
+          revision: { id: 'R1', created_at: 'x' },
+          entities: [{ id: 'E1', kind: 'character', name: 'Mira Vane', text: '', data: {} }],
+          edges: [],
+        }
+      }
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        if (options.failPortraitWith !== undefined) {
+          throw new ApiError(409, 'queue_full', options.failPortraitWith)
+        }
+        const body = JSON.parse((init.body as string) ?? '{}') as {
+          kind: string
+          payload?: unknown
+        }
+        portraitPosts.push({ kind: body.kind, payload: body.payload })
+        return {
+          ...GENERATE_JOB,
+          id: 'JP1',
+          kind: body.kind,
+          payload: body.payload,
+          state: 'queued',
+          progress: 0,
+          queue_position: 1,
+        }
+      }
+      if (options.portraitPending) {
+        return {
+          jobs: [
+            {
+              ...GENERATE_JOB,
+              id: 'JP0',
+              kind: 'image',
+              payload: { entity_id: 'ACC1' },
+              state: 'queued',
+              progress: 0,
+              queue_position: 1,
+            },
+          ],
+          next_cursor: null,
+        }
+      }
+      return { jobs: [GENERATE_JOB], next_cursor: null }
+    })
+    return portraitPosts
+  }
+
+  it('accept with a non-blank appearance auto-enqueues the portrait for the accepted entity', async () => {
+    const portraitPosts = stubPortraitAcceptApi()
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').filter((b) => b.text() === 'Accept')[0]!.trigger('click')
+    await flushPromises()
+    const imagePost = portraitPosts.find((p) => p.kind === 'image')
+    expect(imagePost).toBeDefined()
+    expect(imagePost!.payload).toEqual({ entity_id: 'ACC1' })
+    wrapper.unmount()
+  })
+
+  it('accept with a blank appearance does NOT auto-enqueue a portrait', async () => {
+    const blank: Candidate = {
+      ...SABLE,
+      payload: { ...SABLE.payload, appearance: '   ' },
+    }
+    const portraitPosts = stubPortraitAcceptApi({ list: [blank] })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').filter((b) => b.text() === 'Accept')[0]!.trigger('click')
+    await flushPromises()
+    expect(portraitPosts.filter((p) => p.kind === 'image')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('accept with an EDITED OVERRIDE blanks the appearance — the override gates the enqueue', async () => {
+    const portraitPosts = stubPortraitAcceptApi()
+    const wrapper = mountView()
+    await flushPromises()
+    // Enter edit mode and blank the appearance.
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text() === 'Edit')[0]!
+      .trigger('click')
+    await flushPromises()
+    const appearanceArea = wrapper
+      .findAll('textarea')
+      .find((t) => (t.element as HTMLTextAreaElement).value === 'gaunt, ink-stained fingers')!
+    await appearanceArea.setValue('   ')
+    await wrapper.findAll('button').filter((b) => b.text() === 'Accept edited')[0]!.trigger('click')
+    await flushPromises()
+    // The override (blank appearance) committed — no portrait for the
+    // accepted entity (the gate uses what actually committed).
+    expect(portraitPosts.filter((p) => p.kind === 'image')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('a rejected portrait enqueue never fails the accept flow', async () => {
+    stubPortraitAcceptApi({ failPortraitWith: 'pending jobs at the cap' })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').filter((b) => b.text() === 'Accept')[0]!.trigger('click')
+    await flushPromises()
+    // The accept succeeded and the row left the proposed list — the
+    // portrait enqueue failure is swallowed (the WorldView button is the
+    // fallback), and no accept error is rendered.
+    expect(wrapper.text()).not.toContain('Sable Rook --rival_of')
+    expect(wrapper.text()).not.toContain('pending jobs at the cap')
+    wrapper.unmount()
+  })
+
+  it('accept does not double-enqueue when a portrait job for the entity is already pending', async () => {
+    const portraitPosts = stubPortraitAcceptApi({ portraitPending: true })
+    const wrapper = mountView()
+    await flushPromises()
+    // Seed the jobs store directly: a pre-existing queued image job for
+    // the accepted entity — the pending state the accept path checks.
+    const jobs = useJobsStore()
+    jobs.byId['JP0'] = {
+      ...GENERATE_JOB,
+      id: 'JP0',
+      kind: 'image',
+      payload: { entity_id: 'ACC1' },
+      state: 'queued',
+      progress: 0,
+      queue_position: 1,
+      max_llm_calls: 64,
+      max_media_calls: 8,
+      error: null,
+      result: null,
+      started_at: null,
+      finished_at: null,
+      created_at: '2026-09-06T09:00:00Z',
+    }
+    await wrapper.findAll('button').filter((b) => b.text() === 'Accept')[0]!.trigger('click')
+    await flushPromises()
+    expect(portraitPosts.filter((p) => p.kind === 'image')).toHaveLength(0)
+    wrapper.unmount()
+  })
 })

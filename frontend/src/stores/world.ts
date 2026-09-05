@@ -50,6 +50,8 @@ export interface WorldEntry {
   dirty: boolean
 }
 
+type MediaRow = components['schemas']['MediaResponse']
+
 function emptyEntry(): WorldEntry {
   return {
     world: null,
@@ -64,17 +66,64 @@ function emptyEntry(): WorldEntry {
 export const useWorldStore = defineStore('world', {
   state: () => ({
     byCampaign: {} as Record<string, WorldEntry>,
+    /** The campaign's media manifest (spec-4.1) — fetched separately from
+     * the snapshot: media is NOT woven into WorldExport (the export stays
+     * media-free; story 4.3 owns export validation). */
+    mediaByCampaign: {} as Record<string, MediaRow[]>,
+    /** True when the campaign's media-list fetch last failed — the view
+     * renders 'Portrait list unavailable' instead of 'No portrait.' so a
+     * transient failure never reads as absence (review round). */
+    mediaErrorByCampaign: {} as Record<string, boolean>,
   }),
   getters: {
     entry:
       (state) =>
       (campaignId: string): WorldEntry =>
         state.byCampaign[campaignId] ?? emptyEntry(),
+    /** The campaign's manifest rows, insertion order (the wire order). */
+    mediaFor:
+      (state) =>
+      (campaignId: string): MediaRow[] =>
+        state.mediaByCampaign[campaignId] ?? [],
+    /** True iff the last media-list fetch for the campaign failed. */
+    mediaFetchFailed:
+      (state) =>
+      (campaignId: string): boolean =>
+        state.mediaErrorByCampaign[campaignId] ?? false,
   },
   actions: {
     /** Initial mount load — same coalescing fetch as refetches. */
     async load(campaignId: string) {
       await this.fetchSnapshot(campaignId)
+    },
+    /**
+     * Spec-4.1: the campaign's media manifest. Fired on mount and on an
+     * image job's terminal frame (job_done/failed) — the portrait lands
+     * with no manual refresh. A failure IS tracked: the 'Portrait list
+     * unavailable' flag renders in place of 'No portrait.' (a transient
+     * media-list failure must not read as absence), and the next image
+     * frame or remount refetches.
+     */
+    async fetchMedia(campaignId: string) {
+      try {
+        const response = await apiFetch<components['schemas']['MediaListResponse']>(
+          `/api/campaigns/${encodeURIComponent(campaignId)}/media`,
+        )
+        this.mediaByCampaign[campaignId] = response.media
+        this.mediaErrorByCampaign[campaignId] = false
+      } catch {
+        this.mediaErrorByCampaign[campaignId] = true
+      }
+    },
+    /** The LATEST PORTRAIT row for an entity, or null (newest
+     * created_at, ``kind === 'image'`` only) — a 4.2 video row for the
+     * same entity must never displace the portrait as the <img> src. */
+    portraitFor(campaignId: string, entityId: string): MediaRow | null {
+      return (
+        this.mediaFor(campaignId)
+          .filter((row) => row.entity_id === entityId && row.kind === 'image')
+          .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
+      )
     },
     /** Fire-and-forget re-sync (WS frame / reconnect); coalesced. */
     requestRefetch(campaignId: string) {
@@ -220,14 +269,31 @@ export const useWorldStore = defineStore('world', {
       const terminal = TERMINAL_TYPES.has(message.type)
       const job = jobs.byId[message.job_id]
       if (job) {
-        if (job.kind !== 'build_in' || job.campaign_id !== campaignId) return
-        const qualifies =
-          (message.type === 'job_progress' && (message.progress ?? 0) >= WAVE1_PROGRESS) || terminal
-        if (!qualifies) return
-      } else if (!terminal) {
+        if (job.campaign_id !== campaignId) return
+        if (job.kind === 'build_in') {
+          // Build-in: refetch on a wave-1 commit progress frame and on
+          // any terminal frame (wave 1 may be committed).
+          const qualifies =
+            (message.type === 'job_progress' && (message.progress ?? 0) >= WAVE1_PROGRESS) ||
+            terminal
+          if (qualifies) void this.fetchSnapshot(campaignId)
+          return
+        }
+        if (job.kind === 'image') {
+          // Spec-4.1 portrait: a terminal image frame means the portrait
+          // file + manifest row landed (or the job failed) — re-fetch
+          // the media list so the card renders with no manual refresh.
+          if (terminal) void this.fetchMedia(campaignId)
+          return
+        }
         return
       }
+      if (!terminal) return
+      // Terminal frame for an UNRESOLVED kind (the job never reached the
+      // cache — e.g. REST recovery failed): refetch the snapshot and the
+      // media list; `job_done` is the last frame an image/build-in emits.
       void this.fetchSnapshot(campaignId)
+      void this.fetchMedia(campaignId)
     },
   },
 })

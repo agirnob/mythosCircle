@@ -26,8 +26,17 @@ import contextlib
 import logging
 from typing import Any
 
-from app.core.settings import LLMSettings, llm_settings
+from app.core.settings import (
+    ImageSettings,
+    LLMSettings,
+    configured_media_dir,
+    llm_settings,
+)
+from app.core.settings import (
+    image_settings as resolve_image_settings,
+)
 from app.pipeline.budget import BudgetExceededError, CallBudget
+from app.providers.image import ImageGeneration, image_generation
 from app.providers.llm import ChatCompletion, ProviderError, chat_completion
 from app.store import (
     JobStateConflictError,
@@ -41,8 +50,9 @@ from app.store import (
 
 logger = logging.getLogger(__name__)
 
-#: Provider signature the worker depends on — injectable for tests.
-#: ``chat_completion`` is the production default (transport injected).
+#: Provider signatures the worker depends on — injectable for tests.
+#: ``chat_completion``/``image_generation`` are the production defaults
+#: (transport injected).
 Provider = ChatCompletion
 
 #: Idle sleep between claim attempts (seconds). Claim is a BEGIN IMMEDIATE
@@ -59,6 +69,8 @@ class JobPayloadError(ValueError):
 def run_next_job(
     provider: Provider = chat_completion,
     settings: LLMSettings | None = None,
+    image_provider: ImageGeneration | None = None,
+    image_settings: ImageSettings | None = None,
 ) -> str | None:
     """Process at most one job; returns its id, or None when idle.
 
@@ -68,6 +80,11 @@ def run_next_job(
     kind, unexpected error — ends in ``complete_job`` or ``fail_job`` so
     the queue keeps flowing (AD-3). ``None`` means there was nothing to
     claim; the caller (``worker_loop``) idles before retrying.
+
+    ``image_provider``/``image_settings`` are the portrait dispatch's
+    injectables (spec-4.1) — ``image_generation``/``image_settings()``
+    are the production defaults, resolved at dispatch time so an
+    unrelated text job never pays the image config read.
     """
     try:
         settings = settings or llm_settings()
@@ -78,7 +95,7 @@ def run_next_job(
     if job is None:
         return None
     try:
-        _run_job(job, provider, settings)
+        _run_job(job, provider, settings, image_provider, image_settings)
     except JobStateConflictError:
         # The job is terminal (cancelled) and the generate runner already
         # discarded its ghost rows before re-raising the conflict — a
@@ -106,7 +123,13 @@ def run_next_job(
     return job.id
 
 
-def _run_job(job: models.Job, provider: Provider, settings: LLMSettings) -> None:
+def _run_job(
+    job: models.Job,
+    provider: Provider,
+    settings: LLMSettings,
+    image_provider: ImageGeneration | None = None,
+    image_settings: ImageSettings | None = None,
+) -> None:
     if job.kind == "build_in":
         # Lazy import: ``build_in`` imports ``JobPayloadError`` from this
         # module, so a module-level import here would be circular.
@@ -130,10 +153,26 @@ def _run_job(job: models.Job, provider: Provider, settings: LLMSettings) -> None
 
         run_regenerate(job, provider, settings)
         return
+    if job.kind == "image":
+        # Lazy import (same circularity): the portrait runner writes the
+        # image file + the store's manifest row and commits no world
+        # state (spec-4.1, AD-1 — media is not world graph).
+        from app.media.service import run_portrait
+
+        run_portrait(
+            job,
+            image_provider or image_generation,
+            # ``image_settings()`` is imported aliased — the parameter of
+            # the same name would shadow it and turn the fallback into a
+            # NoneType call.
+            image_settings or resolve_image_settings(),
+            media_dir=configured_media_dir(),
+        )
+        return
     if job.kind != "text":
         raise JobPayloadError(
-            f"job kind {job.kind!r}: the media service lands in Epic 4 — "
-            "only text jobs run in story 1.4"
+            f"job kind {job.kind!r}: the media service lands in story 4.2 — "
+            "only text/build_in/generate/regenerate/image jobs run in this build"
         )
     prompt = _text_prompt(job.payload)
     budget = CallBudget(job)
@@ -184,6 +223,8 @@ async def worker_loop(
     *,
     provider: Provider = chat_completion,
     settings: LLMSettings | None = None,
+    image_provider: ImageGeneration | None = None,
+    image_settings: ImageSettings | None = None,
 ) -> None:
     """The background queue drainer; exits on ``stop`` between jobs.
 
@@ -192,10 +233,14 @@ async def worker_loop(
     ``IDLE_SLEEP`` — short enough to stay responsive, long enough not to
     hammer the write lock. An in-flight job is allowed to finish; a hard
     kill is requeued by ``recover_stale_running`` (spec-1.3). The
-    provider/settings are injectable for deterministic tests.
+    providers/settings are injectable for deterministic tests (the LLM
+    pair for text/build_in/generate/regenerate, the image pair for
+    spec-4.1 portraits).
     """
     while not stop.is_set():
-        processed = await asyncio.to_thread(run_next_job, provider, settings)
+        processed = await asyncio.to_thread(
+            run_next_job, provider, settings, image_provider, image_settings
+        )
         if processed is not None:
             continue
         with contextlib.suppress(TimeoutError):

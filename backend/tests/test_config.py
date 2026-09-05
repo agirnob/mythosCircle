@@ -150,7 +150,9 @@ def test_llm_env_precedence_and_empty_env(tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_config_budgets_consumed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """[llm] max_llm_calls_per_job / max_media_calls_per_job are consumed
-    (review round 1 — they were dead mirrors in the shipped config)."""
+    (review round 1 — they were dead mirrors in the shipped config). The
+    media budget chain is load-bearing since spec-4.1: MediaCallBudget
+    enforces ``job.max_media_calls``, which defaults from this config."""
     path = _write_config(
         tmp_path, "[llm]\nmax_llm_calls_per_job = 4\nmax_media_calls_per_job = 2\n"
     )
@@ -161,3 +163,69 @@ def test_config_budgets_consumed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert queue_settings().max_llm_calls_per_job == 4
     assert queue_settings().max_media_calls_per_job == 2
     reset_runtime_config()
+
+
+def test_image_settings_config_driven(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """[image] endpoint/model/timeout are consumed (spec-4.1)."""
+    path = _write_config(
+        tmp_path,
+        '[image]\nendpoint = "http://img:9000/v1"\nmodel = "cfg-image-model"\ntimeout = 45\n',
+    )
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    from app.core.settings import image_settings
+
+    settings = image_settings()
+    assert settings.endpoint == "http://img:9000/v1"
+    assert settings.model == "cfg-image-model"
+    assert settings.timeout == 45
+    reset_runtime_config()
+
+
+def test_image_env_precedence_and_empty_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The image env vars win over config; a set-but-empty env falls
+    through to the config value (env > config > default)."""
+    path = _write_config(tmp_path, '[image]\nendpoint = "http://cfg-img:8000/v1"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    from app.core.settings import image_settings
+
+    monkeypatch.setenv("MYTHOSCIRCLE_IMAGE_ENDPOINT", "http://env-img:9000/v1")
+    assert image_settings().endpoint == "http://env-img:9000/v1"
+    reset_runtime_config()  # the cache locked endpoint=env URL in phase 1
+    monkeypatch.delenv("MYTHOSCIRCLE_IMAGE_ENDPOINT")
+    monkeypatch.setenv("MYTHOSCIRCLE_IMAGE_ENDPOINT", "")  # empty -> config
+    assert image_settings().endpoint == "http://cfg-img:8000/v1"
+    reset_runtime_config()
+
+
+def test_image_defaults_are_documented_placeholders(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ask-first item's defaults are inert placeholders — a missing
+    config/env resolves to them without error (the mock provider is the
+    test-time real path)."""
+    from app.core.settings import DEFAULT_IMAGE_ENDPOINT, image_settings
+
+    assert image_settings().endpoint == DEFAULT_IMAGE_ENDPOINT
+    assert image_settings().model == "mythos-portrait-v1"
+
+
+def test_media_dir_from_config_and_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """[world] media_dir is consumed; MYTHOSCIRCLE_MEDIA_DIR wins over
+    config (env > config > default, spec-4.1)."""
+    from app.core.settings import configured_media_dir
+
+    path = _write_config(tmp_path, '[world]\nmedia_dir = "/custom/media"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    assert configured_media_dir() == "/custom/media"
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", "/env/media")
+    assert configured_media_dir() == "/env/media"
+    reset_runtime_config()
+
+
+def test_media_dir_code_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.settings import configured_media_dir
+
+    assert configured_media_dir() == "/var/lib/mythoscircle/media"

@@ -18,6 +18,7 @@ Public API:
         set_change_listener                 -- generation queue (jobs)
     stage_candidates / accept_candidate / reject_candidate /
         list_candidates                     -- proposed candidates (candidates)
+    add_media / list_media / get_media_file   -- media manifest (media)
 """
 
 from app.store.auth import (
@@ -128,6 +129,13 @@ from app.store.jobs import (
     report_progress,
     set_change_listener,
 )
+from app.store.media import (
+    InvalidMediaError,
+    MediaNotFoundError,
+    add_media,
+    get_media_file,
+    list_media,
+)
 from app.store.models import (
     Account,
     Base,
@@ -196,6 +204,7 @@ __all__ = [
     "InvalidEdgeTypeError",
     "InvalidEntityRecordError",
     "InvalidJobInputError",
+    "InvalidMediaError",
     "InvalidThemeError",
     "InvalidUlidError",
     "JOB_KINDS",
@@ -206,6 +215,7 @@ __all__ = [
     "LORE_FIELDS",
     "LiveEdgesError",
     "Media",
+    "MediaNotFoundError",
     "OrphanEntityError",
     "PENDING_STATES",
     "PROPOSAL_KIND",
@@ -228,6 +238,7 @@ __all__ = [
     "UnknownEdgeError",
     "UnknownEntityError",
     "accept_candidate",
+    "add_media",
     "app_db_url",
     "campaign_seed",
     "cancel_job",
@@ -246,6 +257,7 @@ __all__ = [
     "fail_job",
     "get_campaign",
     "get_engine",
+    "get_media_file",
     "get_session_account",
     "init_app_db",
     "init_db",
@@ -254,6 +266,7 @@ __all__ = [
     "list_campaigns",
     "list_candidates",
     "list_jobs",
+    "list_media",
     "normalize_theme",
     "payload_section_violations",
     "recover_stale_running",

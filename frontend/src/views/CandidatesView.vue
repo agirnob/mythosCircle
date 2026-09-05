@@ -4,8 +4,9 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../api/client'
 import type { components } from '../api/schema'
-import { useAuthStore } from '../stores/auth'
 import StatBlock from '../components/StatBlock.vue'
+import { hasNonBlankAppearance } from '../lib/appearance'
+import { useAuthStore } from '../stores/auth'
 import { useCandidatesStore } from '../stores/candidates'
 import { useJobsStore } from '../stores/jobs'
 import { useWorldStore } from '../stores/world'
@@ -474,13 +475,13 @@ async function acceptCandidate(candidate: Candidate) {
     closeConflictDialog(candidate.id)
   }
   actingId.value = candidate.id
+  // The accepted appearance rides the override when edited — capture it
+  // BEFORE cancelEdit (which wipes the drafts).
+  const override = isEdited(candidate) ? editedPayload(candidate) : undefined
   try {
-    await candidates.accept(
-      campaignId,
-      candidate.id,
-      isEdited(candidate) ? editedPayload(candidate) : undefined,
-    )
+    const accepted = await candidates.accept(campaignId, candidate.id, override)
     cancelEdit(candidate.id)
+    enqueuePortraitAfterAccept(accepted, override ?? candidate.payload)
   } catch (err) {
     if (isEditConflict(err) && candidate.regenerates_entity_id) {
       // spec-3.6: the target moved since staging — three-way dialog.
@@ -629,15 +630,12 @@ async function conflictAcceptAnyway(candidate: Candidate) {
   }
   actionError.value = null
   actingId.value = candidate.id
+  const override = isEdited(candidate) ? editedPayload(candidate) : undefined
   try {
-    await candidates.accept(
-      campaignId,
-      candidate.id,
-      isEdited(candidate) ? editedPayload(candidate) : undefined,
-      true,
-    )
+    const accepted = await candidates.accept(campaignId, candidate.id, override, true)
     cancelEdit(candidate.id)
     closeConflictDialog(candidate.id)
+    enqueuePortraitAfterAccept(accepted, override ?? candidate.payload)
   } catch (err) {
     actionError.value = {
       id: candidate.id,
@@ -652,6 +650,28 @@ async function conflictAcceptAnyway(candidate: Candidate) {
 /** Re-roll label text for a section while a job is in flight. */
 function rollLabel(candidateId: string, section: string): string {
   return rollingId.value[candidateId] === section ? 'Re-rolling…' : 'Re-roll'
+}
+
+// ---------------------------------------------------------------------------
+// Portrait auto-enqueue (spec-4.1): the DM accept is the portrait trigger
+// point — after a successful accept, enqueue the image job when the
+// ACCEPTED payload carries a non-blank AR24 appearance. Best-effort: an
+// enqueue failure (queue cap, transient error) never fails the accept —
+// the world view's Generate portrait button is the fallback.
+// ---------------------------------------------------------------------------
+
+function enqueuePortraitAfterAccept(accepted: Candidate, payload: Record<string, unknown>) {
+  const entityId = accepted.accepted_entity_id
+  if (!entityId) return
+  if (!hasNonBlankAppearance(payload['appearance'])) return
+  // The in-flight discipline mirrors the WorldView button path: a
+  // portrait job already queued/running for this entity must not burn a
+  // second generation (a double-accept or a re-accept before the
+  // terminal frame).
+  if (jobs.portraitInFlight(campaignId, entityId)) return
+  // Best-effort: an enqueue failure (queue cap, transient error) never
+  // fails the accept — the world view's Generate button is the fallback.
+  void jobs.submitPortrait(campaignId, entityId).catch(() => undefined)
 }
 </script>
 
