@@ -573,6 +573,7 @@ def test_mid_call_role_unboss_edit_gates_spliced_boss(
     }
     with session_scope() as session:
         head = latest_revision(session, campaign_id)
+    assert head is not None, "world fixture commits at least one revision before this test"
     commit_subgraph(
         campaign_id,
         [EntityInput(kind="character", name="Vorgath", data=bbeg_record, id=bbeg_id)],
