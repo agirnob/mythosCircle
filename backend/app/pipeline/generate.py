@@ -52,7 +52,6 @@ from app.pipeline.statblocks import (
     build_stat_repair_prompt,
     collect_stat_issues,
     parse_stat_repair_output,
-    spells_reference_text,
     stat_block_rules_text,
 )
 from app.pipeline.worker import JobPayloadError
@@ -322,9 +321,10 @@ def build_generate_prompt(
     neighborhood's serialized hard truths only — no ids, timestamps, or
     job state, ever. Embeds the closed edge vocabulary + counter
     semantics (spec-2.2), the AR19+AR24 sectioned output contract
-    (spec-3.3), and the AR25 stat-block rules with the full spells
-    reference (the same shared blocks the wave-1 prompt and repair
-    prompt embed).
+    (spec-3.3), and the AR25 stat-block rules — with the SRD SPELLS BY CLASS
+    table omitted here (the runtime validator and the one bounded repair
+    pass own the authoritative table, AD-16); wave-1 and the repair prompt
+    embed the same rules block with the table included.
     """
     entities, edges = context
     lines = [
@@ -349,14 +349,21 @@ def build_generate_prompt(
         "TASK",
         "Create exactly 3 candidate entities that answer the ask. Each candidate is a",
         f"character-like figure with a role in {sorted(ROLES)}, woven into the world by",
-        "at least one typed edge whose far endpoint is a committed entity from the",
+        "at least one meaningful typed edge whose far endpoint is a committed entity from the",
         "context list above. Weave, don't list: every candidate must fit the existing",
         "world. Edges must connect two different entities — no self-loops.",
+        "Prefer more than one edge when that is what clearly establishes the",
+        "candidate's role in the committed world.",
+        "If the ask names several distinct figures, answer each with its own",
+        "candidate, in the order the ask names them.",
+        "Candidates are additions to the committed world: never a duplicate or",
+        "upgrade of a committed entity, and never two versions of the same character",
+        "— each gets a distinct name. Treat an already-established figure as the",
+        'existing figure when the ask refers to it generically ("the BBEG"); do not',
+        "create a replacement or a second one unless the ask explicitly requests one.",
         "",
         "STAT BLOCKS",
-        stat_block_rules_text(),
-        "",
-        spells_reference_text(),
+        stat_block_rules_text(spells_reference=False),
         "",
         "OUTPUT CONTRACT",
         'Respond with one JSON object: {"candidates": [...]} — exactly 3 entries.',
@@ -379,17 +386,32 @@ def build_generate_prompt(
         "           an empty boss object); every other section above is always required,",
         '  "edges": [{"endpoint": "C<index>", "direction": "outbound"|"inbound",',
         '             "type": "<vocabulary member>", "counter": <integer, default 1>}]}.',
+        'Fill every boss field for a BBEG/Monster — use "None." where a field does not',
+        "apply (e.g. a monster without legendary actions).",
         "Every edge connects the candidate to exactly one committed entity: endpoint",
         "is a C<index> ref matching the context list above (never an entity name or",
         'id), direction says whether the edge points from the candidate ("outbound")',
         'or from the endpoint to the candidate ("inbound"). Names, roles, personality,',
         "and the secret/rumor/party_hook fields must be non-blank.",
+        "Direction example: the candidate hunts the C2 figure — candidate -> C2, so",
+        '"outbound"; the C2 figure hunts the candidate — C2 -> candidate, so "inbound".',
+        "Quality bar: secret is a specific concealed fact, rumor a concrete in-world",
+        "claim, party_hook a concrete way the party engages the candidate, and",
+        "world_integration.reaction_matrix says how the committed entities and",
+        "factions above react to the candidate.",
+        "Identity consistency: stat_block.identity.role must match the top-level",
+        "role. For NPC/BBEG, top-level level_cr must be exactly 'level <n>' where",
+        "<n> equals stat_block.identity.level. For Monster, top-level level_cr must",
+        "be exactly 'CR <n>' where <n> equals stat_block.identity.cr. Use lowercase",
+        "'level' and uppercase 'CR' exactly.",
         "",
         "EDGE VOCABULARY (closed set — never invent a type)",
         *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
         "",
         "COUNTER SEMANTICS (one integer per edge)",
         *(f"- {edge_type}: {edge_counter_semantic(edge_type)}" for edge_type in sorted(EDGE_TYPES)),
+        "Neutral types: counter must be 1.",
+        "Amount/score/intensity types: counter must be a positive integer from 1 to 10.",
     ]
     return "\n".join(lines)
 

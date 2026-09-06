@@ -77,13 +77,16 @@ def collect_stat_issues(entities: Sequence[models.EntityInput]) -> list[StatIssu
     return issues
 
 
-def stat_block_rules_text() -> str:
+def stat_block_rules_text(spells_reference: bool = True) -> str:
     """The shared, deterministic stat-block rules block (AD-16).
 
     A pure function of the reference data (sorted) — embedded verbatim in
     the wave-1 prompt and the repair prompt so the model is told exactly
     the constraints ``validate_stat_block`` enforces. No ids, timestamps,
-    or job state, ever.
+    or job state, ever. ``spells_reference=False`` (the wave-2 generate
+    prompt, which omits the SRD SPELLS BY CLASS table — the runtime
+    validator and the repair pass own it) swaps only the closing pointer
+    to that table; every other line is identical.
     """
     return "\n".join(
         [
@@ -119,8 +122,17 @@ def stat_block_rules_text() -> str:
             "actions and traits (optional): entries with a name and a description string.",
             "spells (optional): never for role Monster (a monster's magic is actions",
             "or traits); otherwise only with an identity.class and no repeats — every",
-            "spell name must appear on that class's line of the SRD SPELLS BY CLASS",
-            "reference below.",
+            *(
+                [
+                    "spell name must appear on that class's line of the SRD SPELLS BY CLASS",
+                    "reference below.",
+                ]
+                if spells_reference
+                else [
+                    "spell name must be on that class's SRD spell list (the runtime",
+                    "validator owns the authoritative table).",
+                ]
+            ),
         ]
     )
 

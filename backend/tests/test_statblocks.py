@@ -360,6 +360,12 @@ def test_rules_text_carries_vocabularies() -> None:
     assert "CR_MAX" not in rules  # interpolated, never a name leak
     assert "SRD SPELLS BY CLASS" in rules  # pointer to the embedded reference
     assert "Skill" in rules or "skill" in rules
+    # The flag variant (wave-2 generate prompt) swaps only the closing
+    # pointer to the embedded table; everything else is identical.
+    without_table = stat_block_rules_text(spells_reference=False)
+    assert "reference below" not in without_table
+    assert "runtime" in without_table and "validator owns the authoritative table" in without_table
+    assert without_table != rules
 
 
 def test_rules_text_instructs_challenge_scaling() -> None:

@@ -1041,7 +1041,10 @@ def test_build_generate_prompt_deterministic() -> None:
     assert "WORLD CONTEXT" in first and "entity[0]" in first
     assert "EDGE VOCABULARY" in first and "rival_of" in first and "debt: amount" in first
     assert "COUNTER SEMANTICS" in first
-    assert stat_block_rules_text() in first and "SRD SPELLS BY CLASS" in first
+    assert stat_block_rules_text(spells_reference=False) in first
+    # The generate prompt omits the spell table: the runtime validator and
+    # the bounded repair pass own the authoritative SRD reference.
+    assert "SRD SPELLS BY CLASS" not in first
     assert '"candidates"' in first and "party_hook" in first
     assert '"C<index>"' in first
 
