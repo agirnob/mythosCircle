@@ -229,3 +229,50 @@ def test_media_dir_code_default(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.core.settings import configured_media_dir
 
     assert configured_media_dir() == "/var/lib/mythoscircle/media"
+
+
+def test_video_settings_config_driven(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """[video] endpoint/model/timeout are consumed (spec-4.2)."""
+    from app.core.settings import video_settings
+
+    path = _write_config(
+        tmp_path,
+        '[video]\nendpoint = "http://vid:9000/v1"\nmodel = "cfg-video-model"\ntimeout = 45\n',
+    )
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    settings = video_settings()
+    assert settings.endpoint == "http://vid:9000/v1"
+    assert settings.model == "cfg-video-model"
+    assert settings.timeout == 45
+
+
+def test_video_settings_env_overrides_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MYTHOSCIRCLE_VIDEO_ENDPOINT/MODEL/TIMEOUT win over [video] (env >
+    config > default)."""
+    from app.core.settings import video_settings
+
+    path = _write_config(tmp_path, '[video]\nendpoint = "http://cfg-vid:8000/v1"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_ENDPOINT", "http://env-vid:9000/v1")
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_MODEL", "env-video-model")
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_TIMEOUT", "77")
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_API_KEY", "sk-video")
+    settings = video_settings()
+    assert settings.endpoint == "http://env-vid:9000/v1"
+    assert settings.model == "env-video-model"
+    assert settings.timeout == 77
+    assert settings.api_key == "sk-video"
+
+
+def test_video_defaults_are_documented_placeholders(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The spec-4.2 ask-first item's defaults are inert placeholders — a
+    missing config/env resolves to them without error (the mock provider
+    is the test-time real path)."""
+    from app.core.settings import DEFAULT_VIDEO_ENDPOINT, video_settings
+
+    assert video_settings().endpoint == DEFAULT_VIDEO_ENDPOINT
+    assert video_settings().model == "mythos-reveal-v1"

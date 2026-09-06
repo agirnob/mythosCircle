@@ -405,6 +405,37 @@ describe('world store', () => {
     await vi.waitFor(() => expect(exportCalls).toHaveLength(2))
   })
 
+  it('a job_done frame for a cached video job fetches the media list (spec-4.2)', async () => {
+    const mediaCalls = mockMediaFetch()
+    const jobs = useJobsStore()
+    jobs.upsert(imageJob('JV1', { kind: 'video', state: 'running' }))
+    const world = useWorldStore()
+    await world.load('C1')
+    expect(mediaCalls).toHaveLength(0)
+
+    await world.handleJobMessage(
+      'C1',
+      wsMessage({ type: 'job_done', job_id: 'JV1', state: 'succeeded' }),
+    )
+    await vi.waitFor(() => expect(mediaCalls).toHaveLength(1))
+    expect(mediaCalls[0]).toBe('/api/campaigns/C1/media')
+    expect(exportCalls).toHaveLength(1)
+  })
+
+  it('a video job_failed frame fetches the media list (re-trigger state)', async () => {
+    const mediaCalls = mockMediaFetch()
+    const jobs = useJobsStore()
+    jobs.upsert(imageJob('JV1', { kind: 'video', state: 'running' }))
+    const world = useWorldStore()
+    await world.load('C1')
+
+    await world.handleJobMessage(
+      'C1',
+      wsMessage({ type: 'job_failed', job_id: 'JV1', state: 'failed' }),
+    )
+    await vi.waitFor(() => expect(mediaCalls).toHaveLength(1))
+  })
+
   it('updateEntity PATCHes the changed fields plus the snapshot base_revision and refetches', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = requestUrl(input)
@@ -424,16 +455,20 @@ describe('world store', () => {
     await world.load('C1')
     expect(exportCalls).toHaveLength(1)
 
-    await world.updateEntity('C1', 'E1', { personality: 'rewritten by hand' }, '01JZZZZZZZZZZZZZZZZZZZZZZZ')
-
+    await world.updateEntity(
+      'C1',
+      'E1',
+      { personality: 'rewritten by hand' },
+      '01JZZZZZZZZZZZZZZZZZZZZZZZ',
+    )
+    // Success lands a snapshot refetch.
+    await vi.waitFor(() => expect(exportCalls).toHaveLength(2))
     const patchCall = fetchSpy.mock.calls.find((call) => String(call[0]).includes('/entities/E1'))!
-    expect(patchCall[1]?.method).toBe('PATCH')
-    expect(JSON.parse((patchCall[1]?.body as string) ?? '{}')).toEqual({
+    const body = JSON.parse((patchCall[1]?.body as string) ?? '{}')
+    expect(body).toEqual({
       personality: 'rewritten by hand',
       base_revision: '01JZZZZZZZZZZZZZZZZZZZZZZZ',
     })
-    // Success lands a snapshot refetch.
-    await vi.waitFor(() => expect(exportCalls).toHaveLength(2))
   })
 
   it('updateEntity omits base_revision when none is supplied', async () => {

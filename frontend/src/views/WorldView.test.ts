@@ -1211,4 +1211,194 @@ describe('WorldView', () => {
     expect(wrapper.text()).not.toContain('No portrait.')
     wrapper.unmount()
   })
+
+  // -------------------------------------------------------------------------
+  // Reveal video (spec-4.2, beta)
+  // -------------------------------------------------------------------------
+
+  const VIDEO_FILENAME = '01JZZZZZZZZZZZZZZZZZZZZZZY.mp4'
+
+  function bossWorld(dataOverrides: Record<string, unknown> = {}): WorldExport {
+    return {
+      campaign: {
+        id: 'C1',
+        title: 'Greymarch',
+        theme: 'frontier dread',
+        description: '',
+        custom_lore: '',
+        created_at: '2026-09-03T20:00:00Z',
+      },
+      revision: { id: '01JZZZZZZZZZZZZZZZZZZZZZZZ', created_at: '2026-09-03T20:05:00Z' },
+      entities: [
+        {
+          id: 'E1',
+          kind: 'character',
+          name: 'Vashka the Unmaker',
+          text: 'The BBEG.',
+          data: {
+            name: 'Vashka the Unmaker',
+            role: 'BBEG',
+            appearance: { face: 'a mask of fused iron' },
+            boss: { lair_actions: 'the walls breathe' },
+            ...dataOverrides,
+          },
+        },
+      ],
+      edges: [],
+    }
+  }
+
+  function videoMedia(): { media: components['schemas']['MediaResponse'][] } {
+    return {
+      media: [
+        {
+          id: 'M2',
+          campaign_id: 'C1',
+          entity_id: 'E1',
+          filename: VIDEO_FILENAME,
+          kind: 'video',
+          created_at: '2026-09-06T11:00:00Z',
+        },
+      ],
+    }
+  }
+
+  function videoJob(id: string, entityId: string, overrides: Partial<Job> = {}): Job {
+    return { ...imageJob(id, entityId, overrides), kind: 'video' } as Job
+  }
+
+  /** Route mocks for the reveal-video surface: export + media + jobs POST. */
+  function stubVideoApi(world: WorldExport, media: { media: components['schemas']['MediaResponse'][] }) {
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url.includes('/media')) return media
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        return videoJob('JV1', 'E1', { state: 'queued', queue_position: 1 })
+      }
+      return world
+    })
+  }
+
+  function revealVideoButton(wrapper: VueWrapper) {
+    return wrapper
+      .findAll('button')
+      .filter((b) => b.text().startsWith('Generate reveal video'))[0]
+  }
+
+  it('reveal video: a boss-tier card shows the button; a non-boss card shows none', async () => {
+    stubVideoApi(bossWorld(), { media: [] })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(revealVideoButton(wrapper)).toBeDefined()
+    // The valid-boss enabled state is a load-bearing pin: every other
+    // video button test asserts disabled, so only this one catches a
+    // hasVideoPrompt regression that permanently disables the feature.
+    expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+
+    stubVideoApi(bossWorld({ role: 'NPC' }), { media: [] })
+    const wrapper2 = mountView()
+    await flushPromises()
+    expect(revealVideoButton(wrapper2)).toBeUndefined()
+    expect(wrapper2.text()).not.toContain('Reveal video')
+    wrapper2.unmount()
+  })
+
+  it('reveal video: clicking the button enqueues a video job for the entity', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        bodies.push(JSON.parse(String(init.body)))
+        return videoJob('JV1', 'E1', { state: 'queued', queue_position: 1 })
+      }
+      if (url.includes('/media')) return { media: [] }
+      if (url.includes('/jobs')) return { jobs: [], next_cursor: null }
+      return bossWorld()
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await revealVideoButton(wrapper)!.trigger('click')
+    await flushPromises()
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).toMatchObject({
+      campaign_id: 'C1',
+      kind: 'video',
+      payload: { entity_id: 'E1' },
+    })
+    wrapper.unmount()
+  })
+
+  it('reveal video: the latest video row renders inline in the card', async () => {
+    stubVideoApi(bossWorld(), videoMedia())
+    const wrapper = mountView()
+    await flushPromises()
+    const clip = wrapper.find('video.reveal-video-clip')
+    expect(clip.exists()).toBe(true)
+    expect(clip.attributes('src')).toBe(`/api/campaigns/C1/media/E1/${VIDEO_FILENAME}`)
+    // ROLE_FLIP with an existing row is covered by the non-boss case: the
+    // block (and the <video>) is v-if'd on the boss-tier role.
+    wrapper.unmount()
+  })
+
+  it('reveal video: a boss card without a usable prompt gets a disabled button and a hint', async () => {
+    stubVideoApi(bossWorld({ boss: { lair_actions: '   ' } }), { media: [] })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain(
+      'Add an appearance and a boss section to generate a reveal video.',
+    )
+    expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('reveal video: a queued video job shows its queue position and disables the button', async () => {
+    stubVideoApi(bossWorld(), { media: [] })
+    const jobs = useJobsStore()
+    jobs.upsert(videoJob('JV1', 'E1', { state: 'queued', queue_position: 2 }))
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Reveal video queued — position 2')
+    // The in-flight discipline swaps the button label and disables it.
+    const button = wrapper
+      .findAll('button')
+      .filter((b) => b.text().startsWith('Reveal video queued'))[0]
+    expect(button).toBeDefined()
+    expect(button?.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toContain('Generate reveal video')
+    wrapper.unmount()
+  })
+
+
+  it('reveal video: a running video job shows the generating status', async () => {
+    stubVideoApi(bossWorld(), { media: [] })
+    const jobs = useJobsStore()
+    jobs.upsert(videoJob('JV1', 'E1', { state: 'running', progress: 0.5 }))
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Generating reveal video…')
+    wrapper.unmount()
+  })
+
+  it('reveal video: a failed job shows the failure and re-enables the button over an existing clip', async () => {
+    stubVideoApi(bossWorld(), videoMedia())
+    const jobs = useJobsStore()
+    jobs.upsert(
+      videoJob('JV1', 'E1', {
+        state: 'failed',
+        error: 'video generation failed: provider returned HTTP 502',
+      }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+    // The old clip still renders…
+    expect(wrapper.find('video.reveal-video-clip').exists()).toBe(true)
+    // …but the failed re-generation is NOT hidden behind it (the DM sees
+    // the failure and re-triggers — acceptance criterion 3).
+    expect(wrapper.text()).toContain(
+      'Reveal video failed: video generation failed: provider returned HTTP 502',
+    )
+    expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
 })

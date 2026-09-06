@@ -29,15 +29,20 @@ from typing import Any
 from app.core.settings import (
     ImageSettings,
     LLMSettings,
+    VideoSettings,
     configured_media_dir,
     llm_settings,
 )
 from app.core.settings import (
     image_settings as resolve_image_settings,
 )
+from app.core.settings import (
+    video_settings as resolve_video_settings,
+)
 from app.pipeline.budget import BudgetExceededError, CallBudget
 from app.providers.image import ImageGeneration, image_generation
 from app.providers.llm import ChatCompletion, ProviderError, chat_completion
+from app.providers.video import VideoGeneration, video_generation
 from app.store import (
     JobStateConflictError,
     claim_next_job,
@@ -71,6 +76,8 @@ def run_next_job(
     settings: LLMSettings | None = None,
     image_provider: ImageGeneration | None = None,
     image_settings: ImageSettings | None = None,
+    video_provider: VideoGeneration | None = None,
+    video_settings: VideoSettings | None = None,
 ) -> str | None:
     """Process at most one job; returns its id, or None when idle.
 
@@ -85,6 +92,8 @@ def run_next_job(
     injectables (spec-4.1) — ``image_generation``/``image_settings()``
     are the production defaults, resolved at dispatch time so an
     unrelated text job never pays the image config read.
+    ``video_provider``/``video_settings`` mirror them for the
+    reveal-video dispatch (spec-4.2).
     """
     try:
         settings = settings or llm_settings()
@@ -95,12 +104,22 @@ def run_next_job(
     if job is None:
         return None
     try:
-        _run_job(job, provider, settings, image_provider, image_settings)
+        _run_job(
+            job,
+            provider,
+            settings,
+            image_provider,
+            image_settings,
+            video_provider,
+            video_settings,
+        )
     except JobStateConflictError:
-        # The job is terminal (cancelled) and the generate runner already
-        # discarded its ghost rows before re-raising the conflict — a
-        # second discard is a no-op and failing a cancelled job would
-        # raise a second conflict that only produces a spurious log.
+        # The job is terminal (cancelled) mid-run. The generate runner
+        # has already discarded its ghost staged rows by the time it
+        # re-raises; the media runners keep their file + manifest row
+        # (real content, no dangling row). Either way, failing a
+        # cancelled job would raise a second conflict that only
+        # produces a spurious log.
         pass
     except Exception as exc:  # noqa: BLE001 - a claimed job must never wedge the queue
         if job.kind in ("generate", "regenerate"):
@@ -129,6 +148,8 @@ def _run_job(
     settings: LLMSettings,
     image_provider: ImageGeneration | None = None,
     image_settings: ImageSettings | None = None,
+    video_provider: VideoGeneration | None = None,
+    video_settings: VideoSettings | None = None,
 ) -> None:
     if job.kind == "build_in":
         # Lazy import: ``build_in`` imports ``JobPayloadError`` from this
@@ -169,10 +190,23 @@ def _run_job(
             media_dir=configured_media_dir(),
         )
         return
+    if job.kind == "video":
+        # Lazy import (same circularity): the reveal-video runner writes
+        # the .mp4 file + the store's manifest row and commits no world
+        # state (spec-4.2, AD-1 — media is not world graph).
+        from app.media.service import run_video
+
+        run_video(
+            job,
+            video_provider or video_generation,
+            video_settings or resolve_video_settings(),
+            media_dir=configured_media_dir(),
+        )
+        return
     if job.kind != "text":
         raise JobPayloadError(
-            f"job kind {job.kind!r}: the media service lands in story 4.2 — "
-            "only text/build_in/generate/regenerate/image jobs run in this build"
+            f"job kind {job.kind!r}: only text/build_in/generate/regenerate/"
+            "image/video jobs run in this build"
         )
     prompt = _text_prompt(job.payload)
     budget = CallBudget(job)

@@ -107,7 +107,7 @@ def get_file(
     if get_campaign(current.id, campaign_id) is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")
     try:
-        get_media_file(campaign_id, entity_id, filename)
+        row = get_media_file(campaign_id, entity_id, filename)
     except StoreError as exc:
         store_error_as_http(exc)
     path = Path(configured_media_dir()) / campaign_id / entity_id / filename
@@ -117,10 +117,13 @@ def get_file(
         store_error_as_http(MediaNotFoundError(f"file {entity_id}/{filename} missing on disk"))
     # ``inline`` disposition (Starlette's FileResponse defaults to
     # ``attachment``): a portrait must render inside the entity card's
-    # ``<img>``, never download (acceptance criterion 2).
+    # ``<img>`` and a reveal clip inside its ``<video>`` (spec-4.2), never
+    # download (acceptance criterion 2). The media type follows the
+    # manifest row's kind — a video row serves ``video/mp4``, everything
+    # else the portrait ``image/png``.
     return FileResponse(
         path,
-        media_type="image/png",
+        media_type="video/mp4" if row.kind == "video" else "image/png",
         filename=filename,
         content_disposition_type="inline",
     )

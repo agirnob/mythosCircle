@@ -137,6 +137,52 @@ def image_settings() -> ImageSettings:
     )
 
 
+#: Environment variables for the reveal-video adapter (spec-4.2; keys
+#: and defaults canonical in config.py — documented placeholders until the
+#: owner resolves the dev video server + model ask-first item).
+VIDEO_ENDPOINT = config_mod.VIDEO_ENDPOINT_ENV
+VIDEO_MODEL = config_mod.VIDEO_MODEL_ENV
+VIDEO_API_KEY = "MYTHOSCIRCLE_VIDEO_API_KEY"
+VIDEO_TIMEOUT = config_mod.VIDEO_TIMEOUT_ENV
+
+#: Code defaults (spec-4.2; config.toml [video] overrides in 1.7).
+DEFAULT_VIDEO_ENDPOINT = config_mod.DEFAULT_VIDEO_ENDPOINT
+DEFAULT_VIDEO_MODEL = config_mod.DEFAULT_VIDEO_MODEL
+DEFAULT_VIDEO_TIMEOUT = config_mod.DEFAULT_VIDEO_TIMEOUT
+
+
+@dataclass(frozen=True)
+class VideoSettings:
+    """The OpenAI-compatible video endpoint the adapter talks to (AR9/AD-14).
+
+    Same shape as ``ImageSettings`` — endpoint/model/api_key/timeout — so
+    the reveal-video adapter mirrors the portrait adapter 1:1 (spec-4.2
+    Code Map).
+    """
+
+    endpoint: str = DEFAULT_VIDEO_ENDPOINT
+    model: str = DEFAULT_VIDEO_MODEL
+    api_key: str | None = None
+    timeout: float = DEFAULT_VIDEO_TIMEOUT
+
+
+def video_settings() -> VideoSettings:
+    """Read the video adapter's settings (env > config > default).
+
+    The API key stays environment-only (AD-22) — never config.toml.
+    """
+    resolved = runtime_config()
+    endpoint_env = os.environ.get(VIDEO_ENDPOINT)
+    model_env = os.environ.get(VIDEO_MODEL)
+    return VideoSettings(
+        endpoint=(endpoint_env if endpoint_env else resolved.video_endpoint).strip()
+        or resolved.video_endpoint,
+        model=(model_env if model_env else resolved.video_model).strip() or resolved.video_model,
+        api_key=os.environ.get(VIDEO_API_KEY) or None,
+        timeout=env_float(VIDEO_TIMEOUT, resolved.video_timeout),
+    )
+
+
 def configured_media_dir() -> str:
     """The media storage root — env > config > default (spec-4.1).
 

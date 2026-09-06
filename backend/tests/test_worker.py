@@ -223,15 +223,112 @@ def test_run_image_job_runs_portrait_runner(
     assert seen_prompts == ["face: sharp features\nbody: lean"]
 
 
-def test_run_video_job_fails_kind_boundary(world: str) -> None:
-    """A video job (story 4.2) still fails at the kind boundary so the
-    FIFO never stalls on it — video dispatch lands with the media
-    service's next story."""
-    job_id = enqueue_job(world, "video", {"entity_id": "x"}).id
-    run_next_job(provider=_ok_provider, settings=SETTINGS)
+def test_run_video_job_runs_reveal_runner(
+    world: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec-4.2 video dispatch: a valid video job runs the reveal runner —
+    atomic .mp4 file under media_dir/{campaign}/{entity}/, manifest row
+    kind='video', completed job with {entity_id, filename} (HAPPY_PATH).
+    The prompt is the shared ``bbeg_video_prompt`` projection."""
+    from app.core import ids
+    from app.core.settings import VideoSettings
+    from app.media.service import bbeg_video_prompt
+    from app.store import commit_subgraph, list_media, session_scope, world_entities
+
+    boss_data = {
+        "name": "Vashka the Unmaker",
+        "role": "BBEG",
+        "appearance": {"face": "a mask of fused iron", "body": "towering"},
+        "boss": {"lair_actions": "the walls breathe", "immunities": "fire"},
+    }
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    seen_prompts: list[str] = []
+    VIDEO_SETTINGS = VideoSettings(endpoint="http://video.test/v1", model="vid-model")
+
+    def video_provider(prompt: str, settings: VideoSettings) -> bytes:
+        seen_prompts.append(prompt)
+        assert settings is VIDEO_SETTINGS
+        return b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00reveal-payload"
+
+    job_id = enqueue_job(world, "video", {"entity_id": entity_id}).id
+    processed = run_next_job(
+        provider=_ok_provider,
+        settings=SETTINGS,
+        video_provider=video_provider,
+        video_settings=VIDEO_SETTINGS,
+    )
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["entity_id"] == entity_id
+    filename = str(job.result["filename"])
+    assert filename.endswith(".mp4")
+    with session_scope() as session:
+        entities = {e.id: e for e in world_entities(session, world)}
+    rows = list_media(world)
+    assert entities[entity_id].name == "Vashka"
+    assert len(rows) == 1 and rows[0].entity_id == entity_id
+    assert rows[0].kind == "video" and rows[0].filename == filename
+    mp4_bytes = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00reveal-payload"
+    assert (tmp_path / "media" / world / entity_id / filename).read_bytes() == mp4_bytes
+    # The prompt is the committed AR24 projection (never free text).
+    assert seen_prompts == [bbeg_video_prompt(boss_data)]
+
+
+def test_run_video_job_non_mp4_fails_cleanly(
+    world: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NON_MP4 through the WORKER: an injected provider returning
+    non-ISO-BMFF bytes fails the job with a user-facing message, and no
+    file/row lands."""
+    from app.core import ids
+    from app.core.settings import VideoSettings
+    from app.store import commit_subgraph, list_media
+
+    boss_data = {
+        "name": "Vashka the Unmaker",
+        "role": "BBEG",
+        "appearance": {"face": "a mask of fused iron"},
+        "boss": {"lair_actions": "the walls breathe"},
+    }
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    VIDEO_SETTINGS = VideoSettings(endpoint="http://video.test/v1", model="vid-model")
+
+    def bad_video_provider(prompt: str, settings: VideoSettings) -> bytes:
+        assert "lair_actions" in prompt
+        return b"<html>not a video</html>"
+
+    job_id = enqueue_job(world, "video", {"entity_id": entity_id}).id
+    processed = run_next_job(
+        provider=_ok_provider,
+        settings=SETTINGS,
+        video_provider=bad_video_provider,
+        video_settings=VIDEO_SETTINGS,
+    )
+    assert processed == job_id
     job, _position = job_status(job_id)
     assert job.state == "failed"
-    assert "4.2" in (job.error or "")
+    assert "non-mp4" in (job.error or "")
+    assert list_media(world) == []
+    assert not (tmp_path / "media" / world / entity_id).exists()
 
 
 def test_run_image_job_provider_failure_fails_job_cleanly(

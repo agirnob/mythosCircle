@@ -27,6 +27,9 @@ LLM_TIMEOUT_ENV = "MYTHOSCIRCLE_LLM_TIMEOUT"
 IMAGE_ENDPOINT_ENV = "MYTHOSCIRCLE_IMAGE_ENDPOINT"
 IMAGE_MODEL_ENV = "MYTHOSCIRCLE_IMAGE_MODEL"
 IMAGE_TIMEOUT_ENV = "MYTHOSCIRCLE_IMAGE_TIMEOUT"
+VIDEO_ENDPOINT_ENV = "MYTHOSCIRCLE_VIDEO_ENDPOINT"
+VIDEO_MODEL_ENV = "MYTHOSCIRCLE_VIDEO_MODEL"
+VIDEO_TIMEOUT_ENV = "MYTHOSCIRCLE_VIDEO_TIMEOUT"
 DB_ENV = "MYTHOSCIRCLE_DB"
 LOG_FILE_ENV = "MYTHOSCIRCLE_LOG_FILE"
 MEDIA_DIR_ENV = "MYTHOSCIRCLE_MEDIA_DIR"
@@ -77,6 +80,15 @@ DEFAULT_LLM_TIMEOUT = 120.0
 DEFAULT_IMAGE_ENDPOINT = "http://127.0.0.1:8081/v1"
 DEFAULT_IMAGE_MODEL = "mythos-portrait-v1"
 DEFAULT_IMAGE_TIMEOUT = 120.0
+
+#: Documented PLACEHOLDER defaults (spec-4.2 ask-first item): the dev
+#: video server + model choice is a pending owner decision (ask-first
+#: item); until confirmed these are inert placeholders and the video
+#: tests inject a mock provider. Swapping engines is a config change,
+#: never a code change.
+DEFAULT_VIDEO_ENDPOINT = "http://127.0.0.1:8082/v1"
+DEFAULT_VIDEO_MODEL = "mythos-reveal-v1"
+DEFAULT_VIDEO_TIMEOUT = 120.0
 DEFAULT_MEDIA_DIR = "/var/lib/mythoscircle/media"
 DEFAULT_THEMES = ["High Fantasy", "Grimdark", "Steampunk", "Planar"]
 DEFAULT_DB_URL = "sqlite:////var/lib/mythoscircle/mythoscircle.db"
@@ -95,6 +107,9 @@ class RuntimeConfig:
     image_endpoint: str = DEFAULT_IMAGE_ENDPOINT
     image_model: str = DEFAULT_IMAGE_MODEL
     image_timeout: float = DEFAULT_IMAGE_TIMEOUT
+    video_endpoint: str = DEFAULT_VIDEO_ENDPOINT
+    video_model: str = DEFAULT_VIDEO_MODEL
+    video_timeout: float = DEFAULT_VIDEO_TIMEOUT
     themes: list[str] = field(default_factory=lambda: list(DEFAULT_THEMES))
     db_url: str | None = None
     log_file: str | None = None
@@ -131,6 +146,7 @@ def runtime_config() -> RuntimeConfig:
     queue = data.get("queue", {})
     llm = data.get("llm", {})
     image = data.get("image", {})
+    video = data.get("video", {})
     campaigns = data.get("campaigns", {})
 
     def _config_int(value: Any, name: str, default: int) -> int:
@@ -178,6 +194,14 @@ def runtime_config() -> RuntimeConfig:
         IMAGE_TIMEOUT_ENV,
         _config_float(image.get("timeout"), "image.timeout", DEFAULT_IMAGE_TIMEOUT),
     )
+    video_endpoint = os.environ.get(VIDEO_ENDPOINT_ENV) or str(
+        video.get("endpoint", DEFAULT_VIDEO_ENDPOINT)
+    )
+    video_model = os.environ.get(VIDEO_MODEL_ENV) or str(video.get("model", DEFAULT_VIDEO_MODEL))
+    video_timeout = env_float(
+        VIDEO_TIMEOUT_ENV,
+        _config_float(video.get("timeout"), "video.timeout", DEFAULT_VIDEO_TIMEOUT),
+    )
     themes_raw = campaigns.get("themes", DEFAULT_THEMES)
     if not isinstance(themes_raw, list) or not all(isinstance(t, str) for t in themes_raw):
         raise ValueError("config campaigns.themes must be a list of strings")
@@ -206,6 +230,9 @@ def runtime_config() -> RuntimeConfig:
         image_endpoint=image_endpoint,
         image_model=image_model,
         image_timeout=image_timeout,
+        video_endpoint=video_endpoint,
+        video_model=video_model,
+        video_timeout=video_timeout,
         max_llm_calls_per_job=max_llm,
         max_media_calls_per_job=max_media,
         themes=themes,

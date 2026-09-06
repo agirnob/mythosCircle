@@ -259,6 +259,124 @@ def test_enqueue_image_dict_appearance_accepted(world: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Spec-4.2 video payload contract (the reveal-video enqueue gate)
+# ---------------------------------------------------------------------------
+
+
+def _commit_boss(world: str, role: str = "BBEG", data: dict[str, Any] | None = None) -> str:
+    """One committed boss-tier character with a usable reveal prompt
+    (non-blank appearance + boss section) unless ``data`` overrides."""
+    if data is None:
+        data = {
+            "name": "Vashka the Unmaker",
+            "role": role,
+            "appearance": {"face": "a mask of fused iron"},
+            "boss": {"lair_actions": "the walls breathe"},
+        }
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(kind="character", name="Vashka", data=data, id=entity_id),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    return entity_id
+
+
+def test_enqueue_video_requires_exact_entity_payload(world: str) -> None:
+    """VIDEO_BAD_PAYLOAD: anything but exactly ``{"entity_id": <ULID>}``
+    is a 422, zero rows written."""
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "video", {"prompt": "a cinematic reveal"})
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "video", {"entity_id": "not-a-ulid"})
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "video", {"entity_id": "0" * 26, "extra": 1})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_video_unknown_entity_is_404(world: str) -> None:
+    """ENTITY_MISSING at enqueue: a fabricated entity id is an
+    ``UnknownEntityError`` (404), zero rows written."""
+    with pytest.raises(UnknownEntityError):
+        enqueue_job(world, "video", {"entity_id": MISSING_ID})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_video_foreign_entity_is_404(world: str) -> None:
+    """An entity of ANOTHER campaign is the same indistinguishable 404
+    (AD-9 — no oracle), zero rows written."""
+    other = create_campaign(
+        _owner_id(), title="Other", description="", theme="High Fantasy", custom_lore=""
+    ).id
+    entity_id = _commit_boss(other)
+    with pytest.raises(UnknownEntityError):
+        enqueue_job(world, "video", {"entity_id": entity_id})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_video_not_boss_is_422(world: str) -> None:
+    """NOT_BOSS: the reveal video is a boss-tier surface — a committed
+    entity whose role is not BBEG/Monster is a 422, zero rows written
+    (even with a perfectly usable appearance + boss-shaped record)."""
+    data = {
+        "name": "Mira Vane",
+        "role": "NPC",
+        "appearance": {"face": "sharp features"},
+        "boss": {"lair_actions": "the walls breathe"},
+    }
+    entity_id = _commit_boss(world, data=data)
+    with pytest.raises(InvalidJobInputError, match="not boss-tier"):
+        enqueue_job(world, "video", {"entity_id": entity_id})
+    assert _count_jobs() == 0
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"name": "V", "role": "BBEG"},  # no appearance, no boss
+        {"name": "V", "role": "BBEG", "appearance": {"face": "iron"}},  # no boss
+        {  # boss present but blank
+            "name": "V",
+            "role": "Monster",
+            "appearance": {"face": "iron"},
+            "boss": {"lair_actions": "   "},
+        },
+        {  # boss present but only unknown keys (never prompt sources)
+            "name": "V",
+            "role": "Monster",
+            "appearance": {"face": "iron"},
+            "boss": {"custom_bit": "free text"},
+        },
+        {  # blank appearance
+            "name": "V",
+            "role": "Monster",
+            "appearance": "  ",
+            "boss": {"lair_actions": "walls breathe"},
+        },
+    ],
+)
+def test_enqueue_video_no_usable_prompt_is_422(world: str, data: dict[str, Any]) -> None:
+    """NO_VIDEO_PROMPT: a boss-tier entity without a non-blank appearance
+    + boss section is a 422 (the runner's fail condition mirrored at the
+    enqueue gate via the SAME ``bbeg_video_prompt`` builder), zero rows."""
+    entity_id = _commit_boss(world, data=data)
+    with pytest.raises(InvalidJobInputError, match="no usable reveal prompt"):
+        enqueue_job(world, "video", {"entity_id": entity_id})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_video_boss_entity_accepted(world: str) -> None:
+    """A committed BBEG with a usable prompt enqueues (kind video,
+    state queued) — the FIFO row the worker's video dispatch runs."""
+    entity_id = _commit_boss(world)
+    job = enqueue_job(world, "video", {"entity_id": entity_id})
+    assert job.kind == "video" and job.state == "queued"
+
+
+# ---------------------------------------------------------------------------
 # ENQUEUE_FIFO
 # ---------------------------------------------------------------------------
 

@@ -125,6 +125,17 @@ export const useWorldStore = defineStore('world', {
           .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
       )
     },
+    /** The LATEST reveal-video row for an entity, or null (newest
+     * created_at, ``kind === 'video'`` only) — the boss-tier card's
+     * <video> source; a separate projection from ``portraitFor`` so a
+     * video row never displaces the portrait <img>. */
+    videoFor(campaignId: string, entityId: string): MediaRow | null {
+      return (
+        this.mediaFor(campaignId)
+          .filter((row) => row.entity_id === entityId && row.kind === 'video')
+          .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
+      )
+    },
     /** Fire-and-forget re-sync (WS frame / reconnect); coalesced. */
     requestRefetch(campaignId: string) {
       void this.fetchSnapshot(campaignId)
@@ -279,10 +290,11 @@ export const useWorldStore = defineStore('world', {
           if (qualifies) void this.fetchSnapshot(campaignId)
           return
         }
-        if (job.kind === 'image') {
-          // Spec-4.1 portrait: a terminal image frame means the portrait
-          // file + manifest row landed (or the job failed) — re-fetch
-          // the media list so the card renders with no manual refresh.
+        if (job.kind === 'image' || job.kind === 'video') {
+          // Spec-4.1 portrait / spec-4.2 reveal video: a terminal media
+          // frame means the file + manifest row landed (or the job
+          // failed) — re-fetch the media list so the card renders with
+          // no manual refresh.
           if (terminal) void this.fetchMedia(campaignId)
           return
         }

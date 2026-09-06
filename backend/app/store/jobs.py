@@ -405,6 +405,12 @@ def _enqueue(
         # transaction (like regenerate) — the entity must exist in this
         # campaign and its committed AR24 appearance must be non-blank.
         _validate_image_payload(payload, session, campaign_id)
+    elif kind == "video":
+        # Spec-4.2: the reveal-video payload is validated inside the
+        # enqueue transaction (the image precedent) — the entity must
+        # exist in this campaign, be boss-tier (BBEG/Monster), and carry
+        # a usable reveal prompt (non-blank appearance + boss section).
+        _validate_video_payload(payload, session, campaign_id)
     if not isinstance(payload, dict):
         raise InvalidJobInputError("job payload must be a JSON object")
     _check_json_serializable(payload)
@@ -584,6 +590,43 @@ def _validate_image_payload(payload: dict[str, Any], session: Session, campaign_
     if appearance_prompt((entity.data or {}).get("appearance")) is None:
         raise InvalidJobInputError(
             f"image payload entity {entity_id} has no non-blank AR24 appearance"
+        )
+
+
+def _validate_video_payload(payload: dict[str, Any], session: Session, campaign_id: str) -> None:
+    """Enforce the spec-4.2 video payload contract (422/404, zero rows).
+
+    The payload is exactly ``{"entity_id": <ULID>}`` — the committed
+    entity whose AR24 record is the reveal prompt source (a projection of
+    appearance + boss + identity, never free text). The entity must exist
+    in this campaign (404 ``UnknownEntityError``) and be BOSS-tier: its
+    committed ``role`` must be BBEG or Monster (422 — the NOT_BOSS matrix
+    row), and ``bbeg_video_prompt`` must produce a prompt from its
+    appearance + boss section (422 — the NO_VIDEO_PROMPT matrix row).
+    The prompt-existence check runs the SAME builder the runner uses, so
+    the enqueue gate and the run-time fail condition can never disagree
+    (function-local import: the media service imports this package).
+    """
+    from app.media.service import bbeg_video_prompt
+    from app.store.candidates import BOSS_ROLES
+
+    if not isinstance(payload, dict) or set(payload) != {"entity_id"}:
+        raise InvalidJobInputError("video payload must be exactly {'entity_id': <ULID>}")
+    entity_id = payload["entity_id"]
+    if not isinstance(entity_id, str) or not ids.is_valid_ulid(entity_id):
+        raise InvalidJobInputError(f"video payload entity_id is not a ULID: {entity_id!r}")
+    entity = session.get(models.Entity, entity_id)
+    if entity is None or entity.campaign_id != campaign_id:
+        raise UnknownEntityError(entity_id)
+    data = entity.data or {}
+    if data.get("role") not in BOSS_ROLES:
+        raise InvalidJobInputError(
+            f"video payload entity {entity_id} is not boss-tier (BBEG or Monster)"
+        )
+    if bbeg_video_prompt(data) is None:
+        raise InvalidJobInputError(
+            f"video payload entity {entity_id} has no usable reveal prompt "
+            "(non-blank AR24 appearance and boss section required)"
         )
 
 

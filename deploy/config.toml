@@ -43,6 +43,17 @@ model = "mythos-portrait-v1"
 # HTTP timeout for one images/generations call (seconds).
 timeout = 120
 
+[video]
+# OpenAI-compatible video endpoint (spec-4.2, beta). PLACEHOLDER DEFAULTS —
+# the dev video server + model choice is a pending owner decision
+# (ask-first item); until confirmed these are inert and reveal-video
+# tests inject a mock provider. The key, if any, is an environment
+# variable (MYTHOSCIRCLE_VIDEO_API_KEY).
+endpoint = "http://127.0.0.1:8082/v1"
+model = "mythos-reveal-v1"
+# HTTP timeout for one videos/generations call (seconds).
+timeout = 120
+
 [queue]
 # One persistent FIFO; exactly one job at a time (AD-3). The pending cap
 # (in-flight + queued, AR28) — consumed by the runtime as

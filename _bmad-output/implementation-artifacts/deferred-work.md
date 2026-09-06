@@ -207,3 +207,6 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-3-accept-screen-on-substance.md`
   summary: WorldView duplicates the backend counter-type set as a local COUNTER_TYPES copy (same forward-compat gap CandidatesView had) — a new counter-typed edge type renders without its counter in world-view relation lines.
   evidence: WorldView.vue's copy predates 3.3 (2.7 surface); only CandidatesView's copy was fixed in the 3-3 review round. Align both with a shared counter-rendering helper or a generated contract when the vocabulary next changes. [frontend/src/views/WorldView.vue:116-126]
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-2-bbeg-fast-tier-short-video-beta-not-a-launch-priority.md`
+  summary: Generated media is never pruned — every portrait and now every reveal video accumulates as a manifest row + file per entity with no retention cap, and video files are the expensive kind.
+  evidence: `videoFor`/`portraitFor` pick the newest row and old rows/files simply stay (4-1 shipped the same for portraits; spec-4.2's Never list excludes reclaim-on-delete, which is story 4.3's scope). Unbounded `media_dir` growth on a long campaign needs a retention/pruning decision (keep-latest, keep-N, or DM-visible history) — land with 4.3's reclaim semantics.

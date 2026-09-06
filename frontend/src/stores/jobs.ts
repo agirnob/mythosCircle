@@ -70,6 +70,20 @@ export const useJobsStore = defineStore('jobs', {
           const payload = job.payload as { entity_id?: string } | null
           return payload?.entity_id === entityId
         }),
+    /** A reveal-video job for this entity still queued/running
+     * (spec-4.2) — the in-flight discipline mirroring
+     * ``portraitInFlight``: a second enqueue for the same entity must
+     * not burn a second generation while the first is still pending; a
+     * FAILED job releases the button so the DM can re-trigger. */
+    videoInFlight:
+      (state) =>
+      (campaignId: string, entityId: string): boolean =>
+        Object.values(state.byId).some((job) => {
+          if (job.campaign_id !== campaignId || job.kind !== 'video') return false
+          if (TERMINAL_STATES.has(job.state)) return false
+          const payload = job.payload as { entity_id?: string } | null
+          return payload?.entity_id === entityId
+        }),
   },
   actions: {
     /**
@@ -140,6 +154,25 @@ export const useJobsStore = defineStore('jobs', {
         body: JSON.stringify({
           campaign_id: campaignId,
           kind: 'image',
+          payload: { entity_id: entityId },
+        }),
+      })
+      this.upsert(job)
+      return job
+    },
+    /**
+     * Spec-4.2 reveal video: one video job whose payload names the
+     * committed boss-tier entity — the clip prompt is a backend
+     * projection of the entity's committed AR24 record (appearance +
+     * boss + identity), never free text (the backend validates the
+     * payload + role + prompt at enqueue).
+     */
+    async submitRevealVideo(campaignId: string, entityId: string) {
+      const job = await apiFetch<Job>('/api/jobs', {
+        method: 'POST',
+        body: JSON.stringify({
+          campaign_id: campaignId,
+          kind: 'video',
           payload: { entity_id: entityId },
         }),
       })

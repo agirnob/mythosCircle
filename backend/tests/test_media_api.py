@@ -10,6 +10,7 @@ provider (the app's own worker is disabled under MYTHOSCIRCLE_TESTING=1).
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,6 +29,7 @@ from app.store import (
 )
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"portrait-payload"
+MP4_BYTES = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00reveal-payload"
 
 
 @pytest.fixture()
@@ -298,3 +300,177 @@ def test_media_no_appearance_enqueue_is_422(
     )
     assert response.status_code == 422
     assert response.json()["code"] == "validation_error"
+
+
+def _commit_boss(campaign_id: str, data: dict[str, Any] | None = None, name: str = "Vashka") -> str:
+    """One committed boss-tier character with a usable reveal prompt."""
+    from app.store import latest_revision, session_scope
+
+    if data is None:
+        data = {
+            "name": "Vashka the Unmaker",
+            "role": "BBEG",
+            "appearance": {"face": "a mask of fused iron"},
+            "boss": {"lair_actions": "the walls breathe", "immunities": "fire"},
+        }
+    with session_scope() as session:
+        head = latest_revision(session, campaign_id)
+        base = head.id if head is not None else None
+    entity_id = ids.new_id()
+    anchor_id = ids.new_id()
+    commit_subgraph(
+        campaign_id,
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(kind="character", name=name, data=data, id=entity_id),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        base_revision=base,
+    )
+    return entity_id
+
+
+def _run_video_job() -> None:
+    """Drive the FIFO one step with the injected mock video provider —
+    the deterministic stand-in for the app's background worker."""
+    from app.core.settings import VideoSettings
+
+    def provider(prompt: str, settings: VideoSettings) -> bytes:
+        assert "lair_actions" in prompt
+        return MP4_BYTES
+
+    processed = run_next_job(video_provider=provider)
+    assert processed is not None
+
+
+def _enqueue_video(
+    client: TestClient, campaign_id: str, entity_id: str, kind: str = "video"
+) -> None:
+    response = client.post(
+        "/api/jobs",
+        json={"campaign_id": campaign_id, "kind": kind, "payload": {"entity_id": entity_id}},
+    )
+    assert response.status_code == 201
+
+
+def test_video_happy_path_serves_mp4_inline(
+    client: TestClient,
+    media_api: Callable[[], str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HAPPY_PATH end to end: enqueue (201) -> worker run (mock provider)
+    -> manifest row kind='video' -> the file GET serves ``video/mp4``
+    inline behind the session cookie."""
+    campaign_id = media_api()
+    entity_id = _commit_boss(campaign_id)
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _enqueue_video(client, campaign_id, entity_id)
+    _run_video_job()
+    listing = client.get(f"/api/campaigns/{campaign_id}/media")
+    assert listing.status_code == 200
+    (row,) = listing.json()["media"]
+    assert row["kind"] == "video"
+    assert row["entity_id"] == entity_id
+    filename = row["filename"]
+    assert isinstance(filename, str) and filename.endswith(".mp4")
+    fetched = client.get(f"/api/campaigns/{campaign_id}/media/{entity_id}/{filename}")
+    assert fetched.status_code == 200
+    assert fetched.headers["content-type"].startswith("video/mp4")
+    assert fetched.headers.get("content-disposition", "").startswith("inline")
+    assert fetched.content == MP4_BYTES
+    # The portrait listing is untouched by a video row: the newest video
+    # row must never displace the portrait projection (spec-4.2 Never).
+
+
+def test_video_not_boss_enqueue_is_422(client: TestClient, media_api: Callable[[], str]) -> None:
+    """NOT_BOSS: the forced reveal-video enqueue for a non-boss-tier
+    entity is the envelope 422 (zero jobs written)."""
+    campaign_id = media_api()
+    npc_id = _commit_boss(
+        campaign_id,
+        data={
+            "name": "Mira Vane",
+            "role": "NPC",
+            "appearance": {"face": "sharp"},
+            "boss": {"lair_actions": "walls breathe"},
+        },
+        name="Mira Vane",
+    )
+    response = client.post(
+        "/api/jobs",
+        json={"campaign_id": campaign_id, "kind": "video", "payload": {"entity_id": npc_id}},
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+
+
+def test_video_no_usable_prompt_enqueue_is_422(
+    client: TestClient, media_api: Callable[[], str]
+) -> None:
+    """NO_VIDEO_PROMPT: the forced enqueue for a boss-tier entity without
+    a usable prompt (no boss section) is the envelope 422."""
+    campaign_id = media_api()
+    boss_id = _commit_boss(
+        campaign_id,
+        data={"name": "Vashka", "role": "BBEG", "appearance": {"face": "iron"}},
+    )
+    response = client.post(
+        "/api/jobs",
+        json={"campaign_id": campaign_id, "kind": "video", "payload": {"entity_id": boss_id}},
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+
+
+def test_video_file_route_foreign_campaign_is_404(
+    client: TestClient,
+    media_api: Callable[[], str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FOREIGN_CAMPAIGN on a video file: another DM's campaign with a
+    REAL row + file on disk is still the indistinguishable 404 (AD-9)."""
+    from app.store import add_media, create_campaign, register_account
+
+    campaign_id = media_api()
+    entity_id = _commit_boss(campaign_id)
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _enqueue_video(client, campaign_id, entity_id)
+    _run_video_job()
+    filename = client.get(f"/api/campaigns/{campaign_id}/media").json()["media"][0]["filename"]
+    other_id = create_campaign(
+        register_account(f"foreign-video-{ids.new_id()}@example.com", "password123").id,
+        title="Other",
+        description="",
+        theme="Grimdark",
+        custom_lore="",
+    ).id
+    foreign_entity_id = ids.new_id()
+    foreign_anchor = ids.new_id()
+    commit_subgraph(
+        other_id,
+        [
+            models.EntityInput(kind="place", name="Anchor", id=foreign_anchor),
+            models.EntityInput(
+                kind="character",
+                name="Foreign Vashka",
+                data={
+                    "name": "Foreign Vashka",
+                    "role": "BBEG",
+                    "appearance": {"face": "iron"},
+                    "boss": {"lair_actions": "walls breathe"},
+                },
+                id=foreign_entity_id,
+            ),
+        ],
+        [models.EdgeInput(src=foreign_anchor, dst=foreign_entity_id, type="located_in", counter=1)],
+    )
+    add_media(other_id, foreign_entity_id, filename, "video")
+    foreign_file = tmp_path / "media" / other_id / foreign_entity_id / filename
+    foreign_file.parent.mkdir(parents=True, exist_ok=True)
+    foreign_file.write_bytes(MP4_BYTES)
+    assert (
+        client.get(f"/api/campaigns/{other_id}/media/{foreign_entity_id}/{filename}").status_code
+        == 404
+    )

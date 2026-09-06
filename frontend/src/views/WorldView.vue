@@ -268,7 +268,10 @@ watch(
   () => [
     jobs
       .forCampaign(campaignId)
-      .filter((job) => job.kind === 'image' && PORTRAIT_TERMINAL.has(job.state))
+      .filter(
+        (job) =>
+          (job.kind === 'image' || job.kind === 'video') && PORTRAIT_TERMINAL.has(job.state),
+      )
       .map((job) => `${job.id}:${job.state}`)
       .join('|'),
     world.mediaFor(campaignId)
@@ -346,6 +349,111 @@ async function generatePortrait(entity: EntityExport) {
   } catch (err) {
     portraitErrors.value[entity.id] =
       err instanceof ApiError ? err.message : 'Could not generate the portrait.'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reveal video (spec-4.2, beta): boss-tier cards only — the DM triggers
+// the generation from the card, and the clip renders inline. The prompt
+// is a backend projection of the committed AR24 record (appearance +
+// boss + identity); the button mirrors the enqueue gates (boss-tier
+// role + usable prompt: non-blank appearance + boss section) plus the
+// in-flight discipline.
+// ---------------------------------------------------------------------------
+
+/** The AR24 boss-section keys the reveal prompt joins (the backend's
+ * BOSS_PROMPT_KEYS mirror) — one non-blank value makes a usable prompt. */
+const BOSS_PROMPT_FIELDS = [
+  'lair_actions',
+  'legendary_actions',
+  'immunities',
+  'vulnerabilities',
+] as const
+
+const videoErrors = ref<Record<string, string>>({})
+
+function isBossTier(entity: EntityExport): boolean {
+  const data = entity.data as Record<string, unknown> | null | undefined
+  return typeof data?.role === 'string' && BOSS_ROLES.has(data.role)
+}
+
+/** True iff the committed AR24 record can produce a reveal prompt: a
+ * non-blank appearance AND at least one non-blank documented boss value
+ * (the backend's ``bbeg_video_prompt`` gate, mirrored). */
+function hasVideoPrompt(entity: EntityExport): boolean {
+  const data = entity.data as Record<string, unknown> | null | undefined
+  if (!data) return false
+  const boss = data['boss']
+  if (typeof boss !== 'object' || boss === null) return false
+  const record = boss as Record<string, unknown>
+  return BOSS_PROMPT_FIELDS.some(
+    (field) => typeof record[field] === 'string' && String(record[field]).trim() !== '',
+  )
+}
+
+/** The entity's latest video manifest row (newest created_at), or null. */
+function videoFor(entity: EntityExport) {
+  return world.videoFor(campaignId, entity.id)
+}
+
+/** The same-origin file URL — the session cookie (path /api) authenticates it. */
+function videoUrl(entity: EntityExport): string {
+  const row = videoFor(entity)
+  return row
+    ? `/api/campaigns/${encodeURIComponent(campaignId)}/media/${encodeURIComponent(row.entity_id)}/${row.filename}`
+    : ''
+}
+
+/** The latest video job for this entity (newest first) — status source. */
+function videoJobFor(entityId: string) {
+  return (
+    jobs
+      .forCampaign(campaignId)
+      .filter((job) => {
+        if (job.kind !== 'video') return false
+        const payload = job.payload as { entity_id?: string } | null
+        return payload?.entity_id === entityId
+      })
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
+  )
+}
+
+/** The card's reveal-video status line: queue position while pending,
+ * the failure message — RENDERED whenever the latest video job is
+ * failed, even when an older clip exists (the DM must see a failed
+ * re-generation). */
+function videoStatus(entity: EntityExport): string | null {
+  const job = videoJobFor(entity.id)
+  if (!job) {
+    return hasVideoPrompt(entity)
+      ? null
+      : 'Add an appearance and a boss section to generate a reveal video.'
+  }
+  if (job.state === 'queued') return `Reveal video queued — position ${job.queue_position ?? '…'}`
+  if (job.state === 'running') return 'Generating reveal video…'
+  if (job.state === 'failed') return `Reveal video failed: ${job.error ?? 'unknown error'}`
+  return null
+}
+
+/** The failed-generation message alone — shown even when a clip renders
+ * (a failed re-generation must not be hidden by the old video). */
+function videoFailure(entity: EntityExport): string | null {
+  const job = videoJobFor(entity.id)
+  if (job?.state !== 'failed') return null
+  return `Reveal video failed: ${job.error ?? 'unknown error'}`
+}
+
+async function generateRevealVideo(entity: EntityExport) {
+  if (!isBossTier(entity)) return // the backend gate, mirrored
+  if (jobs.videoInFlight(campaignId, entity.id)) return
+  if (!entityHasAppearance(entity) || !hasVideoPrompt(entity)) return // the backend gate, mirrored
+  videoErrors.value[entity.id] = ''
+  try {
+    await jobs.submitRevealVideo(campaignId, entity.id)
+    await jobs.syncList(campaignId)
+  } catch (err) {
+    videoErrors.value[entity.id] =
+      err instanceof ApiError ? err.message : 'Could not generate the reveal video.'
   }
 }
 
@@ -794,6 +902,55 @@ function additionalDataBlock(entity: EntityExport): string {
                 {{ portraitErrors[entity.id] }}
               </p>
             </div>
+            <!-- Reveal video (spec-4.2, beta): boss-tier cards only. The
+                 clip renders inline; a failed re-generation renders over
+                 an existing clip; queue/running progress renders only
+                 while no clip exists yet. -->
+            <div v-if="isBossTier(entity)" class="reveal-video">
+              <video
+                v-if="videoFor(entity)"
+                :src="videoUrl(entity)"
+                controls
+                preload="metadata"
+                :aria-label="`${entity.name} reveal video`"
+                class="reveal-video-clip"
+              ></video>
+              <p v-else-if="world.mediaFetchFailed(campaignId)" class="muted">
+                Media list unavailable.
+              </p>
+              <p class="reveal-video-actions">
+                <button
+                  type="button"
+                  class="link"
+                  :disabled="
+                    jobs.videoInFlight(campaignId, entity.id) ||
+                    !entityHasAppearance(entity) ||
+                    !hasVideoPrompt(entity)
+                  "
+                  @click="generateRevealVideo(entity)"
+                >
+                  {{
+                    jobs.videoInFlight(campaignId, entity.id)
+                      ? (videoJobFor(entity.id)?.state === 'running'
+                          ? 'Generating reveal video…'
+                          : 'Reveal video queued…')
+                      : 'Generate reveal video'
+                  }}
+                </button>
+              </p>
+              <p v-if="videoFailure(entity)" class="error">
+                {{ videoFailure(entity) }}
+              </p>
+              <p
+                v-else-if="videoStatus(entity) && !videoFor(entity)"
+                class="muted small status"
+              >
+                {{ videoStatus(entity) }}
+              </p>
+              <p v-if="videoErrors[entity.id]" class="error">
+                {{ videoErrors[entity.id] }}
+              </p>
+            </div>
             <p v-if="entity.text" class="text">{{ entity.text }}</p>
             <p v-else class="muted">No description.</p>
             <p v-if="regenerateErrors[entity.id]" class="error">
@@ -1032,6 +1189,26 @@ function additionalDataBlock(entity: EntityExport): string {
 }
 .portrait .status {
   font-size: 0.8rem;
+}
+.reveal-video {
+  margin: 0.5rem 0;
+}
+.reveal-video-clip {
+  display: block;
+  max-width: 16rem;
+  width: 100%;
+  border-radius: 0.5rem;
+  background: #000;
+}
+.reveal-video p {
+  margin: 0.15rem 0;
+}
+.reveal-video-actions {
+  margin-top: 0.25rem;
+}
+.reveal-video-actions .link:disabled {
+  color: #484f58;
+  cursor: default;
 }
 .relations h4 {
   margin: 0.5rem 0 0.25rem;
