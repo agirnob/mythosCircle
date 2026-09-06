@@ -38,9 +38,11 @@ _SYSTEM_PROMPT = (
 class ProviderError(Exception):
     """A provider call failed — the job fails, never retried (spec-1.4).
 
-    ``kind`` is ``"connection"`` (unreachable/timeout) or ``"http"``
-    (non-2xx response); ``status_code`` is set for http errors so the
-    error message can surface the server's status.
+    ``kind`` is ``"connection"`` (unreachable/timeout), ``"http"``
+    (non-2xx response), or ``"timeout"`` (poll exhaustion — the
+    ComfyUI provider's only caller, spec-4.4); ``status_code`` is set
+    for http errors so the error message can surface the server's
+    status.
     """
 
     def __init__(self, kind: str, *, status_code: int | None = None) -> None:
@@ -48,6 +50,8 @@ class ProviderError(Exception):
         self.status_code = status_code
         if kind == "http":
             message = f"provider returned HTTP {status_code}"
+        elif kind == "timeout":
+            message = "provider timed out waiting for generation"
         else:
             message = "provider connection error"
         super().__init__(message)

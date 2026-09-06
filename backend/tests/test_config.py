@@ -268,6 +268,133 @@ def test_video_settings_env_overrides_config(
     assert settings.api_key == "sk-video"
 
 
+def test_image_backend_defaults_to_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spec-4.4 acceptance: an unset image_backend resolves to the
+    default ``"openai"`` — the spec-4.1 path runs unchanged."""
+    from app.core.settings import configured_image_backend
+
+    assert configured_image_backend() == "openai"
+
+
+def test_image_backend_config_override_is_honored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[image] backend = "comfyui" opts in — a static config switch, no
+    fallback chain."""
+    from app.core.settings import configured_image_backend
+
+    path = _write_config(tmp_path, '[image]\nbackend = "comfyui"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    assert configured_image_backend() == "comfyui"
+    reset_runtime_config()
+
+
+def test_image_backend_env_wins_over_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MYTHOSCIRCLE_IMAGE_BACKEND wins over [image] backend (env > config
+    > default, spec-4.4)."""
+    from app.core.settings import configured_image_backend
+
+    path = _write_config(tmp_path, '[image]\nbackend = "comfyui"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_IMAGE_BACKEND", "openai")
+    assert configured_image_backend() == "openai"  # env wins
+    reset_runtime_config()
+
+
+def test_image_backend_misspelled_falls_back_to_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec-4.4 acceptance: a misspelled / unknown value resolves to the
+    default ``"openai"`` — only the literal ``"comfyui"`` opts in."""
+    from app.core.settings import configured_image_backend
+
+    monkeypatch.setenv("MYTHOSCIRCLE_IMAGE_BACKEND", "comfyui-typo")
+    assert configured_image_backend() == "openai"
+
+
+def test_comfyui_image_settings_config_driven(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[comfyui_image] endpoint/workflow_path/prompt_node_id/
+    aspect_ratio/megapixels/timeout are consumed (spec-4.4)."""
+    from app.core.settings import comfyui_image_settings
+
+    path = _write_config(
+        tmp_path,
+        '[comfyui_image]\nendpoint = "http://comfy:7896"\n'
+        'workflow_path = "/wf/krea2.json"\nprompt_node_id = "30:28"\n'
+        'aspect_ratio = "16:9 (Wide)"\nmegapixels = 1.5\ntimeout = 900\n',
+    )
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    settings = comfyui_image_settings()
+    assert settings.endpoint == "http://comfy:7896"
+    assert settings.workflow_path == "/wf/krea2.json"
+    assert settings.prompt_node_id == "30:28"
+    assert settings.aspect_ratio == "16:9 (Wide)"
+    assert settings.megapixels == 1.5
+    assert settings.timeout == 900
+    assert settings.api_key is None
+    reset_runtime_config()
+
+
+def test_comfyui_image_settings_env_overrides_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MYTHOSCIRCLE_COMFYUI_IMAGE_* win over [comfyui_image]; the api_key
+    stays environment-only; a set-but-empty env falls through to the
+    config value (env > config > default)."""
+    from app.core.settings import comfyui_image_settings
+
+    path = _write_config(tmp_path, '[comfyui_image]\nendpoint = "http://cfg-comfy:7896"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_IMAGE_ENDPOINT", "http://env-comfy:7896")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_IMAGE_WORKFLOW_PATH", "/env/wf.json")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_IMAGE_PROMPT_NODE_ID", "5")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_IMAGE_ASPECT_RATIO", "9:16 (Tall)")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_IMAGE_MEGAPIXELS", "2.5")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_IMAGE_TIMEOUT", "77")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_IMAGE_API_KEY", "sk-comfy")
+    settings = comfyui_image_settings()
+    assert settings.endpoint == "http://env-comfy:7896"
+    assert settings.workflow_path == "/env/wf.json"
+    assert settings.prompt_node_id == "5"
+    assert settings.aspect_ratio == "9:16 (Tall)"
+    assert settings.megapixels == 2.5
+    assert settings.timeout == 77
+    assert settings.api_key == "sk-comfy"
+    reset_runtime_config()  # the cache locked env=... values in phase 1
+    monkeypatch.delenv("MYTHOSCIRCLE_COMFYUI_IMAGE_ENDPOINT")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_IMAGE_ENDPOINT", "")  # empty -> config
+    assert comfyui_image_settings().endpoint == "http://cfg-comfy:7896"
+    reset_runtime_config()
+
+
+def test_comfyui_image_defaults_are_documented_placeholders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The spec-4.4 defaults are inert placeholders: the workflow path is
+    empty until the operator sets it (the job fails at first call), and
+    the endpoint/prompt node match the documented Krea2 Turbo setup."""
+    from app.core.settings import (
+        DEFAULT_COMFYUI_IMAGE_ENDPOINT,
+        DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID,
+        DEFAULT_COMFYUI_IMAGE_TIMEOUT,
+        comfyui_image_settings,
+    )
+
+    settings = comfyui_image_settings()
+    assert settings.endpoint == DEFAULT_COMFYUI_IMAGE_ENDPOINT  # http://127.0.0.1:7896
+    assert settings.workflow_path == ""  # operator must set
+    assert settings.prompt_node_id == DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID  # "30:28"
+    assert settings.timeout == DEFAULT_COMFYUI_IMAGE_TIMEOUT  # 1800 — whole-call bound
+
+
 def test_video_defaults_are_documented_placeholders(monkeypatch: pytest.MonkeyPatch) -> None:
     """The spec-4.2 ask-first item's defaults are inert placeholders — a
     missing config/env resolves to them without error (the mock provider
@@ -276,3 +403,52 @@ def test_video_defaults_are_documented_placeholders(monkeypatch: pytest.MonkeyPa
 
     assert video_settings().endpoint == DEFAULT_VIDEO_ENDPOINT
     assert video_settings().model == "mythos-reveal-v1"
+
+
+def test_image_backend_env_only_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MYTHOSCIRCLE_IMAGE_BACKEND=comfyui ALONE (no config file section)
+    opts the runtime into the comfyui backend — env > config > default
+    (review round 1)."""
+    from app.core.settings import configured_image_backend
+
+    monkeypatch.setenv("MYTHOSCIRCLE_IMAGE_BACKEND", "comfyui")
+    assert configured_image_backend() == "comfyui"
+
+
+def test_image_backend_env_only_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MYTHOSCIRCLE_IMAGE_BACKEND=openai alone resolves to the openai
+    backend — the default preserved (review round 1)."""
+    from app.core.settings import configured_image_backend
+
+    monkeypatch.setenv("MYTHOSCIRCLE_IMAGE_BACKEND", "openai")
+    assert configured_image_backend() == "openai"
+
+
+def test_comfyui_empty_timeout_env_falls_through_to_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A set-but-empty MYTHOSCIRCLE_COMFYUI_IMAGE_TIMEOUT is treated as
+    unset — the config value wins; the numeric parse never sees "" (it
+    would raise, contradicting env > config > default precedence)."""
+    from app.core.settings import comfyui_image_settings
+
+    path = _write_config(tmp_path, "[comfyui_image]\ntimeout = 60\n")
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_IMAGE_TIMEOUT", "")
+    assert comfyui_image_settings().timeout == 60
+    reset_runtime_config()
+
+
+def test_env_float_rejects_non_finite(monkeypatch: pytest.MonkeyPatch) -> None:
+    """env_float rejects inf/nan loudly: a timeout of ``inf`` would make
+    the ComfyUI poll deadline unbounded and ``nan`` silently slips past
+    every comparison (review round 1)."""
+    from app.core.config import env_float
+
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_TIMEOUT", "inf")
+    with pytest.raises(ValueError, match="finite"):
+        env_float("MYTHOSCIRCLE_LLM_TIMEOUT", 120.0)
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_TIMEOUT", "nan")
+    with pytest.raises(ValueError, match="finite"):
+        env_float("MYTHOSCIRCLE_LLM_TIMEOUT", 120.0)

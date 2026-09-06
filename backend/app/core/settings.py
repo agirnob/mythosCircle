@@ -137,6 +137,101 @@ def image_settings() -> ImageSettings:
     )
 
 
+#: Environment variables for the ComfyUI portrait backend (spec-4.4;
+#: keys and defaults canonical in config.py). The backend switch
+#: (``[image] backend``) is read via ``configured_image_backend()``;
+#: the api_key stays environment-only per AD-22.
+IMAGE_BACKEND = config_mod.IMAGE_BACKEND_ENV
+COMFYUI_IMAGE_ENDPOINT = config_mod.COMFYUI_IMAGE_ENDPOINT_ENV
+COMFYUI_IMAGE_WORKFLOW_PATH = config_mod.COMFYUI_IMAGE_WORKFLOW_PATH_ENV
+COMFYUI_IMAGE_PROMPT_NODE_ID = config_mod.COMFYUI_IMAGE_PROMPT_NODE_ID_ENV
+COMFYUI_IMAGE_ASPECT_RATIO = config_mod.COMFYUI_IMAGE_ASPECT_RATIO_ENV
+COMFYUI_IMAGE_MEGAPIXELS = config_mod.COMFYUI_IMAGE_MEGAPIXELS_ENV
+COMFYUI_IMAGE_TIMEOUT = config_mod.COMFYUI_IMAGE_TIMEOUT_ENV
+COMFYUI_IMAGE_API_KEY = "MYTHOSCIRCLE_COMFYUI_IMAGE_API_KEY"
+
+#: Code defaults (spec-4.4; config.toml [comfyui_image] overrides in 1.7).
+DEFAULT_COMFYUI_IMAGE_ENDPOINT = config_mod.DEFAULT_COMFYUI_IMAGE_ENDPOINT
+DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH = config_mod.DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH
+DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID = config_mod.DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID
+DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO = config_mod.DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO
+DEFAULT_COMFYUI_IMAGE_MEGAPIXELS = config_mod.DEFAULT_COMFYUI_IMAGE_MEGAPIXELS
+DEFAULT_COMFYUI_IMAGE_TIMEOUT = config_mod.DEFAULT_COMFYUI_IMAGE_TIMEOUT
+
+
+@dataclass(frozen=True)
+class ComfyUIImageSettings:
+    """The ComfyUI portrait backend the adapter talks to (spec-4.4).
+
+    Workflow-driven, not model-driven: the operator's workflow JSON
+    carries the node graph and model weights; these knobs configure
+    only the endpoint, the prompt node to inject into, the documented
+    generation shape (``aspect_ratio`` / ``megapixels`` are config-level
+    documentation — one job = one image, fixed shape per workflow, no
+    per-job knobs), and the whole-call timeout. The API key stays
+    environment-only (AD-22) — never config.toml.
+    """
+
+    endpoint: str = DEFAULT_COMFYUI_IMAGE_ENDPOINT
+    workflow_path: str = DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH
+    prompt_node_id: str = DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID
+    aspect_ratio: str = DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO
+    megapixels: float = DEFAULT_COMFYUI_IMAGE_MEGAPIXELS
+    timeout: float = DEFAULT_COMFYUI_IMAGE_TIMEOUT
+    api_key: str | None = None
+
+
+def comfyui_image_settings() -> ComfyUIImageSettings:
+    """Read the ComfyUI image adapter's settings (env > config > default).
+
+    The API key stays environment-only (AD-22) — never config.toml.
+    """
+    resolved = runtime_config()
+    endpoint_env = os.environ.get(COMFYUI_IMAGE_ENDPOINT)
+    workflow_env = os.environ.get(COMFYUI_IMAGE_WORKFLOW_PATH)
+    node_env = os.environ.get(COMFYUI_IMAGE_PROMPT_NODE_ID)
+    aspect_env = os.environ.get(COMFYUI_IMAGE_ASPECT_RATIO)
+    return ComfyUIImageSettings(
+        # A set-but-empty env value is treated as unset (falls through to
+        # config) — precedence is env > config > default (spec-1.7).
+        endpoint=(endpoint_env if endpoint_env else resolved.comfyui_image_endpoint).strip()
+        or resolved.comfyui_image_endpoint,
+        workflow_path=(
+            workflow_env if workflow_env else resolved.comfyui_image_workflow_path
+        ).strip()
+        or resolved.comfyui_image_workflow_path,
+        prompt_node_id=(node_env if node_env else resolved.comfyui_image_prompt_node_id).strip()
+        or resolved.comfyui_image_prompt_node_id,
+        aspect_ratio=(aspect_env if aspect_env else resolved.comfyui_image_aspect_ratio).strip()
+        or resolved.comfyui_image_aspect_ratio,
+        # The numeric fields get the same empty-env fallthrough BEFORE
+        # the numeric parse — env_float("") would raise, contradicting
+        # the documented env > config > default precedence (review
+        # round 1).
+        megapixels=(
+            env_float(COMFYUI_IMAGE_MEGAPIXELS, resolved.comfyui_image_megapixels)
+            if os.environ.get(COMFYUI_IMAGE_MEGAPIXELS)
+            else resolved.comfyui_image_megapixels
+        ),
+        timeout=(
+            env_float(COMFYUI_IMAGE_TIMEOUT, resolved.comfyui_image_timeout)
+            if os.environ.get(COMFYUI_IMAGE_TIMEOUT)
+            else resolved.comfyui_image_timeout
+        ),
+        api_key=os.environ.get(COMFYUI_IMAGE_API_KEY) or None,
+    )
+
+
+def configured_image_backend() -> str:
+    """The portrait backend switch — env > config > default (spec-4.4).
+
+    Only the literal ``"comfyui"`` opts in; unset / misspelled / None
+    resolves to ``"openai"`` and the spec-4.1 path runs unchanged
+    (acceptance criterion).
+    """
+    return runtime_config().image_backend
+
+
 #: Environment variables for the reveal-video adapter (spec-4.2; keys
 #: and defaults canonical in config.py — documented placeholders until the
 #: owner resolves the dev video server + model ask-first item).

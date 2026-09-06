@@ -50,10 +50,19 @@ def test_api_binds_loopback_only() -> None:
     assert "reverse_proxy" in caddy.lower()
 
 
-def test_theme_seed_in_shipped_config() -> None:
-    """AR27/spec-1.7: the shipped config carries the seed theme list; the
-    runtime consumes it (env > config > seed fallback — config sourcing is
-    pinned in test_config.py)."""
+def test_image_backend_and_comfyui_placeholder_contract() -> None:
+    """Spec-4.4: the shipped [image] backend stays openai (default — a
+    flipped backend would silently change production portrait routing)
+    and the [comfyui_image] placeholders keep their documented shapes
+    (empty workflow_path until the operator fills it, the Krea2 prompt
+    node, whole-call timeout). Pinned so drift fails loudly (review
+    round 1)."""
     config = tomllib.loads((DEPLOY_DIR / "config.toml").read_text())
-    config_themes = config["campaigns"]["themes"]
-    assert set(config_themes) == {"High Fantasy", "Grimdark", "Steampunk", "Planar"}
+    assert config["image"]["backend"] == "openai"
+    comfyui_image = config["comfyui_image"]
+    assert comfyui_image["endpoint"] == "http://127.0.0.1:7896"
+    assert comfyui_image["workflow_path"] == ""
+    assert comfyui_image["prompt_node_id"] == "30:28"
+    assert comfyui_image["aspect_ratio"] == "1:1 (Square)"
+    assert comfyui_image["megapixels"] == 1.0
+    assert comfyui_image["timeout"] == 1800

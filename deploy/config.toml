@@ -42,6 +42,35 @@ endpoint = "http://127.0.0.1:8081/v1"
 model = "mythos-portrait-v1"
 # HTTP timeout for one images/generations call (seconds).
 timeout = 120
+# Backend switch (spec-4.4): "openai" (default — spec-4.1 behavior
+# preserved) or "comfyui" (opt-in alternative local-dev backend; the
+# [comfyui_image] section below is what the comfyui path reads). Static
+# config, no runtime fallback chain.
+backend = "openai"
+
+[comfyui_image]
+# ComfyUI portrait backend (spec-4.4). ASK-FIRST: the Krea2 Turbo T2I
+# workflow file lives on the operator machine
+# (/home/main/Desktop/image_krea2_turbo_t2i_int8 (2).json) — default
+# plan is to DOCUMENT the path only and NOT ship the workflow JSON (it
+# references operator-specific model weights by node id; the provider
+# reloads it from disk on every call). Reopen if the owner wants it
+# shipped in deploy/.
+endpoint = "http://127.0.0.1:7896"
+# Absolute path to the operator's Krea2 Turbo workflow JSON. Empty
+# default is a documented placeholder: the job fails at first call
+# (provider connection error) until the operator fills this in.
+workflow_path = ""
+# The workflow node whose inputs.value carries the prompt text (Krea2
+# Turbo: the prompt widget).
+prompt_node_id = "30:28"
+# Documented generation shape — fixed per workflow, no per-job knobs
+# (one job = one image).
+aspect_ratio = "1:1 (Square)"
+megapixels = 1.0
+# Timeout bounds the ENTIRE ComfyUI call (submit + poll + fetch), not
+# just the submit. Krea2 Turbo on a local GPU is 30-90s typical.
+timeout = 1800
 
 [video]
 # OpenAI-compatible video endpoint (spec-4.2, beta). PLACEHOLDER DEFAULTS —

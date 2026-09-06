@@ -27,11 +27,16 @@ import logging
 from typing import Any
 
 from app.core.settings import (
+    ComfyUIImageSettings,
     ImageSettings,
     LLMSettings,
     VideoSettings,
+    configured_image_backend,
     configured_media_dir,
     llm_settings,
+)
+from app.core.settings import (
+    comfyui_image_settings as resolve_comfyui_image_settings,
 )
 from app.core.settings import (
     image_settings as resolve_image_settings,
@@ -40,6 +45,7 @@ from app.core.settings import (
     video_settings as resolve_video_settings,
 )
 from app.pipeline.budget import BudgetExceededError, CallBudget
+from app.providers.comfyui import ComfyUIImageGeneration, comfyui_image_generation
 from app.providers.image import ImageGeneration, image_generation
 from app.providers.llm import ChatCompletion, ProviderError, chat_completion
 from app.providers.video import VideoGeneration, video_generation
@@ -78,6 +84,8 @@ def run_next_job(
     image_settings: ImageSettings | None = None,
     video_provider: VideoGeneration | None = None,
     video_settings: VideoSettings | None = None,
+    comfyui_image_provider: ComfyUIImageGeneration | None = None,
+    comfyui_image_settings: ComfyUIImageSettings | None = None,
 ) -> str | None:
     """Process at most one job; returns its id, or None when idle.
 
@@ -93,7 +101,11 @@ def run_next_job(
     are the production defaults, resolved at dispatch time so an
     unrelated text job never pays the image config read.
     ``video_provider``/``video_settings`` mirror them for the
-    reveal-video dispatch (spec-4.2).
+    reveal-video dispatch (spec-4.2). ``comfyui_image_provider``/
+    ``comfyui_image_settings`` are the third pair (spec-4.4): when
+    ``[image] backend = "comfyui"``, the image branch routes through
+    ``comfyui_image_generation``/``comfyui_image_settings()`` instead
+    — the OpenAI path is untouched when ``"openai"`` (the default).
     """
     try:
         settings = settings or llm_settings()
@@ -112,6 +124,8 @@ def run_next_job(
             image_settings,
             video_provider,
             video_settings,
+            comfyui_image_provider,
+            comfyui_image_settings,
         )
     except JobStateConflictError:
         # The job is terminal (cancelled) mid-run. The generate runner
@@ -150,6 +164,8 @@ def _run_job(
     image_settings: ImageSettings | None = None,
     video_provider: VideoGeneration | None = None,
     video_settings: VideoSettings | None = None,
+    comfyui_image_provider: ComfyUIImageGeneration | None = None,
+    comfyui_image_settings: ComfyUIImageSettings | None = None,
 ) -> None:
     if job.kind == "build_in":
         # Lazy import: ``build_in`` imports ``JobPayloadError`` from this
@@ -180,6 +196,24 @@ def _run_job(
         # state (spec-4.1, AD-1 — media is not world graph).
         from app.media.service import run_portrait
 
+        if configured_image_backend() == "comfyui":
+            # ComfyUI is the opt-in alternative local-dev backend
+            # (spec-4.4, [image] backend = "comfyui"): the poll-based
+            # provider returns the same PNG bytes, so the shared
+            # run_portrait runner — PNG guard, atomic write, manifest
+            # row, cancel-race poll — is unchanged; only the provider
+            # and its settings swap.
+            run_portrait(
+                job,
+                comfyui_image_provider or comfyui_image_generation,
+                # run_portrait's ``settings`` parameter is transparent
+                # passthrough to the provider (the runner never
+                # interprets it); the comfyui settings object satisfies
+                # the same kwargs-only ``settings=`` call shape.
+                comfyui_image_settings or resolve_comfyui_image_settings(),  # type: ignore[arg-type]
+                media_dir=configured_media_dir(),
+            )
+            return
         run_portrait(
             job,
             image_provider or image_generation,

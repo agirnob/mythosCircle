@@ -377,6 +377,176 @@ def test_run_image_job_provider_failure_fails_job_cleanly(
     assert not (tmp_path / "media" / world / entity_id).exists()
 
 
+def test_run_image_job_comfyui_backend_dispatch(
+    world: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec-4.4 comfyui dispatch: with image_backend = "comfyui", an
+    image job routes through the comfyui provider under the same
+    run_next_job seam — the shared portrait runner writes the file +
+    manifest row, the comfyui prompt rides the committed appearance,
+    and the OpenAI provider is NEVER called (no fallback chain)."""
+    from app.core import ids
+    from app.core.config import reset_runtime_config
+    from app.core.settings import ComfyUIImageSettings
+    from app.store import commit_subgraph, list_media, session_scope, world_entities
+
+    monkeypatch.setenv("MYTHOSCIRCLE_IMAGE_BACKEND", "comfyui")
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    reset_runtime_config()
+    try:
+        entity_id, anchor_id = ids.new_id(), ids.new_id()
+        commit_subgraph(
+            world,
+            [
+                models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+                models.EntityInput(
+                    kind="character",
+                    name="Mira Vane",
+                    data={"appearance": {"face": "sharp features", "body": "lean"}},
+                    id=entity_id,
+                ),
+            ],
+            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        )
+        COMFYUI_SETTINGS = ComfyUIImageSettings(endpoint="http://comfy.test:7896")
+        seen_prompts: list[str] = []
+
+        def comfyui_provider(prompt: str, settings: ComfyUIImageSettings) -> bytes:
+            assert settings is COMFYUI_SETTINGS
+            seen_prompts.append(prompt)
+            return b"\x89PNG\r\n\x1a\ncomfyui-payload"
+
+        def openai_provider(prompt: str, settings: ImageSettings) -> bytes:
+            raise AssertionError("the OpenAI image provider must not run under comfyui")
+
+        job_id = enqueue_job(world, "image", {"entity_id": entity_id}).id
+        processed = run_next_job(
+            provider=_ok_provider,
+            settings=SETTINGS,
+            image_provider=openai_provider,  # poisoned: proves the branch, not a fallback
+            comfyui_image_provider=comfyui_provider,
+            comfyui_image_settings=COMFYUI_SETTINGS,
+        )
+        assert processed == job_id
+        job, _position = job_status(job_id)
+        assert job.state == "succeeded"
+        assert job.result is not None and job.result["entity_id"] == entity_id
+        filename = str(job.result["filename"])
+        assert filename.endswith(".png")
+        with session_scope() as session:
+            entities = {e.id: e for e in world_entities(session, world)}
+        rows = list_media(world)
+        assert entities[entity_id].name == "Mira Vane"
+        assert len(rows) == 1 and rows[0].entity_id == entity_id and rows[0].filename == filename
+        comfy_bytes = b"\x89PNG\r\n\x1a\ncomfyui-payload"
+        assert (tmp_path / "media" / world / entity_id / filename).read_bytes() == comfy_bytes
+        # The prompt is the committed appearance projection — the same
+        # run_portrait contract as the OpenAI path.
+        assert seen_prompts == ["face: sharp features\nbody: lean"]
+    finally:
+        reset_runtime_config()
+
+
+def test_comfyui_real_provider_end_to_end_with_mock_transport(
+    world: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production comfyui path: REAL ``comfyui_image_generation``
+    (via a bound MockTransport, workflow file on disk) through
+    ``run_next_job`` with image_backend=comfyui. This is the seam that
+    proves the keyword-only ``settings=`` call lands — the injected
+    dispatch fakes accept positional settings, so a regression to a
+    positional call would pass every fake test and TypeError every real
+    job (the test_real_provider_end_to_end_with_mock_transport mirror,
+    review round 1)."""
+    import json as _json
+
+    from app.core import ids
+    from app.core.config import reset_runtime_config
+    from app.core.settings import ComfyUIImageSettings
+    from app.providers.comfyui import comfyui_image_generation
+    from app.store import commit_subgraph, list_media
+
+    monkeypatch.setenv("MYTHOSCIRCLE_IMAGE_BACKEND", "comfyui")
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    reset_runtime_config()
+    try:
+        entity_id, anchor_id = ids.new_id(), ids.new_id()
+        commit_subgraph(
+            world,
+            [
+                models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+                models.EntityInput(
+                    kind="character",
+                    name="Mira Vane",
+                    data={"appearance": {"face": "sharp features"}},
+                    id=entity_id,
+                ),
+            ],
+            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        )
+        workflow_path = tmp_path / "krea2.json"
+        workflow_path.write_text(
+            _json.dumps(
+                {
+                    "30:28": {"class_type": "CLIPTextEncode", "inputs": {"value": "stale"}},
+                    "29": {"class_type": "SaveImage", "inputs": {}},
+                }
+            )
+        )
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00" + b"IEND\xaeB`\x82"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/prompt":
+                body = _json.loads(request.read().decode())
+                # The committed appearance projection rides the prompt
+                # node — proving the real provider ran end-to-end.
+                assert body["prompt"]["30:28"]["inputs"]["value"] == "face: sharp features"
+                return httpx.Response(200, json={"prompt_id": "p-1"})
+            if request.url.path == "/history/p-1":
+                return httpx.Response(
+                    200,
+                    json={
+                        "p-1": {
+                            "outputs": {
+                                "29": {
+                                    "images": [
+                                        {
+                                            "filename": "k.png",
+                                            "subfolder": "",
+                                            "type": "output",
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                )
+            assert request.url.path == "/view"
+            return httpx.Response(200, content=png_bytes)
+
+        provider = partial(comfyui_image_generation, transport=httpx.MockTransport(handler))
+        job_id = enqueue_job(world, "image", {"entity_id": entity_id}).id
+        processed = run_next_job(
+            provider=_ok_provider,
+            settings=SETTINGS,
+            comfyui_image_provider=provider,
+            comfyui_image_settings=ComfyUIImageSettings(
+                endpoint="http://comfy.test:7896", workflow_path=str(workflow_path)
+            ),
+        )
+        assert processed == job_id
+        job, _position = job_status(job_id)
+        assert job.state == "succeeded", job.error
+        assert job.result is not None and job.result["entity_id"] == entity_id
+        filename = str(job.result["filename"])
+        assert filename.endswith(".png")
+        rows = list_media(world)
+        assert len(rows) == 1 and rows[0].entity_id == entity_id and rows[0].filename == filename
+        assert (tmp_path / "media" / world / entity_id / filename).read_bytes() == png_bytes
+    finally:
+        reset_runtime_config()
+
+
 def test_result_persisted_and_ws_shape_unchanged(world: str) -> None:
     """RESULT_PERSISTED: job.result is readable via job_status; the AD-17
     WS message carries no 'result' key (the shape is unchanged)."""

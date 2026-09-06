@@ -286,9 +286,7 @@ def run_video(
         # have queued while the DM demoted the entity, and a demotion
         # that leaves boss data in place would still yield a prompt —
         # a clip for a non-boss is the wrong output, so fail cleanly.
-        raise JobPayloadError(
-            f"video: entity {entity_id} is no longer boss-tier (BBEG or Monster)"
-        )
+        raise JobPayloadError(f"video: entity {entity_id} is no longer boss-tier (BBEG or Monster)")
     prompt = bbeg_video_prompt(data)
     if prompt is None:
         raise JobPayloadError(

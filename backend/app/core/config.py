@@ -6,12 +6,13 @@ always env > config.toml > code default; secrets remain environment-only
 a missing file falls back to code defaults.
 """
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 #: Env var pointing at the config path (dev overrides the repo default).
 CONFIG_ENV = "MYTHOSCIRCLE_CONFIG"
@@ -33,6 +34,13 @@ VIDEO_TIMEOUT_ENV = "MYTHOSCIRCLE_VIDEO_TIMEOUT"
 DB_ENV = "MYTHOSCIRCLE_DB"
 LOG_FILE_ENV = "MYTHOSCIRCLE_LOG_FILE"
 MEDIA_DIR_ENV = "MYTHOSCIRCLE_MEDIA_DIR"
+IMAGE_BACKEND_ENV = "MYTHOSCIRCLE_IMAGE_BACKEND"
+COMFYUI_IMAGE_ENDPOINT_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_ENDPOINT"
+COMFYUI_IMAGE_WORKFLOW_PATH_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_WORKFLOW_PATH"
+COMFYUI_IMAGE_PROMPT_NODE_ID_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_PROMPT_NODE_ID"
+COMFYUI_IMAGE_ASPECT_RATIO_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_ASPECT_RATIO"
+COMFYUI_IMAGE_MEGAPIXELS_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_MEGAPIXELS"
+COMFYUI_IMAGE_TIMEOUT_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_TIMEOUT"
 
 
 def env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -54,7 +62,10 @@ def env_float(name: str, default: float, minimum: float = 0.0) -> float:
     """Parse a float env var; malformed or non-positive values fail loudly.
 
     The default minimum is strict-positive (0.0 is rejected) — a zero or
-    negative timeout would disable the guard entirely.
+    negative timeout would disable the guard entirely. Non-finite values
+    (``inf``/``nan``) also fail loudly: a timeout of ``inf`` would make
+    the ComfyUI poll deadline unbounded and ``nan`` silently slips past
+    every comparison (review round 1).
     """
     raw = os.environ.get(name)
     if raw is None:
@@ -63,6 +74,8 @@ def env_float(name: str, default: float, minimum: float = 0.0) -> float:
         value = float(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be a float, got {raw!r}") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite, got {value!r}")
     if value <= minimum:
         raise ValueError(f"{name} must be > {minimum}, got {value}")
     return value
@@ -89,6 +102,24 @@ DEFAULT_IMAGE_TIMEOUT = 120.0
 DEFAULT_VIDEO_ENDPOINT = "http://127.0.0.1:8082/v1"
 DEFAULT_VIDEO_MODEL = "mythos-reveal-v1"
 DEFAULT_VIDEO_TIMEOUT = 120.0
+#: The portrait backend switch (spec-4.4): ``"openai"`` (default —
+#: spec-4.1 preserved) or ``"comfyui"`` (opt-in local-dev alternative).
+DEFAULT_IMAGE_BACKEND: Literal["openai", "comfyui"] = "openai"
+
+#: Documented PLACEHOLDER defaults (spec-4.4): the ComfyUI portrait
+#: backend is an opt-in alternative local-dev path; the workflow JSON
+#: lives on the operator machine and is NEVER shipped (spec-4.4 Never
+#: list), so ``workflow_path`` starts empty and the job fails at first
+#: call until the operator sets it. ``timeout`` bounds the ENTIRE call
+#: (submit + poll + fetch) — Krea2 Turbo on a local GPU is 30-90s
+#: typical, hence the long default, not the OpenAI shape's per-request
+#: 120s.
+DEFAULT_COMFYUI_IMAGE_ENDPOINT = "http://127.0.0.1:7896"
+DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH = ""
+DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID = "30:28"
+DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO = "1:1 (Square)"
+DEFAULT_COMFYUI_IMAGE_MEGAPIXELS = 1.0
+DEFAULT_COMFYUI_IMAGE_TIMEOUT = 1800.0
 DEFAULT_MEDIA_DIR = "/var/lib/mythoscircle/media"
 DEFAULT_THEMES = ["High Fantasy", "Grimdark", "Steampunk", "Planar"]
 DEFAULT_DB_URL = "sqlite:////var/lib/mythoscircle/mythoscircle.db"
@@ -107,6 +138,13 @@ class RuntimeConfig:
     image_endpoint: str = DEFAULT_IMAGE_ENDPOINT
     image_model: str = DEFAULT_IMAGE_MODEL
     image_timeout: float = DEFAULT_IMAGE_TIMEOUT
+    image_backend: Literal["openai", "comfyui"] = DEFAULT_IMAGE_BACKEND
+    comfyui_image_endpoint: str = DEFAULT_COMFYUI_IMAGE_ENDPOINT
+    comfyui_image_workflow_path: str = DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH
+    comfyui_image_prompt_node_id: str = DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID
+    comfyui_image_aspect_ratio: str = DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO
+    comfyui_image_megapixels: float = DEFAULT_COMFYUI_IMAGE_MEGAPIXELS
+    comfyui_image_timeout: float = DEFAULT_COMFYUI_IMAGE_TIMEOUT
     video_endpoint: str = DEFAULT_VIDEO_ENDPOINT
     video_model: str = DEFAULT_VIDEO_MODEL
     video_timeout: float = DEFAULT_VIDEO_TIMEOUT
@@ -147,6 +185,7 @@ def runtime_config() -> RuntimeConfig:
     llm = data.get("llm", {})
     image = data.get("image", {})
     video = data.get("video", {})
+    comfyui_image = data.get("comfyui_image", {})
     campaigns = data.get("campaigns", {})
 
     def _config_int(value: Any, name: str, default: int) -> int:
@@ -194,6 +233,54 @@ def runtime_config() -> RuntimeConfig:
         IMAGE_TIMEOUT_ENV,
         _config_float(image.get("timeout"), "image.timeout", DEFAULT_IMAGE_TIMEOUT),
     )
+    # Backend switch: env > config > default (spec-4.4). Acceptance:
+    # unset / misspelled / None falls back to the default OpenAI path —
+    # only the literal ``"comfyui"`` opts in, never a runtime fallback
+    # chain.
+    backend_setting = os.environ.get(IMAGE_BACKEND_ENV) or str(
+        image.get("backend", DEFAULT_IMAGE_BACKEND)
+    )
+    image_backend: Literal["openai", "comfyui"] = (
+        "comfyui" if backend_setting == "comfyui" else "openai"
+    )
+    comfyui_image_endpoint = os.environ.get(COMFYUI_IMAGE_ENDPOINT_ENV) or str(
+        comfyui_image.get("endpoint", DEFAULT_COMFYUI_IMAGE_ENDPOINT)
+    )
+    comfyui_image_workflow_path = os.environ.get(COMFYUI_IMAGE_WORKFLOW_PATH_ENV) or str(
+        comfyui_image.get("workflow_path", DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH)
+    )
+    comfyui_image_prompt_node_id = os.environ.get(COMFYUI_IMAGE_PROMPT_NODE_ID_ENV) or str(
+        comfyui_image.get("prompt_node_id", DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID)
+    )
+    comfyui_image_aspect_ratio = os.environ.get(COMFYUI_IMAGE_ASPECT_RATIO_ENV) or str(
+        comfyui_image.get("aspect_ratio", DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO)
+    )
+    # A set-but-empty env value is treated as unset (spec-1.7 env >
+    # config > default — the settings-layer docstring's contract): the
+    # numeric parse must never see "" (it would raise and contradict
+    # the documented precedence, review round 1).
+    comfyui_megapixels_env = os.environ.get(COMFYUI_IMAGE_MEGAPIXELS_ENV)
+    comfyui_megapixels_config = _config_float(
+        comfyui_image.get("megapixels"),
+        "comfyui_image.megapixels",
+        DEFAULT_COMFYUI_IMAGE_MEGAPIXELS,
+    )
+    comfyui_image_megapixels = (
+        env_float(COMFYUI_IMAGE_MEGAPIXELS_ENV, comfyui_megapixels_config)
+        if comfyui_megapixels_env
+        else comfyui_megapixels_config
+    )
+    comfyui_timeout_env = os.environ.get(COMFYUI_IMAGE_TIMEOUT_ENV)
+    comfyui_timeout_config = _config_float(
+        comfyui_image.get("timeout"),
+        "comfyui_image.timeout",
+        DEFAULT_COMFYUI_IMAGE_TIMEOUT,
+    )
+    comfyui_image_timeout = (
+        env_float(COMFYUI_IMAGE_TIMEOUT_ENV, comfyui_timeout_config)
+        if comfyui_timeout_env
+        else comfyui_timeout_config
+    )
     video_endpoint = os.environ.get(VIDEO_ENDPOINT_ENV) or str(
         video.get("endpoint", DEFAULT_VIDEO_ENDPOINT)
     )
@@ -230,6 +317,13 @@ def runtime_config() -> RuntimeConfig:
         image_endpoint=image_endpoint,
         image_model=image_model,
         image_timeout=image_timeout,
+        image_backend=image_backend,
+        comfyui_image_endpoint=comfyui_image_endpoint,
+        comfyui_image_workflow_path=comfyui_image_workflow_path,
+        comfyui_image_prompt_node_id=comfyui_image_prompt_node_id,
+        comfyui_image_aspect_ratio=comfyui_image_aspect_ratio,
+        comfyui_image_megapixels=comfyui_image_megapixels,
+        comfyui_image_timeout=comfyui_image_timeout,
         video_endpoint=video_endpoint,
         video_model=video_model,
         video_timeout=video_timeout,
