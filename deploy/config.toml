@@ -62,8 +62,9 @@ endpoint = "http://127.0.0.1:7896"
 # (provider connection error) until the operator fills this in.
 workflow_path = ""
 # The workflow node whose inputs.value carries the prompt text (Krea2
-# Turbo: the prompt widget).
-prompt_node_id = "30:28"
+# Turbo: the "Text String (User Prompt)" widget — node 30:19, NOT the
+# 30:28 switch). Operator-specific; must match the workflow JSON.
+prompt_node_id = "30:19"
 # Documented generation shape — fixed per workflow, no per-job knobs
 # (one job = one image).
 aspect_ratio = "1:1 (Square)"

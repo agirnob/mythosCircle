@@ -62,7 +62,7 @@ def test_image_backend_and_comfyui_placeholder_contract() -> None:
     comfyui_image = config["comfyui_image"]
     assert comfyui_image["endpoint"] == "http://127.0.0.1:7896"
     assert comfyui_image["workflow_path"] == ""
-    assert comfyui_image["prompt_node_id"] == "30:28"
+    assert comfyui_image["prompt_node_id"] == "30:19"
     assert comfyui_image["aspect_ratio"] == "1:1 (Square)"
     assert comfyui_image["megapixels"] == 1.0
     assert comfyui_image["timeout"] == 1800

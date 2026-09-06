@@ -31,7 +31,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00" + b"IEND\xaeB`\x82"
 #: The operator-workflow shape the tests pin: a prompt widget node and a
 #: SaveImage node (the prompt node id matches the config default).
 WORKFLOW: dict[str, Any] = {
-    "30:28": {"class_type": "CLIPTextEncode", "inputs": {"value": "stale prompt"}},
+    "30:19": {"class_type": "CLIPTextEncode", "inputs": {"value": "stale prompt"}},
     "29": {"class_type": "SaveImage", "inputs": {}},
 }
 
@@ -92,14 +92,14 @@ def test_comfyui_image_generation_returns_png_bytes(tmp_path: Path) -> None:
     assert data == PNG
     assert submitted["body"] == {
         "prompt": {
-            "30:28": {"class_type": "CLIPTextEncode", "inputs": {"value": "a sharp face"}},
+            "30:19": {"class_type": "CLIPTextEncode", "inputs": {"value": "a sharp face"}},
             "29": {"class_type": "SaveImage", "inputs": {}},
         }
     }
     assert view_params == {"filename": "Krea2_00001_.png", "type": "output", "subfolder": ""}
     # The provider deep-copies before mutating — the file still carries
     # the operator's stale prompt.
-    assert json.loads(workflow_path.read_text())["30:28"]["inputs"]["value"] == "stale prompt"
+    assert json.loads(workflow_path.read_text())["30:19"]["inputs"]["value"] == "stale prompt"
 
 
 def test_comfyui_workflow_reloaded_from_disk_on_every_call(tmp_path: Path) -> None:
@@ -112,7 +112,7 @@ def test_comfyui_workflow_reloaded_from_disk_on_every_call(tmp_path: Path) -> No
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/prompt":
             submitted_values.append(
-                json.loads(request.read().decode())["prompt"]["30:28"]["inputs"]["value"]
+                json.loads(request.read().decode())["prompt"]["30:19"]["inputs"]["value"]
             )
             return httpx.Response(200, json={"prompt_id": "p-1"})
         if request.url.path == "/history/p-1":
@@ -123,7 +123,7 @@ def test_comfyui_workflow_reloaded_from_disk_on_every_call(tmp_path: Path) -> No
     comfyui_image_generation("first", settings=_settings(workflow_path), transport=transport)
     _write_workflow(
         workflow_path,
-        {"30:28": {"class_type": "CLIPTextEncode", "inputs": {"value": "edited prompt"}}},
+        {"30:19": {"class_type": "CLIPTextEncode", "inputs": {"value": "edited prompt"}}},
     )
     comfyui_image_generation("second", settings=_settings(workflow_path), transport=transport)
     # If the provider cached the workflow, the second call would re-submit
@@ -435,7 +435,7 @@ def test_comfyui_workflow_without_prompt_value_raises_connection(tmp_path: Path)
     """A prompt node whose inputs lack a string ``value`` is NOT the
     Krea2 shape — operator misconfig surfaced at the call site instead
     of submitting a workflow with a phantom key (review round 1)."""
-    workflow = {"30:28": {"class_type": "CLIPTextEncode", "inputs": {"positive": "x"}}}
+    workflow = {"30:19": {"class_type": "CLIPTextEncode", "inputs": {"positive": "x"}}}
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("no HTTP request may happen without a valid workflow")
@@ -475,7 +475,7 @@ def test_comfyui_resolution_selector_receives_configured_shape(tmp_path: Path) -
     values — one job = one image, fixed shape per config, no per-job
     knobs (review round 1)."""
     workflow = {
-        "30:28": {"class_type": "CLIPTextEncode", "inputs": {"value": "stale"}},
+        "30:19": {"class_type": "CLIPTextEncode", "inputs": {"value": "stale"}},
         "12": {
             "class_type": "ResolutionSelector",
             "inputs": {"aspect_ratio": "stale", "megapixels": "stale"},
@@ -508,7 +508,7 @@ def test_comfyui_resolution_marker_node_receives_configured_shape(tmp_path: Path
     marker, whatever the class_type — are pinned the same way, and the
     sibling inputs ride through untouched (review round 1)."""
     workflow = {
-        "30:28": {"class_type": "CLIPTextEncode", "inputs": {"value": "stale"}},
+        "30:19": {"class_type": "CLIPTextEncode", "inputs": {"value": "stale"}},
         "7": {
             "class_type": "AnythingElse",
             "inputs": {"aspect_ratio": "x", "megapixels": 0, "positive": "keep me"},
@@ -553,10 +553,10 @@ def test_comfyui_workflow_without_resolution_node_unchanged(tmp_path: Path) -> N
 
     comfyui_image_generation("x", settings=_settings(path), transport=httpx.MockTransport(handler))
     prompt = submitted["body"]["prompt"]
-    assert set(prompt) == {"30:28", "29"}
-    assert prompt["30:28"]["inputs"]["value"] == "x"
-    assert "aspect_ratio" not in prompt["30:28"]["inputs"]
-    assert "megapixels" not in prompt["30:28"]["inputs"]
+    assert set(prompt) == {"30:19", "29"}
+    assert prompt["30:19"]["inputs"]["value"] == "x"
+    assert "aspect_ratio" not in prompt["30:19"]["inputs"]
+    assert "megapixels" not in prompt["30:19"]["inputs"]
 
 
 def test_comfyui_truncated_png_rejected(tmp_path: Path) -> None:

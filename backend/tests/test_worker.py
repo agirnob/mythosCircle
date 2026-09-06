@@ -488,7 +488,7 @@ def test_comfyui_real_provider_end_to_end_with_mock_transport(
         workflow_path.write_text(
             _json.dumps(
                 {
-                    "30:28": {"class_type": "CLIPTextEncode", "inputs": {"value": "stale"}},
+                    "30:19": {"class_type": "CLIPTextEncode", "inputs": {"value": "stale"}},
                     "29": {"class_type": "SaveImage", "inputs": {}},
                 }
             )
@@ -500,7 +500,7 @@ def test_comfyui_real_provider_end_to_end_with_mock_transport(
                 body = _json.loads(request.read().decode())
                 # The committed appearance projection rides the prompt
                 # node — proving the real provider ran end-to-end.
-                assert body["prompt"]["30:28"]["inputs"]["value"] == "face: sharp features"
+                assert body["prompt"]["30:19"]["inputs"]["value"] == "face: sharp features"
                 return httpx.Response(200, json={"prompt_id": "p-1"})
             if request.url.path == "/history/p-1":
                 return httpx.Response(

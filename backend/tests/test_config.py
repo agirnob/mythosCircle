@@ -391,7 +391,7 @@ def test_comfyui_image_defaults_are_documented_placeholders(
     settings = comfyui_image_settings()
     assert settings.endpoint == DEFAULT_COMFYUI_IMAGE_ENDPOINT  # http://127.0.0.1:7896
     assert settings.workflow_path == ""  # operator must set
-    assert settings.prompt_node_id == DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID  # "30:28"
+    assert settings.prompt_node_id == DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID  # "30:19"
     assert settings.timeout == DEFAULT_COMFYUI_IMAGE_TIMEOUT  # 1800 — whole-call bound
 
 
