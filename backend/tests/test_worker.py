@@ -25,6 +25,7 @@ from app.pipeline.worker import (
 )
 from app.providers.llm import ProviderError
 from app.store import (
+    add_media,
     app_db_url,
     cancel_job,
     claim_next_job,
@@ -46,6 +47,19 @@ def _owner_id() -> str:
 
 
 SETTINGS = LLMSettings(endpoint="http://test/v1", model="test-model")
+
+
+def _attach_portrait(world: str, entity_id: str, media_dir: Path) -> str:
+    """One kind=image manifest row + its file — the i2v source frame a
+    video job resolves (spec-4.5)."""
+    from app.core import ids
+
+    filename = f"{ids.new_id()}.png"
+    target = media_dir / world / entity_id
+    target.mkdir(parents=True, exist_ok=True)
+    (target / filename).write_bytes(b"\x89PNG\r\n\x1a\nfixture-portrait")
+    add_media(world, entity_id, filename, "image")
+    return filename
 
 
 @pytest.fixture()
@@ -254,9 +268,12 @@ def test_run_video_job_runs_reveal_runner(
     seen_prompts: list[str] = []
     VIDEO_SETTINGS = VideoSettings(endpoint="http://video.test/v1", model="vid-model")
 
-    def video_provider(prompt: str, settings: VideoSettings) -> bytes:
+    def video_provider(
+        prompt: str, settings: VideoSettings, first_frame: str | None = None
+    ) -> bytes:
         seen_prompts.append(prompt)
         assert settings is VIDEO_SETTINGS
+        assert first_frame is None  # openai path: no portrait resolution (review round 1)
         return b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00reveal-payload"
 
     job_id = enqueue_job(world, "video", {"entity_id": entity_id}).id
@@ -312,7 +329,9 @@ def test_run_video_job_non_mp4_fails_cleanly(
     monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
     VIDEO_SETTINGS = VideoSettings(endpoint="http://video.test/v1", model="vid-model")
 
-    def bad_video_provider(prompt: str, settings: VideoSettings) -> bytes:
+    def bad_video_provider(
+        prompt: str, settings: VideoSettings, first_frame: str | None = None
+    ) -> bytes:
         assert "lair_actions" in prompt
         return b"<html>not a video</html>"
 
@@ -329,6 +348,202 @@ def test_run_video_job_non_mp4_fails_cleanly(
     assert "non-mp4" in (job.error or "")
     assert list_media(world) == []
     assert not (tmp_path / "media" / world / entity_id).exists()
+
+
+def test_run_video_job_comfyui_backend_dispatch(
+    world: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec-4.5 comfyui dispatch: with video_backend = "comfyui", a
+    video job routes through the comfyui provider under the same
+    run_next_job seam — the shared reveal runner writes the file +
+    manifest row, the portrait's path rides as first_frame, and the
+    OpenAI provider is NEVER called (no fallback chain)."""
+    from app.core import ids
+    from app.core.config import reset_runtime_config
+    from app.core.settings import ComfyUIVideoSettings, VideoSettings
+    from app.media.service import bbeg_video_prompt
+    from app.store import commit_subgraph, list_media
+
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_BACKEND", "comfyui")
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    reset_runtime_config()
+    try:
+        boss_data = {
+            "name": "Vashka the Unmaker",
+            "role": "BBEG",
+            "appearance": {"face": "a mask of fused iron"},
+            "boss": {"lair_actions": "the walls breathe"},
+        }
+        entity_id, anchor_id = ids.new_id(), ids.new_id()
+        commit_subgraph(
+            world,
+            [
+                models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+                models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
+            ],
+            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        )
+        portrait = _attach_portrait(world, entity_id, tmp_path / "media")
+        COMFYUI_SETTINGS = ComfyUIVideoSettings(endpoint="http://comfy.test:7896")
+        seen_prompts: list[str] = []
+        seen_frames: list[str] = []
+
+        def comfyui_provider(
+            prompt: str, settings: ComfyUIVideoSettings, first_frame: str | None = None
+        ) -> bytes:
+            assert settings is COMFYUI_SETTINGS
+            seen_prompts.append(prompt)
+            seen_frames.append(first_frame or "")
+            return b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00reveal-payload"
+
+        def openai_provider(
+            prompt: str, settings: VideoSettings, first_frame: str | None = None
+        ) -> bytes:
+            raise AssertionError("the OpenAI video provider must not run under comfyui")
+
+        job_id = enqueue_job(world, "video", {"entity_id": entity_id}).id
+        processed = run_next_job(
+            provider=_ok_provider,
+            settings=SETTINGS,
+            video_provider=openai_provider,  # poisoned: proves the branch, not a fallback
+            comfyui_video_provider=comfyui_provider,
+            comfyui_video_settings=COMFYUI_SETTINGS,
+        )
+        assert processed == job_id
+        job, _position = job_status(job_id)
+        assert job.state == "succeeded", job.error
+        assert job.result is not None and job.result["entity_id"] == entity_id
+        filename = str(job.result["filename"])
+        assert filename.endswith(".mp4")
+        videos = [row for row in list_media(world) if row.kind == "video"]
+        assert len(videos) == 1 and videos[0].entity_id == entity_id
+        assert videos[0].filename == filename
+        mp4_bytes = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00reveal-payload"
+        assert (tmp_path / "media" / world / entity_id / filename).read_bytes() == mp4_bytes
+        # The prompt is the committed projection and the portrait rides
+        # the shared call shape — the same run_video contract as openai.
+        assert seen_prompts == [bbeg_video_prompt(boss_data)]
+        assert seen_frames == [str(tmp_path / "media" / world / entity_id / portrait)]
+    finally:
+        reset_runtime_config()
+
+
+def test_comfyui_video_real_provider_end_to_end_with_mock_transport(
+    world: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production comfyui path: REAL ``comfyui_video_generation``
+    (via a bound MockTransport, workflow + input dir on disk, the
+    entity's portrait staged from the media dir) through
+    ``run_next_job`` with video_backend=comfyui. This is the seam that
+    proves the keyword-only ``settings=`` + ``first_frame=`` call lands —
+    the injected dispatch fakes accept positional settings, so a
+    regression to a positional call would pass every fake test and
+    TypeError every real job (the 4-4 review-round-1 mirror)."""
+    import json as _json
+
+    from app.core import ids
+    from app.core.config import reset_runtime_config
+    from app.core.settings import ComfyUIVideoSettings
+    from app.media.service import bbeg_video_prompt
+    from app.providers.comfyui_video import comfyui_video_generation
+    from app.store import commit_subgraph, list_media
+
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_BACKEND", "comfyui")
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    reset_runtime_config()
+    try:
+        boss_data = {
+            "name": "Vashka the Unmaker",
+            "role": "BBEG",
+            "appearance": {"face": "a mask of fused iron"},
+            "boss": {"lair_actions": "the walls breathe"},
+        }
+        entity_id, anchor_id = ids.new_id(), ids.new_id()
+        commit_subgraph(
+            world,
+            [
+                models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+                models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
+            ],
+            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        )
+        portrait = _attach_portrait(world, entity_id, tmp_path / "media")
+        input_dir = tmp_path / "comfy-input"
+        workflow_path = tmp_path / "minimax.json"
+        workflow_path.write_text(
+            _json.dumps(
+                {
+                    "105:104": {
+                        "class_type": "MiniMaxH3ImageToVideo",
+                        "inputs": {"prompt": "stale", "first_frame": ["114", 0]},
+                    },
+                    "114": {"class_type": "LoadImage", "inputs": {"image": "stale.png"}},
+                    "92": {"class_type": "SaveVideo", "inputs": {}},
+                }
+            )
+        )
+        mp4_bytes = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00reveal-payload"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/prompt":
+                body = _json.loads(request.read().decode())
+                # The committed projection rides the MiniMax prompt node
+                # and the staged copy name the LoadImage node — proving
+                # the real provider ran end-to-end.
+                assert body["prompt"]["105:104"]["inputs"]["prompt"] == bbeg_video_prompt(boss_data)
+                assert body["prompt"]["114"]["inputs"]["image"].startswith("first_frame_")
+                return httpx.Response(200, json={"prompt_id": "p-1"})
+            if request.url.path == "/history/p-1":
+                return httpx.Response(
+                    200,
+                    json={
+                        "p-1": {
+                            "outputs": {
+                                "92": {
+                                    "gifs": [
+                                        {
+                                            "filename": "MiniMax_H3_00001_.mp4",
+                                            "subfolder": "video",
+                                            "type": "output",
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                )
+            assert request.url.path == "/view"
+            return httpx.Response(200, content=mp4_bytes)
+
+        provider = partial(comfyui_video_generation, transport=httpx.MockTransport(handler))
+        job_id = enqueue_job(world, "video", {"entity_id": entity_id}).id
+        processed = run_next_job(
+            provider=_ok_provider,
+            settings=SETTINGS,
+            comfyui_video_provider=provider,
+            comfyui_video_settings=ComfyUIVideoSettings(
+                endpoint="http://comfy.test:7896",
+                workflow_path=str(workflow_path),
+                input_dir=str(input_dir),
+            ),
+        )
+        assert processed == job_id
+        job, _position = job_status(job_id)
+        assert job.state == "succeeded", job.error
+        assert job.result is not None and job.result["entity_id"] == entity_id
+        filename = str(job.result["filename"])
+        assert filename.endswith(".mp4")
+        videos = [row for row in list_media(world) if row.kind == "video"]
+        assert len(videos) == 1 and videos[0].entity_id == entity_id
+        assert videos[0].filename == filename
+        assert (tmp_path / "media" / world / entity_id / filename).read_bytes() == mp4_bytes
+        # The provider staged the entity's portrait (spec-4.5 Always
+        # list) and removed it afterwards — no litter in ComfyUI's
+        # input dir, and the media-dir portrait still stands.
+        assert list(input_dir.iterdir()) == []
+        assert (tmp_path / "media" / world / entity_id / portrait).exists()
+    finally:
+        reset_runtime_config()
 
 
 def test_run_image_job_provider_failure_fails_job_cleanly(

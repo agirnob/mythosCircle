@@ -335,8 +335,9 @@ def _run_video_job() -> None:
     the deterministic stand-in for the app's background worker."""
     from app.core.settings import VideoSettings
 
-    def provider(prompt: str, settings: VideoSettings) -> bytes:
+    def provider(prompt: str, settings: VideoSettings, first_frame: str | None = None) -> bytes:
         assert "lair_actions" in prompt
+        assert first_frame is None  # openai path: no portrait resolution (review round 1)
         return MP4_BYTES
 
     processed = run_next_job(video_provider=provider)

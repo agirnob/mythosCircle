@@ -7,6 +7,8 @@ deployment silently never backs up the file the app actually writes
 (Story 1.7 wiring, pinned now so drift fails loudly).
 """
 
+import json
+import os
 import tomllib
 from pathlib import Path
 
@@ -50,19 +52,57 @@ def test_api_binds_loopback_only() -> None:
     assert "reverse_proxy" in caddy.lower()
 
 
-def test_image_backend_and_comfyui_placeholder_contract() -> None:
-    """Spec-4.4: the shipped [image] backend stays openai (default — a
-    flipped backend would silently change production portrait routing)
-    and the [comfyui_image] placeholders keep their documented shapes
-    (empty workflow_path until the operator fills it, the Krea2 prompt
-    node, whole-call timeout). Pinned so drift fails loudly (review
-    round 1)."""
+def test_image_and_video_backend_and_comfyui_contract() -> None:
+    """Spec-4.4/4.5: the shipped [image]/[video] backends stay openai
+    (default — a flipped backend would silently change production
+    routing), and the [comfyui_image]/[comfyui_video] sections point at
+    the workflows SHIPPED in deploy/workflows/ via a REPO-RELATIVE path
+    (machine-independent across checkouts — the config file's dir is
+    deploy/, so ``workflows/…json`` resolves next to it; review round
+    1) with their documented node ids and whole-call timeout. Pinned so
+    drift fails loudly."""
     config = tomllib.loads((DEPLOY_DIR / "config.toml").read_text())
     assert config["image"]["backend"] == "openai"
+    assert config["video"]["backend"] == "openai"
     comfyui_image = config["comfyui_image"]
     assert comfyui_image["endpoint"] == "http://127.0.0.1:7896"
-    assert comfyui_image["workflow_path"] == ""
+    assert comfyui_image["workflow_path"] == "workflows/image_krea2_turbo_t2i_int8 (2).json"
+    assert not os.path.isabs(comfyui_image["workflow_path"])
+    assert (DEPLOY_DIR / comfyui_image["workflow_path"]).is_file()
     assert comfyui_image["prompt_node_id"] == "30:19"
     assert comfyui_image["aspect_ratio"] == "1:1 (Square)"
     assert comfyui_image["megapixels"] == 1.0
     assert comfyui_image["timeout"] == 1800
+    comfyui_video = config["comfyui_video"]
+    assert comfyui_video["endpoint"] == "http://127.0.0.1:7896"
+    assert comfyui_video["workflow_path"] == "workflows/video_minimax_h3_i2v_sage.json"
+    assert not os.path.isabs(comfyui_video["workflow_path"])
+    assert (DEPLOY_DIR / comfyui_video["workflow_path"]).is_file()
+    assert comfyui_video["prompt_node_id"] == "105:104"
+    assert comfyui_video["first_frame_node_id"] == "114"
+    assert comfyui_video["input_dir"] == ""  # operator must set (ComfyUI install)
+    assert comfyui_video["timeout"] == 1800
+
+
+def test_shipped_comfyui_workflows_parse_and_carry_provider_shape() -> None:
+    """Spec-4.5 repo-home: every configured workflow JSON ships in
+    deploy/workflows/, parses, and carries EXACTLY the node/widget shape
+    the providers inject into — a node renumbering or widget rename in
+    an operator edit fails AT COMMIT TIME instead of surfacing as a
+    first-call ProviderError('connection') (review round 1)."""
+    config = tomllib.loads((DEPLOY_DIR / "config.toml").read_text())
+
+    image_wf = json.loads((DEPLOY_DIR / config["comfyui_image"]["workflow_path"]).read_text())
+    image_prompt = image_wf[config["comfyui_image"]["prompt_node_id"]]
+    assert isinstance(image_prompt["inputs"]["value"], str)  # "Text String (User Prompt)"
+    save_image = [n for n in image_wf.values() if n.get("class_type") == "SaveImage"]
+    assert save_image, "the image workflow must carry a SaveImage node"
+
+    video_wf = json.loads((DEPLOY_DIR / config["comfyui_video"]["workflow_path"]).read_text())
+    video_prompt = video_wf[config["comfyui_video"]["prompt_node_id"]]
+    assert isinstance(video_prompt["inputs"]["prompt"], str)  # MiniMax node, NOT inputs.value
+    frame = video_wf[config["comfyui_video"]["first_frame_node_id"]]
+    assert frame["class_type"] == "LoadImage"
+    assert isinstance(frame["inputs"]["image"], str)
+    save_video = [n for n in video_wf.values() if n.get("class_type") == "SaveVideo"]
+    assert save_video, "the video workflow must carry a SaveVideo node"

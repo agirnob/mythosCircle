@@ -378,9 +378,13 @@ def test_comfyui_image_settings_env_overrides_config(
 def test_comfyui_image_defaults_are_documented_placeholders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The spec-4.4 defaults are inert placeholders: the workflow path is
-    empty until the operator sets it (the job fails at first call), and
-    the endpoint/prompt node match the documented Krea2 Turbo setup."""
+    """The spec-4.4 defaults are documented placeholders: with no
+    config/env, the workflow_path resolves to the repo-shipped Krea2
+    workflow (spec-4.5 repo-home decision — computed from the repo's
+    deploy dir, never a machine-specific absolute), and the
+    endpoint/prompt node match the documented Krea2 Turbo setup. Pinned
+    via a missing config file so the shipped config cannot leak in."""
+    from app.core.config import DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH
     from app.core.settings import (
         DEFAULT_COMFYUI_IMAGE_ENDPOINT,
         DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID,
@@ -388,9 +392,12 @@ def test_comfyui_image_defaults_are_documented_placeholders(
         comfyui_image_settings,
     )
 
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", "/nonexistent/mythoscircle.toml")
     settings = comfyui_image_settings()
     assert settings.endpoint == DEFAULT_COMFYUI_IMAGE_ENDPOINT  # http://127.0.0.1:7896
-    assert settings.workflow_path == ""  # operator must set
+    assert settings.workflow_path == DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH
+    assert os.path.isabs(settings.workflow_path)
+    assert settings.workflow_path.endswith("deploy/workflows/image_krea2_turbo_t2i_int8 (2).json")
     assert settings.prompt_node_id == DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID  # "30:19"
     assert settings.timeout == DEFAULT_COMFYUI_IMAGE_TIMEOUT  # 1800 — whole-call bound
 
@@ -452,3 +459,217 @@ def test_env_float_rejects_non_finite(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MYTHOSCIRCLE_LLM_TIMEOUT", "nan")
     with pytest.raises(ValueError, match="finite"):
         env_float("MYTHOSCIRCLE_LLM_TIMEOUT", 120.0)
+
+
+# ---------------------------------------------------------------------------
+# Spec-4.5: the reveal-video backend switch + ComfyUI video settings
+# ---------------------------------------------------------------------------
+
+
+def test_video_backend_defaults_to_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spec-4.5 acceptance: an unset video_backend resolves to the
+    default ``"openai"`` — the spec-4.2 path runs unchanged."""
+    from app.core.settings import configured_video_backend
+
+    assert configured_video_backend() == "openai"
+
+
+def test_video_backend_config_override_is_honored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[video] backend = "comfyui" opts in — a static config switch, no
+    fallback chain."""
+    from app.core.settings import configured_video_backend
+
+    path = _write_config(tmp_path, '[video]\nbackend = "comfyui"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    assert configured_video_backend() == "comfyui"
+    reset_runtime_config()
+
+
+def test_video_backend_env_wins_over_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MYTHOSCIRCLE_VIDEO_BACKEND wins over [video] backend (env > config
+    > default, spec-4.5)."""
+    from app.core.settings import configured_video_backend
+
+    path = _write_config(tmp_path, '[video]\nbackend = "comfyui"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_BACKEND", "openai")
+    assert configured_video_backend() == "openai"  # env wins
+    reset_runtime_config()
+
+
+def test_video_backend_misspelled_falls_back_to_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec-4.5 acceptance: a misspelled / unknown value resolves to the
+    default ``"openai"`` — only the literal ``"comfyui"`` opts in."""
+    from app.core.settings import configured_video_backend
+
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_BACKEND", "comfyui-typo")
+    assert configured_video_backend() == "openai"
+
+
+def test_video_backend_env_only_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MYTHOSCIRCLE_VIDEO_BACKEND=comfyui ALONE (no config file section)
+    opts the runtime into the comfyui backend — env > config > default."""
+    from app.core.settings import configured_video_backend
+
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_BACKEND", "comfyui")
+    assert configured_video_backend() == "comfyui"
+
+
+def test_video_backend_env_only_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MYTHOSCIRCLE_VIDEO_BACKEND=openai alone resolves to the openai
+    backend — the default preserved."""
+    from app.core.settings import configured_video_backend
+
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_BACKEND", "openai")
+    assert configured_video_backend() == "openai"
+
+
+def test_comfyui_video_settings_config_driven(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[comfyui_video] endpoint/workflow_path/prompt_node_id/
+    first_frame_node_id/input_dir/timeout are consumed (spec-4.5)."""
+    from app.core.settings import comfyui_video_settings
+
+    path = _write_config(
+        tmp_path,
+        '[comfyui_video]\nendpoint = "http://comfy:7896"\n'
+        'workflow_path = "/wf/minimax.json"\nprompt_node_id = "5:1"\n'
+        'first_frame_node_id = "9"\ninput_dir = "/comfy/input"\ntimeout = 900\n',
+    )
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    settings = comfyui_video_settings()
+    assert settings.endpoint == "http://comfy:7896"
+    assert settings.workflow_path == "/wf/minimax.json"
+    assert settings.prompt_node_id == "5:1"
+    assert settings.first_frame_node_id == "9"
+    assert settings.input_dir == "/comfy/input"
+    assert settings.timeout == 900
+    reset_runtime_config()
+
+
+def test_comfyui_video_settings_env_overrides_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MYTHOSCIRCLE_COMFYUI_VIDEO_* win over [comfyui_video]; the api_key
+    stays environment-only; a set-but-empty env falls through to the
+    config value (env > config > default)."""
+    from app.core.settings import comfyui_video_settings
+
+    path = _write_config(tmp_path, '[comfyui_video]\nendpoint = "http://cfg-comfy:7896"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_VIDEO_ENDPOINT", "http://env-comfy:7896")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_VIDEO_WORKFLOW_PATH", "/env/wf.json")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_VIDEO_PROMPT_NODE_ID", "5")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID", "7")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_VIDEO_INPUT_DIR", "/env/input")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_VIDEO_TIMEOUT", "77")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_VIDEO_API_KEY", "sk-vid")
+    settings = comfyui_video_settings()
+    assert settings.endpoint == "http://env-comfy:7896"
+    assert settings.workflow_path == "/env/wf.json"
+    assert settings.prompt_node_id == "5"
+    assert settings.first_frame_node_id == "7"
+    assert settings.input_dir == "/env/input"
+    assert settings.timeout == 77
+    assert settings.api_key == "sk-vid"  # env-only (AD-22)
+    reset_runtime_config()  # the cache locked env=... values in phase 1
+    monkeypatch.delenv("MYTHOSCIRCLE_COMFYUI_VIDEO_ENDPOINT")
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_VIDEO_ENDPOINT", "")  # empty -> config
+    assert comfyui_video_settings().endpoint == "http://cfg-comfy:7896"
+    reset_runtime_config()
+
+
+def test_comfyui_video_defaults_are_documented_placeholders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The spec-4.5 defaults are documented placeholders: with no
+    config/env, the workflow_path resolves to the repo-shipped MiniMax
+    workflow (spec-4.5 repo-home decision — computed from the repo's
+    deploy dir), while ``input_dir`` stays empty (operator must point
+    at their ComfyUI install), and the timeout is the whole-call 1800
+    bound like the image twin. Pinned via a missing config file so the
+    shipped config cannot leak in."""
+    from app.core.config import DEFAULT_COMFYUI_VIDEO_WORKFLOW_PATH
+    from app.core.settings import (
+        DEFAULT_COMFYUI_VIDEO_ENDPOINT,
+        DEFAULT_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID,
+        DEFAULT_COMFYUI_VIDEO_PROMPT_NODE_ID,
+        DEFAULT_COMFYUI_VIDEO_TIMEOUT,
+        comfyui_video_settings,
+    )
+
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", "/nonexistent/mythoscircle.toml")
+    settings = comfyui_video_settings()
+    assert settings.endpoint == DEFAULT_COMFYUI_VIDEO_ENDPOINT  # http://127.0.0.1:7896
+    assert settings.workflow_path == DEFAULT_COMFYUI_VIDEO_WORKFLOW_PATH
+    assert os.path.isabs(settings.workflow_path)
+    assert settings.workflow_path.endswith("deploy/workflows/video_minimax_h3_i2v_sage.json")
+    assert settings.input_dir == ""  # operator must set
+    assert settings.prompt_node_id == DEFAULT_COMFYUI_VIDEO_PROMPT_NODE_ID  # "105:104"
+    assert settings.first_frame_node_id == DEFAULT_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID  # "114"
+    assert settings.timeout == DEFAULT_COMFYUI_VIDEO_TIMEOUT  # 1800 — whole-call bound
+
+
+def test_comfyui_video_empty_timeout_env_falls_through_to_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A set-but-empty MYTHOSCIRCLE_COMFYUI_VIDEO_TIMEOUT is treated as
+    unset — the config value wins; the numeric parse never sees "" (it
+    would raise, contradicting env > config > default precedence)."""
+    from app.core.settings import comfyui_video_settings
+
+    path = _write_config(tmp_path, "[comfyui_video]\ntimeout = 60\n")
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_COMFYUI_VIDEO_TIMEOUT", "")
+    assert comfyui_video_settings().timeout == 60
+    reset_runtime_config()
+
+
+def test_comfyui_video_relative_workflow_path_resolves_against_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A RELATIVE workflow_path resolves against the ACTIVE config
+    file's directory — the shipped config's ``deploy/config.toml`` sits
+    next to ``deploy/workflows/``, so ``workflow_path =
+    "workflows/x.json"`` is machine-independent across checkouts
+    (review round 1); an absolute path is used verbatim."""
+    from app.core.settings import comfyui_video_settings
+
+    path = _write_config(tmp_path, '[comfyui_video]\nworkflow_path = "workflows/minimax.json"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    assert comfyui_video_settings().workflow_path == str(tmp_path / "workflows" / "minimax.json")
+    reset_runtime_config()
+    absolute = _write_config(
+        tmp_path, f'[comfyui_video]\nworkflow_path = "{tmp_path}/definitely-absolute.json"\n'
+    )
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(absolute))
+    reset_runtime_config()
+    assert comfyui_video_settings().workflow_path == f"{tmp_path}/definitely-absolute.json"
+    reset_runtime_config()
+
+
+def test_comfyui_image_relative_workflow_path_resolves_against_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same relative resolution for the image workflow (review round
+    1 — both comfyui sections share the derive-from-config-dir rule)."""
+    from app.core.settings import comfyui_image_settings
+
+    path = _write_config(tmp_path, '[comfyui_image]\nworkflow_path = "workflows/krea2.json"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    assert comfyui_image_settings().workflow_path == str(tmp_path / "workflows" / "krea2.json")
+    reset_runtime_config()

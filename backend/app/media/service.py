@@ -30,10 +30,12 @@ import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+
+from sqlalchemy import literal_column, select
 
 from app.core import ids
-from app.core.settings import ImageSettings, VideoSettings
+from app.core.settings import configured_video_backend
 from app.pipeline.budget import BudgetExceededError, MediaCallBudget
 from app.pipeline.worker import JobPayloadError
 from app.providers.llm import ProviderError
@@ -50,6 +52,32 @@ from app.store.candidates import BOSS_FIELDS, BOSS_ROLES
 from app.store.db import session_scope
 
 logger = logging.getLogger(__name__)
+
+
+class ProviderSettings(Protocol):
+    """The settings object a media runner hands to its provider — opaque
+    passthrough: the runner never interprets it, so BOTH backends'
+    settings shapes satisfy it (``ImageSettings``/``VideoSettings``
+    from spec-4.1/4-2 and ``ComfyUIImageSettings``/``ComfyUIVideoSettings``
+    from spec-4.4/4-5 — the comfyui objects carry the extra workflow
+    knobs the runners never touch). The two properties are the shared
+    surface; the provider itself constrains the concrete type.
+
+    Typed so the worker's comfyui dispatch passes the comfyui settings
+    object without a ``type: ignore`` (review round 1) — the alternative
+    (union-typing ``settings`` per backend) would let a video job accept
+    an image settings object and vice versa. Property style matches the
+    read-only attributes of the frozen settings dataclasses (review
+    round 1; a plain-annotation Protocol would reject them as
+    read-only).
+    """
+
+    @property
+    def endpoint(self) -> str: ...
+
+    @property
+    def api_key(self) -> str | None: ...
+
 
 #: The known AR24 appearance keys, in canonical join order (the frozen
 #: spec's prompt-source list). Unknown keys are TOLERATED (AR24 forward
@@ -152,7 +180,7 @@ def bbeg_video_prompt(data: Any) -> str | None:
 def run_portrait(
     job: models.Job,
     provider: Callable[..., bytes],
-    settings: ImageSettings,
+    settings: ProviderSettings,
     media_dir: str | os.PathLike[str],
 ) -> None:
     """Run one image job to a terminal state (complete_job/fail_job).
@@ -252,18 +280,30 @@ def run_portrait(
 def run_video(
     job: models.Job,
     provider: Callable[..., bytes],
-    settings: VideoSettings,
+    settings: ProviderSettings,
     media_dir: str | os.PathLike[str],
 ) -> None:
-    """Run one reveal-video job to a terminal state (spec-4.2).
+    """Run one reveal-video job to a terminal state (spec-4.2/4.5).
 
     The ``run_portrait`` discipline mirrored: payload contract
     (``{"entity_id": <ULID>}``) -> run-time entity re-read -> prompt from
-    ``bbeg_video_prompt(data)`` -> budget-guarded provider call ->
-    mp4-signature guard -> atomic file write -> ``add_media`` row ->
-    ``complete_job`` with ``{entity_id, filename}``. Every failure
-    propagates so the worker fails the job; no file/row is left behind by
-    a failing run.
+    ``bbeg_video_prompt(data)`` -> (comfyui backend ONLY) the i2v
+    source-frame gate -> budget-guarded provider call -> mp4-signature
+    guard -> atomic file write -> ``add_media`` row -> ``complete_job``
+    with ``{entity_id, filename}``. Every failure propagates so the
+    worker fails the job; no file/row is left behind by a failing run.
+
+    The i2v source-frame (spec-4.5) is scoped to the ComfyUI backend
+    ONLY (review round 1): the MiniMax workflow animates the entity's
+    NEWEST portrait (the last kind=image manifest row — rowid/insertion
+    order), so under ``[video] backend = "comfyui"`` the runner resolves
+    it and passes its path as the provider's ``first_frame`` kwarg — and
+    a boss-tier entity with NO portrait fails the job before any
+    provider call (you cannot i2v without a source frame; matrix row
+    NO_FIRST_FRAME). Under ``"openai"`` (the default) the spec-4.2
+    text-to-video path runs EXACTLY as before: no portrait resolution,
+    ``first_frame=None``, and the OpenAI provider's ignored optional
+    kwarg keeps the two backends on one call shape.
     """
     payload = job.payload
     if (
@@ -273,15 +313,34 @@ def run_video(
     ):
         raise JobPayloadError("video: job payload must be exactly {'entity_id': <ULID>}")
     entity_id = payload["entity_id"]
+    comfyui = configured_video_backend() == "comfyui"
 
     # Run-time re-read of the COMMITTED entity: the job may have queued
     # while the DM deleted the entity — ENTITY_MISSING fails cleanly with
-    # a stable message, no file, no row.
+    # a stable message, no file, no row. Under the comfyui backend, the
+    # entity's NEWEST portrait (spec-4.5) is read in the SAME snapshot
+    # session — plain rowid SELECT, no nested write transaction (the
+    # 4-3 media-read precedent); the OpenAI path never touches the
+    # manifest (spec-4.2 behavior preserved, review round 1).
+    portrait_filename: str | None = None
     with session_scope() as session:
         entity = session.get(models.Entity, entity_id)
         if entity is None or entity.campaign_id != job.campaign_id:
             raise JobPayloadError(f"video: entity {entity_id} does not exist in this campaign")
         data = entity.data or {}
+        if comfyui:
+            portrait = session.scalar(
+                select(models.Media)
+                .where(
+                    models.Media.campaign_id == job.campaign_id,
+                    models.Media.entity_id == entity_id,
+                    models.Media.kind == "image",
+                )
+                .order_by(literal_column("rowid").desc())
+                .limit(1)
+            )
+            if portrait is not None:
+                portrait_filename = portrait.filename
     if data.get("role") not in BOSS_ROLES:
         # Run-time mirror of the enqueue gate's NOT_BOSS row: the job may
         # have queued while the DM demoted the entity, and a demotion
@@ -294,6 +353,19 @@ def run_video(
             f"video: entity {entity_id} has no usable reveal prompt — "
             "a boss-tier reveal needs a non-blank AR24 appearance and boss section"
         )
+    first_frame: str | None = None
+    if comfyui:
+        if portrait_filename is None:
+            # The i2v source-frame gate (comfyui backend ONLY — the
+            # OpenAI path is text-to-video and never needed a source
+            # frame, review round 1): a boss with no portrait
+            # (kind=image manifest row) cannot render through MiniMax —
+            # fail before any provider call, no file, no row (matrix row
+            # NO_FIRST_FRAME).
+            raise JobPayloadError(
+                f"video: entity {entity_id} has no portrait — the i2v reveal needs a source frame"
+            )
+        first_frame = str(Path(media_dir) / job.campaign_id / entity_id / portrait_filename)
 
     budget = MediaCallBudget(job)
 
@@ -302,7 +374,9 @@ def run_video(
     if not _job_still_running(job):
         return
     try:
-        video_bytes = budget.call(lambda: provider(prompt, settings=settings))
+        video_bytes = budget.call(
+            lambda: provider(prompt, settings=settings, first_frame=first_frame)
+        )
     except BudgetExceededError:
         raise
     except ProviderError as exc:

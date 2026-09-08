@@ -120,12 +120,15 @@ def comfyui_image_generation(
     except (OSError, ValueError) as exc:
         raise ProviderError("connection") from exc
     node = workflow.get(settings.prompt_node_id) if isinstance(workflow, dict) else None
-    value = node.get("inputs", {}).get("value") if isinstance(node, dict) else None
+    node_inputs = node.get("inputs") if isinstance(node, dict) else None
+    value = node_inputs.get("value") if isinstance(node_inputs, dict) else None
     if not isinstance(value, str):
         # The prompt widget (``inputs.value``) is the ONLY field the
-        # provider must touch — a workflow that cannot carry it is not
-        # the Krea2 shape and is unusable, not worth submitting (matrix
-        # row INVALID_WORKFLOW_JSON, review round 1).
+        # provider must touch — a workflow that cannot carry it (missing
+        # node, non-dict ``inputs``, non-string widget) is not the Krea2
+        # shape and is unusable, not worth submitting (matrix row
+        # INVALID_WORKFLOW_JSON, review rounds 1/2: guarded against a
+        # present-but-non-dict ``inputs``).
         raise ProviderError("connection")
     workflow = copy.deepcopy(workflow)
     workflow[settings.prompt_node_id]["inputs"]["value"] = prompt

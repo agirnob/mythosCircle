@@ -41,6 +41,7 @@ def video_generation(
     prompt: str,
     *,
     settings: VideoSettings,
+    first_frame: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> bytes:
     """Call the configured endpoint and return the video bytes (mp4).
@@ -49,6 +50,12 @@ def video_generation(
     decodes ``data[0].b64_json`` — the OpenAI-compatible contract a
     local video server implements. Base64 keeps the response
     self-contained (no second URL fetch, no URL-validation surface).
+
+    ``first_frame`` is the spec-4.5 shared call shape: ``run_video``
+    always resolves the entity's newest portrait and passes its path to
+    BOTH backends so one call shape serves two providers — the
+    OpenAI-compatible server has no source-frame input, so this adapter
+    accepts and ignores it.
 
     Bare ``httpx`` transport failures (DNS, refused, timeout) ->
     ``ProviderError("connection")``; non-2xx ->

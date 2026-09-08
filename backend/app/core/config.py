@@ -31,6 +31,13 @@ IMAGE_TIMEOUT_ENV = "MYTHOSCIRCLE_IMAGE_TIMEOUT"
 VIDEO_ENDPOINT_ENV = "MYTHOSCIRCLE_VIDEO_ENDPOINT"
 VIDEO_MODEL_ENV = "MYTHOSCIRCLE_VIDEO_MODEL"
 VIDEO_TIMEOUT_ENV = "MYTHOSCIRCLE_VIDEO_TIMEOUT"
+VIDEO_BACKEND_ENV = "MYTHOSCIRCLE_VIDEO_BACKEND"
+COMFYUI_VIDEO_ENDPOINT_ENV = "MYTHOSCIRCLE_COMFYUI_VIDEO_ENDPOINT"
+COMFYUI_VIDEO_WORKFLOW_PATH_ENV = "MYTHOSCIRCLE_COMFYUI_VIDEO_WORKFLOW_PATH"
+COMFYUI_VIDEO_PROMPT_NODE_ID_ENV = "MYTHOSCIRCLE_COMFYUI_VIDEO_PROMPT_NODE_ID"
+COMFYUI_VIDEO_FIRST_FRAME_NODE_ID_ENV = "MYTHOSCIRCLE_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID"
+COMFYUI_VIDEO_INPUT_DIR_ENV = "MYTHOSCIRCLE_COMFYUI_VIDEO_INPUT_DIR"
+COMFYUI_VIDEO_TIMEOUT_ENV = "MYTHOSCIRCLE_COMFYUI_VIDEO_TIMEOUT"
 DB_ENV = "MYTHOSCIRCLE_DB"
 LOG_FILE_ENV = "MYTHOSCIRCLE_LOG_FILE"
 MEDIA_DIR_ENV = "MYTHOSCIRCLE_MEDIA_DIR"
@@ -106,20 +113,45 @@ DEFAULT_VIDEO_TIMEOUT = 120.0
 #: spec-4.1 preserved) or ``"comfyui"`` (opt-in local-dev alternative).
 DEFAULT_IMAGE_BACKEND: Literal["openai", "comfyui"] = "openai"
 
-#: Documented PLACEHOLDER defaults (spec-4.4): the ComfyUI portrait
-#: backend is an opt-in alternative local-dev path; the workflow JSON
-#: lives on the operator machine and is NEVER shipped (spec-4.4 Never
-#: list), so ``workflow_path`` starts empty and the job fails at first
-#: call until the operator sets it. ``timeout`` bounds the ENTIRE call
-#: (submit + poll + fetch) — Krea2 Turbo on a local GPU is 30-90s
-#: typical, hence the long default, not the OpenAI shape's per-request
-#: 120s.
+#: The ComfyUI portrait backend is an opt-in local-dev path (spec-4.4);
+#: the repo-home decision (spec-4.5 Ask First: None) moves the workflow
+#: JSONs INTO the repo at ``deploy/workflows/``, so the default
+#: workflow_path is COMPUTED relative to the repo's deploy dir — never
+#: a machine-specific absolute path (review round 1). ``timeout`` bonds
+#: the ENTIRE call (submit + poll + fetch) — Krea2 Turbo on a local GPU
+#: is 30-90s typical, hence the long default.
 DEFAULT_COMFYUI_IMAGE_ENDPOINT = "http://127.0.0.1:7896"
-DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH = ""
+DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH = str(
+    Path(__file__).resolve().parents[3]
+    / "deploy"
+    / "workflows"
+    / "image_krea2_turbo_t2i_int8 (2).json"
+)
 DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID = "30:19"
 DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO = "1:1 (Square)"
 DEFAULT_COMFYUI_IMAGE_MEGAPIXELS = 1.0
 DEFAULT_COMFYUI_IMAGE_TIMEOUT = 1800.0
+#: The reveal-video backend switch (spec-4.5): ``"openai"`` (default —
+#: spec-4.2 preserved) or ``"comfyui"`` (opt-in local-dev MiniMax
+#: i2v alternative).
+DEFAULT_VIDEO_BACKEND: Literal["openai", "comfyui"] = "openai"
+
+#: The ComfyUI video backend is an opt-in local-dev path (spec-4.5);
+#: the MiniMax H3 i2v workflow JSON ships in the repo at
+#: ``deploy/workflows/``, so the default workflow_path is COMPUTED
+#: relative to the repo's deploy dir (review round 1) while
+#: ``input_dir`` stays empty (operator must point at their ComfyUI
+#: install's input/). ``timeout`` bounds the ENTIRE call (submit +
+#: poll + fetch) — an 11s MiniMax clip renders in ~1-2 min on a local
+#: GPU, hence the long default (the image twin's rationale).
+DEFAULT_COMFYUI_VIDEO_ENDPOINT = "http://127.0.0.1:7896"
+DEFAULT_COMFYUI_VIDEO_WORKFLOW_PATH = str(
+    Path(__file__).resolve().parents[3] / "deploy" / "workflows" / "video_minimax_h3_i2v_sage.json"
+)
+DEFAULT_COMFYUI_VIDEO_PROMPT_NODE_ID = "105:104"
+DEFAULT_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID = "114"
+DEFAULT_COMFYUI_VIDEO_INPUT_DIR = ""
+DEFAULT_COMFYUI_VIDEO_TIMEOUT = 1800.0
 DEFAULT_MEDIA_DIR = "/var/lib/mythoscircle/media"
 DEFAULT_THEMES = ["High Fantasy", "Grimdark", "Steampunk", "Planar"]
 DEFAULT_DB_URL = "sqlite:////var/lib/mythoscircle/mythoscircle.db"
@@ -148,6 +180,13 @@ class RuntimeConfig:
     video_endpoint: str = DEFAULT_VIDEO_ENDPOINT
     video_model: str = DEFAULT_VIDEO_MODEL
     video_timeout: float = DEFAULT_VIDEO_TIMEOUT
+    video_backend: Literal["openai", "comfyui"] = DEFAULT_VIDEO_BACKEND
+    comfyui_video_endpoint: str = DEFAULT_COMFYUI_VIDEO_ENDPOINT
+    comfyui_video_workflow_path: str = DEFAULT_COMFYUI_VIDEO_WORKFLOW_PATH
+    comfyui_video_prompt_node_id: str = DEFAULT_COMFYUI_VIDEO_PROMPT_NODE_ID
+    comfyui_video_first_frame_node_id: str = DEFAULT_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID
+    comfyui_video_input_dir: str = DEFAULT_COMFYUI_VIDEO_INPUT_DIR
+    comfyui_video_timeout: float = DEFAULT_COMFYUI_VIDEO_TIMEOUT
     themes: list[str] = field(default_factory=lambda: list(DEFAULT_THEMES))
     db_url: str | None = None
     log_file: str | None = None
@@ -162,6 +201,22 @@ def config_path() -> Path:
     if _REPO_CONFIG.exists():
         return _REPO_CONFIG
     return _INSTALLED_CONFIG
+
+
+def _resolve_workflow_path(value: str) -> str:
+    """Resolve a workflow path to an absolute path for the providers.
+
+    A RELATIVE value resolves against the ACTIVE config file's
+    directory — the shipped config's ``deploy/config.toml`` sits next
+    to ``deploy/workflows/``, so ``workflow_path = "workflows/…json"``
+    is machine-independent across checkouts (review round 1). An
+    absolute value (an operator installing the config elsewhere and
+    pointing at their own checkout) is used verbatim; empty stays
+    empty (the job fails at first call until configured).
+    """
+    if not value or os.path.isabs(value):
+        return value
+    return str(Path(config_path()).resolve().parent / value)
 
 
 def load_config(path: Path | None = None) -> dict[str, Any]:
@@ -186,6 +241,7 @@ def runtime_config() -> RuntimeConfig:
     image = data.get("image", {})
     video = data.get("video", {})
     comfyui_image = data.get("comfyui_image", {})
+    comfyui_video = data.get("comfyui_video", {})
     campaigns = data.get("campaigns", {})
 
     def _config_int(value: Any, name: str, default: int) -> int:
@@ -246,8 +302,9 @@ def runtime_config() -> RuntimeConfig:
     comfyui_image_endpoint = os.environ.get(COMFYUI_IMAGE_ENDPOINT_ENV) or str(
         comfyui_image.get("endpoint", DEFAULT_COMFYUI_IMAGE_ENDPOINT)
     )
-    comfyui_image_workflow_path = os.environ.get(COMFYUI_IMAGE_WORKFLOW_PATH_ENV) or str(
-        comfyui_image.get("workflow_path", DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH)
+    comfyui_image_workflow_path = _resolve_workflow_path(
+        os.environ.get(COMFYUI_IMAGE_WORKFLOW_PATH_ENV)
+        or str(comfyui_image.get("workflow_path", DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH))
     )
     comfyui_image_prompt_node_id = os.environ.get(COMFYUI_IMAGE_PROMPT_NODE_ID_ENV) or str(
         comfyui_image.get("prompt_node_id", DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID)
@@ -289,6 +346,47 @@ def runtime_config() -> RuntimeConfig:
         VIDEO_TIMEOUT_ENV,
         _config_float(video.get("timeout"), "video.timeout", DEFAULT_VIDEO_TIMEOUT),
     )
+    # Reveal-video backend switch: env > config > default (spec-4.5).
+    # Mirror of the image switch: unset / misspelled / None falls back to
+    # the default OpenAI path — only the literal ``"comfyui"`` opts in,
+    # never a runtime fallback chain.
+    video_backend_setting = os.environ.get(VIDEO_BACKEND_ENV) or str(
+        video.get("backend", DEFAULT_VIDEO_BACKEND)
+    )
+    video_backend: Literal["openai", "comfyui"] = (
+        "comfyui" if video_backend_setting == "comfyui" else "openai"
+    )
+    comfyui_video_endpoint = os.environ.get(COMFYUI_VIDEO_ENDPOINT_ENV) or str(
+        comfyui_video.get("endpoint", DEFAULT_COMFYUI_VIDEO_ENDPOINT)
+    )
+    comfyui_video_workflow_path = _resolve_workflow_path(
+        os.environ.get(COMFYUI_VIDEO_WORKFLOW_PATH_ENV)
+        or str(comfyui_video.get("workflow_path", DEFAULT_COMFYUI_VIDEO_WORKFLOW_PATH))
+    )
+    comfyui_video_prompt_node_id = os.environ.get(COMFYUI_VIDEO_PROMPT_NODE_ID_ENV) or str(
+        comfyui_video.get("prompt_node_id", DEFAULT_COMFYUI_VIDEO_PROMPT_NODE_ID)
+    )
+    comfyui_video_first_frame_node_id = os.environ.get(
+        COMFYUI_VIDEO_FIRST_FRAME_NODE_ID_ENV
+    ) or str(comfyui_video.get("first_frame_node_id", DEFAULT_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID))
+    comfyui_video_input_dir = os.environ.get(COMFYUI_VIDEO_INPUT_DIR_ENV) or str(
+        comfyui_video.get("input_dir", DEFAULT_COMFYUI_VIDEO_INPUT_DIR)
+    )
+    # A set-but-empty env value is treated as unset (spec-1.7 env >
+    # config > default): the numeric parse must never see "" (it would
+    # raise and contradict the documented precedence — the image twin's
+    # review-round-1 contract).
+    comfyui_video_timeout_env = os.environ.get(COMFYUI_VIDEO_TIMEOUT_ENV)
+    comfyui_video_timeout_config = _config_float(
+        comfyui_video.get("timeout"),
+        "comfyui_video.timeout",
+        DEFAULT_COMFYUI_VIDEO_TIMEOUT,
+    )
+    comfyui_video_timeout = (
+        env_float(COMFYUI_VIDEO_TIMEOUT_ENV, comfyui_video_timeout_config)
+        if comfyui_video_timeout_env
+        else comfyui_video_timeout_config
+    )
     themes_raw = campaigns.get("themes", DEFAULT_THEMES)
     if not isinstance(themes_raw, list) or not all(isinstance(t, str) for t in themes_raw):
         raise ValueError("config campaigns.themes must be a list of strings")
@@ -327,6 +425,13 @@ def runtime_config() -> RuntimeConfig:
         video_endpoint=video_endpoint,
         video_model=video_model,
         video_timeout=video_timeout,
+        video_backend=video_backend,
+        comfyui_video_endpoint=comfyui_video_endpoint,
+        comfyui_video_workflow_path=comfyui_video_workflow_path,
+        comfyui_video_prompt_node_id=comfyui_video_prompt_node_id,
+        comfyui_video_first_frame_node_id=comfyui_video_first_frame_node_id,
+        comfyui_video_input_dir=comfyui_video_input_dir,
+        comfyui_video_timeout=comfyui_video_timeout,
         max_llm_calls_per_job=max_llm,
         max_media_calls_per_job=max_media,
         themes=themes,

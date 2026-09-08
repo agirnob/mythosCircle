@@ -49,18 +49,17 @@ timeout = 120
 backend = "openai"
 
 [comfyui_image]
-# ComfyUI portrait backend (spec-4.4). ASK-FIRST: the Krea2 Turbo T2I
-# workflow file lives on the operator machine
-# (/home/main/Desktop/image_krea2_turbo_t2i_int8 (2).json) — default
-# plan is to DOCUMENT the path only and NOT ship the workflow JSON (it
-# references operator-specific model weights by node id; the provider
-# reloads it from disk on every call). Reopen if the owner wants it
-# shipped in deploy/.
+# ComfyUI portrait backend (spec-4.4; repo-home decision, spec-4.5 Ask
+# First: None): the Krea2 Turbo T2I workflow JSON lives in the REPO at
+# deploy/workflows/image_krea2_turbo_t2i_int8 (2).json — the repo is
+# the single home (spec-4.5 Never list) and the provider reloads it
+# from disk on every call.
 endpoint = "http://127.0.0.1:7896"
-# Absolute path to the operator's Krea2 Turbo workflow JSON. Empty
-# default is a documented placeholder: the job fails at first call
-# (provider connection error) until the operator fills this in.
-workflow_path = ""
+# Path to the Krea2 Turbo workflow JSON, RELATIVE to this config file's
+# directory (deploy/workflows/… — the JSONs ship in the repo, so the
+# relative form is machine-independent across checkouts; an operator
+# installing the config elsewhere sets an absolute path instead).
+workflow_path = "workflows/image_krea2_turbo_t2i_int8 (2).json"
 # The workflow node whose inputs.value carries the prompt text (Krea2
 # Turbo: the "Text String (User Prompt)" widget — node 30:19, NOT the
 # 30:28 switch). Operator-specific; must match the workflow JSON.
@@ -83,6 +82,42 @@ endpoint = "http://127.0.0.1:8082/v1"
 model = "mythos-reveal-v1"
 # HTTP timeout for one videos/generations call (seconds).
 timeout = 120
+# Backend switch (spec-4.5): "openai" (default — spec-4.2 behavior
+# preserved) or "comfyui" (opt-in alternative local-dev backend; the
+# [comfyui_video] section below is what the comfyui path reads). Static
+# config, no runtime fallback chain.
+backend = "openai"
+
+[comfyui_video]
+# ComfyUI reveal-video backend (spec-4.5): the MiniMax H3 image-to-video
+# workflow. The workflow JSON lives in the REPO at
+# deploy/workflows/video_minimax_h3_i2v_sage.json (the repo is the
+# single home — spec-4.5 Never list) and is reloaded from disk on every
+# call; endpoint/timeout configure the ComfyUI server itself.
+endpoint = "http://127.0.0.1:7896"
+# Path to the MiniMax i2v workflow JSON, RELATIVE to this config file's
+# directory (deploy/workflows/… — the JSONs ship in the repo, so the
+# relative form is machine-independent across checkouts; an operator
+# installing the config elsewhere sets an absolute path instead).
+workflow_path = "workflows/video_minimax_h3_i2v_sage.json"
+# The workflow node whose inputs.prompt carries the reveal prompt text —
+# the MiniMax H3 Image-to-Video node (105:104), NOT a text-encode
+# node's inputs.value (that is the image workflow's widget). Must match
+# the workflow JSON.
+prompt_node_id = "105:104"
+# The workflow node whose inputs.image names the source frame — the
+# LoadImage node (114). The provider stages the entity's portrait into
+# ComfyUI's input dir and sets this to the staged filename.
+first_frame_node_id = "114"
+# Absolute path to ComfyUI's input directory (LoadImage reads from
+# HERE, never the media dir). Empty default is a documented
+# placeholder: the job fails at first call (provider connection error)
+# until the operator points this at the ComfyUI install's input/.
+input_dir = ""
+# Timeout bounds the ENTIRE ComfyUI call (submit + poll + fetch).
+# An 11s MiniMax H3 clip renders in ~1-2 min on a local GPU — the
+# default comfortably exceeds the render time (spec-4.5 Verification).
+timeout = 1800
 
 [queue]
 # One persistent FIFO; exactly one job at a time (AD-3). The pending cap

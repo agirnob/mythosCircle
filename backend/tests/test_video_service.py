@@ -24,6 +24,7 @@ from app.pipeline.budget import BudgetExceededError
 from app.pipeline.worker import JobPayloadError
 from app.providers.llm import ProviderError
 from app.store import (
+    add_media,
     app_db_url,
     claim_next_job,
     commit_subgraph,
@@ -123,8 +124,27 @@ def _commit_with_data(world: str, data: dict[str, Any], name: str = "Vashka") ->
     return entity_id
 
 
-def _mp4_provider(prompt: str, settings: VideoSettings) -> bytes:
+def _attach_portrait(
+    world: str, entity_id: str, media_dir: Path, *, write_file: bool = True
+) -> str:
+    """One kind=image manifest row (+ its file) — the i2v source frame a
+    video job resolves (spec-4.5): a running video needs a portrait, and
+    the file is what the provider would stage."""
+    filename = f"{ids.new_id()}.png"
+    if write_file:
+        target = media_dir / world / entity_id
+        target.mkdir(parents=True, exist_ok=True)
+        (target / filename).write_bytes(b"\x89PNG\r\n\x1a\nfixture-portrait")
+    add_media(world, entity_id, filename, "image")
+    return filename
+
+
+def _mp4_provider(prompt: str, settings: VideoSettings, first_frame: str | None = None) -> bytes:
+    """The spec-4.2 (openai) contract fake: the runner passes
+    ``first_frame=None`` on the default path — no portrait resolution
+    (review round 1)."""
     assert settings is SETTINGS
+    assert first_frame is None
     return MP4_BYTES
 
 
@@ -188,7 +208,7 @@ def test_run_video_blank_prompt_fails_cleanly(world: str, tmp_path: Path) -> Non
     job = _claim_direct_video_job(world, entity_id)
     called: list[str] = []
 
-    def provider(prompt: str, settings: VideoSettings) -> bytes:
+    def provider(prompt: str, settings: VideoSettings, first_frame: str | None = None) -> bytes:
         called.append(prompt)
         return MP4_BYTES
 
@@ -217,10 +237,12 @@ def test_bbeg_video_prompt_unknown_boss_keys_never_join() -> None:
 
 
 def test_run_video_happy_path(world: str, tmp_path: Path) -> None:
-    """HAPPY_PATH: no file, no row, job ``running`` -> provider call ->
-    atomic .mp4 write -> manifest row kind='video' -> completed job with
-    {entity_id, filename} — and the prompt is the shared builder's
-    projection (the enqueue gate and the run can never disagree)."""
+    """HAPPY_PATH (openai, default): no file, no row, job ``running`` ->
+    provider call with ``first_frame=None`` (spec-4.2 path unchanged;
+    review round 1) -> atomic .mp4 write -> manifest row kind='video' ->
+    completed job with {entity_id, filename} — and the prompt is the
+    shared builder's projection (the enqueue gate and the run can never
+    disagree). No portrait is needed or resolved on this path."""
     import os
 
     entity_id = _commit_with_data(world, BOSS_DATA)
@@ -228,9 +250,10 @@ def test_run_video_happy_path(world: str, tmp_path: Path) -> None:
     assert job.state == "running"
     seen_prompts: list[str] = []
 
-    def provider(prompt: str, settings: VideoSettings) -> bytes:
+    def provider(prompt: str, settings: VideoSettings, first_frame: str | None = None) -> bytes:
         seen_prompts.append(prompt)
         assert settings is SETTINGS
+        assert first_frame is None  # the 4-2 path never resolves a portrait
         return MP4_BYTES
 
     run_video(job, provider, SETTINGS, media_dir=tmp_path)
@@ -296,7 +319,9 @@ def test_run_video_provider_failure_fails_job_cleanly(world: str, tmp_path: Path
     """PROVIDER_FAIL: a non-2xx provider response fails the run with the
     video-flavored user-facing message — no file, no row."""
 
-    def failing_provider(prompt: str, settings: VideoSettings) -> bytes:
+    def failing_provider(
+        prompt: str, settings: VideoSettings, first_frame: str | None = None
+    ) -> bytes:
         raise ProviderError("http", status_code=502)
 
     entity_id = _commit_with_data(world, BOSS_DATA)
@@ -308,7 +333,9 @@ def test_run_video_provider_failure_fails_job_cleanly(world: str, tmp_path: Path
 
 
 def test_run_video_connection_failure_fails_cleanly(world: str, tmp_path: Path) -> None:
-    def failing_provider(prompt: str, settings: VideoSettings) -> bytes:
+    def failing_provider(
+        prompt: str, settings: VideoSettings, first_frame: str | None = None
+    ) -> bytes:
         raise ProviderError("connection")
 
     entity_id = _commit_with_data(world, BOSS_DATA)
@@ -322,7 +349,9 @@ def test_run_video_empty_provider_bytes_fails(world: str, tmp_path: Path) -> Non
     """A provider that returns empty bytes fails the job (never writes an
     empty .mp4 or a manifest row)."""
 
-    def empty_provider(prompt: str, settings: VideoSettings) -> bytes:
+    def empty_provider(
+        prompt: str, settings: VideoSettings, first_frame: str | None = None
+    ) -> bytes:
         return b""
 
     entity_id = _commit_with_data(world, BOSS_DATA)
@@ -348,7 +377,12 @@ def test_run_video_non_mp4_bytes_fails_cleanly(world: str, tmp_path: Path, bad: 
     entity_id = _commit_with_data(world, BOSS_DATA)
     job = _claim_video_job(world, entity_id)
 
-    def bad_provider(prompt: str, settings: VideoSettings, payload: bytes = bad) -> bytes:
+    def bad_provider(
+        prompt: str,
+        settings: VideoSettings,
+        first_frame: str | None = None,
+        payload: bytes = bad,
+    ) -> bytes:
         return payload
 
     with pytest.raises(JobPayloadError, match="non-mp4 data"):
@@ -447,7 +481,7 @@ def test_run_video_budget_zero_fails_before_provider(world: str, tmp_path: Path)
     assert claimed is not None and claimed.id == job_row.id
     called: list[str] = []
 
-    def provider(prompt: str, settings: VideoSettings) -> bytes:
+    def provider(prompt: str, settings: VideoSettings, first_frame: str | None = None) -> bytes:
         called.append(prompt)
         return MP4_BYTES
 
@@ -465,7 +499,9 @@ def test_run_video_entity_deleted_mid_run_no_dangling(world: str, tmp_path: Path
     entity_id = _commit_with_data(world, BOSS_DATA)
     job = _claim_video_job(world, entity_id)
 
-    def deleting_provider(prompt: str, settings: VideoSettings) -> bytes:
+    def deleting_provider(
+        prompt: str, settings: VideoSettings, first_frame: str | None = None
+    ) -> bytes:
         # Delete the entity mid-run: the file lands, then add_media
         # re-checks existence and rejects.
         from app.store import delete_entity
@@ -480,3 +516,89 @@ def test_run_video_entity_deleted_mid_run_no_dangling(world: str, tmp_path: Path
     # The directory may remain, but no FILE may: the orphaned clip
     # is removed with the failing row (a row/file never dangles).
     assert not any((tmp_path / world / entity_id).glob("*"))
+
+
+# ---------------------------------------------------------------------------
+# Spec-4.5: the i2v source-frame gate — scoped to the COMFYUI backend
+# (the OpenAI path is text-to-video and runs unchanged, review round 1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def comfyui_video_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Point the reveal-video dispatch at the ComfyUI backend for one
+    test: ``configured_video_backend()`` (and run_video's in-run read)
+    resolves env > config, so the switch rides the env var and the
+    cached runtime config is reset around the case."""
+    from app.core.config import reset_runtime_config
+
+    monkeypatch.setenv("MYTHOSCIRCLE_VIDEO_BACKEND", "comfyui")
+    reset_runtime_config()
+    try:
+        yield
+    finally:
+        reset_runtime_config()
+
+
+def test_run_video_no_portrait_fails_cleanly(
+    world: str, tmp_path: Path, comfyui_video_backend: None
+) -> None:
+    """NO_FIRST_FRAME (comfyui backend): a boss-tier entity with no
+    kind=image manifest row fails the job BEFORE any provider call —
+    i2v needs a source frame — with no video file and no video row
+    (acceptance criterion)."""
+    entity_id = _commit_with_data(world, BOSS_DATA)
+    job = _claim_video_job(world, entity_id)
+    called: list[str] = []
+
+    def provider(prompt: str, settings: VideoSettings, first_frame: str | None = None) -> bytes:
+        called.append(prompt)
+        return MP4_BYTES
+
+    with pytest.raises(JobPayloadError, match="no portrait"):
+        run_video(job, provider, SETTINGS, media_dir=tmp_path)
+    assert called == []
+    assert list_media(world) == []
+    assert not (tmp_path / world / entity_id).exists()
+
+
+def test_run_video_passes_newest_portrait_as_first_frame(
+    world: str, tmp_path: Path, comfyui_video_backend: None
+) -> None:
+    """HAPPY_PATH_COMFYUI's runner half: with several portraits, the
+    provider receives the NEWEST (last kind=image manifest row — rowid
+    order), so the reveal animates the latest committed likeness, never
+    the first."""
+    entity_id = _commit_with_data(world, BOSS_DATA)
+    _attach_portrait(world, entity_id, tmp_path)
+    newest = _attach_portrait(world, entity_id, tmp_path)
+    job = _claim_video_job(world, entity_id)
+    seen_frames: list[str] = []
+
+    def provider(prompt: str, settings: VideoSettings, first_frame: str | None = None) -> bytes:
+        seen_frames.append(first_frame or "")
+        return MP4_BYTES
+
+    run_video(job, provider, SETTINGS, media_dir=tmp_path)
+    assert seen_frames == [str(tmp_path / world / entity_id / newest)]
+    state, _position = job_status(job.id)
+    assert state.state == "succeeded"
+
+
+def test_run_video_non_image_rows_do_not_satisfy_first_frame(
+    world: str, tmp_path: Path, comfyui_video_backend: None
+) -> None:
+    """The source frame is specifically a PORTRAIT (kind=image): a prior
+    video clip (kind=video) is not a source frame, so the job still
+    fails the no-portrait gate."""
+    entity_id = _commit_with_data(world, BOSS_DATA)
+    filename = f"{ids.new_id()}.mp4"
+    add_media(world, entity_id, filename, "video")
+    job = _claim_video_job(world, entity_id)
+
+    def provider(prompt: str, settings: VideoSettings, first_frame: str | None = None) -> bytes:
+        raise AssertionError("no provider call may happen without a portrait")
+
+    with pytest.raises(JobPayloadError, match="no portrait"):
+        run_video(job, provider, SETTINGS, media_dir=tmp_path)
+    assert [row.kind for row in list_media(world)] == ["video"]

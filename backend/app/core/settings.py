@@ -7,6 +7,7 @@ these helpers read it first and apply env overrides on top.
 
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 from app.core import config as config_mod
 from app.core.config import env_float, env_int, runtime_config
@@ -276,6 +277,106 @@ def video_settings() -> VideoSettings:
         api_key=os.environ.get(VIDEO_API_KEY) or None,
         timeout=env_float(VIDEO_TIMEOUT, resolved.video_timeout),
     )
+
+
+#: Environment variables for the ComfyUI reveal-video backend (spec-4.5;
+#: keys and defaults canonical in config.py). The backend switch
+#: (``[video] backend``) is read via ``configured_video_backend()``; the
+#: api_key stays environment-only per AD-22.
+VIDEO_BACKEND = config_mod.VIDEO_BACKEND_ENV
+COMFYUI_VIDEO_ENDPOINT = config_mod.COMFYUI_VIDEO_ENDPOINT_ENV
+COMFYUI_VIDEO_WORKFLOW_PATH = config_mod.COMFYUI_VIDEO_WORKFLOW_PATH_ENV
+COMFYUI_VIDEO_PROMPT_NODE_ID = config_mod.COMFYUI_VIDEO_PROMPT_NODE_ID_ENV
+COMFYUI_VIDEO_FIRST_FRAME_NODE_ID = config_mod.COMFYUI_VIDEO_FIRST_FRAME_NODE_ID_ENV
+COMFYUI_VIDEO_INPUT_DIR = config_mod.COMFYUI_VIDEO_INPUT_DIR_ENV
+COMFYUI_VIDEO_TIMEOUT = config_mod.COMFYUI_VIDEO_TIMEOUT_ENV
+COMFYUI_VIDEO_API_KEY = "MYTHOSCIRCLE_COMFYUI_VIDEO_API_KEY"
+
+#: Code defaults (spec-4.5; config.toml [comfyui_video] overrides in 1.7).
+DEFAULT_COMFYUI_VIDEO_ENDPOINT = config_mod.DEFAULT_COMFYUI_VIDEO_ENDPOINT
+DEFAULT_COMFYUI_VIDEO_WORKFLOW_PATH = config_mod.DEFAULT_COMFYUI_VIDEO_WORKFLOW_PATH
+DEFAULT_COMFYUI_VIDEO_PROMPT_NODE_ID = config_mod.DEFAULT_COMFYUI_VIDEO_PROMPT_NODE_ID
+DEFAULT_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID = config_mod.DEFAULT_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID
+DEFAULT_COMFYUI_VIDEO_INPUT_DIR = config_mod.DEFAULT_COMFYUI_VIDEO_INPUT_DIR
+DEFAULT_COMFYUI_VIDEO_TIMEOUT = config_mod.DEFAULT_COMFYUI_VIDEO_TIMEOUT
+
+
+@dataclass(frozen=True)
+class ComfyUIVideoSettings:
+    """The ComfyUI reveal-video backend the adapter talks to (spec-4.5).
+
+    Workflow-driven, not model-driven — the image twin's shape: the
+    operator's MiniMax H3 i2v workflow JSON (in-repo at
+    ``deploy/workflows/``) carries the node graph and model weights;
+    these knobs configure only the endpoint, the MiniMax prompt node to
+    inject into (``inputs.prompt`` — NOT ``inputs.value``), the LoadImage
+    node whose ``inputs.image`` carries the staged portrait, the
+    ComfyUI input directory the portrait is staged into, and the
+    whole-call timeout. The API key stays environment-only (AD-22) —
+    never config.toml.
+    """
+
+    endpoint: str = DEFAULT_COMFYUI_VIDEO_ENDPOINT
+    workflow_path: str = DEFAULT_COMFYUI_VIDEO_WORKFLOW_PATH
+    prompt_node_id: str = DEFAULT_COMFYUI_VIDEO_PROMPT_NODE_ID
+    first_frame_node_id: str = DEFAULT_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID
+    input_dir: str = DEFAULT_COMFYUI_VIDEO_INPUT_DIR
+    timeout: float = DEFAULT_COMFYUI_VIDEO_TIMEOUT
+    api_key: str | None = None
+
+
+def comfyui_video_settings() -> ComfyUIVideoSettings:
+    """Read the ComfyUI video adapter's settings (env > config > default).
+
+    The API key stays environment-only (AD-22) — never config.toml.
+    """
+    resolved = runtime_config()
+    endpoint_env = os.environ.get(COMFYUI_VIDEO_ENDPOINT)
+    workflow_env = os.environ.get(COMFYUI_VIDEO_WORKFLOW_PATH)
+    prompt_node_env = os.environ.get(COMFYUI_VIDEO_PROMPT_NODE_ID)
+    frame_node_env = os.environ.get(COMFYUI_VIDEO_FIRST_FRAME_NODE_ID)
+    input_dir_env = os.environ.get(COMFYUI_VIDEO_INPUT_DIR)
+    return ComfyUIVideoSettings(
+        # A set-but-empty env value is treated as unset (falls through to
+        # config) — precedence is env > config > default (spec-1.7).
+        endpoint=(endpoint_env if endpoint_env else resolved.comfyui_video_endpoint).strip()
+        or resolved.comfyui_video_endpoint,
+        workflow_path=(
+            workflow_env if workflow_env else resolved.comfyui_video_workflow_path
+        ).strip()
+        or resolved.comfyui_video_workflow_path,
+        prompt_node_id=(
+            prompt_node_env if prompt_node_env else resolved.comfyui_video_prompt_node_id
+        ).strip()
+        or resolved.comfyui_video_prompt_node_id,
+        first_frame_node_id=(
+            frame_node_env if frame_node_env else resolved.comfyui_video_first_frame_node_id
+        ).strip()
+        or resolved.comfyui_video_first_frame_node_id,
+        input_dir=(input_dir_env if input_dir_env else resolved.comfyui_video_input_dir).strip()
+        or resolved.comfyui_video_input_dir,
+        # The numeric field gets the same empty-env fallthrough BEFORE the
+        # numeric parse — env_float("") would raise, contradicting the
+        # documented env > config > default precedence (the image twin's
+        # review-round-1 contract).
+        timeout=(
+            env_float(COMFYUI_VIDEO_TIMEOUT, resolved.comfyui_video_timeout)
+            if os.environ.get(COMFYUI_VIDEO_TIMEOUT)
+            else resolved.comfyui_video_timeout
+        ),
+        api_key=os.environ.get(COMFYUI_VIDEO_API_KEY) or None,
+    )
+
+
+def configured_video_backend() -> Literal["openai", "comfyui"]:
+    """The reveal-video backend switch — env > config > default (spec-4.5).
+
+    Only the literal ``"comfyui"`` opts in; unset / misspelled / None
+    resolves to ``"openai"`` and the spec-4.2 path runs unchanged
+    (acceptance criterion). The Literal return keeps the narrow type
+    from ``RuntimeConfig.video_backend`` (review round 1).
+    """
+    return runtime_config().video_backend
 
 
 def configured_media_dir() -> str:

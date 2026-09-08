@@ -449,6 +449,27 @@ def test_comfyui_workflow_without_prompt_value_raises_connection(tmp_path: Path)
     assert excinfo.value.kind == "connection"
 
 
+def test_comfyui_workflow_prompt_node_non_dict_inputs_raises_connection(
+    tmp_path: Path,
+) -> None:
+    """Present-but-NON-DICT ``inputs`` on the prompt node (a foreign or
+    malformed workflow) must be a connection-class failure, never a raw
+    AttributeError escaping the provider (review round 2 — mirrors the
+    comfyui_video guard)."""
+    workflow = {"30:19": {"class_type": "CLIPTextEncode", "inputs": ["not", "a", "dict"]}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no HTTP request may happen without a valid workflow")
+
+    with pytest.raises(ProviderError) as excinfo:
+        comfyui_image_generation(
+            "x",
+            settings=_settings(_write_workflow(tmp_path / "k.json", workflow)),
+            transport=httpx.MockTransport(handler),
+        )
+    assert excinfo.value.kind == "connection"
+
+
 def test_comfyui_hostile_prompt_id_rejected(tmp_path: Path) -> None:
     """A /prompt 200 whose prompt_id can inject path segments (e.g.
     "a/b") is a provider error — the id is validated BEFORE URL
