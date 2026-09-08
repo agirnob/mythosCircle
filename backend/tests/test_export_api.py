@@ -17,8 +17,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from app.core import time
 from app.core.ids import new_id
-from app.store import models
+from app.store import add_media, models
 from app.store.commit import commit_subgraph
 from app.store.db import session_scope
 
@@ -485,3 +486,119 @@ def test_export_markdown_label_uniqueness(client: Any) -> None:
     assert len(sanitized_collide) == 2
     # Wikilinks use the same labels as headings.
     assert f"[[{vexes[0]}]] --debt(50)--> [[{vexes[1]}]]" in md
+
+
+def _write_media_file(tmp_path: Path, campaign_id: str, row: models.Media) -> None:
+    """The file on disk for a manifest row, under the env-pinned media root."""
+    path = tmp_path / "media" / campaign_id / row.entity_id / row.filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"payload")
+
+
+def test_export_media_refs_flag_disk_presence(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EXPORT_VALID_REF / EXPORT_BROKEN_REF (spec-4.3, FR14): each
+    entity's manifest rows ride the export in rowid order with
+    ``available`` resolved against disk — a broken reference is flagged,
+    never dropped; markdown lists valid files unflagged and marks the
+    broken one."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign = _create_campaign(client).json()
+    campaign_id = campaign["id"]
+    _commit_world(campaign_id)
+    body = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    vex_id, guild_id = body["entities"][0]["id"], body["entities"][1]["id"]
+
+    portrait = add_media(campaign_id, vex_id, f"{new_id()}.png", "image")
+    clip = add_media(campaign_id, vex_id, f"{new_id()}.mp4", "video")
+    broken = add_media(campaign_id, vex_id, f"{new_id()}.png", "image")
+    guild_portrait = add_media(campaign_id, guild_id, f"{new_id()}.png", "image")
+    for row in (portrait, clip, guild_portrait):
+        _write_media_file(tmp_path, campaign_id, row)
+
+    data = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    vex_media = data["entities"][0]["media"]
+    assert [m["filename"] for m in vex_media] == [
+        portrait.filename,
+        clip.filename,
+        broken.filename,
+    ]
+    assert [m["kind"] for m in vex_media] == ["image", "video", "image"]
+    assert [m["available"] for m in vex_media] == [True, True, False]
+    guild_media = data["entities"][1]["media"]
+    assert [m["available"] for m in guild_media] == [True]
+
+    md = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "markdown"}).text
+    assert md.count("### Media") == 2
+    assert f"- image: {portrait.filename}" in md
+    assert f"- video: {clip.filename}" in md
+    assert f"- image: {broken.filename} (broken: file missing on disk)" in md
+    assert f"- image: {guild_portrait.filename}" in md
+
+
+def test_export_without_media_lists_nothing(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EXPORT_NO_MEDIA: entities with no manifest rows export an empty
+    media array and the markdown carries no Media block."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign = _create_campaign(client).json()
+    _commit_world(campaign["id"])
+    data = client.get(f"/api/campaigns/{campaign['id']}/export").json()
+    assert all(e["media"] == [] for e in data["entities"])
+    md = client.get(f"/api/campaigns/{campaign['id']}/export", params={"format": "markdown"}).text
+    assert "### Media" not in md
+
+
+def test_export_ships_no_orphan_media_rows(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EXPORT_ORPHAN_LEGACY: a pre-4.3 orphan row (its entity is gone)
+    belongs to no listed entity — never shipped; the row itself persists
+    (no sweep of legacy rows in this story)."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign = _create_campaign(client).json()
+    campaign_id = campaign["id"]
+    _commit_world(campaign_id)
+    orphan = models.Media(
+        id=new_id(),
+        campaign_id=campaign_id,
+        entity_id=new_id(),  # no such entity
+        filename=f"{new_id()}.png",
+        kind="image",
+        created_at=time.now(),
+    )
+    with session_scope() as session:
+        session.add(orphan)
+    data = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    shipped = {m["filename"] for e in data["entities"] for m in e["media"]}
+    assert orphan.filename not in shipped
+    with session_scope() as session:
+        assert session.get(models.Media, orphan.id) is not None  # row persists
+
+
+def test_export_determinism_includes_media(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The byte-identical guarantee holds with the media field: a fixed
+    world + media store yields identical repeated exports (changing a
+    file changes ``available`` — that is the flag's purpose)."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign = _create_campaign(client).json()
+    campaign_id = campaign["id"]
+    _commit_world(campaign_id)
+    body = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    vex_id = body["entities"][0]["id"]
+    row = add_media(campaign_id, vex_id, f"{new_id()}.png", "image")
+    _write_media_file(tmp_path, campaign_id, row)
+    first_json = client.get(f"/api/campaigns/{campaign_id}/export")
+    second_json = client.get(f"/api/campaigns/{campaign_id}/export")
+    assert first_json.content == second_json.content
+    first_md = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "markdown"})
+    second_md = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "markdown"})
+    assert first_md.content == second_md.content

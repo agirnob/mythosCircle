@@ -22,6 +22,7 @@ from app.store import (
     app_db_url,
     commit_subgraph,
     create_campaign,
+    delete_entity_media,
     get_media_file,
     init_db,
     list_media,
@@ -159,3 +160,20 @@ def test_reads_are_campaign_scoped(world: str) -> None:
         list_media("0" * 26)
     with pytest.raises(UnknownCampaignError):
         get_media_file("0" * 26, entity_id, row.filename)
+
+
+def test_delete_entity_media_deletes_rows_in_callers_session(world: str) -> None:
+    """The spec-4.3 deletion seam: delete_entity_media removes exactly the
+    entity's rows inside the CALLER's transaction (no session of its own
+    — _delete_entity is the only caller); other entities' rows survive."""
+    entity_id = _commit_entity(world)
+    other_id = _commit_entity(world, "Other")
+    gone_one = add_media(world, entity_id, f"{ids.new_id()}.png", "image")
+    gone_two = add_media(world, entity_id, f"{ids.new_id()}.mp4", "video")
+    kept = add_media(world, other_id, f"{ids.new_id()}.png", "image")
+    with session_scope() as session:
+        delete_entity_media(session, world, entity_id)
+    remaining = list_media(world)
+    assert [r.id for r in remaining] == [kept.id]
+    assert gone_one.id not in {r.id for r in remaining}
+    assert gone_two.id not in {r.id for r in remaining}

@@ -186,3 +186,99 @@ def test_list_empty_200(client: Any) -> None:
     response = client.get("/api/campaigns")
     assert response.status_code == 200
     assert response.json()["campaigns"] == []
+
+
+def test_delete_campaign_reclaims_media_rows_and_files(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CAMPAIGN_DELETE_MEDIA (spec-4.3): the confirmed AR20 delete removes
+    the campaign's manifest rows (inside the store transaction) and its
+    whole media directory (post-commit reclaim) — another campaign's
+    media rows and files survive untouched."""
+    from sqlalchemy import select
+
+    from app.core import ids
+    from app.store import add_media, commit_subgraph, models, session_scope
+
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    mine = _create_campaign(client).json()
+    keep = _create_campaign(client, title="Keeper").json()
+
+    def seed(campaign_id: str) -> str:
+        """One committed entity pair (a new entity needs an anchor edge)."""
+        entity_id, anchor_id = ids.new_id(), ids.new_id()
+        commit_subgraph(
+            campaign_id,
+            [
+                models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+                models.EntityInput(kind="character", name="Mira Vane", id=entity_id),
+            ],
+            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        )
+        return entity_id
+
+    mira = seed(mine["id"])
+    keep_entity = seed(keep["id"])
+    for campaign_id, entity_id in ((mine["id"], mira), (keep["id"], keep_entity)):
+        row = add_media(campaign_id, entity_id, f"{ids.new_id()}.png", "image")
+        path = tmp_path / "media" / campaign_id / entity_id / row.filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"payload")
+
+    response = client.request("DELETE", f"/api/campaigns/{mine['id']}", json={"confirm": True})
+    assert response.status_code == 204
+    # The deleted campaign's media directory is gone — exactly it.
+    assert not (tmp_path / "media" / mine["id"]).exists()
+    assert (tmp_path / "media" / keep["id"]).is_dir()
+    with session_scope() as session:
+        # Scoped selects: the full-suite DB is shared per process, so the
+        # probe must not depend on what other tests left in the table.
+        mine_rows = session.scalars(
+            select(models.Media).where(models.Media.campaign_id == mine["id"])
+        ).all()
+        assert mine_rows == []
+        keep_rows = session.scalars(
+            select(models.Media).where(models.Media.campaign_id == keep["id"])
+        ).all()
+        assert len(keep_rows) == 1
+
+
+def test_delete_media_reclaim_failure_still_204(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reclaim failure never turns a successful delete into an error:
+    the helper is imported by name into the route module, so patching
+    ``app.api.campaigns.reclaim_campaign_media`` pins the boundary — the
+    store rows are already gone and the 204 stands even when the file
+    reclaim explodes."""
+    from sqlalchemy import select
+
+    from app.api import campaigns as campaigns_module
+    from app.core import ids
+    from app.store import add_media, commit_subgraph, models, session_scope
+
+    def exploding_reclaim(media_dir: object, campaign_id: str) -> None:
+        raise RuntimeError("reclaim exploded")
+
+    monkeypatch.setattr(campaigns_module, "reclaim_campaign_media", exploding_reclaim)
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    mine = _create_campaign(client).json()
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        mine["id"],
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(kind="character", name="Mira Vane", id=entity_id),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    add_media(mine["id"], entity_id, f"{ids.new_id()}.png", "image")
+    response = client.request("DELETE", f"/api/campaigns/{mine['id']}", json={"confirm": True})
+    assert response.status_code == 204
+    with session_scope() as session:
+        rows = session.scalars(
+            select(models.Media).where(models.Media.campaign_id == mine["id"])
+        ).all()
+        assert rows == []

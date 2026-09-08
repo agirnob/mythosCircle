@@ -41,6 +41,7 @@ from app.store import (
     UnknownCampaignError,
     UnknownEdgeError,
     UnknownEntityError,
+    add_media,
     app_db_url,
     commit_subgraph,
     create_campaign,
@@ -49,6 +50,7 @@ from app.store import (
     edge_counter_semantic,
     entity_live_edges,
     init_db,
+    list_media,
     models,
     session_scope,
     undo,
@@ -471,7 +473,8 @@ def test_undo_restores_prior_state_with_stable_ulids_and_media(world: str) -> No
         chain = list(revision_chain(session, world))
         undo_events = list(revision_events(session, world, undo_revision.id))
         media_rows = list(session.scalars(select(models.Media)))
-        # Undo must not touch the media manifest (reclamation is Epic 4, AD-10).
+        # Undo must not touch the media manifest (undo never restores
+        # reclaimed media, spec-4.3).
         assert [m.entity_id for m in media_rows] == [kellan_id]
 
     assert len(chain) == 3
@@ -1647,3 +1650,50 @@ def test_entity_live_edges_helper_rowid_ordered(world: str) -> None:
             (kellan_id, mira_id, "rival_of"),
         ]
         assert list(entity_live_edges(session, world, ids.new_id())) == []
+
+
+def test_delete_entity_reclaims_media_rows_in_transaction(world: str) -> None:
+    """ENTITY_DELETE_MEDIA (store, spec-4.3): the delete transaction
+    removes the entity's manifest rows — image and video alike — while
+    neighbors' rows survive; the delete revision carries no media events
+    (media rows are an index, not graph state, AD-1)."""
+    bar_id, mira_id = _seed_world(world)
+    mira_portrait = add_media(world, mira_id, f"{ids.new_id()}.png", "image")
+    mira_clip = add_media(world, mira_id, f"{ids.new_id()}.mp4", "video")
+    bar_portrait = add_media(world, bar_id, f"{ids.new_id()}.png", "image")
+    revision = delete_entity(world, mira_id, cascade=True, base_revision=_head(world))
+    remaining = list_media(world)
+    assert [r.id for r in remaining] == [bar_portrait.id]
+    assert mira_portrait.id not in {r.id for r in remaining}
+    assert mira_clip.id not in {r.id for r in remaining}
+    with session_scope() as session:
+        events = list(revision_events(session, world, revision.id))
+        assert {ev.type for ev in events} == {"entity_deleted", "edge_deleted"}
+
+
+def test_delete_entity_without_media_unchanged(world: str) -> None:
+    """ENTITY_DELETE_NO_MEDIA (store): deleting an entity with no media
+    rows works exactly as before — an empty manifest stays empty."""
+    _bar_id, mira_id = _seed_world(world)
+    delete_entity(world, mira_id, cascade=True, base_revision=_head(world))
+    assert list_media(world) == []
+
+
+def test_undo_of_delete_restores_entity_but_not_media(world: str) -> None:
+    """ENTITY_DELETE_UNDO (spec-4.3): undoing a delete revision restores
+    the entity and its edges with stable ULIDs, but the manifest rows
+    stay reclaimed — undo does not restore media (``store/undo.py``);
+    regeneration is the recovery."""
+    bar_id, mira_id = _seed_world(world)
+    add_media(world, mira_id, f"{ids.new_id()}.png", "image")
+    member_id_before = _edge_id(world, mira_id, bar_id, "member_of")
+    debt_id_before = _edge_id(world, mira_id, bar_id, "debt")
+    delete_entity(world, mira_id, cascade=True, base_revision=_head(world))
+    assert list_media(world) == []
+    head = _head(world)
+    assert head is not None
+    undo(world, head)
+    entities, edges = _state(world)
+    assert mira_id in entities
+    assert member_id_before in edges and debt_id_before in edges
+    assert list_media(world) == []  # media are NOT restored by undo

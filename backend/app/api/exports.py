@@ -11,10 +11,13 @@ revision, no event, no store write (AR18, AD-1):
 - ``...?format=markdown`` — an Obsidian-level document: YAML frontmatter,
   one section per entity (kind, text, full ``data`` with stat blocks in a
   fenced yaml block), per-entity Relations with ``[[wikilinks]]`` from both
-  endpoints, and a world-level edge table. Served as an attachment.
+  endpoints, a per-entity Media listing (spec-4.3), and a world-level edge
+  table. Served as an attachment.
 
 Only committed state is exported — candidates/proposed entities are
-invisible here (AR7). Media/portraits ship with Epic 4. Repeated exports
+invisible here (AR7). Each entity's media-manifest rows ride along with an
+``available`` flag resolved against disk (spec-4.3, FR14): a broken
+reference is flagged, never dropped. Repeated exports
 are byte-identical: determinism falls out of the read helpers' rowid
 ordering and stable dict insertion order, and the frontmatter ``exported_at``
 is the snapshot's own timestamp (the latest revision's ``created_at``,
@@ -26,12 +29,16 @@ import json as _json
 import math
 import re
 from collections import Counter
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
+from sqlalchemy import literal_column, select
 
 from app.api.auth import get_current_account
+from app.core.settings import configured_media_dir
 from app.store import get_campaign, models
 from app.store.commit import edge_counter_semantic
 from app.store.db import session_scope
@@ -54,12 +61,24 @@ class RevisionMeta(BaseModel):
     created_at: str
 
 
+class MediaRefExport(BaseModel):
+    """One manifest row riding an entity's export (spec-4.3, FR14):
+    ``available`` is the file's on-disk presence — a broken reference is
+    flagged, never dropped or hidden."""
+
+    id: str
+    kind: str
+    filename: str
+    available: bool
+
+
 class EntityExport(BaseModel):
     id: str
     kind: str
     name: str
     text: str | None
     data: dict[str, Any]
+    media: list[MediaRefExport]
 
 
 class EdgeExport(BaseModel):
@@ -194,6 +213,11 @@ def _render_markdown(export: WorldExport) -> str:
                 f"- [[{names.get(edge.dst, edge.dst)}]]"
                 f" <--{_edge_label(edge)}-- [[{names.get(edge.src, edge.src)}]]"
             )
+        if entity.media:
+            lines += ["", "### Media", ""]
+            for ref in entity.media:
+                broken = "" if ref.available else " (broken: file missing on disk)"
+                lines.append(f"- {ref.kind}: {ref.filename}{broken}")
         lines.append("")
     if export.edges:
         lines += [
@@ -219,6 +243,29 @@ def _exported_at(export: WorldExport) -> str:
     return export.campaign.created_at
 
 
+def _media_refs(campaign_id: str, rows: Sequence[models.Media]) -> dict[str, list[MediaRefExport]]:
+    """Group the campaign's manifest rows by entity, rowid (insertion)
+    order preserved within each group (spec-4.3), each resolved against
+    disk: ``available`` is the file's presence under
+    ``{media_dir}/{campaign}/{entity}/{filename}`` — a missing file is
+    flagged, never dropped (FR14). Pre-4.3 orphan rows (their entity is
+    gone) belong to no listed entity and are excluded by the grouping
+    (the row itself persists — outside this story's scope).
+    """
+    media_root = Path(configured_media_dir()) / campaign_id
+    grouped: dict[str, list[MediaRefExport]] = {}
+    for row in rows:
+        grouped.setdefault(row.entity_id, []).append(
+            MediaRefExport(
+                id=row.id,
+                kind=row.kind,
+                filename=row.filename,
+                available=(media_root / row.entity_id / row.filename).is_file(),
+            )
+        )
+    return grouped
+
+
 @router.get("/api/campaigns/{campaign_id}/export", response_model=WorldExport)
 def export_world(
     campaign_id: str,
@@ -239,6 +286,17 @@ def export_world(
             raise HTTPException(status_code=404, detail="Campaign not found.")
         revision = latest_revision(session, campaign_id)
         entities, edges = world_state(session, campaign_id)
+        # The media manifest rides along (spec-4.3, FR14): a plain SELECT
+        # on the open snapshot session — snapshot-consistent with the
+        # world read above, and no nested session_scope (a second BEGIN
+        # IMMEDIATE under this transaction's write lock would deadlock).
+        # Rowid ordering mirrors list_media's documented ordering.
+        media_rows = session.scalars(
+            select(models.Media)
+            .where(models.Media.campaign_id == campaign_id)
+            .order_by(literal_column("rowid"))
+        ).all()
+        media_by_entity = _media_refs(campaign_id, media_rows)
         export = WorldExport(
             campaign=CampaignMeta(
                 id=campaign.id,
@@ -258,6 +316,7 @@ def export_world(
                     name=entity.name,
                     text=entity.text,
                     data=_finite_only(entity.data),
+                    media=media_by_entity.get(entity.id, []),
                 )
                 for entity in entities
             ],

@@ -133,6 +133,7 @@ from app.store.media import (
     InvalidMediaError,
     MediaNotFoundError,
     add_media,
+    delete_entity_media,
     get_media_file,
     list_media,
 )
@@ -248,6 +249,7 @@ __all__ = [
     "create_campaign",
     "create_session",
     "delete_campaign",
+    "delete_entity_media",
     "delete_edge",
     "delete_entity",
     "discard_candidates",

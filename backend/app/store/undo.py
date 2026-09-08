@@ -15,8 +15,11 @@ path's validate-then-mutate discipline. State/log inconsistencies that
 would make the inverse impossible raise ``CorruptEventError`` (reject,
 never guess) and roll back the whole undo.
 
-Media-manifest rows are untouched by undo; reclamation happens with the
-media stories (AD-10, Epic 4).
+Media-manifest rows are untouched by undo — no media events exist to
+invert, so undo never restores reclaimed media (spec-4.3). An entity
+delete reclaims its manifest rows in the same transaction; undo of an
+entity-CREATION revision currently leaves that entity's media rows and
+files behind (deferred — no HTTP route exposes undo).
 """
 
 from collections.abc import Sequence

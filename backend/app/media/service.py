@@ -27,6 +27,7 @@ no event (AD-10).
 
 import logging
 import os
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -372,3 +373,46 @@ def _job_still_running(job: models.Job) -> bool:
         logger.exception("worker state check failed for job %s", job.id)
         return True
     return state is None or state.state == "running"
+
+
+# ---------------------------------------------------------------------------
+# Reclaim-on-delete (spec-4.3, AD-10): the API layer's post-commit half
+# ---------------------------------------------------------------------------
+
+
+def _rmtree_best_effort(target: Path) -> None:
+    """Best-effort and fully idempotent recursive delete: a missing
+    target is a silent no-op, any other ``OSError`` is logged and
+    swallowed — a reclaim failure never turns a successful 204 into an
+    error (spec-4.3), and the rows are already gone regardless.
+    """
+    try:
+        shutil.rmtree(target)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("media reclaim failed for %s: %s", target, exc)
+
+
+def reclaim_entity_media(
+    media_dir: str | os.PathLike[str], campaign_id: str, entity_id: str
+) -> None:
+    """Remove ``{media_dir}/{campaign_id}/{entity_id}/`` after the store
+    committed the manifest-row deletion — the file half of AD-10's
+    "media are reclaimed when their entity is deleted" (the store owns
+    rows; this owns files).
+
+    Rows-first ordering (spec-4.3 Design Notes): a crash before this runs
+    leaves garbage files but no dangling manifest row, and a failed file
+    delete never re-enters the DB.
+    """
+    _rmtree_best_effort(Path(media_dir) / campaign_id / entity_id)
+
+
+def reclaim_campaign_media(media_dir: str | os.PathLike[str], campaign_id: str) -> None:
+    """Remove ``{media_dir}/{campaign_id}/`` after the store committed the
+    campaign's total hard delete (AR20/AD-25; spec-4.3).
+
+    Removes exactly the campaign's own directory — never walks above it.
+    """
+    _rmtree_best_effort(Path(media_dir) / campaign_id)

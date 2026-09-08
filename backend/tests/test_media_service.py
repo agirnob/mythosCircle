@@ -7,6 +7,7 @@ ENTITY_MISSING, PROVIDER_FAIL, BUDGET_EXCEEDED, plus the atomic-write and
 file-before-row invariants (a row never dangles).
 """
 
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -14,7 +15,12 @@ import pytest
 
 from app.core import ids
 from app.core.settings import ImageSettings
-from app.media.service import appearance_prompt, run_portrait
+from app.media.service import (
+    appearance_prompt,
+    reclaim_campaign_media,
+    reclaim_entity_media,
+    run_portrait,
+)
 from app.pipeline.budget import BudgetExceededError
 from app.pipeline.worker import JobPayloadError
 from app.providers.llm import ProviderError
@@ -439,3 +445,54 @@ def test_run_portrait_entity_deleted_mid_run_no_dangling(world: str, tmp_path: P
     # The directory may remain, but no FILE may: the orphaned portrait
     # is removed with the failing row (a row/file never dangles).
     assert not any((tmp_path / world / entity_id).glob("*"))
+
+
+# ---------------------------------------------------------------------------
+# Reclaim-on-delete (spec-4.3, AD-10): file half, post-commit
+# ---------------------------------------------------------------------------
+
+
+def test_reclaim_entity_media_removes_dir_idempotently(tmp_path: Path) -> None:
+    """Reclaim removes exactly the entity's media directory — leftover
+    temp dotfiles included — leaves the campaign root, and a missing
+    target (already gone, or never written) is a silent no-op."""
+    entity_dir = tmp_path / "camp" / "ent"
+    entity_dir.mkdir(parents=True)
+    (entity_dir / "a.png").write_bytes(b"x")
+    (entity_dir / ".a.png.tmp").write_bytes(b"x")  # atomic-write leftover
+    reclaim_entity_media(tmp_path, "camp", "ent")
+    assert not entity_dir.exists()
+    assert (tmp_path / "camp").exists()  # never walks above the entity
+    reclaim_entity_media(tmp_path, "camp", "ent")  # already gone: no-op
+    reclaim_entity_media(tmp_path, "camp", "missing-entity")  # never written
+
+
+def test_reclaim_entity_media_swallows_oserror_logs_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed file delete never raises: an OSError is logged as a
+    warning — a reclaim failure must never turn a successful 204 into an
+    error (spec-4.3), and the row is already gone regardless."""
+
+    def exploding_rmtree(path: object) -> None:
+        raise PermissionError(13, "no permission")
+
+    monkeypatch.setattr("app.media.service.shutil.rmtree", exploding_rmtree)
+    with caplog.at_level(logging.WARNING, logger="app.media.service"):
+        reclaim_entity_media(tmp_path, "camp", "ent")
+    assert "media reclaim failed" in caplog.text
+
+
+def test_reclaim_campaign_media_removes_only_campaign_dir(tmp_path: Path) -> None:
+    """Campaign reclaim removes ``{media_dir}/{campaign}`` and nothing
+    above or beside it; missing targets are no-ops."""
+    (tmp_path / "camp" / "ent").mkdir(parents=True)
+    (tmp_path / "camp" / "ent" / "a.png").write_bytes(b"x")
+    sibling = tmp_path / "other-camp"
+    sibling.mkdir()
+    reclaim_campaign_media(tmp_path, "camp")
+    assert not (tmp_path / "camp").exists()
+    assert sibling.exists()
+    assert tmp_path.exists()  # the media root itself survives
+    reclaim_campaign_media(tmp_path, "camp")  # idempotent
+    reclaim_campaign_media(tmp_path, "missing-camp")  # never existed

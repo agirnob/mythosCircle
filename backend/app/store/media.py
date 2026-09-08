@@ -2,13 +2,18 @@
 
 The store is the ONLY writer of the ``media`` table (AD-1 — the media
 service and the API never write it directly): ``add_media`` is the single
-write seam, and the runner orders the FILE write before it, so a manifest
-row never dangles over a missing file. The row is the index of record for
-a generated portrait; the file lives under
+write seam (the runner orders the FILE write before it, so a manifest row
+never dangles over a missing file) and ``delete_entity_media`` is the
+entity-delete seam (used by ``_delete_entity`` inside its transaction;
+spec-4.3 reclaims rows with their entity — ``delete_campaign`` bulk-deletes
+its campaign's rows in the same spirit, and undo of an entity-CREATION
+revision leaves rows behind, deferred). The row is the index of record
+for a generated portrait; the file lives under
 ``media_dir/{campaign_id}/{entity_id}/{filename}``.
 
 Media rows are NOT world graph: no revision, no event (AD-1 governs the
-graph; manifest rows are an index, not state the export projects). Reads
+graph); 4-3 projects them into exports with an on-disk ``available`` flag
+but they remain an index undo never restores. Reads
 are campaign-scoped — a foreign campaign is the indistinguishable 404 the
 API layer maps (AD-9).
 """
@@ -16,7 +21,8 @@ API layer maps (AD-9).
 from collections.abc import Sequence
 from pathlib import Path
 
-from sqlalchemy import literal_column, select
+from sqlalchemy import delete, literal_column, select
+from sqlalchemy.orm import Session
 
 from app.core import ids, time
 from app.store import models
@@ -95,6 +101,28 @@ def list_media(campaign_id: str) -> Sequence[models.Media]:
             .where(models.Media.campaign_id == campaign_id)
             .order_by(literal_column("rowid"))
         ).all()
+
+
+def delete_entity_media(session: Session, campaign_id: str, entity_id: str) -> None:
+    """Delete every manifest row of one entity INSIDE the caller's
+    transaction — the entity-delete seam (AD-1; the caller is
+    ``_delete_entity``, spec-4.3). The store's other row deletions are
+    ``delete_campaign``'s bulk sweep and undo's leave-behind on
+    entity-creation reverts; neither routes through here.
+
+    Media rows are NOT world graph: no events, no revision delta, and
+    undo does not restore them (``store/undo.py`` — regeneration is the
+    recovery). File reclaim is the API layer's post-commit job (AD-10
+    rows-first ordering); this seam only removes rows. The entity's
+    existence is the caller's precondition — it has just resolved the
+    entity row and is about to delete it.
+    """
+    session.execute(
+        delete(models.Media).where(
+            models.Media.campaign_id == campaign_id,
+            models.Media.entity_id == entity_id,
+        )
+    )
 
 
 def get_media_file(campaign_id: str, entity_id: str, filename: str) -> models.Media:

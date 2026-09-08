@@ -538,6 +538,11 @@ def delete_entity(
     ``before`` snapshots matching undo's ``_ENTITY_KEYS``/``_EDGE_KEYS``
     contract exactly — undoing the delete revision recreates the rows
     with stable ULIDs via the existing undo machinery, zero undo changes.
+    Media manifest rows leave in the same transaction (AD-10, spec-4.3):
+    they are not world graph — no events, no revision delta — and undo
+    does NOT restore them (``store/undo.py``); regeneration is the
+    recovery. Files are reclaimed post-commit by the API layer, so a
+    crash between commit and reclaim leaves files but no dangling row.
 
     Rejects (no state change) with ``UnknownCampaignError``,
     ``UnknownEntityError`` (unknown or foreign-campaign entity),
@@ -617,6 +622,13 @@ def _delete_entity(
         {"id": entity_id, "before": _entity_snapshot(entity), "after": None},
         now,
     )
+    # Reclaim the entity's media rows inside this transaction (AD-10,
+    # spec-4.3) — the store's single media-row deletion seam. No events,
+    # no revision delta: manifest rows are an index, not graph state.
+    # Function-local import: store.media imports this module's errors.
+    from app.store.media import delete_entity_media
+
+    delete_entity_media(session, campaign_id, entity_id)
     session.delete(entity)
     return revision
 

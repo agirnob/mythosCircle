@@ -21,15 +21,20 @@ Confirmation contract (AD-5 — required only "with live edges"):
 """
 
 import json as _json
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.auth import get_current_account
 from app.api.common import store_error_as_http
+from app.core.settings import configured_media_dir
+from app.media.service import reclaim_entity_media
 from app.store import StoreError, get_campaign, models
 from app.store.commit import delete_entity as store_delete_entity
 from app.store.commit import update_entity as store_update_entity
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -90,6 +95,15 @@ async def delete_entity(
         store_delete_entity(campaign_id, entity_id, cascade=cascade, base_revision=base_revision)
     except StoreError as exc:
         store_error_as_http(exc)
+    # Rows committed — now reclaim the files (AD-10 rows-first ordering,
+    # spec-4.3): the store removed the manifest rows inside the delete
+    # transaction; the files go after the commit. The helper is
+    # best-effort (logs OSError, never raises) and the route guards
+    # anyway — a reclaim failure NEVER turns the 204 into an error.
+    try:
+        reclaim_entity_media(configured_media_dir(), campaign_id, entity_id)
+    except Exception:  # noqa: BLE001 - reclaim must never fail the 204
+        logger.exception("post-delete media reclaim failed for %s/%s", campaign_id, entity_id)
 
 
 @router.patch(

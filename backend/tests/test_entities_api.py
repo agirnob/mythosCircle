@@ -9,7 +9,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import ids
-from app.store import commit_subgraph, models, session_scope, world_entities
+from app.store import (
+    MediaNotFoundError,
+    add_media,
+    commit_subgraph,
+    get_media_file,
+    list_media,
+    models,
+    session_scope,
+    world_entities,
+)
 
 
 @pytest.fixture()
@@ -333,3 +342,123 @@ def test_delete_non_string_base_revision_400(client: Any) -> None:
     assert response.status_code == 400
     with session_scope() as session:
         assert mira_id in {e.id for e in world_entities(session, mine["id"])}
+
+
+def _media_row(campaign_id: str, entity_id: str, tmp_path: Path, kind: str = "image") -> Any:
+    """One manifest row + its file on disk under the env-pinned media
+    root (add_media validates the ULID stem, mirroring the runner)."""
+    ext = "mp4" if kind == "video" else "png"
+    row = add_media(campaign_id, entity_id, f"{ids.new_id()}.{ext}", kind)
+    path = tmp_path / "media" / campaign_id / entity_id / row.filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"payload")
+    return row
+
+
+def test_delete_reclaims_media_rows_and_files(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENTITY_DELETE_MEDIA (spec-4.3): a confirmed delete removes the
+    entity's manifest rows inside the delete transaction and its media
+    directory after the commit (AD-10 rows-first ordering) — a neighbor's
+    media is untouched."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    mine = _create_campaign(client)
+    bar_id, mira_id = _seed_world(mine["id"])
+    _media_row(mine["id"], mira_id, tmp_path, kind="image")
+    mira_clip = _media_row(mine["id"], mira_id, tmp_path, kind="video")
+    bar_portrait = _media_row(mine["id"], bar_id, tmp_path, kind="image")
+    mira_dir = tmp_path / "media" / mine["id"] / mira_id
+    assert mira_dir.is_dir()
+    response = client.request(
+        "DELETE",
+        f"/api/campaigns/{mine['id']}/entities/{mira_id}",
+        json={"confirm": True, "cascade": True},
+    )
+    assert response.status_code == 204
+    # Rows gone: the manifest lists only the neighbor's row, and the row
+    # lookup for a deleted clip is the store-family 404.
+    assert [r.id for r in list_media(mine["id"])] == [bar_portrait.id]
+    with pytest.raises(MediaNotFoundError):
+        get_media_file(mine["id"], mira_id, mira_clip.filename)
+    # Files gone: the entity's whole media directory, never higher.
+    assert not mira_dir.exists()
+    assert (tmp_path / "media" / mine["id"] / bar_id / bar_portrait.filename).is_file()
+
+
+def test_delete_entity_without_media_touches_nothing(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENTITY_DELETE_NO_MEDIA (spec-4.3): an entity with no manifest rows
+    and no directory deletes unchanged — reclaim is a no-op, nothing on
+    disk appears."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    mine = _create_campaign(client)
+    bar_id, mira_id = _seed_world(mine["id"])
+    # Cascade mira; the bar is edgeless and media-less afterwards.
+    assert (
+        client.request(
+            "DELETE",
+            f"/api/campaigns/{mine['id']}/entities/{mira_id}",
+            json={"confirm": True, "cascade": True},
+        ).status_code
+        == 204
+    )
+    response = client.delete(f"/api/campaigns/{mine['id']}/entities/{bar_id}")
+    assert response.status_code == 204
+    assert list_media(mine["id"]) == []
+    assert not (tmp_path / "media" / mine["id"]).exists()  # nothing created
+
+
+def test_delete_with_row_but_missing_file_still_204(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENTITY_DELETE_ROWFILE_GONE (spec-4.3): a manifest row whose file
+    (and even whose directory) never existed — the delete still 204s and
+    the row is removed; reclaiming a missing directory is a no-op."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    mine = _create_campaign(client)
+    _bar_id, mira_id = _seed_world(mine["id"])
+    row = add_media(mine["id"], mira_id, f"{ids.new_id()}.png", "image")  # no file written
+    response = client.request(
+        "DELETE",
+        f"/api/campaigns/{mine['id']}/entities/{mira_id}",
+        json={"confirm": True, "cascade": True},
+    )
+    assert response.status_code == 204
+    assert list_media(mine["id"]) == []
+    with pytest.raises(MediaNotFoundError):
+        get_media_file(mine["id"], mira_id, row.filename)
+
+
+def test_delete_media_reclaim_failure_still_204(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reclaim failure never turns a successful delete into an error:
+    the helper is imported by name into the route module, so patching
+    ``app.api.entities.reclaim_entity_media`` pins the boundary — the
+    store rows are already gone and the 204 stands even when the file
+    reclaim explodes."""
+    from app.api import entities as entities_module
+
+    def exploding_reclaim(media_dir: object, campaign_id: str, entity_id: str) -> None:
+        raise RuntimeError("reclaim exploded")
+
+    monkeypatch.setattr(entities_module, "reclaim_entity_media", exploding_reclaim)
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    mine = _create_campaign(client)
+    _bar_id, mira_id = _seed_world(mine["id"])
+    _media_row(mine["id"], mira_id, tmp_path, kind="image")
+    response = client.request(
+        "DELETE",
+        f"/api/campaigns/{mine['id']}/entities/{mira_id}",
+        json={"confirm": True, "cascade": True},
+    )
+    assert response.status_code == 204
+    # Row reclamation only: the rows left in the delete transaction, the
+    # (exploded) file reclaim is invisible to the wire contract.
+    assert list_media(mine["id"]) == []

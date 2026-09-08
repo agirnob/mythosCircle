@@ -4,7 +4,9 @@ The ``campaign``/``campaigns`` routes require a valid session (1.5's
 ``get_current_account``) and are owner-scoped: a foreign or unknown
 campaign id maps to the same 404 (NFR6, AD-9 — no oracle). Delete
 requires an explicit confirmation body and is the AR20 total hard delete
-(cascades revisions/events/entities/edges/jobs/media rows). Store
+(cascades revisions/events/entities/edges/jobs/media rows), with the
+campaign's media directory reclaimed post-commit by the media service
+(spec-4.3, AD-10). Store
 rejections map through the shared ``store_error_as_http`` (epic-1 retro
 item 3: campaigns errors are ``StoreError`` subclasses; the cursor-miss
 family — ``InvalidCursorError`` from a deleted/fabricated cursor — rides
@@ -12,6 +14,7 @@ the same mapper, retro item 2).
 """
 
 import json as _json
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -20,6 +23,8 @@ from pydantic import BaseModel, Field
 from app.api.auth import get_current_account
 from app.api.common import store_error_as_http
 from app.core.pagination import InvalidCursorError, decode_cursor, encode_cursor
+from app.core.settings import configured_media_dir
+from app.media.service import reclaim_campaign_media
 from app.store import StoreError, models
 from app.store.campaigns import (
     create_campaign,
@@ -28,6 +33,8 @@ from app.store.campaigns import (
     list_campaigns,
     update_campaign,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -178,3 +185,12 @@ async def delete(
     deleted = delete_campaign(current.id, campaign_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Campaign not found.")
+    # Rows committed (the store's delete_campaign removed the manifest
+    # rows in its transaction) — reclaim the files post-commit (AD-10
+    # rows-first ordering, spec-4.3). The helper is best-effort (logs
+    # OSError, never raises) and the route guards anyway — a reclaim
+    # failure NEVER turns the 204 into an error.
+    try:
+        reclaim_campaign_media(configured_media_dir(), campaign_id)
+    except Exception:  # noqa: BLE001 - reclaim must never fail the 204
+        logger.exception("post-delete media reclaim failed for %s", campaign_id)
