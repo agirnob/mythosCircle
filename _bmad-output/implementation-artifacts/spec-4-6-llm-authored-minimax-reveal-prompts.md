@@ -111,6 +111,11 @@ The MiniMax guide ships in-repo at `deploy/guides/VIDEO_PROMPT_WRITING_GUIDE_bas
 - Result: `01M215BGHVBF05SW66WN6Y3X7R.mp4` — 772 KB, valid ISO-MP4; h264 video + **AAC audio**, 13.67s both. Manifest row kind=video added; served `200 video/mp4` inline. Frame at 4s (vision-checked): single woman, chest-up, dim cinematic room, tight braid, high-collared midnight-blue tunic with metallic fastenings, calculating half-smile, camera push-in vibe — matches the committed appearance + drafted `integrated_multimodal_description`; no extra faces, no artifacts, no text. Audio (volumedetect): mean −27.8 dB, max −15.2 dB — present, quiet soundscape-level (fits "low ominous hum + slow cello"), decisively NOT the pre-4.6 hallucinated-speech signature (speech peaks −6…−1 dB).
 - KEEP: the two-phase flow is the fix — draft (gemma, ~20s) → DM review → render (MiniMax, ~5.3 min) shipped the audio the DM ordered. The RENDER_WITH_PROMPT verbatim path is live-verified end to end (unit matrix already pinned it at the service layer).
 
+### 2026-09-08 — owner verdict: approved
+
+- Trigger: full two-phase live smoke (draft + render) presented for review.
+- Verdict: "yea its good" — sprint row flipped review → done. Epic-4 now has all 6 stories accepted (epic-4 retrospective was already recorded with its 4 open action items: shared comfyui scaffolding refactor, shared media-write tail refactor, media retention/pruning ruling, undo-of-entity-creation media decision).
+
 ## Design Notes
 
 - The guide's I2VA instruction is the first line (the `<Picture 1>` referenced line); `run_video_prompt` instructs gemma to emit that line + the three core fields, and to use `overall_soundscape: N/A` / `non_diegetic_music: N/A` when the DM wants silence — that's the guardrail against the hallucinated "sorry Esteya" speech.
