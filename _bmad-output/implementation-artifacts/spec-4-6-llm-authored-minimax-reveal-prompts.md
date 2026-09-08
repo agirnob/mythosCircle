@@ -83,7 +83,7 @@ The MiniMax guide ships in-repo at `deploy/guides/VIDEO_PROMPT_WRITING_GUIDE_bas
 - [x] `backend/app/api/jobs.py`; `backend/app/store/jobs.py` — `video_prompt` kind + validator updates.
 - [x] `frontend/src/views/WorldView.vue`; `stores/jobs.ts`; `stores/world.ts` — draft + render surfaces.
 - [x] `backend/tests/` — matrix-row tests.
-- [ ] Live smoke: draft a reveal prompt for Vespera (gemma up), review the prompt (assert it carries the 3 core fields + no dialogue unless desired), then render.
+- [x] Live smoke: draft a reveal prompt for Vespera (gemma up), review the prompt (assert it carries the 3 core fields + no dialogue unless desired), then render.
 
 **Acceptance Criteria:**
 - Given a boss-tier entity with appearance + boss, when the DM drafts a reveal prompt, then a MiniMax-I2VA-structured prompt results (contains `integrated_multimodal_description`, `overall_soundscape`, `non_diegetic_music`), reviewable/editable before render.
@@ -94,6 +94,15 @@ The MiniMax guide ships in-repo at `deploy/guides/VIDEO_PROMPT_WRITING_GUIDE_bas
 ## Spec Change Log
 
 <!-- Append-only; filled by step-04 review loops. -->
+
+### 2026-09-08 — live smoke (draft half)
+
+- Trigger: task-list live smoke for Vespera Nyx, deferred until the operator's Unsloth Studio (gemma-4-12B-it-qat-GGUF) was up.
+- What ran: `POST /api/jobs` `kind: video_prompt` for Vespera (`01M20F1TH1SRVXQYT04XP3PEB2`, BBEG, appearance + boss section) against the dev api (`api-verdict` restarted to load the 4-6 code; `MYTHOSCIRCLE_DB=/tmp/mythos-dev/mythoscircle.db`); job `01M20Z76RFKXYTH5SYBBQ7JKW7` → `succeeded` in ~20s.
+- Result: the draft leads with the I2VA picture-alignment line, carries all three core fields, no invented dialogue, audio follows the drafted soundscape/music (entity-grounded: Vespera's braid/tunic/half-smile from appearance; the Seraph's radiant light from `boss.lair_actions`). No media row, no revision (AD-1: a draft is a job result only).
+- Known-bad state avoided: the pre-4.6 render path shipped whatever MiniMax hallucinated (the "sorry Esteya" failure); no draft + LLM down verifies the clean-fail path via the matrix instead.
+- KEEP: `run_video_prompt`'s guide-verbatim embed is fast enough (~20s) — normalization of the instruction is not needed; the draft ran at `MYTHOSCIRCLE_LLM_TIMEOUT=2400` (operator env).
+- Remaining: the render half of the smoke needs ComfyUI + MiniMax up (operator swaps VRAM: gemma out, video model in) — draft → render with the approved prompt verbatim.
 
 ## Design Notes
 
