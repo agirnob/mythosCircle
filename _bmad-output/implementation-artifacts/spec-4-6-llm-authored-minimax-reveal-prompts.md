@@ -104,6 +104,13 @@ The MiniMax guide ships in-repo at `deploy/guides/VIDEO_PROMPT_WRITING_GUIDE_bas
 - KEEP: `run_video_prompt`'s guide-verbatim embed is fast enough (~20s) — normalization of the instruction is not needed; the draft ran at `MYTHOSCIRCLE_LLM_TIMEOUT=2400` (operator env).
 - Remaining: the render half of the smoke needs ComfyUI + MiniMax up (operator swaps VRAM: gemma out, video model in) — draft → render with the approved prompt verbatim.
 
+### 2026-09-08 — live smoke (render half) — DONE
+
+- Trigger: operator opened ComfyUI (127.0.0.1:7896, HTTP 200); the render half of the 4-6 smoke.
+- What ran: `POST /api/jobs` `kind: video` with `{entity_id: Vespera, prompt: <drafted text verbatim, 1199 chars>}` → 201 (`01M2151W9TQV552G2GCMW2BXEN`). Worker claimed it, ComfyUI submitted the MiniMax H3 i2v workflow (provider history-polling observed in logs), **succeeded in ~5.3 min** (progress 0→1.0).
+- Result: `01M215BGHVBF05SW66WN6Y3X7R.mp4` — 772 KB, valid ISO-MP4; h264 video + **AAC audio**, 13.67s both. Manifest row kind=video added; served `200 video/mp4` inline. Frame at 4s (vision-checked): single woman, chest-up, dim cinematic room, tight braid, high-collared midnight-blue tunic with metallic fastenings, calculating half-smile, camera push-in vibe — matches the committed appearance + drafted `integrated_multimodal_description`; no extra faces, no artifacts, no text. Audio (volumedetect): mean −27.8 dB, max −15.2 dB — present, quiet soundscape-level (fits "low ominous hum + slow cello"), decisively NOT the pre-4.6 hallucinated-speech signature (speech peaks −6…−1 dB).
+- KEEP: the two-phase flow is the fix — draft (gemma, ~20s) → DM review → render (MiniMax, ~5.3 min) shipped the audio the DM ordered. The RENDER_WITH_PROMPT verbatim path is live-verified end to end (unit matrix already pinned it at the service layer).
+
 ## Design Notes
 
 - The guide's I2VA instruction is the first line (the `<Picture 1>` referenced line); `run_video_prompt` instructs gemma to emit that line + the three core fields, and to use `overall_soundscape: N/A` / `non_diegetic_music: N/A` when the DM wants silence — that's the guardrail against the hallucinated "sorry Esteya" speech.
