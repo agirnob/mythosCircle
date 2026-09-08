@@ -198,6 +198,89 @@ def test_post_build_in_blank_422(client: TestClient, job_api: Callable[[], str])
     _assert_envelope(response, 422, "validation_error")
 
 
+def test_post_video_prompt_draft_201_with_supplied_prompt_render(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """Spec-4.6 wire contract: a valid ``video_prompt`` draft enqueues
+    201, and a ``video`` payload carrying the DM's approved prompt
+    enqueues 201 (the prompt rides the payload dict, no wire change)."""
+    from app.store import commit_subgraph, models
+
+    campaign_id = job_api()
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        campaign_id,
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(
+                kind="character",
+                name="Vashka",
+                data={
+                    "name": "Vashka the Unmaker",
+                    "role": "BBEG",
+                    "appearance": {"face": "a mask of fused iron"},
+                },
+                id=entity_id,
+            ),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    draft = client.post(
+        "/api/jobs",
+        json={
+            "campaign_id": campaign_id,
+            "kind": "video_prompt",
+            "payload": {"entity_id": entity_id},
+        },
+    )
+    assert draft.status_code == 201
+    assert draft.json()["kind"] == "video_prompt"
+    assert draft.json()["state"] == "queued"
+    render = client.post(
+        "/api/jobs",
+        json={
+            "campaign_id": campaign_id,
+            "kind": "video",
+            "payload": {"entity_id": entity_id, "prompt": "DM-approved reveal"},
+        },
+    )
+    assert render.status_code == 201
+    assert render.json()["kind"] == "video"
+
+
+def test_post_video_prompt_bad_payload_422(client: TestClient, job_api: Callable[[], str]) -> None:
+    """Spec-4.6 DRAFT_NO_* envelope: a forced draft for a non-boss or an
+    appearance-less boss is the 422 validation_error envelope, zero rows."""
+    from app.store import commit_subgraph, models
+
+    campaign_id = job_api()
+    npc_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        campaign_id,
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(
+                kind="character",
+                name="Mira",
+                data={"name": "Mira", "role": "NPC", "appearance": {"face": "sharp"}},
+                id=npc_id,
+            ),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=npc_id, type="located_in", counter=1)],
+    )
+    response = client.post(
+        "/api/jobs",
+        json={
+            "campaign_id": campaign_id,
+            "kind": "video_prompt",
+            "payload": {"entity_id": npc_id},
+        },
+    )
+    _assert_envelope(response, 422, "validation_error")
+    listed = client.get("/api/jobs", params={"campaign_id": campaign_id}).json()
+    assert listed["jobs"] == []  # zero rows written
+
+
 def test_post_job_missing_campaign_fields_422(client: TestClient) -> None:
     # Payload with neither campaign_id nor kind is rejected by validation.
     response = client.post("/api/jobs", json={"payload": {}})

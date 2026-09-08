@@ -278,10 +278,18 @@ def _run_job(
             media_dir=configured_media_dir(),
         )
         return
+    if job.kind == "video_prompt":
+        # Lazy import (same circularity): the draft runner produces the
+        # DM-reviewable MiniMax-I2VA prompt as the job result (spec-4.6)
+        # — an LLM call, no file, no media row, no world write (AD-1).
+        from app.media.service import run_video_prompt
+
+        run_video_prompt(job, provider, settings)
+        return
     if job.kind != "text":
         raise JobPayloadError(
             f"job kind {job.kind!r}: only text/build_in/generate/regenerate/"
-            "image/video jobs run in this build"
+            "image/video/video_prompt jobs run in this build"
         )
     prompt = _text_prompt(job.payload)
     budget = CallBudget(job)

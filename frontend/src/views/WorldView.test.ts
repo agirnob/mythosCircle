@@ -1279,27 +1279,59 @@ describe('WorldView', () => {
     })
   }
 
+  /**
+   * Spec-4.2/4.6: the reveal-video surface gains the two-phase prompt
+   * flow — 'Draft reveal prompt' + editable textarea + 'Render reveal
+   * video'. The render button is the render gate.
+   */
   function revealVideoButton(wrapper: VueWrapper) {
     return wrapper
       .findAll('button')
-      .filter((b) => b.text().startsWith('Generate reveal video'))[0]
+      .filter((b) => b.text().startsWith('Render reveal video'))[0]
   }
 
-  it('reveal video: a boss-tier card shows the button; a non-boss card shows none', async () => {
+  function draftPromptButton(wrapper: VueWrapper) {
+    return wrapper
+      .findAll('button')
+      .filter((b) => b.text().startsWith('Draft reveal prompt'))[0]
+  }
+
+  function revealPromptTextarea(wrapper: VueWrapper) {
+    return wrapper.find('textarea.reveal-prompt-textarea')
+  }
+
+  function promptDraftJob(
+    id: string,
+    entityId: string,
+    prompt: string,
+    overrides: Partial<Job> = {},
+  ): Job {
+    return {
+      ...imageJob(id, entityId, overrides),
+      kind: 'video_prompt',
+      result: { entity_id: entityId, prompt },
+    } as Job
+  }
+
+  it('reveal video: a boss-tier card shows the draft + render surface; a non-boss card shows none', async () => {
     stubVideoApi(bossWorld(), { media: [] })
     const wrapper = mountView()
     await flushPromises()
     expect(revealVideoButton(wrapper)).toBeDefined()
     // The valid-boss enabled state is a load-bearing pin: every other
     // video button test asserts disabled, so only this one catches a
-    // hasVideoPrompt regression that permanently disables the feature.
+    // hasVideoPrompt/videoPromptFor regression that permanently disables
+    // the feature.
     expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeUndefined()
+    expect(draftPromptButton(wrapper)).toBeDefined()
+    expect(revealPromptTextarea(wrapper).exists()).toBe(true)
     wrapper.unmount()
 
     stubVideoApi(bossWorld({ role: 'NPC' }), { media: [] })
     const wrapper2 = mountView()
     await flushPromises()
     expect(revealVideoButton(wrapper2)).toBeUndefined()
+    expect(draftPromptButton(wrapper2)).toBeUndefined()
     expect(wrapper2.text()).not.toContain('Reveal video')
     wrapper2.unmount()
   })
@@ -1341,13 +1373,27 @@ describe('WorldView', () => {
     wrapper.unmount()
   })
 
-  it('reveal video: a boss card without a usable prompt gets a disabled button and a hint', async () => {
+  it('reveal video: a boss card without a usable prompt gets a disabled render button, but can draft', async () => {
     stubVideoApi(bossWorld({ boss: { lair_actions: '   ' } }), { media: [] })
     const wrapper = mountView()
     await flushPromises()
-    expect(wrapper.text()).toContain(
-      'Add an appearance and a boss section to generate a reveal video.',
-    )
+    expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeDefined()
+    // The two-phase flow needs only a boss-tier role + appearance to
+    // draft — the spec-4.6 point is that the DM drafts BEFORE a good boss
+    // section exists, so the draft button stays live.
+    expect(draftPromptButton(wrapper)?.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('reveal video: a boss card without an appearance gets the draft hint and no actions', async () => {
+    stubVideoApi(bossWorld({ appearance: '   ' }), { media: [] })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Add an appearance to draft a reveal video prompt.')
+    // No appearance -> no draft surface and no render (the backend gates
+    // both on the source-frame description).
+    expect(draftPromptButton(wrapper)).toBeUndefined()
+    expect(revealPromptTextarea(wrapper).exists()).toBe(false)
     expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
@@ -1399,6 +1445,102 @@ describe('WorldView', () => {
       'Reveal video failed: video generation failed: provider returned HTTP 502',
     )
     expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  // -----------------------------------------------------------------------
+  // Spec-4.6 two-phase prompt flow
+  // -----------------------------------------------------------------------
+
+  it('reveal prompt: clicking Draft enqueues a video_prompt job for the entity', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        bodies.push(JSON.parse(String(init.body)))
+        return promptDraftJob('JP1', 'E1', 'draft', { state: 'queued', queue_position: 1 })
+      }
+      if (url.includes('/media')) return { media: [] }
+      if (url.includes('/jobs')) return { jobs: [], next_cursor: null }
+      return bossWorld()
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await draftPromptButton(wrapper)!.trigger('click')
+    await flushPromises()
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).toMatchObject({
+      campaign_id: 'C1',
+      kind: 'video_prompt',
+      payload: { entity_id: 'E1' },
+    })
+    wrapper.unmount()
+  })
+
+  it('reveal prompt: a succeeded draft prefills the editable textarea', async () => {
+    stubVideoApi(bossWorld({ boss: {} }), { media: [] })
+    const jobs = useJobsStore()
+    const draft = 'For the target video, at 0.00 seconds…\n\nintegrated_multimodal_description: …'
+    jobs.upsert(promptDraftJob('JP1', 'E1', draft, { state: 'succeeded' }))
+    const wrapper = mountView()
+    await flushPromises()
+    const textarea = revealPromptTextarea(wrapper)
+    expect(textarea.exists()).toBe(true)
+    expect((textarea.element as HTMLTextAreaElement).value).toBe(draft)
+    // A boss with NO boss section can now render — the draft IS the prompt
+    // source; the old bbeg gate is relaxed by the supplied prompt.
+    expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('reveal prompt: a DM-edited prompt travels verbatim on render', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        bodies.push(JSON.parse(String(init.body)))
+        return videoJob('JV1', 'E1', { state: 'queued', queue_position: 1 })
+      }
+      if (url.includes('/media')) return { media: [] }
+      if (url.includes('/jobs')) return { jobs: [], next_cursor: null }
+      return bossWorld()
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const textarea = revealPromptTextarea(wrapper)
+    expect(textarea.exists()).toBe(true)
+    await textarea.setValue('the DM edits until it is perfect: silence, dread, no dialogue')
+    await flushPromises()
+    await revealVideoButton(wrapper)!.trigger('click')
+    await flushPromises()
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).toMatchObject({
+      campaign_id: 'C1',
+      kind: 'video',
+      payload: {
+        entity_id: 'E1',
+        prompt: 'the DM edits until it is perfect: silence, dread, no dialogue',
+      },
+    })
+    wrapper.unmount()
+  })
+
+  it('reveal prompt: a failed draft shows the failure and releases the button', async () => {
+    stubVideoApi(bossWorld(), { media: [] })
+    const jobs = useJobsStore()
+    jobs.upsert(
+      promptDraftJob('JP1', 'E1', '', {
+        state: 'failed',
+        error: 'video prompt generation failed: provider returned HTTP 502',
+        result: null,
+      }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain(
+      'Reveal prompt failed: video prompt generation failed: provider returned HTTP 502',
+    )
+    expect(draftPromptButton(wrapper)?.attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
 })

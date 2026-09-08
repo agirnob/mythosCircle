@@ -106,3 +106,24 @@ def test_shipped_comfyui_workflows_parse_and_carry_provider_shape() -> None:
     assert isinstance(frame["inputs"]["image"], str)
     save_video = [n for n in video_wf.values() if n.get("class_type") == "SaveVideo"]
     assert save_video, "the video workflow must carry a SaveVideo node"
+
+
+def test_video_prompt_writing_guide_ships_and_is_readable() -> None:
+    """Spec-4.6: the MiniMax-H3 writing guide ships in-repo at
+    deploy/guides/ and is non-empty — the draft runner loads it into the
+    generation instruction, so a missing/empty guide would surface as a
+    runtime 'guide unreadable' job failure instead of a deploy-time
+    defect. Also pins the I2VA contract the drafts must follow."""
+    guide = DEPLOY_DIR / "guides" / "VIDEO_PROMPT_WRITING_GUIDE_base_en.md"
+    text = guide.read_text(encoding="utf-8")
+    assert text.strip(), "the video prompt writing guide must be non-empty"
+    # The three core fields the I2VA drafts must carry (spec-4.6
+    # acceptance: a structured draft contains all three).
+    for field in (
+        "integrated_multimodal_description",
+        "overall_soundscape",
+        "non_diegetic_music",
+    ):
+        assert field in text, f"the writing guide must document {field!r}"
+    # The I2VA picture-alignment instruction the draft MUST open with.
+    assert "is fully referenced" in text

@@ -376,6 +376,107 @@ def test_enqueue_video_boss_entity_accepted(world: str) -> None:
     assert job.kind == "video" and job.state == "queued"
 
 
+def test_enqueue_video_supplied_prompt_accepted_and_relaxes_boss_section(
+    world: str,
+) -> None:
+    """A supplied non-blank prompt (spec-4.6 RENDER_WITH_PROMPT) enqueues
+    even without a boss section — the DM's prompt is the source of truth
+    — but the boss-tier + appearance gates still hold."""
+    entity_id = _commit_boss(
+        world,
+        data={"name": "Vashka", "role": "BBEG", "appearance": {"face": "iron"}},
+    )
+    job = enqueue_job(
+        world,
+        "video",
+        {"entity_id": entity_id, "prompt": "DM's own reveal, no boss data"},
+    )
+    assert job.kind == "video" and job.state == "queued"
+
+
+def test_enqueue_video_blank_supplied_prompt_is_422(world: str) -> None:
+    """RENDER_BLANK_PROMPT: a supplied blank prompt is rejected even for
+    a boss whose record could produce a bbeg prompt — use legacy (drop
+    the key) or re-draft."""
+    entity_id = _commit_boss(world)
+    with pytest.raises(InvalidJobInputError, match="prompt' must be a non-blank string"):
+        enqueue_job(world, "video", {"entity_id": entity_id, "prompt": "   "})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_video_supplied_prompt_no_appearance_is_422(world: str) -> None:
+    """A supplied prompt relaxes the boss-section projection but NEVER
+    the source-frame (appearance) gate (frozen spec-4.6 contract)."""
+    entity_id = _commit_boss(
+        world,
+        data={"name": "Vashka", "role": "BBEG", "boss": {"lair_actions": "walls breathe"}},
+    )
+    with pytest.raises(InvalidJobInputError, match="no non-blank AR24 appearance"):
+        enqueue_job(world, "video", {"entity_id": entity_id, "prompt": "a cinematic reveal"})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_video_prompt_requires_exact_entity_payload(world: str) -> None:
+    """VIDEO_PROMPT_BAD_PAYLOAD: anything but exactly
+    ``{"entity_id": <ULID>}`` is a 422, zero rows written."""
+    with pytest.raises(InvalidJobInputError, match="exactly \\{'entity_id'"):
+        enqueue_job(world, "video_prompt", {"prompt": "a cinematic reveal"})
+    with pytest.raises(InvalidJobInputError, match="entity_id is not a ULID"):
+        enqueue_job(world, "video_prompt", {"entity_id": "not-a-ulid"})
+    with pytest.raises(InvalidJobInputError, match="exactly \\{'entity_id'"):
+        enqueue_job(world, "video_prompt", {"entity_id": "0" * 26, "extra": 1})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_video_prompt_unknown_entity_is_404(world: str) -> None:
+    """DRAFT_ENTITY_MISSING at enqueue: a fabricated entity id is an
+    ``UnknownEntityError`` (404), zero rows written."""
+    with pytest.raises(UnknownEntityError):
+        enqueue_job(world, "video_prompt", {"entity_id": MISSING_ID})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_video_prompt_not_boss_is_422(world: str) -> None:
+    """DRAFT_NO_BOSS: a non-boss-tier entity is a 422 even with a perfect
+    appearance — a boss-reveal draft is a boss-tier surface."""
+    entity_id = _commit_boss(
+        world,
+        data={
+            "name": "Mira Vane",
+            "role": "NPC",
+            "appearance": {"face": "sharp features"},
+            "boss": {"lair_actions": "the walls breathe"},
+        },
+    )
+    with pytest.raises(InvalidJobInputError, match="not boss-tier"):
+        enqueue_job(world, "video_prompt", {"entity_id": entity_id})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_video_prompt_no_appearance_is_422(world: str) -> None:
+    """DRAFT_NO_SOURCE: a boss without a non-blank AR24 appearance is a
+    422 — a MiniMax-I2VA draft needs a source-frame description."""
+    entity_id = _commit_boss(
+        world,
+        data={"name": "Vashka", "role": "BBEG", "boss": {"lair_actions": "walls breathe"}},
+    )
+    with pytest.raises(InvalidJobInputError, match="no non-blank AR24 appearance"):
+        enqueue_job(world, "video_prompt", {"entity_id": entity_id})
+    assert _count_jobs() == 0
+
+
+def test_enqueue_video_prompt_boss_entity_accepted(world: str) -> None:
+    """A committed BBEG with a non-blank appearance enqueues a
+    ``video_prompt`` job (zero boss section needed — the LLM drafts
+    from the guide + appearance)."""
+    entity_id = _commit_boss(
+        world,
+        data={"name": "Vashka", "role": "BBEG", "appearance": {"face": "iron"}},
+    )
+    job = enqueue_job(world, "video_prompt", {"entity_id": entity_id})
+    assert job.kind == "video_prompt" and job.state == "queued"
+
+
 # ---------------------------------------------------------------------------
 # ENQUEUE_FIFO
 # ---------------------------------------------------------------------------

@@ -100,6 +100,85 @@ def test_run_text_job_completes_with_result(world: str) -> None:
     assert job.finished_at is not None
 
 
+def test_run_video_prompt_job_runs_the_draft_runner(world: str) -> None:
+    """Spec-4.6 video_prompt dispatch: a valid draft job runs the draft
+    runner — one LLM call, result {entity_id, prompt}, no media file, no
+    manifest row (a draft is a job result, AD-1)."""
+    from app.core import ids
+    from app.store import commit_subgraph, list_media
+
+    draft = (
+        "For the target video, at 0.00 seconds into the target video, "
+        "<Picture 1> (from [Shot 1]) is fully referenced.\n\n"
+        "integrated_multimodal_description: [Shot 1] A slow reveal.\n"
+        "overall_soundscape: N/A\n"
+        "non_diegetic_music: low brass\n"
+    )
+    boss_data = {
+        "name": "Vashka the Unmaker",
+        "role": "BBEG",
+        "appearance": {"face": "a mask of fused iron"},
+    }
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    seen: list[str] = []
+
+    def draft_provider(prompt: str, settings: LLMSettings) -> str:
+        assert settings is SETTINGS
+        seen.append(prompt)
+        return draft
+
+    job_id = enqueue_job(world, "video_prompt", {"entity_id": entity_id}).id
+    processed = run_next_job(provider=draft_provider, settings=SETTINGS)
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result == {"entity_id": entity_id, "prompt": draft}
+    assert list_media(world) == []
+    assert len(seen) == 1
+    assert "the writing guide" in seen[0].lower()
+
+
+def test_run_video_prompt_job_fails_cleanly_when_llm_down(world: str) -> None:
+    """DRAFT_LLM_DOWN through the worker: a provider failure fails the
+    job with the draft's own error vocabulary, no leftover."""
+    from app.core import ids
+    from app.store import commit_subgraph
+
+    boss_data = {
+        "name": "Vashka the Unmaker",
+        "role": "BBEG",
+        "appearance": {"face": "a mask of fused iron"},
+    }
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+            models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+
+    def down(prompt: str, settings: LLMSettings) -> str:
+        raise ProviderError(kind="connection")
+
+    job_id = enqueue_job(world, "video_prompt", {"entity_id": entity_id}).id
+    processed = run_next_job(provider=down, settings=SETTINGS)
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "video prompt generation failed" in (job.error or "")
+    assert job.result is None
+
+
 def test_run_no_job_returns_none(world: str) -> None:
     """RUN_NO_JOB: an empty queue yields None, no claim, no provider call."""
     called: list[str] = []

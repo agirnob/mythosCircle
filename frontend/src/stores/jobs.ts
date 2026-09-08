@@ -84,6 +84,38 @@ export const useJobsStore = defineStore('jobs', {
           const payload = job.payload as { entity_id?: string } | null
           return payload?.entity_id === entityId
         }),
+    /** A video-prompt draft job for this entity still queued/running
+     * (spec-4.6) — the in-flight discipline mirroring ``videoInFlight``:
+     * a second enqueue for the same entity must not burn a second draft
+     * while the first is pending; a FAILED job releases the button. */
+    videoPromptInFlight:
+      (state) =>
+      (campaignId: string, entityId: string): boolean =>
+        Object.values(state.byId).some((job) => {
+          if (job.campaign_id !== campaignId || job.kind !== 'video_prompt') return false
+          if (TERMINAL_STATES.has(job.state)) return false
+          const payload = job.payload as { entity_id?: string } | null
+          return payload?.entity_id === entityId
+        }),
+    /** The latest SUCCEEDED draft prompt for an entity (spec-4.6), or
+     * null. The draft is a job result the frontend holds — session-only
+     * durability (Ask-First 1 answer): a reload loses it and the DM
+     * re-drafts; never a media row (a prompt is not a file). */
+    videoPromptFor:
+      (state) =>
+      (campaignId: string, entityId: string): string | null => {
+        const job = Object.values(state.byId)
+          .filter((j) => {
+            if (j.campaign_id !== campaignId || j.kind !== 'video_prompt') return false
+            if (j.state !== 'succeeded') return false
+            const payload = j.payload as { entity_id?: string } | null
+            return payload?.entity_id === entityId
+          })
+          .sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
+        if (!job?.result) return null
+        const prompt = job.result['prompt']
+        return typeof prompt === 'string' && prompt.trim() ? prompt : null
+      },
   },
   actions: {
     /**
@@ -161,19 +193,43 @@ export const useJobsStore = defineStore('jobs', {
       return job
     },
     /**
-     * Spec-4.2 reveal video: one video job whose payload names the
-     * committed boss-tier entity — the clip prompt is a backend
-     * projection of the entity's committed AR24 record (appearance +
-     * boss + identity), never free text (the backend validates the
-     * payload + role + prompt at enqueue).
+     * Spec-4.6 reveal-video prompt draft: one video_prompt job whose
+     * payload names the committed boss-tier entity (with a non-blank
+     * appearance) — gemma authors a MiniMax-I2VA-compliant draft from
+     * the entity's AR24 record + the writing guide. The draft lands as
+     * the job result {entity_id, prompt}; the DM reviews/edits it in
+     * the card before any render (two-phase; the backend validates the
+     * payload + role + appearance at enqueue).
      */
-    async submitRevealVideo(campaignId: string, entityId: string) {
+    async submitRevealVideoPrompt(campaignId: string, entityId: string) {
+      const job = await apiFetch<Job>('/api/jobs', {
+        method: 'POST',
+        body: JSON.stringify({
+          campaign_id: campaignId,
+          kind: 'video_prompt',
+          payload: { entity_id: entityId },
+        }),
+      })
+      this.upsert(job)
+      return job
+    },
+    /**
+     * Spec-4.2/4.6 reveal video: one video job whose payload names the
+     * committed boss-tier entity. Without a prompt the clip prompt is a
+     * backend projection of the entity's committed AR24 record
+     * (appearance + boss + identity) — never free text (the backend
+     * validates the payload + role + prompt at enqueue). With a
+     * non-blank prompt (spec-4.6) the DM's approved text is used
+     * VERBATIM by run_video — the draft-and-edit path's render.
+     */
+    async submitRevealVideo(campaignId: string, entityId: string, prompt?: string) {
+      const promptValue = prompt?.trim() ?? ''
       const job = await apiFetch<Job>('/api/jobs', {
         method: 'POST',
         body: JSON.stringify({
           campaign_id: campaignId,
           kind: 'video',
-          payload: { entity_id: entityId },
+          payload: promptValue ? { entity_id: entityId, prompt: promptValue } : { entity_id: entityId },
         }),
       })
       this.upsert(job)

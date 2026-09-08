@@ -372,6 +372,75 @@ const BOSS_PROMPT_FIELDS = [
 
 const videoErrors = ref<Record<string, string>>({})
 
+/** Spec-4.6: per-entity reveal-prompt textarea errors and local edits.
+ * The textarea renders the latest committed draft result unless the DM
+ * has hand-edited it (draftPromptTexts wins while non-empty); a fresh
+ * draft clears the local edit so the new draft shows. */
+const draftPromptErrors = ref<Record<string, string>>({})
+const draftPromptTexts = ref<Record<string, string>>({})
+
+/** The textarea's current value for this entity: the DM's local edit
+ * when present (hand-written or edited), else the latest succeeded
+ * draft, else empty. Never a media row (spec-4.6: a draft is a job
+ * result; session-only durability). */
+function revealPromptText(entity: EntityExport): string {
+  const local = draftPromptTexts.value[entity.id]
+  if (local !== undefined) return local
+  return jobs.videoPromptFor(campaignId, entity.id) ?? ''
+}
+
+/** The latest video_prompt draft job for this entity — status source. */
+function draftPromptJobFor(entityId: string) {
+  return (
+    jobs
+      .forCampaign(campaignId)
+      .filter((job) => {
+        if (job.kind !== 'video_prompt') return false
+        const payload = job.payload as { entity_id?: string } | null
+        return payload?.entity_id === entityId
+      })
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
+  )
+}
+
+/** The card's draft status line: queue position while pending, the
+ * failure message — mirroring the reveal-video status discipline. */
+function draftPromptStatus(entity: EntityExport): string | null {
+  const job = draftPromptJobFor(entity.id)
+  if (!job) return null
+  if (job.state === 'queued') return `Reveal prompt queued — position ${job.queue_position ?? '…'}`
+  if (job.state === 'running') return 'Drafting reveal prompt…'
+  if (job.state === 'failed') return `Reveal prompt failed: ${job.error ?? 'unknown error'}`
+  return null
+}
+
+/** True while a draft is pending — the draft button's in-flight gate. */
+function draftPromptInFlight(entity: EntityExport): boolean {
+  return jobs.videoPromptInFlight(campaignId, entity.id)
+}
+
+/** The draft failure line alone — mirroring ``videoFailure``. */
+function draftPromptFailure(entity: EntityExport): string | null {
+  const job = draftPromptJobFor(entity.id)
+  if (job?.state !== 'failed') return null
+  return `Reveal prompt failed: ${job.error ?? 'unknown error'}`
+}
+
+async function draftRevealVideoPrompt(entity: EntityExport) {
+  if (!isBossTier(entity)) return // the backend gate, mirrored
+  if (draftPromptInFlight(entity)) return
+  if (!entityHasAppearance(entity)) return // the backend gate, mirrored
+  draftPromptErrors.value[entity.id] = ''
+  delete draftPromptTexts.value[entity.id] // a fresh draft replaces the old text
+  try {
+    await jobs.submitRevealVideoPrompt(campaignId, entity.id)
+    await jobs.syncList(campaignId)
+  } catch (err) {
+    draftPromptErrors.value[entity.id] =
+      err instanceof ApiError ? err.message : 'Could not draft the reveal video prompt.'
+  }
+}
+
 function isBossTier(entity: EntityExport): boolean {
   const data = entity.data as Record<string, unknown> | null | undefined
   return typeof data?.role === 'string' && BOSS_ROLES.has(data.role)
@@ -425,9 +494,12 @@ function videoJobFor(entityId: string) {
 function videoStatus(entity: EntityExport): string | null {
   const job = videoJobFor(entity.id)
   if (!job) {
-    return hasVideoPrompt(entity)
+    // With the spec-4.6 draft surface a boss only needs a non-blank
+    // appearance to draft; the boss-section requirement applies to the
+    // legacy one-shot render only.
+    return entityHasAppearance(entity)
       ? null
-      : 'Add an appearance and a boss section to generate a reveal video.'
+      : 'Add an appearance to draft a reveal video prompt.'
   }
   if (job.state === 'queued') return `Reveal video queued — position ${job.queue_position ?? '…'}`
   if (job.state === 'running') return 'Generating reveal video…'
@@ -446,10 +518,12 @@ function videoFailure(entity: EntityExport): string | null {
 async function generateRevealVideo(entity: EntityExport) {
   if (!isBossTier(entity)) return // the backend gate, mirrored
   if (jobs.videoInFlight(campaignId, entity.id)) return
-  if (!entityHasAppearance(entity) || !hasVideoPrompt(entity)) return // the backend gate, mirrored
+  if (!entityHasAppearance(entity)) return // the backend gate, mirrored
+  const prompt = revealPromptText(entity).trim()
+  if (!prompt && !hasVideoPrompt(entity)) return // the backend gate, mirrored
   videoErrors.value[entity.id] = ''
   try {
-    await jobs.submitRevealVideo(campaignId, entity.id)
+    await jobs.submitRevealVideo(campaignId, entity.id, prompt || undefined)
     await jobs.syncList(campaignId)
   } catch (err) {
     videoErrors.value[entity.id] =
@@ -902,10 +976,14 @@ function additionalDataBlock(entity: EntityExport): string {
                 {{ portraitErrors[entity.id] }}
               </p>
             </div>
-            <!-- Reveal video (spec-4.2, beta): boss-tier cards only. The
+            <!-- Reveal video (spec-4.2/4.6, beta): boss-tier cards only. The
                  clip renders inline; a failed re-generation renders over
                  an existing clip; queue/running progress renders only
-                 while no clip exists yet. -->
+                 while no clip exists yet. Spec-4.6 adds the two-phase
+                 surface: 'Draft reveal prompt' authors a MiniMax-I2VA
+                 draft from the committed character + writing guide, the
+                 textarea lets the DM review/edit (or hand-write), and
+                 'Render reveal video' sends the approved prompt. -->
             <div v-if="isBossTier(entity)" class="reveal-video">
               <video
                 v-if="videoFor(entity)"
@@ -920,12 +998,37 @@ function additionalDataBlock(entity: EntityExport): string {
               </p>
               <p class="reveal-video-actions">
                 <button
+                  v-if="entityHasAppearance(entity)"
+                  type="button"
+                  class="link"
+                  :disabled="draftPromptInFlight(entity)"
+                  @click="draftRevealVideoPrompt(entity)"
+                >
+                  {{
+                    draftPromptInFlight(entity)
+                      ? (draftPromptJobFor(entity.id)?.state === 'running'
+                          ? 'Drafting reveal prompt…'
+                          : 'Reveal prompt queued…')
+                      : 'Draft reveal prompt'
+                  }}
+                </button>
+                <textarea
+                  v-if="entityHasAppearance(entity)"
+                  :value="revealPromptText(entity)"
+                  :aria-label="`${entity.name} reveal video prompt (optional)`"
+                  class="reveal-prompt-textarea"
+                  @input="
+                    draftPromptTexts[entity.id] =
+                      ($event.target as HTMLTextAreaElement).value
+                  "
+                ></textarea>
+                <button
                   type="button"
                   class="link"
                   :disabled="
                     jobs.videoInFlight(campaignId, entity.id) ||
                     !entityHasAppearance(entity) ||
-                    !hasVideoPrompt(entity)
+                    (!revealPromptText(entity).trim() && !hasVideoPrompt(entity))
                   "
                   @click="generateRevealVideo(entity)"
                 >
@@ -934,9 +1037,18 @@ function additionalDataBlock(entity: EntityExport): string {
                       ? (videoJobFor(entity.id)?.state === 'running'
                           ? 'Generating reveal video…'
                           : 'Reveal video queued…')
-                      : 'Generate reveal video'
+                      : 'Render reveal video'
                   }}
                 </button>
+              </p>
+              <p v-if="draftPromptFailure(entity)" class="error">
+                {{ draftPromptFailure(entity) }}
+              </p>
+              <p v-else-if="draftPromptStatus(entity)" class="muted small status">
+                {{ draftPromptStatus(entity) }}
+              </p>
+              <p v-if="draftPromptErrors[entity.id]" class="error">
+                {{ draftPromptErrors[entity.id] }}
               </p>
               <p v-if="videoFailure(entity)" class="error">
                 {{ videoFailure(entity) }}
@@ -1209,6 +1321,17 @@ function additionalDataBlock(entity: EntityExport): string {
 .reveal-video-actions .link:disabled {
   color: #484f58;
   cursor: default;
+}
+.reveal-prompt-textarea {
+  display: block;
+  width: 100%;
+  min-height: 4.5rem;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+.reveal-prompt-textarea:disabled {
+  background: #1f2328;
+  color: #9aa0a6;
 }
 .relations h4 {
   margin: 0.5rem 0 0.25rem;

@@ -287,8 +287,10 @@ def test_run_video_missing_entity_fails_cleanly(world: str, tmp_path: Path) -> N
 
 
 def test_run_video_bad_payload_fails(world: str, tmp_path: Path) -> None:
-    """A payload that is not exactly {entity_id} fails at run time (the
-    worker maps the raise to fail_job; the enqueue gate 422s first)."""
+    """A payload with a key outside {entity_id, prompt} fails at run time
+    (the worker maps the raise to fail_job; the enqueue gate 422s
+    first) — spec-4.6 relaxed the exact-shape contract to allow the
+    DM's optional prompt, nothing else."""
     from app.store.db import session_scope as scope
 
     entity_id = _commit_with_data(world, BOSS_DATA)
@@ -310,7 +312,7 @@ def test_run_video_bad_payload_fails(world: str, tmp_path: Path) -> None:
         session.add(row)
     claimed = claim_next_job()
     assert claimed is not None
-    with pytest.raises(JobPayloadError, match="exactly"):
+    with pytest.raises(JobPayloadError, match="job payload must be"):
         run_video(claimed, _mp4_provider, SETTINGS, media_dir=tmp_path)
     assert list_media(world) == []
 
