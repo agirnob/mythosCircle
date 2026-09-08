@@ -114,6 +114,7 @@ context:
 
 **Manual check (live MiniMax smoke):**
 - With `video_backend="comfyui"` and `[comfyui_video] workflow_path` pointing at `deploy/workflows/video_minimax_h3_i2v_sage.json`, a boss-tier entity with a portrait enqueues a video job that renders a real clip through ComfyUI's MiniMax H3 workflow (submit/poll/fetch, ~1-2 min), lands mp4 in `media/{campaign}/{entity}/`, and serves `video/mp4` inline. The `[comfyui_video] timeout` default comfortably exceeds the render time.
+- **LIVE SMOKE DONE (2026-09-08, 430s)**: BBEG "Vespera Nyx" (hand-edited to role=BBEG + boss section per 3-6) → portrait via Krea2 (~20s) → reveal video via MiniMax i2v (430s) → `01M20HQ7MBWCTHBVDJ2FPSNHVT.mp4` (1.5MB, `ftyp`) → manifest row kind=video → serves `video/mp4` 200 → export `available:true`. Operational note: `[comfyui_video] input_dir` must point at the **Comfy Desktop root** (`/home/main/ComfyUI-Shared/input`), not a stale `/home/main/comfy/ComfyUI/input` — the provider staged correctly once pointed at the real dir (no code change).
 
 ## Suggested Review Order
 
