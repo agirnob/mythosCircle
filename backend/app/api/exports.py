@@ -1,50 +1,59 @@
-"""World-state export: read-only JSON + Markdown projections (FR5, AD-11; spec-2.6).
+"""World-state export: read-only JSON + Markdown + styled HTML projections
+(FR5, FR18, AD-11; spec-2.6, spec-4.3, spec-5.1).
 
 Two surfaces over the same latest-revision snapshot, both pure reads via
 the store's rowid-ordered read helpers — export never mutates state: no
 revision, no event, no store write (AR18, AD-1):
 
-- ``GET /api/campaigns/{id}/export?format=json`` — the full world state
-  (all entities, typed edges, counters, stat blocks) plus the ``revision``
-  id+created_at of the latest revision (closing the 2.5 deferral: the
-  revision id was previously unexposed, leaving ``base_revision`` unusable).
-- ``...?format=markdown`` — an Obsidian-level document: YAML frontmatter,
-  one section per entity (kind, text, full ``data`` with stat blocks in a
-  fenced yaml block), per-entity Relations with ``[[wikilinks]]`` from both
-  endpoints, a per-entity Media listing (spec-4.3), and a world-level edge
-  table. Served as an attachment.
+- ``GET /api/campaigns/{id}/export?format=json|markdown|html`` — the full
+  world state (all entities, typed edges, counters, stat blocks, media
+  refs) plus the latest revision's id+created_at; Markdown as the
+  Obsidian-complete document, HTML as a self-contained styled document
+  (story 5.1: no embedded binaries at world level — paths + availability).
+- ``GET /api/campaigns/{id}/entities/{eid}/export?format=json|markdown|html``
+  — the single-entity projection (the engine Epic 5's VTT targets build
+  on): the entity with its touching edges and the revision head; the
+  HTML sheet embeds the available portrait as a data URI and converts to
+  PDF via the browser.
+
+The renderers live in ``export_sheets`` — pure functions of the fetched
+snapshot. A renderer raising is a commit-path regression, not a validation
+gate (FR18): the projection never re-validates, but the failure is logged
+as one ``export_failure`` JSON-lines event before the generic 500.
 
 Only committed state is exported — candidates/proposed entities are
 invisible here (AR7). Each entity's media-manifest rows ride along with an
 ``available`` flag resolved against disk (spec-4.3, FR14): a broken
-reference is flagged, never dropped. Repeated exports
-are byte-identical: determinism falls out of the read helpers' rowid
-ordering and stable dict insertion order, and the frontmatter ``exported_at``
-is the snapshot's own timestamp (the latest revision's ``created_at``,
-falling back to the campaign's creation for an empty world) — never a
-wall-clock read.
+reference is flagged, never dropped. Repeated exports are byte-identical:
+determinism falls out of the read helpers' rowid ordering and stable dict
+insertion order, and the ``exported_at`` stamp is the snapshot's own
+timestamp — never a wall-clock read.
 """
 
-import json as _json
+import logging
 import math
 import re
-from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import literal_column, select
+from sqlalchemy.orm import Session
 
+from app.api import export_sheets
 from app.api.auth import get_current_account
 from app.core.settings import configured_media_dir
 from app.store import get_campaign, models
-from app.store.commit import edge_counter_semantic
 from app.store.db import session_scope
 from app.store.read import campaign_seed, latest_revision, world_state
 
 router = APIRouter()
+
+#: FR18: export-failure events land on the JSON-lines log (spec-1.7
+#: logging_setup) — export writes no world-state events (AD-1).
+_logger = logging.getLogger(__name__)
 
 
 class CampaignMeta(BaseModel):
@@ -96,28 +105,14 @@ class WorldExport(BaseModel):
     edges: list[EdgeExport]
 
 
-def _yaml_scalar(value: str) -> str:
-    """A double-quoted YAML scalar — deterministic and frontmatter-safe.
+class EntityExportDetail(BaseModel):
+    """The single-entity JSON projection (spec-5.1): the entity, every
+    edge touching it (rowid order — the same ordering the world document
+    renders), and the revision head the snapshot was taken at."""
 
-    Campaign titles/descriptions are free text (colons, quotes, newlines,
-    carriage returns, any control character). JSON string escaping IS a
-    valid YAML double-quoted scalar and round-trips every character, so
-    the frontmatter always parses in Obsidian.
-    """
-    return _json.dumps(value, ensure_ascii=False)
-
-
-def _edge_label(edge: EdgeExport) -> str:
-    """The Relations-line edge label (spec-2.6 Design Notes): debt shows
-    the amount, grudge/loyalty the score, ally/enemy the intensity; the
-    neutral types' informational counter renders bare (AD-23 semantics)."""
-    if edge_counter_semantic(edge.type) == "neutral":
-        return edge.type
-    return f"{edge.type}({edge.counter})"
-
-
-_RESERVED_HEADINGS = frozenset({"Edges", "Relations"})
-_WIKI_UNSAFE = re.compile(r"[\[\]|#^\n\r]")
+    entity: EntityExport
+    edges: list[EdgeExport]
+    revision: RevisionMeta | None
 
 
 def _finite_only(value: Any) -> Any:
@@ -131,116 +126,6 @@ def _finite_only(value: Any) -> Any:
     if isinstance(value, list):
         return [_finite_only(item) for item in value]
     return value
-
-
-def _unique_label(base: str, entity_id: str, used: set[str]) -> str:
-    """A label unique against ``used``, grown from the short-id
-    discriminator. Full ULIDs are unique, so the loop terminates."""
-    for width in range(4, len(entity_id) + 1):
-        candidate = f"{base} ({entity_id[-width:]})"
-        if candidate not in used:
-            return candidate
-    raise AssertionError("unreachable: full ULIDs are unique")
-
-
-def _name_labels(export: WorldExport) -> dict[str, str]:
-    """Display label per entity id. Entity names are neither unique (the
-    store constrains staged ULIDs, not names) nor wikilink-safe. Uniqueness
-    is enforced *after* sanitization — raw-name dedup alone lets distinct
-    names ("A[B", "A]B") collapse into one label or an all-unsafe name go
-    blank — by growing the short-id discriminator; structural headings
-    ("Edges", "Relations") are reserved and get a discriminator too.
-    Applied consistently to headings, wikilinks, and table cells."""
-    counts = Counter(entity.name for entity in export.entities)
-    labels: dict[str, str] = {}
-    used: set[str] = set()
-    for entity in export.entities:
-        base = _WIKI_UNSAFE.sub(" ", entity.name).strip() or entity.id
-        if counts[entity.name] == 1 and base not in used and base not in _RESERVED_HEADINGS:
-            labels[entity.id] = base
-        else:
-            labels[entity.id] = _unique_label(base, entity.id, used)
-        used.add(labels[entity.id])
-    return labels
-
-
-def _longest_backtick_run(text: str) -> int:
-    runs = (match.group() for match in re.finditer(r"`+", text))
-    return max((len(run) for run in runs), default=0)
-
-
-def _render_markdown(export: WorldExport) -> str:
-    """The Obsidian document for an already-fetched export snapshot.
-
-    A pure function of the rows — session assembly (the store reads) is
-    separated from string building; this never touches a session.
-    """
-    names = _name_labels(export)
-    lines = [
-        "---",
-        f"campaign_id: {export.campaign.id}",
-        f"title: {_yaml_scalar(export.campaign.title)}",
-        f"theme: {_yaml_scalar(export.campaign.theme)}",
-        f"description: {_yaml_scalar(export.campaign.description)}",
-        f"custom_lore: {_yaml_scalar(export.campaign.custom_lore)}",
-        f"revision: {export.revision.id if export.revision is not None else 'null'}",
-        f"exported_at: {_yaml_scalar(_exported_at(export))}",
-        "---",
-        "",
-    ]
-    for entity in export.entities:
-        lines += [f"## {names[entity.id]}", "", f"kind: {entity.kind}"]
-        if entity.text is not None:
-            lines += ["", entity.text]
-        # The full data — stat blocks included — serialized verbatim
-        # (JSON is a valid YAML flow subset, so the fence parses as yaml).
-        # The fence outgrows any backtick run inside the payload, so data
-        # containing ``` can never terminate it early.
-        data_json = _json.dumps(entity.data, indent=2, ensure_ascii=False)
-        fence = "`" * max(3, _longest_backtick_run(data_json) + 1)
-        lines += ["", f"{fence}yaml", data_json, fence]
-        outbound = [edge for edge in export.edges if edge.src == entity.id]
-        inbound = [edge for edge in export.edges if edge.dst == entity.id]
-        if outbound or inbound:
-            lines += ["", "### Relations", ""]
-        for edge in outbound:
-            lines.append(
-                f"- [[{names.get(edge.src, edge.src)}]]"
-                f" --{_edge_label(edge)}--> [[{names.get(edge.dst, edge.dst)}]]"
-            )
-        for edge in inbound:
-            lines.append(
-                f"- [[{names.get(edge.dst, edge.dst)}]]"
-                f" <--{_edge_label(edge)}-- [[{names.get(edge.src, edge.src)}]]"
-            )
-        if entity.media:
-            lines += ["", "### Media", ""]
-            for ref in entity.media:
-                broken = "" if ref.available else " (broken: file missing on disk)"
-                lines.append(f"- {ref.kind}: {ref.filename}{broken}")
-        lines.append("")
-    if export.edges:
-        lines += [
-            "## Edges",
-            "",
-            "| source | type | counter | target |",
-            "| --- | --- | --- | --- |",
-        ]
-        for edge in export.edges:
-            src = names.get(edge.src, edge.src)
-            dst = names.get(edge.dst, edge.dst)
-            lines.append(f"| [[{src}]] | {edge.type} | {edge.counter} | [[{dst}]] |")
-        lines.append("")
-    return "\n".join(lines)
-
-
-def _exported_at(export: WorldExport) -> str:
-    """The snapshot's own timestamp — the latest revision's ``created_at``,
-    or the campaign's creation for an empty world. Deliberately NOT a
-    wall-clock read: repeated exports must be byte-identical."""
-    if export.revision is not None:
-        return export.revision.created_at
-    return export.campaign.created_at
 
 
 def _media_refs(campaign_id: str, rows: Sequence[models.Media]) -> dict[str, list[MediaRefExport]]:
@@ -266,80 +151,198 @@ def _media_refs(campaign_id: str, rows: Sequence[models.Media]) -> dict[str, lis
     return grouped
 
 
+def _build_export(
+    session: Session, campaign: models.Campaign, campaign_id: str
+) -> WorldExport | None:
+    """Assemble the latest-revision snapshot on the caller's open session.
+    ``None`` when the campaign vanished between the ownership check and
+    here — a concurrent delete must still 404, never produce a phantom
+    export. The media manifest rides along (spec-4.3, FR14) as a plain
+    SELECT on the same snapshot session — snapshot-consistent, and no
+    nested session_scope (a second BEGIN IMMEDIATE under this
+    transaction's write lock would deadlock). Rowid ordering mirrors
+    list_media's documented ordering."""
+    if campaign_seed(session, campaign_id) is None:
+        return None
+    revision = latest_revision(session, campaign_id)
+    entities, edges = world_state(session, campaign_id)
+    media_rows = session.scalars(
+        select(models.Media)
+        .where(models.Media.campaign_id == campaign_id)
+        .order_by(literal_column("rowid"))
+    ).all()
+    media_by_entity = _media_refs(campaign_id, media_rows)
+    return WorldExport(
+        campaign=CampaignMeta(
+            id=campaign.id,
+            title=campaign.title,
+            theme=campaign.theme,
+            description=campaign.description,
+            custom_lore=campaign.custom_lore,
+            created_at=campaign.created_at,
+        ),
+        revision=RevisionMeta(id=revision.id, created_at=revision.created_at)
+        if revision is not None
+        else None,
+        entities=[
+            EntityExport(
+                id=entity.id,
+                kind=entity.kind,
+                name=entity.name,
+                text=entity.text,
+                data=_finite_only(entity.data),
+                media=media_by_entity.get(entity.id, []),
+            )
+            for entity in entities
+        ],
+        edges=[
+            EdgeExport(
+                id=edge.id,
+                src=edge.src,
+                dst=edge.dst,
+                type=edge.type,
+                counter=edge.counter,
+            )
+            for edge in edges
+        ],
+    )
+
+
+def _attachment(
+    render: Callable[[], str],
+    *,
+    filename: str,
+    media_type: str,
+    campaign_id: str,
+    entity_id: str | None,
+    fmt: str,
+) -> Response:
+    """Render and wrap as a download. A render failure is an FR18
+    signal — exactly one ``export_failure`` log event (the store-event
+    path is world-state-only, AD-1) — then re-raise: the generic 500
+    handler owns the response shape, and a format assertion breaking IS
+    a commit-path regression, not something to paper over here."""
+    try:
+        body = render()
+    except Exception:
+        _logger.error(
+            "export_failure campaign_id=%s entity_id=%s format=%s",
+            campaign_id,
+            entity_id or "-",
+            fmt,
+            exc_info=True,
+        )
+        raise
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+_SLUG_STRIP = re.compile(r"[^a-z0-9]+")
+
+
+def _download_stem(label: str, ident: str, fallback: str) -> str:
+    """Human-readable attachment base name: an ASCII slug of the display
+    label plus the short-id discriminator — deterministic, header-safe
+    (RFC 6266 forbids raw non-ASCII here), and collision-resistant.
+    A label with no ASCII characters at all falls back to the surface
+    name; the ULID tail keeps the file unique either way."""
+    slug = _SLUG_STRIP.sub("-", label.lower()).strip("-")[:48].rstrip("-")
+    return f"{slug}-{ident[-8:]}" if slug else f"{fallback}-{ident[-8:]}"
+
+
 @router.get("/api/campaigns/{campaign_id}/export", response_model=WorldExport)
 def export_world(
     campaign_id: str,
     current: Annotated[models.Account, Depends(get_current_account)],
-    format: Literal["json", "markdown"] = "json",
+    format: Literal["json", "markdown", "html"] = "json",
 ) -> WorldExport | Response:
-    """The complete latest-revision world state as JSON or Obsidian Markdown."""
+    """The complete latest-revision world state as JSON, Obsidian
+    Markdown, or a self-contained styled HTML document."""
     # Ownership first: a foreign or unknown campaign is the single
     # indistinguishable 404 (campaign route pattern, no oracle).
     campaign = get_campaign(current.id, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")
     with session_scope() as session:
-        # Re-check inside the snapshot transaction: a campaign deleted
-        # between the ownership check and here must still 404, not
-        # produce a phantom export.
-        if campaign_seed(session, campaign_id) is None:
+        export = _build_export(session, campaign, campaign_id)
+        if export is None:
             raise HTTPException(status_code=404, detail="Campaign not found.")
-        revision = latest_revision(session, campaign_id)
-        entities, edges = world_state(session, campaign_id)
-        # The media manifest rides along (spec-4.3, FR14): a plain SELECT
-        # on the open snapshot session — snapshot-consistent with the
-        # world read above, and no nested session_scope (a second BEGIN
-        # IMMEDIATE under this transaction's write lock would deadlock).
-        # Rowid ordering mirrors list_media's documented ordering.
-        media_rows = session.scalars(
-            select(models.Media)
-            .where(models.Media.campaign_id == campaign_id)
-            .order_by(literal_column("rowid"))
-        ).all()
-        media_by_entity = _media_refs(campaign_id, media_rows)
-        export = WorldExport(
-            campaign=CampaignMeta(
-                id=campaign.id,
-                title=campaign.title,
-                theme=campaign.theme,
-                description=campaign.description,
-                custom_lore=campaign.custom_lore,
-                created_at=campaign.created_at,
-            ),
-            revision=RevisionMeta(id=revision.id, created_at=revision.created_at)
-            if revision is not None
-            else None,
-            entities=[
-                EntityExport(
-                    id=entity.id,
-                    kind=entity.kind,
-                    name=entity.name,
-                    text=entity.text,
-                    data=_finite_only(entity.data),
-                    media=media_by_entity.get(entity.id, []),
-                )
-                for entity in entities
-            ],
-            edges=[
-                EdgeExport(
-                    id=edge.id,
-                    src=edge.src,
-                    dst=edge.dst,
-                    type=edge.type,
-                    counter=edge.counter,
-                )
-                for edge in edges
-            ],
+    if format == "json":
+        return export
+    if format == "markdown":
+        stem = _download_stem(export.campaign.title, campaign_id, "world")
+        return _attachment(
+            lambda: export_sheets.render_world_markdown(export),
+            filename=f"{stem}.md",
+            media_type="text/markdown",
+            campaign_id=campaign_id,
+            entity_id=None,
+            fmt="markdown",
+        )
+    stem = _download_stem(export.campaign.title, campaign_id, "world")
+    return _attachment(
+        lambda: export_sheets.render_world_html(export),
+        filename=f"{stem}.html",
+        media_type="text/html",
+        campaign_id=campaign_id,
+        entity_id=None,
+        fmt="html",
+    )
+
+
+@router.get(
+    "/api/campaigns/{campaign_id}/entities/{entity_id}/export",
+    response_model=EntityExportDetail,
+)
+def export_entity(
+    campaign_id: str,
+    entity_id: str,
+    current: Annotated[models.Account, Depends(get_current_account)],
+    format: Literal["json", "markdown", "html"] = "json",
+) -> EntityExportDetail | Response:
+    """One committed entity — edges touching it and the revision head —
+    as JSON, Markdown, or a print-ready HTML sheet. The entity-level
+    projection is the engine Epic 5's VTT adapters consume (spec-5.1)."""
+    campaign = get_campaign(current.id, campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    with session_scope() as session:
+        export = _build_export(session, campaign, campaign_id)
+        if export is None:
+            raise HTTPException(status_code=404, detail="Campaign not found.")
+    entity = next((e for e in export.entities if e.id == entity_id), None)
+    if entity is None:
+        # An entity outside the caller's owned world is indistinguishable
+        # from a missing one — the same no-oracle rule, one level down.
+        raise HTTPException(status_code=404, detail="Entity not found.")
+    if format == "json":
+        return EntityExportDetail(
+            entity=entity,
+            edges=[e for e in export.edges if entity_id in (e.src, e.dst)],
+            revision=export.revision,
         )
     if format == "markdown":
-        return Response(
-            content=_render_markdown(export),
+        stem = _download_stem(export_sheets.name_labels(export)[entity_id], entity_id, "entity")
+        return _attachment(
+            lambda: export_sheets.render_entity_markdown(export, entity_id),
+            filename=f"{stem}.md",
             media_type="text/markdown",
-            headers={
-                "Content-Disposition": f'attachment; filename="world-export-{campaign_id}.md"'
-            },
+            campaign_id=campaign_id,
+            entity_id=entity_id,
+            fmt="markdown",
         )
-    return export
+    stem = _download_stem(export_sheets.name_labels(export)[entity_id], entity_id, "entity")
+    return _attachment(
+        lambda: export_sheets.render_entity_html(export, entity_id),
+        filename=f"{stem}.html",
+        media_type="text/html",
+        campaign_id=campaign_id,
+        entity_id=entity_id,
+        fmt="html",
+    )
 
 
 __all__ = ["router"]

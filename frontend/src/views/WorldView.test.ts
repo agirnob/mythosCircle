@@ -74,7 +74,9 @@ function worldExport(): WorldExport {
       created_at: '2026-09-03T20:00:00Z',
     },
     revision: { id: '01JZZZZZZZZZZZZZZZZZZZZZZZ', created_at: '2026-09-03T20:05:00Z' },
-    entities: [{ id: 'E1', kind: 'character', name: 'Mira Vane', text: 'The barkeep.', data: {} }],
+    entities: [
+      { id: 'E1', kind: 'character', name: 'Mira Vane', text: 'The barkeep.', data: {}, media: [] },
+    ],
     edges: [],
   }
 }
@@ -97,6 +99,7 @@ function populatedWorld(): WorldExport {
         kind: 'character',
         name: 'Mira Vane',
         text: 'The barkeep.',
+        media: [],
         data: {
           stat_block: {
             identity: { role: 'Barkeep', race: 'Human', level: 3, alignment: 'Neutral Good' },
@@ -107,7 +110,7 @@ function populatedWorld(): WorldExport {
           },
         },
       },
-      { id: 'E2', kind: 'place', name: 'The Gilded Bar', text: 'Tavern.', data: {} },
+      { id: 'E2', kind: 'place', name: 'The Gilded Bar', text: 'Tavern.', data: {}, media: [] },
     ],
     edges: [
       { id: 'ED1', src: 'E1', dst: 'E2', type: 'debt', counter: 50 },
@@ -261,12 +264,13 @@ describe('WorldView', () => {
   it('ODD_DATA: null text gets a placeholder, junk stat_block renders nothing', async () => {
     const odd = worldExport()
     odd.entities = [
-      { id: 'E1', kind: 'character', name: 'Mira Vane', text: null, data: {} },
+      { id: 'E1', kind: 'character', name: 'Mira Vane', text: null, data: {}, media: [] },
       {
         id: 'E2',
         kind: 'place',
         name: 'The Gilded Bar',
         text: 'Tavern.',
+        media: [],
         data: { stat_block: 'junk' },
       },
     ]
@@ -573,6 +577,7 @@ describe('WorldView', () => {
           kind: 'character',
           name: 'Mira Vane',
           text: 'The barkeep.',
+          media: [],
           data: {
             name: 'Mira Vane',
             role: 'NPC',
@@ -990,6 +995,7 @@ describe('WorldView', () => {
           id: 'E1',
           kind: 'character',
           name: 'Mira Vane',
+          media: [],
           text: 'The barkeep.',
           data: { appearance },
         },
@@ -1034,7 +1040,10 @@ describe('WorldView', () => {
   }
 
   /** Route mocks for the portrait surface: export + media + jobs POST. */
-  function stubPortraitApi(world: WorldExport, media: { media: components['schemas']['MediaResponse'][] }) {
+  function stubPortraitApi(
+    world: WorldExport,
+    media: { media: components['schemas']['MediaResponse'][] },
+  ) {
     apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
       const url = String(path)
       if (url.includes('/media')) return media
@@ -1099,7 +1108,9 @@ describe('WorldView', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('Portrait queued — position 2')
     // The in-flight discipline swaps the button label and disables it.
-    const button = wrapper.findAll('button').filter((b) => b.text().startsWith('Portrait queued'))[0]
+    const button = wrapper
+      .findAll('button')
+      .filter((b) => b.text().startsWith('Portrait queued'))[0]
     expect(button).toBeDefined()
     expect(button.attributes('disabled')).toBeDefined()
     expect(wrapper.text()).not.toContain('Generate portrait')
@@ -1127,7 +1138,9 @@ describe('WorldView', () => {
     )
     const wrapper = mountView()
     await flushPromises()
-    expect(wrapper.text()).toContain('Portrait failed: image generation failed: provider returned HTTP 502')
+    expect(wrapper.text()).toContain(
+      'Portrait failed: image generation failed: provider returned HTTP 502',
+    )
     const button = generatePortraitButton(wrapper)
     expect(button.attributes('disabled')).toBeUndefined() // failed releases the button
     wrapper.unmount()
@@ -1148,7 +1161,9 @@ describe('WorldView', () => {
     expect(wrapper.find('.portrait-img').exists()).toBe(true)
     // …but the failed re-generation is NOT hidden behind it (acceptance
     // criterion 4: the DM sees the failure and re-triggers).
-    expect(wrapper.text()).toContain('Portrait failed: image generation failed: provider returned HTTP 502')
+    expect(wrapper.text()).toContain(
+      'Portrait failed: image generation failed: provider returned HTTP 502',
+    )
     wrapper.unmount()
   })
 
@@ -1235,6 +1250,7 @@ describe('WorldView', () => {
           kind: 'character',
           name: 'Vashka the Unmaker',
           text: 'The BBEG.',
+          media: [],
           data: {
             name: 'Vashka the Unmaker',
             role: 'BBEG',
@@ -1268,7 +1284,10 @@ describe('WorldView', () => {
   }
 
   /** Route mocks for the reveal-video surface: export + media + jobs POST. */
-  function stubVideoApi(world: WorldExport, media: { media: components['schemas']['MediaResponse'][] }) {
+  function stubVideoApi(
+    world: WorldExport,
+    media: { media: components['schemas']['MediaResponse'][] },
+  ) {
     apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
       const url = String(path)
       if (url.includes('/media')) return media
@@ -1285,15 +1304,11 @@ describe('WorldView', () => {
    * video'. The render button is the render gate.
    */
   function revealVideoButton(wrapper: VueWrapper) {
-    return wrapper
-      .findAll('button')
-      .filter((b) => b.text().startsWith('Render reveal video'))[0]
+    return wrapper.findAll('button').filter((b) => b.text().startsWith('Render reveal video'))[0]
   }
 
   function draftPromptButton(wrapper: VueWrapper) {
-    return wrapper
-      .findAll('button')
-      .filter((b) => b.text().startsWith('Draft reveal prompt'))[0]
+    return wrapper.findAll('button').filter((b) => b.text().startsWith('Draft reveal prompt'))[0]
   }
 
   function revealPromptTextarea(wrapper: VueWrapper) {
@@ -1414,7 +1429,6 @@ describe('WorldView', () => {
     expect(wrapper.text()).not.toContain('Generate reveal video')
     wrapper.unmount()
   })
-
 
   it('reveal video: a running video job shows the generating status', async () => {
     stubVideoApi(bossWorld(), { media: [] })
@@ -1541,6 +1555,37 @@ describe('WorldView', () => {
       'Reveal prompt failed: video prompt generation failed: provider returned HTTP 502',
     )
     expect(draftPromptButton(wrapper)?.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+  it('renders export anchors that link the entity/world export endpoints', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    const wrapper = mountView()
+    await flushPromises()
+
+    // World level: Markdown + styled HTML sheet.
+    const worldHtml = wrapper.findAll('a').find((anchor) => anchor.text().trim() === 'Export HTML')
+    expect(worldHtml?.attributes('href')).toBe('/api/campaigns/C1/export?format=html')
+    expect(worldHtml?.attributes('download')).toBeDefined()
+    const worldMd = wrapper
+      .findAll('a')
+      .find((anchor) => anchor.text().trim() === 'Export Markdown')
+    expect(worldMd?.attributes('href')).toBe('/api/campaigns/C1/export?format=markdown')
+
+    // Per entity: one Markdown + one sheet link for each committed entity.
+    const entityHtml = wrapper
+      .findAll('a')
+      .find((anchor) => anchor.text().trim() === 'Sheet (HTML)')
+    expect(entityHtml?.attributes('href')).toBe('/api/campaigns/C1/entities/E1/export?format=html')
+    expect(entityHtml?.attributes('download')).toBeDefined()
+    expect(
+      wrapper
+        .findAll('a')
+        .filter((anchor) => anchor.text().trim() === 'Markdown')
+        .map((anchor) => anchor.attributes('href')),
+    ).toEqual([
+      '/api/campaigns/C1/entities/E1/export?format=markdown',
+      '/api/campaigns/C1/entities/E2/export?format=markdown',
+    ])
     wrapper.unmount()
   })
 })

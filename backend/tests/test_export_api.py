@@ -8,7 +8,9 @@ head exposure (the 2.5 base_revision deferral closure), and non-finite
 float coercion (a pure read endpoint never 500s on its own data).
 """
 
+import base64
 import json as _json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -264,6 +266,9 @@ def test_export_empty_world(client: Any) -> None:
     assert front["exported_at"] == campaign["created_at"]
     assert "## " not in md  # no entity sections, no edge table
     assert "### Relations" not in md
+    html_response = client.get(f"/api/campaigns/{campaign['id']}/export", params={"format": "html"})
+    assert html_response.status_code == 200
+    assert "revision: none" in html_response.text  # the empty-world branch of _revision_meta
 
 
 def test_export_foreign_404_identical_to_unknown(client: Any) -> None:
@@ -388,6 +393,12 @@ def test_export_non_finite_floats_never_500(client: Any) -> None:
     ]
     # The neutral located_in renders bare in Relations (second neutral type).
     assert "[[Probe]] --located_in--> [[Anchor]]" in md
+    probe_json = client.get(f"/api/campaigns/{campaign_id}/entities/{probe_id}/export").json()
+    assert probe_json["entity"]["data"]["probe"] is None
+    probe_html = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{probe_id}/export", params={"format": "html"}
+    ).text
+    assert '"probe": null' in probe_html  # the appendix carries the coerced record
 
 
 def test_export_fence_grows_with_backticks(client: Any) -> None:
@@ -438,6 +449,12 @@ def test_export_campaign_deleted_mid_request_404s(
     response = client.get(f"/api/campaigns/{campaign_id}/export")
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
+    # The entity route shares the guard: the same race must yield the same
+    # indistinguishable 404 envelope, not an AttributeError 500.
+    second = _create_campaign(client).json()["id"]
+    entity_response = client.get(f"/api/campaigns/{second}/entities/{new_id()}/export")
+    assert entity_response.status_code == 404
+    assert entity_response.json() == response.json()
 
 
 def test_export_markdown_label_uniqueness(client: Any) -> None:
@@ -602,3 +619,328 @@ def test_export_determinism_includes_media(
     first_md = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "markdown"})
     second_md = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "markdown"})
     assert first_md.content == second_md.content
+
+
+# ---------------------------------------------------------------------------
+# spec-5.1: entity-level export + styled HTML sheets
+# ---------------------------------------------------------------------------
+
+_VESPERA_DATA: dict[str, Any] = {
+    "name": "Vespera",
+    "role": "BBEG",
+    "level_cr": "level 12",
+    "race_type": "Tiefling",
+    "class_profession": "Warlock",
+    "alignment": "CE",
+    "appearance": "Horned silhouette, ember-lit.",
+    "secret": "The guild's founder lives on in her ledger.",
+    "stat_block": {
+        "identity": {"role": "BBEG", "race": "Tiefling", "level": 12},
+        "attributes": {"str": 12, "dex": 16, "con": 14, "int": 18, "wis": 11, "cha": 20},
+        "combat": {"armor_class": 16, "hit_points": 99, "speed": "30 ft."},
+        "skills": [{"name": "Deception", "bonus": 8}],
+        "actions": [{"name": "Ember Lance", "description": "Ranged spell attack, 2d6 & fire <b>."}],
+        "traits": [],
+        "spells": [],
+    },
+    # Unknown forward-compat key (AR24): must survive verbatim everywhere.
+    "widget_config": {"nested": [1, 2, {"deep": True}]},
+}
+
+
+def _commit_vespera(campaign_id: str, guild_id: str, base_revision: str) -> str:
+    """An AR24-ish BBEG sheet fixture: Vespera owes the guild. The base is
+    explicit — a second graph commit onto an existing head is opt-in
+    optimistic concurrency (AD-2)."""
+    vespera_id = new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=vespera_id,
+                kind="character",
+                name="Vespera",
+                text="The ember in the ledger.",
+                data=dict(_VESPERA_DATA),
+            )
+        ],
+        edges=[
+            models.EdgeInput(src=vespera_id, dst=guild_id, type="debt", counter=5),
+            models.EdgeInput(src=guild_id, dst=vespera_id, type="ally_of", counter=3),
+        ],
+        base_revision=base_revision,
+    )
+    return vespera_id
+
+
+def _sheet_world(client: Any) -> tuple[str, str]:
+    """Campaign + Vex/guild + Vespera; returns (campaign_id, vespera_id)."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    revision = _commit_world(campaign_id)
+    body = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    guild_id = body["entities"][1]["id"]
+    return campaign_id, _commit_vespera(campaign_id, guild_id, revision.id)
+
+
+def test_entity_export_json_projection(client: Any) -> None:
+    """HAPPY entity (json): the entity, ONLY its touching edges (rowid
+    order), and the revision head — the shared Epic 5 engine shape."""
+    campaign_id, vespera_id = _sheet_world(client)
+    response = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{vespera_id}/export", params={"format": "json"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entity"]["id"] == vespera_id
+    assert body["entity"]["name"] == "Vespera"
+    assert body["entity"]["data"] == _VESPERA_DATA  # verbatim, unknown keys included
+    world = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    assert body["edges"] == [e for e in world["edges"] if vespera_id in (e["src"], e["dst"])]
+    assert body["revision"] == world["revision"]
+
+
+def test_entity_export_markdown_pure(client: Any) -> None:
+    """HAPPY entity (markdown): frontmatter parses, the full data fence
+    round-trips, relations render with plain neighbor names (a standalone
+    file has no wikilink targets), and NO inline <style> ships — the .md
+    twin stays pure (obsidian.md/help/html rationale)."""
+    campaign_id, vespera_id = _sheet_world(client)
+    response = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{vespera_id}/export",
+        params={"format": "markdown"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert re.search(r'filename="vespera-[0-9A-Z]{8}\.md"', response.headers["content-disposition"])
+    md = response.text
+    front = _parse_frontmatter(md)
+    assert front["entity_id"] == vespera_id
+    assert front["campaign_id"] == campaign_id
+    assert front["name"] == "Vespera"
+    assert "# Vespera" in md
+    assert _fences(md)[0] == _VESPERA_DATA
+    assert "--debt(5)--> The Guild" in md
+    assert "<--ally_of(3)-- The Guild" in md  # inbound renders too
+    assert "[[" not in md
+    assert "<style" not in md
+
+
+def test_entity_export_html_sheet(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HAPPY entity (html): self-contained sheet — embedded CSS, the
+    portrait as an exact data URI, stat-block panel, verbatim JSON
+    appendix; byte-identical repeats; read-only invariant (AR18)."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    campaign_id, vespera_id = _sheet_world(client)
+    row = add_media(campaign_id, vespera_id, f"{new_id()}.png", "image")
+    _write_media_file(tmp_path, campaign_id, row)
+    url = f"/api/campaigns/{campaign_id}/entities/{vespera_id}/export"
+    first = client.get(url, params={"format": "html"})
+    second = client.get(url, params={"format": "html"})
+    assert first.status_code == 200
+    assert first.headers["content-type"].startswith("text/html")
+    assert "attachment" in first.headers["content-disposition"]
+    assert first.content == second.content  # byte-identical (determinism)
+    html_body = first.text
+    assert html_body.startswith("<!DOCTYPE html>")
+    assert "@page" in html_body and "print-color-adjust: exact" in html_body  # embedded CSS
+    assert f"data:image/png;base64,{base64.b64encode(b'payload').decode()}" in html_body
+    # The portrait leads the sheet — before the prose — and the identity
+    # 'name' key never duplicates the card heading.
+    assert html_body.index("data:image") < html_body.index("The ember in the ledger")
+    assert "<h3>Name</h3>" not in html_body
+    assert "Stat Block" in html_body and "Ember Lance" in html_body  # panel + actions
+    assert "widget_config" in html_body  # unknown key survives verbatim…
+    assert '"deep": true' in html_body  # …inside the appendix JSON
+    assert "--debt(5)--> The Guild" in html_body  # relations render
+    assert "2d6 &amp; fire &lt;b&gt;" in html_body and "&amp;amp;" not in html_body
+    assert "&lt;--ally_of(3)-- The Guild" in html_body
+    assert "<details class='appendix'" in html_body
+    before = _counts(campaign_id)
+    client.get(url, params={"format": "html"})
+    assert _counts(campaign_id) == before  # read-only (AR18)
+
+
+def test_entity_export_html_broken_and_oversized_media(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BROKEN / HUGE media (matrix): a missing file is flagged, an image
+    over the inline cap is captioned — neither is ever embedded, and
+    neither is ever dropped."""
+    from app.api.export_sheets import MAX_INLINE_BYTES
+
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    campaign_id, vespera_id = _sheet_world(client)
+    broken = add_media(campaign_id, vespera_id, f"{new_id()}.png", "image")  # never written
+    huge = add_media(campaign_id, vespera_id, f"{new_id()}.png", "image")
+    huge_path = tmp_path / "media" / campaign_id / vespera_id / huge.filename
+    huge_path.parent.mkdir(parents=True, exist_ok=True)
+    huge_path.write_bytes(b"x" * (MAX_INLINE_BYTES + 1))
+    html_body = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{vespera_id}/export", params={"format": "html"}
+    ).text
+    assert "(broken: file missing on disk)</span>" in html_body
+    assert broken.filename in html_body and huge.filename in html_body  # listed, never dropped
+    # The only available image is the oversized one → nothing embeds.
+    assert "data:image" not in html_body
+
+
+def test_entity_export_html_escapes_injection(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Markup in committed data is escaped — a projection is not a script
+    execution surface (the self-contained, no-script contract) — including
+    attribute context: a quote in the name must not break out of alt=."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    victim_id, quote_id, anchor_id = new_id(), new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=victim_id,
+                kind="character",
+                name="<img src=x onerror=alert(1)>",
+                data={"secret": "</h2><script>evil()</script>"},
+            ),
+            models.EntityInput(id=quote_id, kind="character", name='V" onload="alert(1)', data={}),
+            models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
+        ],
+        edges=[
+            models.EdgeInput(src=victim_id, dst=anchor_id, type="located_in", counter=1),
+            models.EdgeInput(src=quote_id, dst=anchor_id, type="located_in", counter=1),
+        ],
+    )
+    row = add_media(campaign_id, quote_id, f"{new_id()}.png", "image")
+    _write_media_file(tmp_path, campaign_id, row)
+    html_body = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{victim_id}/export", params={"format": "html"}
+    ).text
+    assert "<img src=x" not in html_body
+    assert "<script>evil()" not in html_body
+    assert "&lt;img src=x" in html_body and "&lt;/h2&gt;&lt;script&gt;" in html_body
+    quoted = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{quote_id}/export", params={"format": "html"}
+    ).text
+    assert 'alt="V" onload=' not in quoted  # no attribute breakout…
+    assert "&quot; onload=&quot;" in quoted  # …escaped inside alt
+
+
+def test_entity_export_404_shapes_and_format(client: Any) -> None:
+    """MISSING/FOREIGN (matrix) + BAD FORMAT 422 on the entity surface.
+    (Unauthenticated 401 is pinned by the world route — same dependency.)"""
+    _register_login(client, "other@example.com")
+    theirs = _create_campaign(client).json()["id"]
+    _register_login(client, "dm@example.com")
+    foreign = client.get(f"/api/campaigns/{theirs}/entities/{new_id()}/export")
+    unknown_campaign = client.get(f"/api/campaigns/{new_id()}/entities/{new_id()}/export")
+    assert foreign.status_code == unknown_campaign.status_code == 404
+    assert foreign.json() == unknown_campaign.json()  # indistinguishable (no oracle)
+    assert foreign.json()["code"] == "not_found"
+    campaign_id = _create_campaign(client).json()["id"]
+    missing = client.get(f"/api/campaigns/{campaign_id}/entities/{new_id()}/export")
+    assert missing.status_code == 404
+    bad = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{new_id()}/export", params={"format": "pdf"}
+    )
+    assert bad.status_code == 422  # format validated before the entity lookup
+
+
+def test_world_export_html_document(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HAPPY world html (matrix): styled attachment — cards for every
+    entity, the edge table, media listed by path with availability — and
+    NO embedded binaries at world level; deterministic bytes."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    _commit_world(campaign_id)
+    body = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    vex_id = body["entities"][0]["id"]
+    row = add_media(campaign_id, vex_id, f"{new_id()}.png", "image")
+    _write_media_file(tmp_path, campaign_id, row)
+    first = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "html"})
+    second = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "html"})
+    assert first.status_code == 200
+    assert first.headers["content-type"].startswith("text/html")
+    assert "aetheria-" in first.headers["content-disposition"]  # human-readable stem
+    assert first.content == second.content
+    doc = first.text
+    assert "<!DOCTYPE html>" in doc and "@page" in doc
+    assert "Vex" in doc and "The Guild" in doc
+    assert "<th>counter</th>" in doc  # world edge table present
+    assert row.filename in doc and f"media/{campaign_id}/{vex_id}" in doc  # path listed
+    assert "data:image" not in doc  # no embedded binaries at world level
+    assert "<details class='appendix'" not in doc  # the appendix is the sheet's job
+
+
+def test_export_failure_is_logged_as_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """RENDER FAILURE (matrix, FR18): a renderer raising is a commit-path
+    regression — exactly one export_failure log event naming the surface,
+    then the generic 500 envelope; world state untouched. Its own client:
+    the generic 500 needs raise_server_exceptions=False (test_api.py
+    pattern), and a second TestClient cannot nest on the shared loop."""
+    from app.api import export_sheets
+    from app.main import app
+    from app.store import app_db_url, init_db
+
+    def boom(export: Any, entity_id: str) -> str:
+        raise RuntimeError("simulated renderer regression")
+
+    monkeypatch.setattr(export_sheets, "render_entity_html", boom)
+    previous = app_db_url()
+    init_db(f"sqlite:///{tmp_path / 'export-fail.db'}")
+    try:
+        with TestClient(
+            app, base_url="https://testserver", raise_server_exceptions=False
+        ) as boom_client:
+            _register_login(boom_client)
+            campaign_id = _create_campaign(boom_client).json()["id"]
+            _commit_world(campaign_id)
+            before = _counts(campaign_id)
+            body = boom_client.get(f"/api/campaigns/{campaign_id}/export").json()
+            vex_id = body["entities"][0]["id"]
+            with caplog.at_level(logging.ERROR):
+                response = boom_client.get(
+                    f"/api/campaigns/{campaign_id}/entities/{vex_id}/export",
+                    params={"format": "html"},
+                )
+            assert response.status_code == 500
+            assert response.json()["code"] == "internal_error"
+            events = [r for r in caplog.records if "export_failure" in r.getMessage()]
+            assert len(events) == 1
+            assert events[0].exc_info is not None  # the traceback rides the event
+            message = events[0].getMessage()
+            assert campaign_id in message and vex_id in message and "format=html" in message
+            assert _counts(campaign_id) == before  # no state change from the failure
+    finally:
+        init_db(previous)
+
+
+def test_entity_html_non_string_identity_still_visible(client: Any) -> None:
+    """An identity-anchor value that is not a string (reachable via the
+    hand-edit path) cannot ride the meta line — it must still appear as a
+    body section, never vanish from the styled sheet."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    odd_id, anchor_id = new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(id=odd_id, kind="character", name="Odd", data={"level_cr": 12}),
+            models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
+        ],
+        edges=[models.EdgeInput(src=odd_id, dst=anchor_id, type="located_in", counter=1)],
+    )
+    html_body = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{odd_id}/export", params={"format": "html"}
+    ).text
+    assert "<h3>Level cr</h3>" in html_body and ">12<" in html_body

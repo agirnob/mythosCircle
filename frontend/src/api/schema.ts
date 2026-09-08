@@ -350,9 +350,32 @@ export interface paths {
     }
     /**
      * Export World
-     * @description The complete latest-revision world state as JSON or Obsidian Markdown.
+     * @description The complete latest-revision world state as JSON, Obsidian
+     *     Markdown, or a self-contained styled HTML document.
      */
     get: operations['export_world_api_campaigns__campaign_id__export_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/campaigns/{campaign_id}/entities/{entity_id}/export': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Export Entity
+     * @description One committed entity — edges touching it and the revision head —
+     *     as JSON, Markdown, or a print-ready HTML sheet. The entity-level
+     *     projection is the engine Epic 5's VTT adapters consume (spec-5.1).
+     */
+    get: operations['export_entity_api_campaigns__campaign_id__entities__entity_id__export_get']
     put?: never
     post?: never
     delete?: never
@@ -450,20 +473,17 @@ export interface paths {
     parameters: {
       query?: never
       header?: never
-      path: {
-        campaign_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
+      path?: never
+      cookie?: never
     }
-    put?: never
     /**
      * List Campaign Media
      * @description The campaign's media manifest (FOREIGN_CAMPAIGN: owner-only, the
      *     single indistinguishable 404).
      */
     get: operations['list_campaign_media_api_campaigns__campaign_id__media_get']
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -474,16 +494,9 @@ export interface paths {
     parameters: {
       query?: never
       header?: never
-      path: {
-        campaign_id: string
-        entity_id: string
-        filename: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
+      path?: never
+      cookie?: never
     }
-    put?: never
     /**
      * Get File
      * @description One portrait file — ownership + manifest row + disk checks, all 404.
@@ -496,6 +509,8 @@ export interface paths {
      *     rejected outright.
      */
     get: operations['get_file_api_campaigns__campaign_id__media__entity_id___filename__get']
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -688,6 +703,20 @@ export interface components {
       data: {
         [key: string]: unknown
       }
+      /** Media */
+      media: components['schemas']['MediaRefExport'][]
+    }
+    /**
+     * EntityExportDetail
+     * @description The single-entity JSON projection (spec-5.1): the entity, every
+     *     edge touching it (rowid order — the same ordering the world document
+     *     renders), and the revision head the snapshot was taken at.
+     */
+    EntityExportDetail: {
+      entity: components['schemas']['EntityExport']
+      /** Edges */
+      edges: components['schemas']['EdgeExport'][]
+      revision: components['schemas']['RevisionMeta'] | null
     }
     /** HTTPValidationError */
     HTTPValidationError: {
@@ -705,7 +734,7 @@ export interface components {
        * Kind
        * @enum {string}
        */
-      kind: 'text' | 'image' | 'video' | 'build_in' | 'generate' | 'regenerate'
+      kind: 'text' | 'image' | 'video' | 'video_prompt' | 'build_in' | 'generate' | 'regenerate'
       /** Payload */
       payload: {
         [key: string]: unknown
@@ -782,6 +811,22 @@ export interface components {
     MediaListResponse: {
       /** Media */
       media: components['schemas']['MediaResponse'][]
+    }
+    /**
+     * MediaRefExport
+     * @description One manifest row riding an entity's export (spec-4.3, FR14):
+     *     ``available`` is the file's on-disk presence — a broken reference is
+     *     flagged, never dropped or hidden.
+     */
+    MediaRefExport: {
+      /** Id */
+      id: string
+      /** Kind */
+      kind: string
+      /** Filename */
+      filename: string
+      /** Available */
+      available: boolean
     }
     /**
      * MediaResponse
@@ -1463,7 +1508,7 @@ export interface operations {
   export_world_api_campaigns__campaign_id__export_get: {
     parameters: {
       query?: {
-        format?: 'json' | 'markdown'
+        format?: 'json' | 'markdown' | 'html'
       }
       header?: never
       path: {
@@ -1482,6 +1527,42 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['WorldExport']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  export_entity_api_campaigns__campaign_id__entities__entity_id__export_get: {
+    parameters: {
+      query?: {
+        format?: 'json' | 'markdown' | 'html'
+      }
+      header?: never
+      path: {
+        campaign_id: string
+        entity_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['EntityExportDetail']
         }
       }
       /** @description Validation Error */
@@ -1658,7 +1739,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/octet-stream': string
+          'application/json': unknown
         }
       }
       /** @description Validation Error */

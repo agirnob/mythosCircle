@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 08:25
-last_updated: 09-08-2026 21:50
+last_updated: 09-08-2026 22:51
 project: mythosCircle
 project_key: NOKEY
 tracking_system: file-system
@@ -74,8 +74,8 @@ development_status:
   4-6-llm-authored-minimax-reveal-prompts: done
   epic-4-retrospective: done
 
-  epic-5: backlog
-  5-1-export-engine-pure-projection: backlog
+  epic-5: in-progress
+  5-1-export-engine-pure-projection: review
   5-2-owlbear-export-first-target: backlog
   5-3-fantasy-grounds-export-second-target: backlog
   5-4-maptool-rpgtoken-export-third-target: backlog

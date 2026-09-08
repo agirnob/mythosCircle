@@ -269,12 +269,12 @@ watch(
     jobs
       .forCampaign(campaignId)
       .filter(
-        (job) =>
-          (job.kind === 'image' || job.kind === 'video') && PORTRAIT_TERMINAL.has(job.state),
+        (job) => (job.kind === 'image' || job.kind === 'video') && PORTRAIT_TERMINAL.has(job.state),
       )
       .map((job) => `${job.id}:${job.state}`)
       .join('|'),
-    world.mediaFor(campaignId)
+    world
+      .mediaFor(campaignId)
       .map((row) => row.id)
       .join('|'),
   ],
@@ -294,6 +294,17 @@ function portraitUrl(entity: EntityExport): string {
   return row
     ? `/api/campaigns/${encodeURIComponent(campaignId)}/media/${encodeURIComponent(row.entity_id)}/${row.filename}`
     : ''
+}
+
+/** Spec-5.1: pure-projection download links. Same-origin GETs — the
+ * session cookie (path /api) authenticates them; `download` saves the
+ * attachment without navigation. */
+function worldExportUrl(format: 'markdown' | 'html'): string {
+  return `/api/campaigns/${encodeURIComponent(campaignId)}/export?format=${format}`
+}
+
+function entityExportUrl(entityId: string, format: 'markdown' | 'html'): string {
+  return `/api/campaigns/${encodeURIComponent(campaignId)}/entities/${encodeURIComponent(entityId)}/export?format=${format}`
 }
 
 function entityHasAppearance(entity: EntityExport): boolean {
@@ -497,9 +508,7 @@ function videoStatus(entity: EntityExport): string | null {
     // With the spec-4.6 draft surface a boss only needs a non-blank
     // appearance to draft; the boss-section requirement applies to the
     // legacy one-shot render only.
-    return entityHasAppearance(entity)
-      ? null
-      : 'Add an appearance to draft a reveal video prompt.'
+    return entityHasAppearance(entity) ? null : 'Add an appearance to draft a reveal video prompt.'
   }
   if (job.state === 'queued') return `Reveal video queued — position ${job.queue_position ?? '…'}`
   if (job.state === 'running') return 'Generating reveal video…'
@@ -897,6 +906,10 @@ function additionalDataBlock(entity: EntityExport): string {
             Open candidates
           </RouterLink>
         </p>
+        <p class="export-actions">
+          <a class="link" :href="worldExportUrl('markdown')" download>Export Markdown</a>
+          <a class="link" :href="worldExportUrl('html')" download>Export HTML</a>
+        </p>
       </div>
 
       <div v-if="entities.length === 0" class="card">
@@ -932,6 +945,8 @@ function additionalDataBlock(entity: EntityExport): string {
               >
                 Edit profile
               </button>
+              <a class="link" :href="entityExportUrl(entity.id, 'markdown')" download> Markdown </a>
+              <a class="link" :href="entityExportUrl(entity.id, 'html')" download> Sheet (HTML) </a>
             </h3>
             <div class="portrait">
               <img
@@ -955,9 +970,9 @@ function additionalDataBlock(entity: EntityExport): string {
                 >
                   {{
                     jobs.portraitInFlight(campaignId, entity.id)
-                      ? (portraitJobFor(entity.id)?.state === 'running'
-                          ? 'Generating portrait…'
-                          : 'Portrait queued…')
+                      ? portraitJobFor(entity.id)?.state === 'running'
+                        ? 'Generating portrait…'
+                        : 'Portrait queued…'
                       : 'Generate portrait'
                   }}
                 </button>
@@ -969,7 +984,10 @@ function additionalDataBlock(entity: EntityExport): string {
               <p v-if="portraitFailure(entity)" class="error">
                 {{ portraitFailure(entity) }}
               </p>
-              <p v-else-if="portraitStatus(entity) && !portraitFor(entity)" class="muted small status">
+              <p
+                v-else-if="portraitStatus(entity) && !portraitFor(entity)"
+                class="muted small status"
+              >
                 {{ portraitStatus(entity) }}
               </p>
               <p v-if="portraitErrors[entity.id]" class="error">
@@ -1006,9 +1024,9 @@ function additionalDataBlock(entity: EntityExport): string {
                 >
                   {{
                     draftPromptInFlight(entity)
-                      ? (draftPromptJobFor(entity.id)?.state === 'running'
-                          ? 'Drafting reveal prompt…'
-                          : 'Reveal prompt queued…')
+                      ? draftPromptJobFor(entity.id)?.state === 'running'
+                        ? 'Drafting reveal prompt…'
+                        : 'Reveal prompt queued…'
                       : 'Draft reveal prompt'
                   }}
                 </button>
@@ -1018,8 +1036,7 @@ function additionalDataBlock(entity: EntityExport): string {
                   :aria-label="`${entity.name} reveal video prompt (optional)`"
                   class="reveal-prompt-textarea"
                   @input="
-                    draftPromptTexts[entity.id] =
-                      ($event.target as HTMLTextAreaElement).value
+                    draftPromptTexts[entity.id] = ($event.target as HTMLTextAreaElement).value
                   "
                 ></textarea>
                 <button
@@ -1034,9 +1051,9 @@ function additionalDataBlock(entity: EntityExport): string {
                 >
                   {{
                     jobs.videoInFlight(campaignId, entity.id)
-                      ? (videoJobFor(entity.id)?.state === 'running'
-                          ? 'Generating reveal video…'
-                          : 'Reveal video queued…')
+                      ? videoJobFor(entity.id)?.state === 'running'
+                        ? 'Generating reveal video…'
+                        : 'Reveal video queued…'
                       : 'Render reveal video'
                   }}
                 </button>
@@ -1053,10 +1070,7 @@ function additionalDataBlock(entity: EntityExport): string {
               <p v-if="videoFailure(entity)" class="error">
                 {{ videoFailure(entity) }}
               </p>
-              <p
-                v-else-if="videoStatus(entity) && !videoFor(entity)"
-                class="muted small status"
-              >
+              <p v-else-if="videoStatus(entity) && !videoFor(entity)" class="muted small status">
                 {{ videoStatus(entity) }}
               </p>
               <p v-if="videoErrors[entity.id]" class="error">
@@ -1350,6 +1364,7 @@ function additionalDataBlock(entity: EntityExport): string {
   color: #58a6ff;
   cursor: pointer;
   font-size: 0.85rem;
+  text-decoration: none;
 }
 .link:disabled {
   color: #484f58;
