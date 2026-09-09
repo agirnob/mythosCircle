@@ -1114,6 +1114,51 @@ def test_wave1_records_repaired_in_one_pass(world: str) -> None:
     assert mira.data["stat_block"] == _MIRA_STAT_BLOCK  # …untouched by the patch
 
 
+def test_reaction_matrix_object_canonicalized_on_build_in(world: str) -> None:
+    """REACTION_MATRIX_NORMALIZE, build-in (dogfood 2026-09-09): the
+    compact model ships ``world_integration.reaction_matrix`` as a
+    ``{"C<index>": "<reaction>"}`` mapping even on the build-in path —
+    the record is canonicalized to the string form BEFORE the record gate,
+    so a wave commits its full AR24 record without burning the repair
+    pass; a mapping arriving inside the repair patch is canonicalized on
+    the merge the same way."""
+    output = _wave1_output()
+    mapping = {
+        "C0": "Wary; watches the bar for Guild spies.",
+        "C1": "Hostile; owes her brother's claim.",
+    }
+    output["entities"][1]["data"] = {
+        **_character_record(
+            "Mira Vane",
+            world_integration={
+                "reputation": "Known to the Guild.",
+                "factions": "The Gilded Bar (member).",
+                "current_location": "The Gilded Bar, back room.",
+                "reaction_matrix": mapping,
+                "on_defeat": "Flees to the harbor with the ledger.",
+            },
+        ),
+        "stat_block": _MIRA_STAT_BLOCK,
+    }
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(output)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 1  # canonicalized up front: NO record repair pass
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    matrix = mira.data["world_integration"]["reaction_matrix"]
+    assert matrix.startswith("C0: Wary; watches the bar for Guild spies., ")
+    assert "C1: Hostile; owes her brother's claim." in matrix
+
+
 def test_record_repair_missing_ref_fails(world: str) -> None:
     """RECORD_REPAIR_MISSING_REF: the repair response must list exactly the
     flagged refs — an empty 'records' list fails the job, zero commits."""

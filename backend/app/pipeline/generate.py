@@ -71,6 +71,7 @@ from app.store.candidates import (
     IDENTITY_FIELDS,
     LORE_FIELDS,
     WORLD_INTEGRATION_FIELDS,
+    canonicalize_reaction_matrix,
     payload_section_violations,
 )
 from app.store.db import session_scope
@@ -141,6 +142,13 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
     prompt = build_generate_prompt(seed, ask, (context_entities, context_edges))
     text = budget.call(lambda: provider(prompt, settings=settings))
     parsed = _parse_candidates(text)[:MAX_CANDIDATES]
+    # Dogfood 2026-09-09: the compact model renders
+    # ``world_integration.reaction_matrix`` as a ``{"C<i>": "<reaction>"}``
+    # mapping (all 3 candidates were dropped -> the job hard-failed);
+    # canonicalize every candidate BEFORE validation so the mapping's
+    # entries land in the contract's single-string form and validation
+    # sees exactly what will stage. A string matrix passes through.
+    parsed = [canonicalize_reaction_matrix(raw) for raw in parsed]
 
     # Shape validation (AR19): drop candidates that violate the contract.
     # E-refs are the PARSED indices throughout — one numbering for the
@@ -380,6 +388,11 @@ def build_generate_prompt(
         '  "world_integration": {"reputation": "...", "factions": "...",',
         '                        "current_location": "...", "reaction_matrix": "...",',
         '                        "on_defeat": "..."},',
+        "world_integration.reaction_matrix is ONE non-blank prose string —",
+        "never a JSON object/mapping: enumerate each reacting committed",
+        "entity or faction as 'C<index>: <reaction>' inside that single",
+        "string, e.g. 'C5: Friendly — welcomes the party; C2: Hostile —",
+        "schemes against them'.",
         '  "boss": {"lair_actions": "...", "legendary_actions": "...", "immunities": "...",',
         '           "vulnerabilities": "..."}  — CONDITIONAL: this one section is REQUIRED',
         "           when the role is BBEG or Monster and OMITTED entirely for NPC (never",

@@ -321,6 +321,53 @@ def test_world_integration_block_validated(world: str) -> None:
     assert "world_integration.reaction_matrix must be a non-blank string" in reasons
 
 
+def test_reaction_matrix_object_canonicalized_to_string(world: str) -> None:
+    """REACTION_MATRIX_NORMALIZE (dogfood 2026-09-09): the compact model
+    renders ``world_integration.reaction_matrix`` as a
+    ``{"C<index>": "<reaction>"}`` mapping — all 3 candidates were dropped
+    and the whole generate job hard-failed ('0 valid candidate(s) survived
+    validation'). The mapping must canonicalize to the contract's single
+    non-blank string BEFORE validation: every entry becomes
+    ``'ref: reaction'`` (join ", "), a string matrix passes through
+    unchanged, and an EMPTY mapping stays invalid (canonicalization never
+    rescues an empty matrix — the drop reason survives)."""
+    _commit_world(world)
+    output = _generate_output()
+    for candidate in output["candidates"]:
+        candidate["world_integration"]["reaction_matrix"] = {
+            "C0": "Hostile; views them as complicit in the cover-up",
+            "C1": "Friendly; drinks beside them",
+        }
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["candidate_count"] == 3
+    for row in _staged(world):
+        matrix = row.payload["world_integration"]["reaction_matrix"]
+        assert matrix.startswith("C0: Hostile; views them as complicit in the cover-up, ")
+        assert "C1: Friendly; drinks beside them" in matrix
+
+    # A string matrix passes through byte-identical.
+    output = _generate_output()
+    output["candidates"][0]["world_integration"]["reaction_matrix"] = "C0: wary, watches the door"
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["candidate_count"] == 3
+    corvin = [row for row in _staged(world) if row.payload["name"] == "Corvin Ashe"][-1]
+    assert corvin.payload["world_integration"]["reaction_matrix"] == "C0: wary, watches the door"
+
+    # An empty mapping yields a blank string -> still dropped (NEVER rescues).
+    output = _generate_output()
+    output["candidates"][0]["world_integration"]["reaction_matrix"] = {"C0": "   "}
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["candidate_count"] == 2
+    reasons = " | ".join(drop["reason"] for drop in job.result["dropped"])
+    assert "world_integration.reaction_matrix must be a non-blank string" in reasons
+
+
 def test_boss_section_required_for_bbeg_and_monster(world: str) -> None:
     """BBEG/Monster candidates MUST carry the boss section: a Monster
     with a complete boss stages with it; a BBEG without one is dropped

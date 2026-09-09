@@ -157,6 +157,43 @@ def _boss_violations(role: Any, boss: Any) -> list[str]:
     return []
 
 
+def canonicalize_reaction_matrix(record: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of an AR24 candidate record whose
+    ``world_integration.reaction_matrix`` is a non-blank string — the
+    contract form (spec-3.3: one non-blank prose string per field).
+
+    A JSON-object matrix is the shape the compact model emits when the
+    prompt says the matrix "says how the committed entities react": the
+    ``{"C<i>": "<reaction>", ...}`` mapping. The object's entries ARE the
+    canonical string's content (the exported sheet's committed form is
+    ``"C0: Neutral, C1: Neutral, ..."``), so the mapping is serialized
+    deterministically into that same string form — dogfood 2026-09-09:
+    gemma shipped a mapping for all 3 candidates and the generate job
+    hard-failed '0 valid candidate(s) survived validation' because the
+    shared validator rejects anything but a string. A string (or an
+    absent/blank matrix, or a non-dict record) passes through unchanged;
+    a mapping without a single well-formed ``"ref: non-blank text"``
+    entry leaves a blank string, which the shared validator still
+    rejects — canonicalization never rescues an empty matrix.
+    """
+    if not isinstance(record, dict):
+        return record
+    world = record.get("world_integration")
+    if not isinstance(world, dict):
+        return record
+    matrix = world.get("reaction_matrix")
+    if not isinstance(matrix, dict):
+        return record
+    entries = [
+        f"{key}: {value}"
+        for key, value in matrix.items()
+        if isinstance(key, str) and key.strip() and isinstance(value, str) and value.strip()
+    ]
+    out = dict(record)
+    out["world_integration"] = {**world, "reaction_matrix": ", ".join(entries)}
+    return out
+
+
 def payload_section_violations(payload: Any) -> list[str]:
     """The required-section shape violations of one AR24 candidate
     payload (``[]`` = valid): the AR19 core (non-blank name, role in the

@@ -74,6 +74,7 @@ from app.store.candidates import (
     REGEN_SECTIONS,
     _replace_candidate_payload,
     _stage_candidates,
+    canonicalize_reaction_matrix,
     payload_section_violations,
 )
 from app.store.db import session_scope
@@ -141,6 +142,12 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
     raw = parsed[0]
     if not isinstance(raw, dict):
         raise JobPayloadError("regenerate: candidate must be an object")
+    # Dogfood 2026-09-09 (generate's pattern): the compact model renders
+    # ``world_integration.reaction_matrix`` as a ``{"C<i>": "<reaction>"}``
+    # mapping — canonicalize the re-rolled record BEFORE validation so a
+    # world_integration re-roll of a previously-canonical record cannot
+    # hard-fail on the shape; a string matrix passes through.
+    raw = canonicalize_reaction_matrix(raw)
     _validate_output(raw, record, requested)
 
     # Cancel-race poll before the write: a cancel during the call/validation
@@ -473,6 +480,9 @@ def build_regenerate_prompt(
         "the job fails. The world_integration, boss (only for BBEG/Monster",
         "roles — omit for NPC), and all narrative sections are non-blank",
         "strings; the boss section is NEVER an empty object.",
+        "world_integration.reaction_matrix is one non-blank string (never a",
+        "JSON object/mapping): enumerate each reacting committed entity or",
+        "faction as 'C<index>: <reaction>' inside that single string.",
         "",
         # The stat-block machinery is only relevant when a stat_block is
         # actually being re-rolled: its rules and the (large) spells

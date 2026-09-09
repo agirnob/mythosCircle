@@ -63,6 +63,7 @@ from app.store.candidates import (
     IDENTITY_FIELDS,
     LORE_FIELDS,
     WORLD_INTEGRATION_FIELDS,
+    canonicalize_reaction_matrix,
     payload_section_violations,
 )
 from app.store.db import session_scope
@@ -107,6 +108,9 @@ def _character_record_lines() -> list[str]:
         '   "stat_block": {...per the STAT BLOCK RULES above; its',
         "     identity.role matches the record role...},",
         f'   "world_integration": {{{world}}},',
+        "world_integration.reaction_matrix is ONE non-blank string (never a",
+        "JSON object/mapping): enumerate each reacting committed entity or",
+        "faction as 'C<index>: <reaction>' inside that single string.",
         f'   "boss": {{{boss}}}',
         "  }",
         "boss is CONDITIONAL: required when role is BBEG or Monster (write",
@@ -275,7 +279,13 @@ def _apply_record_repairs(
     for position, entity in enumerate(entities):
         if position in repaired:
             patch = {k: v for k, v in repaired[position].items() if k not in ("stat_block", "name")}
-            entity = dataclasses.replace(entity, data={**entity.data, **patch})
+            # The repair patch can carry a mapping-form ``reaction_matrix``
+            # too — canonicalize the merged record so the re-check sees the
+            # string form (dogfood 2026-09-09, generate's pattern).
+            entity = dataclasses.replace(
+                entity,
+                data=canonicalize_reaction_matrix({**entity.data, **patch}),
+            )
         merged.append(entity)
     return merged
 
@@ -661,7 +671,11 @@ def _validate_subgraph(
             # (generate parity: committed character data carries "name").
             # The AR24 record SHAPE is not checked here: violations flow to
             # the bounded repair pass in _enforce_character_records below.
-            data = {**(data or {}), "name": name.strip()}
+            # ``reaction_matrix`` is canonicalized to its string form first
+            # (dogfood 2026-09-09: the compact model ships a
+            # {"C<i>": "<reaction>"} mapping, which the shared validator
+            # would flag and burn the record gate's one repair pass on).
+            data = canonicalize_reaction_matrix({**(data or {}), "name": name.strip()})
         entity_id = ids.new_id()
         assigned_ids.append(entity_id)
         entity_inputs.append(
