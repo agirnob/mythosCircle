@@ -23,7 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from app.pipeline.fencing import strip_fence
+from app.pipeline.fencing import parse_json_object
 from app.pipeline.knowledge import (
     ABILITY_MAX,
     ABILITY_MIN,
@@ -206,20 +206,17 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue]) -> str:
 
 def parse_stat_repair_output(
     text: str, flagged_positions: Sequence[int]
-) -> dict[int, dict[str, Any]]:
+) -> dict[int, dict[str, Any]] | None:
     """Parse the repair response into {position: stat_block}.
 
     The response must list EXACTLY the flagged refs (each once, canonical
     ``E<position>``); a missing, unknown, or duplicate ref is a
-    ``JobPayloadError`` — the job fails, never a partial merge.
-    """
-    stripped = strip_fence(text)
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise JobPayloadError(f"stat repair: output is not valid JSON ({exc})") from exc
-    if not isinstance(parsed, dict):
-        raise JobPayloadError("stat repair: output must be a JSON object")
+    ``JobPayloadError`` — the job fails, never a partial merge. Returns
+    None when the text is not parseable as one JSON object (the build-in
+    stat gate retries once — ``_run_repair``)."""
+    parsed = parse_json_object(text)
+    if parsed is None:
+        return None
     raw = parsed.get("stat_blocks")
     if not isinstance(raw, list):
         raise JobPayloadError("stat repair: output must have a 'stat_blocks' list")

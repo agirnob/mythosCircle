@@ -189,6 +189,11 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
             lambda: provider(build_stat_repair_prompt(stat_issues), settings=settings)
         )
         repaired = parse_stat_repair_output(repair_text, [issue.position for issue in stat_issues])
+        if repaired is None:
+            # A malformed repair response repairs nothing: the flagged
+            # candidates drop below as still-invalid (generate's contract
+            # is drop-not-fail — never stage an AR25-invalid block).
+            repaired = {}
         inputs = apply_stat_repairs(inputs, repaired)
         remaining = collect_stat_issues(inputs)
         if remaining:

@@ -1296,6 +1296,149 @@ def test_wave2_nameless_character_repaired(world: str) -> None:
     assert harlow.kind == "character" and harlow.data["name"] == "Captain Harlow"
 
 
+def test_record_repair_malformed_json_retried_once(world: str) -> None:
+    """RECORD_REPAIR_RETRY (dogfood 2026-09-09 live: the user's build_in
+    failed with 'record repair: output is not valid JSON (Expecting ':'
+    delimiter ...)' — gemma's repair response embedded an excluded
+    stat_block whose traits/actions members were bare strings: invalid
+    JSON). A non-parseable repair response gets exactly one retry that
+    feeds the invalid text back; the valid retry commits — the merge
+    discards any stat_block the retry carries."""
+    output = _wave1_output()
+    output["entities"][1]["data"] = {"stat_block": _MIRA_STAT_BLOCK}  # no record -> gate fires
+    malformed = (
+        '{"records": [{"ref": "E1", "data": {'
+        '"role": "NPC", "level_cr": "level 5", '
+        '"traits": {"Tavern Keep: Can identify poisons.", "Steady Hand: Advantage on checks."}, '
+        '"actions": {"Heavy Mug: +4 to hit, 1d6+2 bludgeoning."}, '
+        '"world_integration": {"reaction_matrix": "C0: fine"}}}]}'
+    )
+    responses = [
+        json.dumps(output),
+        malformed,  # invalid JSON -> retry
+        json.dumps({"records": [{"ref": "E1", "data": {**_character_record("Mira Vane")}}]}),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 3  # wave 1 + record repair + the JSON retry
+    assert "YOUR PREVIOUS INVALID RESPONSE" in calls[2]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["appearance"]  # the retried record committed…
+    assert mira.data["stat_block"] == _MIRA_STAT_BLOCK  # …stat_block untouched by repairs
+
+
+def test_record_repair_malformed_twice_fails(world: str) -> None:
+    """RECORD_REPAIR_RETRY_EXHAUSTED: two consecutive malformed repair
+    responses fail the job with a clear message; zero commits."""
+    output = _wave1_output()
+    output["entities"][1]["data"] = {"stat_block": _MIRA_STAT_BLOCK}
+    malformed = '{"records": [{"ref": "E1", "data": {"traits": {"T: x", "S: y"}}}]}'
+    responses = [json.dumps(output), malformed, malformed]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(
+        provider=lambda prompt, settings, responses=responses: responses.pop(0),
+        settings=SETTINGS,
+    )
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "record repair: output was not valid JSON after one retry" in (job.error or "")
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+
+def test_record_repair_prose_wrapped_json_rescued(world: str) -> None:
+    """RECORD_REPAIR_EXTRACT: prose around the repair JSON (the model
+    wraps the object in a sentence) is stripped by the balanced-object
+    extraction — no retry is burned."""
+    output = _wave1_output()
+    output["entities"][1]["data"] = {"stat_block": _MIRA_STAT_BLOCK}
+    wrapped = (
+        "Here is the completed record:\n"
+        + json.dumps({"records": [{"ref": "E1", "data": {**_character_record("Mira Vane")}}]})
+        + "\nHope this helps!"
+    )
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return json.dumps(output)
+        return wrapped
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 2  # wave 1 + record repair (no retry)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+
+
+def test_name_repair_malformed_json_retried_once(world: str) -> None:
+    """NAME_REPAIR_RETRY: the name gate gets the same one JSON retry."""
+    output = _wave1_output()
+    del output["entities"][1]["name"]
+    del output["entities"][1]["data"]["name"]
+    responses = [
+        json.dumps(output),
+        '{"names": [{"ref": "E1", "name": "Mira" Vane"}]}',  # unescaped quote: invalid
+        json.dumps({"names": [{"ref": "E1", "name": "Mira Vane"}]}),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 3  # wave 1 + name repair + the JSON retry
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.kind == "character" and mira.data["name"] == "Mira Vane"
+
+
+def test_stat_repair_malformed_json_retried_once(world: str) -> None:
+    """STAT_REPAIR_RETRY: the stat gate gets the same one JSON retry — a
+    malformed stat-repair response (bare-string object members) is
+    re-elicited once, then the valid block commits."""
+    output = _wave1_output()
+    bad_block = {**_MIRA_STAT_BLOCK, "attributes": {**_MIRA_STAT_BLOCK["attributes"], "str": 40}}
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_block}
+    responses = [
+        json.dumps(output),
+        '{"stat_blocks": [{"ref": "E1", "stat_block": {"traits": {"X: y"}}}]}',  # invalid JSON
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 3  # wave 1 + stat repair + the JSON retry
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"] == _MIRA_STAT_BLOCK
+
+
 def test_record_repair_missing_ref_fails(world: str) -> None:
     """RECORD_REPAIR_MISSING_REF: the repair response must list exactly the
     flagged refs — an empty 'records' list fails the job, zero commits."""

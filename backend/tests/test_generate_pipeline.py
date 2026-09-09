@@ -867,9 +867,11 @@ def test_malformed_output_fails_zero_staged(world: str) -> None:
         assert _staged(world) == []
 
 
-def test_malformed_repair_output_fails(world: str) -> None:
-    """A repair response that is not parseable stat blocks fails the job
-    (the repair pass is bounded; its output is not retried)."""
+def test_malformed_repair_output_drops_candidate(world: str) -> None:
+    """A repair response that is not parseable stat blocks repairs nothing
+    — the flagged candidate is DROPPED (generate's 2-3 contract is
+    drop-not-fail: an AR25-invalid block never stages; a malformed repair
+    is not a job-level failure)."""
     _commit_world(world)
     output = _generate_output()
     bad_block = json.loads(json.dumps(_VALID_STAT_BLOCK))
@@ -884,8 +886,14 @@ def test_malformed_repair_output_fails(world: str) -> None:
     job_id = _run(world, provider)
     assert len(calls) == 2
     job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert _staged(world) == []
+    # 2 of 3 candidates survive; the still-invalid E0 drops.
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["candidate_count"] == 2
+    dropped = job.result["dropped"]
+    assert len(dropped) == 1 and "still invalid after the repair pass" in dropped[0]["reason"]
+    staged = _staged(world)
+    assert len(staged) == 2
+    assert all(row.payload["name"] != "Corvin Ashe" for row in staged)
 
 
 # ---------------------------------------------------------------------------

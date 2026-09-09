@@ -36,6 +36,7 @@ from typing import Any, cast
 from app.core import ids
 from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
+from app.pipeline.fencing import parse_json_object
 from app.pipeline.fencing import strip_fence as _strip_fence
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import (
@@ -129,6 +130,68 @@ RETRIEVAL_DEPTH = 1
 RETRIEVAL_ENTITY_CAP = 24
 
 
+def _repair_retry_prompt(base_prompt: str, bad_text: str) -> str:
+    """The one bounded retry when a repair response is not parseable JSON:
+    the same base prompt plus the invalid text and explicit JSON rules
+    (dogfood 2026-09-09: gemma's record-repair response embedded an
+    excluded stat_block whose traits/actions members were bare strings —
+    invalid JSON — and the whole wave failed over it)."""
+    return "\n".join(
+        [
+            base_prompt,
+            "",
+            "YOUR PREVIOUS RESPONSE COULD NOT BE PARSED AS JSON. Correct it:",
+            "return the SAME entries as ONE valid JSON object — nothing else.",
+            'JSON rules: every object member is "key": value — a bare string',
+            'as an object member is INVALID (e.g. {"A: title"} must become',
+            '{"A: title": "..."} or an array of objects); escape any literal',
+            'double quote inside a value as \\"; no prose before or after the',
+            "object. For records, NEVER include a stat_block — it belongs to a",
+            "separate pass and is discarded here.",
+            "",
+            "YOUR PREVIOUS INVALID RESPONSE:",
+            bad_text.strip(),
+        ]
+    )
+
+
+def _run_repair[R: Mapping[int, Any]](
+    *,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    prompt: str,
+    parse: Callable[[str, Sequence[int]], R | None],
+    positions: Sequence[int],
+    label: str,
+) -> R:
+    """One bounded repair pass with exactly one JSON retry (AR25 stays
+    one CONTENT repair — a malformed response is not a content verdict).
+
+    The provider's output is parsed; when it is not parseable as one JSON
+    object (prose, truncation, unescaped quotes, a bare-string object
+    member — the 2026-09-09 gemma failure), the invalid text is fed back
+    and the model is asked exactly once more. A second malformed response
+    fails the job with a clear message; CONTRACT violations (wrong refs,
+    duplicates, missing entries) inside well-formed JSON still fail
+    immediately — they are deterministic, not JSON noise."""
+    repair_text = budget.call(lambda: provider(prompt, settings=settings))
+    repaired = parse(repair_text, positions)
+    if repaired is not None:
+        return repaired
+    retry_text = budget.call(
+        lambda: provider(_repair_retry_prompt(prompt, repair_text), settings=settings)
+    )
+    repaired = parse(retry_text, positions)
+    if repaired is None:
+        snippet = retry_text.strip()[:200]
+        raise JobPayloadError(
+            f"{label} repair: output was not valid JSON after one retry "
+            f"(last output starts: {snippet!r})"
+        )
+    return repaired
+
+
 def _enforce_stat_blocks(
     job: models.Job,
     budget: CallBudget,
@@ -145,8 +208,15 @@ def _enforce_stat_blocks(
         return entities, False
     if not _job_still_running(job):
         return entities, True
-    repair_text = budget.call(lambda: provider(build_stat_repair_prompt(issues), settings=settings))
-    repaired = parse_stat_repair_output(repair_text, [issue.position for issue in issues])
+    repaired = _run_repair(
+        budget=budget,
+        provider=provider,
+        settings=settings,
+        prompt=build_stat_repair_prompt(issues),
+        parse=parse_stat_repair_output,
+        positions=[issue.position for issue in issues],
+        label="stat",
+    )
     entities = apply_stat_repairs(entities, repaired)
     remaining = collect_stat_issues(entities)
     if remaining:
@@ -207,8 +277,15 @@ def _build_record_repair_prompt(issues: Sequence[_RecordIssue]) -> str:
             "For EVERY character listed, supply the record fields that are",
             "missing or wrong (a sectioned object may be returned whole).",
             "Invent concrete in-world content that fits the name and the",
-            "current data. Never return a stat_block or a different name.",
-            "Use the refs exactly as given.",
+            "current data. Use the refs exactly as given.",
+            "NEVER return a stat_block or a different name — the stat block",
+            "is owned by a separate pass and ANY stat_block in this response",
+            "is discarded; including one can invalidate the whole response.",
+            "Reply with STRICTLY VALID JSON: every object member is",
+            '"key": value — a bare string as an object member (e.g.',
+            '{"Tavern Keep: ...", "Steady Hand: ..."}) is INVALID; escape',
+            'any literal " inside a value as \\"; nothing but the object,',
+            "no surrounding prose.",
             "",
             "OUTPUT CONTRACT",
             'Respond with one JSON object: {"records": [{"ref": "E<position>",',
@@ -222,19 +299,17 @@ def _build_record_repair_prompt(issues: Sequence[_RecordIssue]) -> str:
 
 def _parse_record_repair_output(
     text: str, flagged_positions: Sequence[int]
-) -> dict[int, dict[str, Any]]:
+) -> dict[int, dict[str, Any]] | None:
     """Parse the repair response into {position: record patch}.
 
     Same strictness as the stat repair: EXACTLY the flagged refs, each once;
-    a missing, unknown, or duplicate ref fails the job — never a partial merge.
-    """
-    stripped = _strip_fence(text)
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise JobPayloadError(f"record repair: output is not valid JSON ({exc})") from exc
-    if not isinstance(parsed, dict):
-        raise JobPayloadError("record repair: output must be a JSON object")
+    a missing, unknown, or duplicate ref fails the job — never a partial
+    merge. Returns None when the text is not parseable as one JSON object
+    (the gate retries once — ``_run_repair``); a well-formed JSON object
+    with the wrong CONTRACT fails immediately."""
+    parsed = parse_json_object(text)
+    if parsed is None:
+        return None
     raw = parsed.get("records")
     if not isinstance(raw, list):
         raise JobPayloadError("record repair: output must have a 'records' list")
@@ -352,20 +427,17 @@ def _build_name_repair_prompt(issues: Sequence[tuple[int, models.EntityInput]]) 
     )
 
 
-def _parse_name_repair_output(text: str, flagged_positions: Sequence[int]) -> dict[int, str]:
+def _parse_name_repair_output(text: str, flagged_positions: Sequence[int]) -> dict[int, str] | None:
     """Parse the name repair response into {position: name}.
 
     Same strictness as the record repair: EXACTLY the flagged refs, each
     once, each with a non-blank string name; a missing, unknown,
     duplicate, or blank ref fails the job — never a partial merge.
-    """
-    stripped = _strip_fence(text)
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise JobPayloadError(f"name repair: output is not valid JSON ({exc})") from exc
-    if not isinstance(parsed, dict):
-        raise JobPayloadError("name repair: output must be a JSON object")
+    Returns None when the text is not parseable as one JSON object (the
+    gate retries once — ``_run_repair``)."""
+    parsed = parse_json_object(text)
+    if parsed is None:
+        return None
     raw = parsed.get("names")
     if not isinstance(raw, list):
         raise JobPayloadError("name repair: output must have a 'names' list")
@@ -442,10 +514,15 @@ def _enforce_entity_names(
         return entities, False
     if not _job_still_running(job):
         return entities, True
-    repair_text = budget.call(
-        lambda: provider(_build_name_repair_prompt(issues), settings=settings)
+    repaired = _run_repair(
+        budget=budget,
+        provider=provider,
+        settings=settings,
+        prompt=_build_name_repair_prompt(issues),
+        parse=_parse_name_repair_output,
+        positions=[position for position, _entity in issues],
+        label="name",
     )
-    repaired = _parse_name_repair_output(repair_text, [position for position, _entity in issues])
     entities = _apply_name_repairs(entities, repaired)
     remaining = _collect_name_issues(entities)
     if remaining:
@@ -472,10 +549,15 @@ def _enforce_character_records(
         return entities, False
     if not _job_still_running(job):
         return entities, True
-    repair_text = budget.call(
-        lambda: provider(_build_record_repair_prompt(issues), settings=settings)
+    repaired = _run_repair(
+        budget=budget,
+        provider=provider,
+        settings=settings,
+        prompt=_build_record_repair_prompt(issues),
+        parse=_parse_record_repair_output,
+        positions=[issue.position for issue in issues],
+        label="record",
     )
-    repaired = _parse_record_repair_output(repair_text, [issue.position for issue in issues])
     entities = _apply_record_repairs(entities, repaired)
     remaining = _collect_record_issues(entities)
     if remaining:

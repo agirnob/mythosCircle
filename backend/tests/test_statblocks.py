@@ -418,7 +418,6 @@ def test_parse_repair_output_strips_fence() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        "not json",
         json.dumps({"stat_blocks": "nope"}),
         json.dumps({"stat_blocks": [{"ref": "E0"}]}),  # missing stat_block
         json.dumps({"stat_blocks": [{"ref": "X0", "stat_block": VALID}]}),
@@ -439,6 +438,21 @@ def test_parse_repair_output_strips_fence() -> None:
 def test_parse_repair_output_rejects_malformed(payload: str) -> None:
     with pytest.raises(JobPayloadError):
         parse_stat_repair_output(payload, [0, 1])
+
+
+def test_parse_repair_output_malformed_json_is_none() -> None:
+    """A response that is not parseable as one JSON object returns None
+    (the build-in stat gate retries once) — it is NOT a contract
+    violation; only well-formed JSON with the wrong CONTRACT raises."""
+    assert parse_stat_repair_output("not json", [0, 1]) is None
+    # JSON with a bare-string object member (the 2026-09-09 gemma failure).
+    malformed = '{"stat_blocks": [{"ref": "E0", "stat_block": {"X: y"}}]}'
+    assert parse_stat_repair_output(malformed, [0]) is None
+    # Prose-wrapped valid JSON is rescued by the balanced-object extraction.
+    wrapped = (
+        "Here: " + json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": VALID}]}) + " thanks"
+    )
+    assert parse_stat_repair_output(wrapped, [0]) == {0: VALID}
 
 
 def test_apply_repairs_touches_only_flagged_stat_blocks() -> None:
