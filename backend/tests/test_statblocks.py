@@ -432,7 +432,7 @@ def test_parse_repair_output_strips_fence() -> None:
                 ]
             }
         ),  # duplicate
-        json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": VALID}]}),  # E1 missing
+        json.dumps({"stat_blocks": [{"ref": "E" + "9" * 5000, "stat_block": VALID}]}),  # huge ref
     ],
 )
 def test_parse_repair_output_rejects_malformed(payload: str) -> None:

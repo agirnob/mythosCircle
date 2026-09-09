@@ -130,12 +130,14 @@ RETRIEVAL_DEPTH = 1
 RETRIEVAL_ENTITY_CAP = 24
 
 
-def _repair_retry_prompt(base_prompt: str, bad_text: str) -> str:
+def _repair_retry_prompt(base_prompt: str, bad_text: str, retry_note: str) -> str:
     """The one bounded retry when a repair response is not parseable JSON:
-    the same base prompt plus the invalid text and explicit JSON rules
-    (dogfood 2026-09-09: gemma's record-repair response embedded an
-    excluded stat_block whose traits/actions members were bare strings —
-    invalid JSON — and the whole wave failed over it)."""
+    the same base prompt plus the invalid text, explicit JSON rules, and
+    one gate-specific shape note (dogfood 2026-09-09: gemma's record-repair
+    response embedded an excluded stat_block whose traits/actions members
+    were bare strings — invalid JSON — and the whole wave failed over it).
+    The note is per-gate: the record gate excludes the stat block, the
+    stat gate requires it — one shared text mis-instructs both."""
     return "\n".join(
         [
             base_prompt,
@@ -146,8 +148,8 @@ def _repair_retry_prompt(base_prompt: str, bad_text: str) -> str:
             'as an object member is INVALID (e.g. {"A: title"} must become',
             '{"A: title": "..."} or an array of objects); escape any literal',
             'double quote inside a value as \\"; no prose before or after the',
-            "object. For records, NEVER include a stat_block — it belongs to a",
-            "separate pass and is discarded here.",
+            "object.",
+            retry_note,
             "",
             "YOUR PREVIOUS INVALID RESPONSE:",
             bad_text.strip(),
@@ -164,23 +166,24 @@ def _run_repair[R: Mapping[int, Any]](
     parse: Callable[[str, Sequence[int]], R | None],
     positions: Sequence[int],
     label: str,
+    retry_note: str,
 ) -> R:
     """One bounded repair pass with exactly one JSON retry (AR25 stays
     one CONTENT repair — a malformed response is not a content verdict).
-
     The provider's output is parsed; when it is not parseable as one JSON
     object (prose, truncation, unescaped quotes, a bare-string object
     member — the 2026-09-09 gemma failure), the invalid text is fed back
-    and the model is asked exactly once more. A second malformed response
-    fails the job with a clear message; CONTRACT violations (wrong refs,
-    duplicates, missing entries) inside well-formed JSON still fail
-    immediately — they are deterministic, not JSON noise."""
+    with the gate's shape note and the model is asked exactly once more.
+    A second malformed response fails the job with a clear message;
+    CONTRACT violations (wrong refs, duplicates, missing entries) inside
+    well-formed JSON still fail immediately — they are deterministic, not
+    JSON noise."""
     repair_text = budget.call(lambda: provider(prompt, settings=settings))
     repaired = parse(repair_text, positions)
     if repaired is not None:
         return repaired
     retry_text = budget.call(
-        lambda: provider(_repair_retry_prompt(prompt, repair_text), settings=settings)
+        lambda: provider(_repair_retry_prompt(prompt, repair_text, retry_note), settings=settings)
     )
     repaired = parse(retry_text, positions)
     if repaired is None:
@@ -216,6 +219,8 @@ def _enforce_stat_blocks(
         parse=parse_stat_repair_output,
         positions=[issue.position for issue in issues],
         label="stat",
+        retry_note='Return ONLY a "stat_blocks" list — each entry '
+        '{"ref": "E<position>", "stat_block": {...}} with the full corrected block.',
     )
     entities = apply_stat_repairs(entities, repaired)
     remaining = collect_stat_issues(entities)
@@ -322,7 +327,10 @@ def _parse_record_repair_output(
         if not isinstance(ref, str) or not ref.startswith("E"):
             raise JobPayloadError(f"record repair: ref must be E<position>, got {ref!r}")
         digits = ref[1:]
-        if not digits.isdecimal() or str(int(digits)) != digits:
+        # Length guard first: int() on a 4300+-digit string raises raw
+        # ValueError (CPython int-string limit), escaping the JobPayloadError
+        # channel as a 500 — positions are wave indices, never this long.
+        if len(digits) > 6 or not digits.isdecimal() or str(int(digits)) != digits:
             raise JobPayloadError(f"record repair: ref must be E<position>, got {ref!r}")
         position = int(digits)
         if position not in expected:
@@ -450,7 +458,9 @@ def _parse_name_repair_output(text: str, flagged_positions: Sequence[int]) -> di
         if not isinstance(ref, str) or not ref.startswith("E"):
             raise JobPayloadError(f"name repair: ref must be E<position>, got {ref!r}")
         digits = ref[1:]
-        if not digits.isdecimal() or str(int(digits)) != digits:
+        # Same length guard as the record parser above: a huge digit string
+        # must fail as a contract violation, not a raw ValueError.
+        if len(digits) > 6 or not digits.isdecimal() or str(int(digits)) != digits:
             raise JobPayloadError(f"name repair: ref must be E<position>, got {ref!r}")
         position = int(digits)
         if position not in expected:
@@ -522,6 +532,8 @@ def _enforce_entity_names(
         parse=_parse_name_repair_output,
         positions=[position for position, _entity in issues],
         label="name",
+        retry_note='Return ONLY a "names" list — each entry '
+        '{"ref": "E<position>", "name": "..."} with one non-blank name.',
     )
     entities = _apply_name_repairs(entities, repaired)
     remaining = _collect_name_issues(entities)
@@ -557,6 +569,8 @@ def _enforce_character_records(
         parse=_parse_record_repair_output,
         positions=[issue.position for issue in issues],
         label="record",
+        retry_note="For records, NEVER include a stat_block — it belongs to a "
+        "separate pass and is discarded here.",
     )
     entities = _apply_record_repairs(entities, repaired)
     remaining = _collect_record_issues(entities)

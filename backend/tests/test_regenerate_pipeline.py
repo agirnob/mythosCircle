@@ -379,6 +379,37 @@ def test_section_regen_entity_new_row_sections_regenerated_rest_identical(
     assert _revision_count(campaign_id) == 1
 
 
+def test_section_regen_world_integration_mapping_canonicalized(
+    world: tuple[str, str, str],
+) -> None:
+    """REGEN_MATRIX_NORMALIZE (review 2026-09-09): a mapping-form
+    reaction_matrix in a world_integration re-roll canonicalizes to the
+    contract's string form BEFORE validation — the compact model's mapping
+    shape stages instead of hard-failing the re-roll."""
+    campaign_id, mira_id, _guild_id = world
+    record = _record()
+    job_id = _enqueue(campaign_id, {"kind": "entity", "id": mira_id}, ["world_integration"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        out = json.loads(json.dumps(record))
+        out["world_integration"] = {
+            **record["world_integration"],
+            "reaction_matrix": {
+                "C0": "Wary; watches the door.",
+                "C1": "Friendly; pours a free round.",
+            },
+        }
+        return json.dumps({"candidates": [out]})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _ = job_status(job_id)
+    assert job.state == "succeeded"
+    rows = _staged(campaign_id)
+    assert len(rows) == 1
+    matrix = rows[0].payload["world_integration"]["reaction_matrix"]
+    assert matrix == "C0: Wary; watches the door., C1: Friendly; pours a free round."
+
+
 def test_settled_candidate_target_fails_job(
     world: tuple[str, str, str],
 ) -> None:

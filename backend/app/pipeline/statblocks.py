@@ -315,6 +315,8 @@ def _parse_ref(ref: Any) -> int:
     if not isinstance(ref, str) or not ref.startswith("E"):
         raise JobPayloadError(f"stat repair: ref must be E<position>, got {ref!r}")
     digits = ref[1:]
-    if not digits.isdecimal() or str(int(digits)) != digits:
+    # Length guard first: int() on a 4300+-digit string raises raw
+    # ValueError, escaping the JobPayloadError channel as a 500.
+    if len(digits) > 6 or not digits.isdecimal() or str(int(digits)) != digits:
         raise JobPayloadError(f"stat repair: ref must be E<position>, got {ref!r}")
     return int(digits)

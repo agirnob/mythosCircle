@@ -161,7 +161,6 @@ def canonicalize_reaction_matrix(record: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of an AR24 candidate record whose
     ``world_integration.reaction_matrix`` is a non-blank string — the
     contract form (spec-3.3: one non-blank prose string per field).
-
     A JSON-object matrix is the shape the compact model emits when the
     prompt says the matrix "says how the committed entities react": the
     ``{"C<i>": "<reaction>", ...}`` mapping. The object's entries ARE the
@@ -171,10 +170,12 @@ def canonicalize_reaction_matrix(record: dict[str, Any]) -> dict[str, Any]:
     gemma shipped a mapping for all 3 candidates and the generate job
     hard-failed '0 valid candidate(s) survived validation' because the
     shared validator rejects anything but a string. A string (or an
-    absent/blank matrix, or a non-dict record) passes through unchanged;
-    a mapping without a single well-formed ``"ref: non-blank text"``
+    absent/blank matrix, or a non-dict record) passes through unchanged.
+    Only ``C<index>`` keys survive: any other key is dropped, and a
+    mapping without a single well-formed ``"C<index>: non-blank text"``
     entry leaves a blank string, which the shared validator still
-    rejects — canonicalization never rescues an empty matrix.
+    rejects — canonicalization never rescues an empty matrix, and
+    arbitrary keys can no longer launder themselves into validity.
     """
     if not isinstance(record, dict):
         return record
@@ -184,11 +185,18 @@ def canonicalize_reaction_matrix(record: dict[str, Any]) -> dict[str, Any]:
     matrix = world.get("reaction_matrix")
     if not isinstance(matrix, dict):
         return record
-    entries = [
-        f"{key}: {value}"
-        for key, value in matrix.items()
-        if isinstance(key, str) and key.strip() and isinstance(value, str) and value.strip()
-    ]
+    entries = []
+    for key, value in matrix.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        ref = key.strip()
+        # The contract's reacting slots are committed-entity refs: anything
+        # else (prose keys, nested shapes flattened to text) is dropped.
+        if not ref.startswith("C") or not ref[1:].isdecimal():
+            continue
+        if not value.strip():
+            continue
+        entries.append(f"{ref}: {value.strip()}")
     out = dict(record)
     out["world_integration"] = {**world, "reaction_matrix": ", ".join(entries)}
     return out
