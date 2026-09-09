@@ -246,3 +246,15 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-combat-power-enforcement.md`
   summary: Regenerate re-rolls of stat_block run neither shape nor power validation, while the embedded rules text describes validator enforcement.
   evidence: regenerate._validate_output checks AR24 shape + byte-identical sections only (backend/app/pipeline/regenerate.py:394-416); wiring validate_stat_block into that path changes job outcomes (bad re-rolls would fail instead of stage) — an owner decision. The prompt wording is scoped to build-in/generate in the meantime.
+## Owner verdicts 2026-09-09 (5-2 spec gates)
+
+- level_cr (spec-3-3 deferral): LOOSEN — export derives level/CR from
+  stat_block.identity numerics; top-level string stays display-only; prompt
+- retention (epic-4 retro item 13): KEEP-5 — bounded per-entity history
+  (current + 4 priors); export references newest available.
+- wave-2 orphan (build-in dogfood): ONE bounded wave-2 re-prompt naming the
+  orphans; second miss fails loudly. Mirrors record/stat one-pass semantics.
+- regenerate power (combat review deferral): WIRE validate_stat_block into
+  regenerate._validate_output — bad re-rolls fail instead of stage; matches
+  prompt claims + combat inherits-everywhere decision.
+- portrait URL mechanism: PENDING (signed URLs vs manual upload).

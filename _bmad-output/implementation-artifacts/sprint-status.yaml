@@ -29,14 +29,14 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 08:25
-last_updated: 09-08-2026 22:51
+last_updated: 09-09-2026
 project: mythosCircle
 project_key: NOKEY
 tracking_system: file-system
 story_location: 
   /home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts
 development_status:
-  epic-1: in-progress
+  epic-1: done
   1-1-repo-scaffold-with-conventions-and-green-test-harness: done
   1-2-versioned-world-store: done
   1-3-persistent-generation-queue: done
@@ -46,7 +46,7 @@ development_status:
   1-7-deploy-to-the-operator-s-host: done
   epic-1-retrospective: done
 
-  epic-2: in-progress
+  epic-2: done
   2-1-guided-build-in-flow: done
   2-2-typed-edge-vocabulary-on-commit: done
   2-3-core-first-two-wave-build-in-pipeline: done
@@ -56,7 +56,7 @@ development_status:
   2-7-first-visible-moment: done
   epic-2-retrospective: optional
 
-  epic-3: in-progress
+  epic-3: done
   3-1-plain-language-ask-returns-2-3-candidates: done
   3-2-candidate-lifecycle-and-atomic-commit: done
   3-3-accept-screen-on-substance: done
@@ -65,7 +65,7 @@ development_status:
   3-6-hand-editing-the-dm-is-the-final-author: done
   epic-3-retrospective: done
 
-  epic-4: in-progress
+  epic-4: done
   4-1-portrait-generation-for-accepted-entities: done
   4-2-bbeg-fast-tier-short-video-beta-not-a-launch-priority: done
   4-3-reclaim-on-delete-and-export-media-validation: done
