@@ -1159,6 +1159,143 @@ def test_reaction_matrix_object_canonicalized_on_build_in(world: str) -> None:
     assert "C1: Hostile; owes her brother's claim." in matrix
 
 
+def test_missing_entity_name_repaired_in_one_pass(world: str) -> None:
+    """NAME_REPAIR (dogfood 2026-09-09 live: gemma shipped wave-1 with a
+    fully-detailed character that had NO name field at all — the old
+    structural check hard-failed the whole wave on 'entity N name must
+    be a non-blank string'). A nameless entity of ANY kind (here a
+    faction AND a character) gets exactly one bounded repair pass; the
+    repaired name lands on the entity level and — for a character — in
+    the record too; the fully-repaired wave commits with no further
+    repair calls (record/stat gates stay silent)."""
+    output = _wave1_output()
+    # The 2026-09-09 gemma shape: no name on the entity NOR in the record.
+    del output["entities"][0]["name"]  # faction: The Gilded Bar
+    del output["entities"][1]["name"]  # character: Mira Vane
+    del output["entities"][1]["data"]["name"]
+    responses = [
+        json.dumps(output),
+        json.dumps(
+            {
+                "names": [
+                    {"ref": "E0", "name": "The Gilded Bar"},
+                    {"ref": "E1", "name": "Barkeep Whostbos"},
+                ]
+            }
+        ),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 2  # wave 1 + the name repair; record/stat gates silent
+    assert "names" in calls[1] and "E0 (faction)" in calls[1] and "E1 (character)" in calls[1]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        by_name = {e.name: e for e in world_entities(session, world)}
+    assert "The Gilded Bar" in by_name  # faction: entity name repaired, no record
+    assert "name" not in by_name["The Gilded Bar"].data
+    barkeep = by_name["Barkeep Whostbos"]
+    assert barkeep.kind == "character"
+    assert barkeep.data["name"] == "Barkeep Whostbos"  # record name matches (contract)
+
+
+def test_missing_entity_name_falls_back_to_record_name(world: str) -> None:
+    """NAME_FALLBACK (dogfood 2026-09-09): a character whose entity-level
+    name is missing but whose RECORD carries a name (the CHARACTER RECORDS
+    contract requires data.name == entity name — the model clearly meant
+    it) is recovered WITHOUT a repair call: the record name becomes the
+    entity name before any gate runs."""
+    output = _wave1_output()
+    del output["entities"][1]["name"]  # data (record) still has "name": "Mira Vane"
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(output)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 1  # no repair pass: the record name was recovered
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.kind == "character" and mira.data["name"] == "Mira Vane"
+
+
+def test_name_repair_blank_or_missing_ref_fails(world: str) -> None:
+    """NAME_REPAIR_STRICT: the name repair response must list exactly the
+    flagged refs with non-blank string names — a blank name or an empty
+    'names' list fails the job, zero commits (same strictness as the
+    record repair)."""
+    output = _wave1_output()
+    del output["entities"][1]["name"]
+    del output["entities"][1]["data"]["name"]
+    responses = [
+        json.dumps(output),
+        json.dumps({"names": [{"ref": "E1", "name": "   "}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(
+        provider=lambda prompt, settings, responses=responses: responses.pop(0),
+        settings=SETTINGS,
+    )
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "name repair: ref E1 name must be a non-blank string" in (job.error or "")
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+    responses2 = [json.dumps(output), json.dumps({"names": []})]
+    job_id2 = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(
+        provider=lambda prompt, settings, responses=responses2: responses.pop(0),
+        settings=SETTINGS,
+    )
+    job2, _position = job_status(job_id2)
+    assert job2.state == "failed"
+    assert "name repair: missing repaired names for E1" in (job2.error or "")
+
+
+def test_wave2_nameless_character_repaired(world: str) -> None:
+    """NAME_REPAIR_WAVE2: the name gate is parity-gated on wave 2 — a
+    wave-2 character with no name gets one bounded repair pass (labelled
+    E<position>, the repair convention shared with the record gate) and
+    commits with the name; the wave-1 core stays untouched."""
+    output2 = _wave2_output()
+    del output2["entities"][1]["name"]
+    del output2["entities"][1]["data"]["name"]
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(output2),
+        json.dumps({"names": [{"ref": "E1", "name": "Captain Harlow"}]}),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, notes="the docks teem with Captain Harlow")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 3  # wave 1 + wave 2 + the name repair
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["entity_count"] == 4
+    with session_scope() as session:
+        harlow = next(e for e in world_entities(session, world) if e.name == "Captain Harlow")
+    assert harlow.kind == "character" and harlow.data["name"] == "Captain Harlow"
+
+
 def test_record_repair_missing_ref_fails(world: str) -> None:
     """RECORD_REPAIR_MISSING_REF: the repair response must list exactly the
     flagged refs — an empty 'records' list fails the job, zero commits."""

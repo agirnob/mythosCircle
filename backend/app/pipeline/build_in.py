@@ -300,6 +300,159 @@ def _record_failure_message(wave: int, issues: Sequence[_RecordIssue]) -> str:
     return f"wave {wave}: " + " | ".join(parts)
 
 
+def _collect_name_issues(
+    entities: Sequence[models.EntityInput],
+) -> list[tuple[int, models.EntityInput]]:
+    """Flag every entity whose name is missing or blank — of ANY kind
+    (place/faction/character, dogfood fix 2026-09-09: the compact model
+    shipped a fully-detailed wave-1 character with no name field at all,
+    and the old structural check hard-failed the whole wave over it)."""
+    return [
+        (position, entity)
+        for position, entity in enumerate(entities)
+        if not (isinstance(entity.name, str) and entity.name.strip())
+    ]
+
+
+def _build_name_repair_prompt(issues: Sequence[tuple[int, models.EntityInput]]) -> str:
+    """The name gate's one bounded repair pass (AR25 semantics, same
+    shape as the stat/record repairs): each flagged entity's ref, kind,
+    and the narrative hints that carry its identity (text +
+    personality/appearance/role, stat_block and empty name excluded) so
+    the supplied name fits the entity."""
+    flagged: list[str] = []
+    for position, entity in issues:
+        excerpt: dict[str, Any] = {}
+        if entity.text:
+            excerpt["text"] = entity.text
+        for key in ("role", "personality", "appearance", "background"):
+            value = entity.data.get(key) if isinstance(entity.data, dict) else None
+            if isinstance(value, str) and value.strip():
+                excerpt[key] = value
+        excerpt_json = json.dumps(excerpt, sort_keys=True, separators=(",", ":"))
+        flagged.append(f"E{position} ({entity.kind}):\ncurrent record: {excerpt_json}")
+    return "\n".join(
+        [
+            "You are naming entities for a TTRPG world-build-in.",
+            "Respond with exactly one JSON object — nothing else.",
+            "",
+            "TASK",
+            "Each entity listed below was created without a name. Supply ONE",
+            "concise, evocative name per entity, fitting its kind and the",
+            "current record (a barkeep character might be 'Barkeep Whostbos',",
+            "an old archivist 'Old Ferrick').",
+            "",
+            "\n\n".join(flagged),
+            "",
+            "OUTPUT CONTRACT",
+            'Respond with one JSON object: {"names": [{"ref": "E<position>",',
+            '  "name": "..."}, ...]} — exactly one entry per entity listed,',
+            "one ref per entry, nothing else. The name must be a non-blank string.",
+        ]
+    )
+
+
+def _parse_name_repair_output(text: str, flagged_positions: Sequence[int]) -> dict[int, str]:
+    """Parse the name repair response into {position: name}.
+
+    Same strictness as the record repair: EXACTLY the flagged refs, each
+    once, each with a non-blank string name; a missing, unknown,
+    duplicate, or blank ref fails the job — never a partial merge.
+    """
+    stripped = _strip_fence(text)
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise JobPayloadError(f"name repair: output is not valid JSON ({exc})") from exc
+    if not isinstance(parsed, dict):
+        raise JobPayloadError("name repair: output must be a JSON object")
+    raw = parsed.get("names")
+    if not isinstance(raw, list):
+        raise JobPayloadError("name repair: output must have a 'names' list")
+    expected = set(flagged_positions)
+    repaired: dict[int, str] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise JobPayloadError("name repair: each names entry must be an object")
+        ref = entry.get("ref")
+        if not isinstance(ref, str) or not ref.startswith("E"):
+            raise JobPayloadError(f"name repair: ref must be E<position>, got {ref!r}")
+        digits = ref[1:]
+        if not digits.isdecimal() or str(int(digits)) != digits:
+            raise JobPayloadError(f"name repair: ref must be E<position>, got {ref!r}")
+        position = int(digits)
+        if position not in expected:
+            raise JobPayloadError(f"name repair: ref E{position} was not flagged for repair")
+        if position in repaired:
+            raise JobPayloadError(f"name repair: ref E{position} appears more than once")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise JobPayloadError(f"name repair: ref E{position} name must be a non-blank string")
+        repaired[position] = name.strip()
+    missing = sorted(expected - repaired.keys())
+    if missing:
+        names = ", ".join(f"E{position}" for position in missing)
+        raise JobPayloadError(f"name repair: missing repaired names for {names}")
+    return repaired
+
+
+def _apply_name_repairs(
+    entities: Sequence[models.EntityInput],
+    repaired: Mapping[int, str],
+) -> list[models.EntityInput]:
+    """Apply repaired names: the entity-level name always; for a
+    character the record's ``name`` too (the record contract requires it
+    to match). Everything else is untouched."""
+    merged: list[models.EntityInput] = []
+    for position, entity in enumerate(entities):
+        if position in repaired:
+            name = repaired[position]
+            data = {**entity.data, "name": name} if entity.kind == "character" else entity.data
+            entity = dataclasses.replace(entity, name=name, data=data)
+        merged.append(entity)
+    return merged
+
+
+def _name_failure_message(wave: int, remaining: Sequence[tuple[int, models.EntityInput]]) -> str:
+    """The fail-event message for a wave still carrying nameless entities
+    after the repair."""
+    parts = [
+        f"entity {position} ({entity.kind}) still has no non-blank name"
+        for position, entity in remaining
+    ]
+    return f"wave {wave}: " + " | ".join(parts)
+
+
+def _enforce_entity_names(
+    job: models.Job,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    entities: list[models.EntityInput],
+    wave: int,
+) -> tuple[list[models.EntityInput], bool]:
+    """The structural-name gate shared by both waves (dogfood fix
+    2026-09-09): collect nameless entities, run exactly one bounded
+    repair pass, re-check. Returns ``(entities, cancelled)`` — cancelled
+    True means the job was cancelled mid-gate and the caller must stop
+    without committing this wave. Runs BEFORE the record gate so the
+    record repair's NAME-verbatim rule sees a real name."""
+    issues = _collect_name_issues(entities)
+    if not issues:
+        return entities, False
+    if not _job_still_running(job):
+        return entities, True
+    repair_text = budget.call(
+        lambda: provider(_build_name_repair_prompt(issues), settings=settings)
+    )
+    repaired = _parse_name_repair_output(repair_text, [position for position, _entity in issues])
+    entities = _apply_name_repairs(entities, repaired)
+    remaining = _collect_name_issues(entities)
+    if remaining:
+        raise JobPayloadError(_name_failure_message(wave, remaining))
+    return entities, False
+
+
 def _enforce_character_records(
     job: models.Job,
     budget: CallBudget,
@@ -370,6 +523,15 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # Only characters carry stat blocks (AR24, spec-2.4 review decision): a
     # stray block from a faction/place is stripped before validation or commit.
     entities_1 = strip_noncharacter_stat_blocks(entities_1)
+    # Structural-name enforcement (dogfood fix 2026-09-09): a wave entity
+    # missing its name (gemma shipped a fully-detailed character with no
+    # name field) gets one bounded repair pass BEFORE the record gate, so
+    # the record repair's name-verbatim rule sees a real name.
+    entities_1, cancelled = _enforce_entity_names(
+        job, budget, provider, settings, entities_1, wave=1
+    )
+    if cancelled:
+        return
     # Record enforcement (dogfood fix 2026-09-09): every wave character
     # carries the full AR24 record — violations go through exactly one
     # bounded repair pass, same AR25 semantics as the stat gate below. It
@@ -413,10 +575,15 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         entities_2, edges_2 = _validate_subgraph(
             2, parsed_2, context=context_entities, core_count=core_count
         )
-        # The same gates as wave 1 (dogfood fix 2026-09-09): wave-2
-        # characters carry full AR24 records (record gate, then the
-        # stat-block gate) before committing.
+        # The same gates as wave 1 (dogfood fix 2026-09-09): wave-2 names
+        # (name gate), then characters carry full AR24 records (record
+        # gate, then the stat-block gate) before committing.
         entities_2 = strip_noncharacter_stat_blocks(entities_2)
+        entities_2, cancelled = _enforce_entity_names(
+            job, budget, provider, settings, entities_2, wave=2
+        )
+        if cancelled:
+            return
         entities_2, cancelled = _enforce_character_records(
             job, budget, provider, settings, entities_2, wave=2
         )
@@ -657,15 +824,27 @@ def _validate_subgraph(
             raise JobPayloadError(
                 f"wave {wave}: entity {position} kind {kind!r} not in {sorted(ENTITY_KINDS)}"
             )
-        name = raw.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise JobPayloadError(f"wave {wave}: entity {position} name must be a non-blank string")
         text = raw.get("text")
         if text is not None and not isinstance(text, str):
             raise JobPayloadError(f"wave {wave}: entity {position} text must be a string")
         data = raw.get("data")
         if data is not None and not isinstance(data, dict):
             raise JobPayloadError(f"wave {wave}: entity {position} data must be an object")
+        name = raw.get("name")
+        # A missing/blank/mis-typed name is NOT a hard-fail here (dogfood
+        # 2026-09-09: the compact model shipped a fully-detailed character
+        # with no name field at all, killing the whole wave). It flows to
+        # the bounded name-repair gate (_enforce_entity_names) — but a
+        # character whose record carries a name (the CHARACTER RECORDS
+        # contract requires data.name == entity name) falls back to it
+        # right here, so the repair pass is never burned on a name the
+        # model already wrote once. ``""`` keeps EntityInput.name a string
+        # (the column is non-nullable); the gate runs before any commit.
+        clean_name = name.strip() if isinstance(name, str) else ""
+        if kind == "character" and not clean_name:
+            record_name = data.get("name") if isinstance(data, dict) else None
+            if isinstance(record_name, str) and record_name.strip():
+                clean_name = record_name.strip()
         if kind == "character":
             # The entity-level name is authoritative inside the record too
             # (generate parity: committed character data carries "name").
@@ -675,14 +854,14 @@ def _validate_subgraph(
             # (dogfood 2026-09-09: the compact model ships a
             # {"C<i>": "<reaction>"} mapping, which the shared validator
             # would flag and burn the record gate's one repair pass on).
-            data = canonicalize_reaction_matrix({**(data or {}), "name": name.strip()})
+            data = canonicalize_reaction_matrix({**(data or {}), "name": clean_name})
         entity_id = ids.new_id()
         assigned_ids.append(entity_id)
         entity_inputs.append(
             models.EntityInput(
                 id=entity_id,
                 kind=kind,
-                name=name.strip(),
+                name=clean_name,
                 text=text,
                 data=data or {},
             )
