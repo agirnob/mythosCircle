@@ -30,6 +30,7 @@ insertion order, and the ``exported_at`` stamp is the snapshot's own
 timestamp — never a wall-clock read.
 """
 
+import json
 import logging
 import math
 import re
@@ -301,11 +302,12 @@ def export_entity(
     campaign_id: str,
     entity_id: str,
     current: Annotated[models.Account, Depends(get_current_account)],
-    format: Literal["json", "markdown", "html"] = "json",
+    format: Literal["json", "markdown", "html", "owlbear"] = "json",
 ) -> EntityExportDetail | Response:
     """One committed entity — edges touching it and the revision head —
-    as JSON, Markdown, or a print-ready HTML sheet. The entity-level
-    projection is the engine Epic 5's VTT adapters consume (spec-5.1)."""
+    as JSON, Markdown, a print-ready HTML sheet, or the Owlbear/Forge
+    transfer payload. The entity-level projection is the engine Epic 5's
+    VTT adapters consume (spec-5.1, spec-5-2)."""
     campaign = get_campaign(current.id, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")
@@ -333,6 +335,20 @@ def export_entity(
             campaign_id=campaign_id,
             entity_id=entity_id,
             fmt="markdown",
+        )
+    if format == "owlbear":
+        stem = _download_stem(export_sheets.name_labels(export)[entity_id], entity_id, "entity")
+        return _attachment(
+            lambda: json.dumps(
+                export_sheets.render_entity_owlbear(export, entity_id),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            filename=f"{stem}.json",
+            media_type="application/json",
+            campaign_id=campaign_id,
+            entity_id=entity_id,
+            fmt="owlbear",
         )
     stem = _download_stem(export_sheets.name_labels(export)[entity_id], entity_id, "entity")
     return _attachment(

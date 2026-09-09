@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import html as _html
 import json
+import math
 import re
 from collections import Counter
 from pathlib import Path
@@ -637,3 +638,211 @@ def render_world_html(export: WorldExport) -> str:
             f"<tbody>{''.join(rows)}</tbody></table></section>"
         )
     return _document(export.campaign.title, "".join(subtitle_parts), "".join(body_parts))
+
+# ---------------------------------------------------------------------------
+# Owlbear / Forge export (spec-5-2)
+# ---------------------------------------------------------------------------
+
+#: Extension namespace prefixing every Forge metadata key (measured from
+#: the live default-5e AI Template dictionary, 2026-09-09).
+_FORGE_NS = "com.battle-system.forge"
+
+#: BID -> meaning (the frozen table from the spec's Design Notes; Ask
+#: First before changing — it mirrors the live dictionary, not memory).
+#: Z001 identity.level (NPC/BBEG only); Z003 record alignment; Z004
+#: record race_type; Z005/Z006 combat hp (current/max); Z007 combat ac;
+#: Z014 skills join; Z016 identity.cr fraction->decimal (Monster only);
+#: Z017-Z022 the six scores; Z023-Z028 derived saves
+#: floor((score-10)/2); Z034 traits; Z035 actions; Z038
+#: boss.legendary_actions; Z039 spells (names, "" descriptions); Z040
+#: record equipment. Everything else is omitted — sparse payloads import
+#: validly (speeds, senses, languages, resistances, proficiency,
+#: Z036/Z037 bonus/reactions have no stored source).
+
+def _forge_key(bid: str) -> str:
+    """The extension-namespaced metadata key Forge imports (unit-card
+    field menus show the bare ``[Z017]`` BID for the same slot)."""
+    return f"{_FORGE_NS}/{bid}"
+
+def _forge_number(value: Any) -> int | float | None:
+    """Coerce a stored numeric to a JSON number (Forge ``numb``).
+    Ints/floats pass (non-finite never serializes — omitted); numeric
+    strings parse; CR fractions (``"1/2"``) divide out. Anything else is
+    unmapped and omitted — the export path never validates (FR18)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if "/" in text:
+            parts = text.split("/")
+            if len(parts) == 2:
+                try:
+                    num, den = float(parts[0]), float(parts[1])
+                except ValueError:
+                    return None
+                if den == 0:
+                    return None
+                result = num / den
+                return result if math.isfinite(result) else None
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        try:
+            result = float(text)
+        except ValueError:
+            return None
+        return result if math.isfinite(result) else None
+    return None
+
+
+def _forge_text(value: Any) -> str | None:
+    """A non-blank string, else None (sparse omit)."""
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _forge_entries(entity_id: str, items: Any) -> list[dict[str, str]]:
+    """A name/description list as Forge ``list`` entries with index-stable
+    ids (``{entity-id-8}-{i}`` — never fresh ULIDs, so repeats are
+    byte-identical). Nameless members are skipped, not failed."""
+    if not isinstance(items, list):
+        return []
+    entries = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        description = item.get("description", "")
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            description = str(description)
+        entries.append(
+            {"id": f"{entity_id[-8:]}-{index}", "name": name, "description": description}
+        )
+    return entries
+
+
+def render_entity_owlbear(export: WorldExport, entity_id: str) -> dict[str, Any]:
+    """The Forge transfer payload for one committed entity (spec-5-2):
+    ``{name, author, metadata}`` with the observed ``fabd`` constant
+    inside the namespaced metadata — the Import modal's full-transfer
+    shape (a raw metadata object also imports, but the file carries the
+    whole unit).
+    Level/CR derive from ``stat_block.identity`` numerics (owner
+    verdict: top-level ``level_cr`` is display-only and never read
+    here). Only character-shaped records map — anything unmapped is
+    omitted, never validated."""
+    entity = next(e for e in export.entities if e.id == entity_id)
+    data = entity.data if isinstance(entity.data, dict) else {}
+    block = data.get("stat_block")
+    block = block if isinstance(block, dict) else {}
+    identity = block.get("identity")
+    identity = identity if isinstance(identity, dict) else {}
+    combat = block.get("combat")
+    combat = combat if isinstance(combat, dict) else {}
+    attributes = block.get("attributes")
+    attributes = attributes if isinstance(attributes, dict) else {}
+    boss = data.get("boss")
+    boss = boss if isinstance(boss, dict) else {}
+    role = identity.get("role")
+    metadata: dict[str, Any] = {}
+    if role in ("NPC", "BBEG"):
+        level = _forge_number(identity.get("level"))
+        if level is not None:
+            metadata[_forge_key("Z001")] = level
+    elif role == "Monster":
+        challenge = _forge_number(identity.get("cr"))
+        if challenge is not None:
+            metadata[_forge_key("Z016")] = challenge
+    alignment = _forge_text(data.get("alignment"))
+    if alignment is not None:
+        metadata[_forge_key("Z003")] = alignment
+    race = _forge_text(data.get("race_type"))
+    if race is not None:
+        metadata[_forge_key("Z004")] = race
+    hp_raw = combat.get("hp")
+    if hp_raw is None:
+        # The 5-1 sheet fixture commits the long names (armor_class /
+        # hit_points); the validator's rules text says ac / hp — read both.
+        hp_raw = combat.get("hit_points")
+    hit_points = _forge_number(hp_raw)
+    if hit_points is not None:
+        metadata[_forge_key("Z005")] = hit_points
+        metadata[_forge_key("Z006")] = hit_points
+    ac_raw = combat.get("ac")
+    if ac_raw is None:
+        ac_raw = combat.get("armor_class")
+    armor = _forge_number(ac_raw)
+    if armor is not None:
+        metadata[_forge_key("Z007")] = armor
+    skills = block.get("skills")
+    if isinstance(skills, list):
+        parts = []
+        for entry in skills:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            # A missing/unparseable bonus keeps the bare name — the
+            # export never invents a bonus it was not given.
+            bonus = _forge_number(entry.get("bonus"))
+            if bonus is None:
+                parts.append(name)
+            else:
+                sign = "+" if bonus >= 0 else ""
+                parts.append(f"{name} {sign}{bonus}")
+        if parts:
+            metadata[_forge_key("Z014")] = ", ".join(parts)
+    scores: dict[str, int | float] = {}
+    for position, ability in enumerate(_ABILITY_ORDER):
+        score = _forge_number(attributes.get(ability))
+        if score is None:
+            continue
+        scores[ability] = score
+        metadata[_forge_key(f"Z{17 + position:03d}")] = score
+    for position, ability in enumerate(_ABILITY_ORDER):
+        score = scores.get(ability)
+        if score is None:
+            continue
+        metadata[_forge_key(f"Z{23 + position:03d}")] = math.floor((score - 10) / 2)
+    traits = _forge_entries(entity_id, block.get("traits"))
+    if traits:
+        metadata[_forge_key("Z034")] = traits
+    actions = _forge_entries(entity_id, block.get("actions"))
+    if actions:
+        metadata[_forge_key("Z035")] = actions
+    legendary = _forge_text(boss.get("legendary_actions"))
+    if legendary is not None:
+        metadata[_forge_key("Z038")] = legendary
+    spells = block.get("spells")
+    if isinstance(spells, list):
+        spell_entries = [
+            {"id": f"{entity_id[-8:]}-{index}", "name": name.strip(), "description": ""}
+            for index, name in enumerate(spells)
+            if isinstance(name, str) and name.strip()
+        ]
+        if spell_entries:
+            metadata[_forge_key("Z039")] = spell_entries
+    equipment = _forge_entries(entity_id, data.get("equipment"))
+    if equipment:
+        metadata[_forge_key("Z040")] = equipment
+    # ``fabd`` rides INSIDE the namespaced metadata (both observed live
+    # payloads carry ``com.battle-system.forge/fabd: true`` — review
+    # round 1), not as a bare top-level key.
+    metadata[_forge_key("fabd")] = True
+    return {
+        "name": entity.name,
+        "author": export.campaign.title,
+        "metadata": metadata,
+    }

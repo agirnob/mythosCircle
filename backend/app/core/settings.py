@@ -391,6 +391,28 @@ def configured_media_dir() -> str:
     return runtime_config().media_dir
 
 
+#: Environment variable for the signed portrait-URL HMAC secret
+#: (spec-5.2). Env-only per AD-22 — never config.toml, never the client:
+#: anyone holding it can mint portrait URLs for any campaign.
+MEDIA_URL_SECRET = "MYTHOSCIRCLE_MEDIA_URL_SECRET"
+
+
+def media_url_secret() -> str | None:
+    """The HMAC secret minting signed portrait URLs, or None when unset
+    (the portrait-url route 500s — fail closed, never mint unsigned)."""
+    value = os.environ.get(MEDIA_URL_SECRET)
+    return value if value else None
+
+
+def configured_base_url() -> str:
+    """The deployment's public origin — env > config > default (spec-5.2).
+    The mint route builds absolute portrait URLs from it (Forge's
+    portrait override needs a public URL, not a same-origin path). A
+    set-but-empty env value falls through to config (the falsy rule the
+    secret reader and the numeric settings share)."""
+    return os.environ.get(config_mod.BASE_URL_ENV) or runtime_config().base_url
+
+
 #: Environment variable for the session lifetime (spec-1.5).
 SESSION_TTL_DAYS = "MYTHOSCIRCLE_SESSION_TTL_DAYS"
 #: Default session lifetime in days (AR14/AR29).

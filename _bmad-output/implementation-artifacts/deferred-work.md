@@ -259,3 +259,6 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - portrait URL mechanism: SIGNED URLs — HMAC over path+expiry, origin-public
   assumption holds (dynamic IP fine via DNS); base_url still placeholder
   world.example.tld, set real hostname at 5-2 spec time.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-2-owlbear-export.md`
+  summary: Damaged HP state has no export representation — Z005/Z006 both mirror the single stored combat.hp.
+  evidence: 5-2 review (blind hunter): no stored current-vs-max split exists in the commit path, so the Forge payload cannot carry in-combat damage; stat-model evolution, not export scope.

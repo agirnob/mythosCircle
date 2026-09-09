@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import type { components } from '../api/schema'
-import { ApiError } from '../api/client'
+import { ApiError, apiFetch } from '../api/client'
 import StatBlock from '../components/StatBlock.vue'
 import { useAuthStore } from '../stores/auth'
 import { hasNonBlankAppearance } from '../lib/appearance'
@@ -307,6 +307,10 @@ watch(
   ],
   () => {
     portraitErrors.value = {}
+    // A manifest change can orphan a minted link (newest portrait
+    // replaced, row deleted) — drop kept links so the next click
+    // re-mints against the current manifest, never a stale file.
+    portraitLinks.value = {}
   },
 )
 
@@ -323,6 +327,45 @@ function portraitUrl(entity: EntityExport): string {
     : ''
 }
 
+/** Spec-5-2: signed Forge portrait URL per entity — minted on click
+ * (the URL is absolute + expiring, pasted into Forge's per-unit
+ * portrait override), then kept for one-click re-copy. Failures render
+ * inline on the owning card; a clipboard denial keeps the link visible
+ * for manual copy. */
+const portraitLinks = ref<Record<string, string>>({})
+const portraitLinkBusy = ref<string | null>(null)
+const portraitLinkErrors = ref<Record<string, string>>({})
+
+async function copyText(text: string, entityId: string) {
+  try {
+    await globalThis.navigator.clipboard.writeText(text)
+  } catch {
+    portraitLinkErrors.value[entityId] = 'Copy failed — the link is shown below; copy it manually.'
+  }
+}
+
+async function fetchPortraitLink(entityId: string) {
+  portraitLinkErrors.value[entityId] = ''
+  const existing = portraitLinks.value[entityId]
+  if (existing) {
+    await copyText(existing, entityId)
+    return
+  }
+  portraitLinkBusy.value = entityId
+  try {
+    const body = await apiFetch<{ url: string; expires_at: string }>(
+      `/api/campaigns/${encodeURIComponent(campaignId)}/entities/${encodeURIComponent(entityId)}/portrait-url`,
+    )
+    portraitLinks.value[entityId] = body.url
+    await copyText(body.url, entityId)
+  } catch (err) {
+    portraitLinkErrors.value[entityId] =
+      err instanceof ApiError ? err.message : 'Could not get the portrait link.'
+  } finally {
+    portraitLinkBusy.value = null
+  }
+}
+
 /** Spec-5.1: pure-projection download links. Same-origin GETs — the
  * session cookie (path /api) authenticates them; `download` saves the
  * attachment without navigation. */
@@ -330,7 +373,7 @@ function worldExportUrl(format: 'markdown' | 'html'): string {
   return `/api/campaigns/${encodeURIComponent(campaignId)}/export?format=${format}`
 }
 
-function entityExportUrl(entityId: string, format: 'markdown' | 'html'): string {
+function entityExportUrl(entityId: string, format: 'markdown' | 'html' | 'owlbear'): string {
   return `/api/campaigns/${encodeURIComponent(campaignId)}/entities/${encodeURIComponent(entityId)}/export?format=${format}`
 }
 
@@ -1033,6 +1076,10 @@ function additionalDataBlock(entity: EntityExport): string {
               </button>
               <a class="link" :href="entityExportUrl(entity.id, 'markdown')" download> Markdown </a>
               <a class="link" :href="entityExportUrl(entity.id, 'html')" download> Sheet (HTML) </a>
+              <a class="link" :href="entityExportUrl(entity.id, 'owlbear')" download>
+                Owlbear (Forge)
+              </a>
+              <span class="muted small">Forge: file → Import paste · link → portrait override</span>
             </h3>
             <div class="portrait">
               <img
@@ -1062,6 +1109,20 @@ function additionalDataBlock(entity: EntityExport): string {
                       : 'Generate portrait'
                   }}
                 </button>
+                <button
+                  type="button"
+                  class="link"
+                  :disabled="portraitLinkBusy === entity.id"
+                  @click="fetchPortraitLink(entity.id)"
+                >
+                  {{
+                    portraitLinkBusy === entity.id
+                      ? 'Getting portrait link…'
+                      : portraitLinks[entity.id]
+                        ? 'Copy portrait link'
+                        : 'Get portrait link'
+                  }}
+                </button>
               </p>
               <!-- The failed-generation message renders REGARDLESS of an
                    existing portrait (a failed re-generation must not hide
@@ -1078,6 +1139,17 @@ function additionalDataBlock(entity: EntityExport): string {
               </p>
               <p v-if="portraitErrors[entity.id]" class="error">
                 {{ portraitErrors[entity.id] }}
+              </p>
+              <input
+                v-if="portraitLinks[entity.id]"
+                :value="portraitLinks[entity.id]"
+                readonly
+                :aria-label="`${entity.name} portrait link`"
+                class="portrait-link"
+                @focus="($event.target as HTMLInputElement).select()"
+              />
+              <p v-if="portraitLinkErrors[entity.id]" class="error">
+                {{ portraitLinkErrors[entity.id] }}
               </p>
             </div>
             <!-- Reveal video (spec-4.2/4.6, beta): boss-tier cards only. The
@@ -1406,6 +1478,13 @@ function additionalDataBlock(entity: EntityExport): string {
 .portrait-actions .link:disabled {
   color: #484f58;
   cursor: default;
+}
+.portrait-link {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  font-family: monospace;
 }
 .portrait .status {
   font-size: 0.8rem;

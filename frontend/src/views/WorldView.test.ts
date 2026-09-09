@@ -1588,6 +1588,172 @@ describe('WorldView', () => {
     ])
     wrapper.unmount()
   })
+  it('renders the Owlbear export anchor per committed entity', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    const wrapper = mountView()
+    await flushPromises()
+    const owlbear = wrapper
+      .findAll('a')
+      .filter((anchor) => anchor.text().trim() === 'Owlbear (Forge)')
+    expect(owlbear.map((anchor) => anchor.attributes('href'))).toEqual([
+      '/api/campaigns/C1/entities/E1/export?format=owlbear',
+      '/api/campaigns/C1/entities/E2/export?format=owlbear',
+    ])
+    expect(owlbear[0]?.attributes('download')).toBeDefined()
+    // PATCH 8 (review round 1): the DM flow hint rides beside the anchor.
+    expect(wrapper.text()).toContain('Forge: file → Import paste · link → portrait override')
+    wrapper.unmount()
+  })
+  it('portrait link: mints the signed URL, copies it, and shows it for manual copy', async () => {
+    const signed =
+      'https://table.example.test/api/campaigns/C1/media/E1/01JZZZZZZZZZZZZZZZZZZZZZZX.png?exp=9&sig=abc'
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.endsWith('/portrait-url')) {
+        return { url: signed, expires_at: '2033-09-09T00:00:00Z' }
+      }
+      if (url.includes('/media')) return portraitMedia()
+      return populatedWorld()
+    })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const wrapper = mountView()
+    await flushPromises()
+    const button = wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text() === 'Get portrait link')
+    expect(button).toBeDefined()
+    await button!.trigger('click')
+    await flushPromises()
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/campaigns/C1/entities/E1/portrait-url')
+    expect(writeText).toHaveBeenCalledWith(signed)
+    const input = wrapper.find('input.portrait-link')
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe(signed)
+    // A second click re-copies the kept link without re-minting.
+    const portraitCalls = apiFetchMock.mock.calls.filter((call) =>
+      String(call[0]).endsWith('/portrait-url'),
+    ).length
+    await wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text() === 'Copy portrait link')!
+      .trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledTimes(2)
+    expect(
+      apiFetchMock.mock.calls.filter((call) => String(call[0]).endsWith('/portrait-url')).length,
+    ).toBe(portraitCalls)
+    vi.unstubAllGlobals()
+    wrapper.unmount()
+  })
+  it('portrait link: a mint failure renders the card error, never the field', async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.endsWith('/portrait-url')) {
+        throw new ApiError(404, 'not_found', 'Entity not found.')
+      }
+      if (url.includes('/media')) return portraitMedia()
+      return populatedWorld()
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text() === 'Get portrait link')!
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Entity not found.')
+    expect(wrapper.find('input.portrait-link').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('portrait link: the button renders with no portrait; the mint 404 covers absence', async () => {
+    // PATCH 5 (review round 1): no portraitFor gate — an entity with no
+    // manifest row still offers the button; the mint 404 renders inline.
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.endsWith('/portrait-url')) {
+        throw new ApiError(404, 'not_found', 'Entity not found.')
+      }
+      if (url.includes('/media')) return { media: [] }
+      return populatedWorld()
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('No portrait.')
+    await wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text() === 'Get portrait link')!
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Entity not found.')
+    expect(wrapper.find('input.portrait-link').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('portrait link: a clipboard denial renders Copy-failed with the link retained', async () => {
+    // PATCH 10e (review round 1): the minted link stays visible for
+    // manual copy when writeText rejects.
+    const signed =
+      'https://table.example.test/api/campaigns/C1/media/E1/01JZZZZZZZZZZZZZZZZZZZZZZX.png?exp=9&sig=abc'
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.endsWith('/portrait-url')) {
+        return { url: signed, expires_at: '2033-09-09T00:00:00Z' }
+      }
+      if (url.includes('/media')) return portraitMedia()
+      return populatedWorld()
+    })
+    vi.stubGlobal('navigator', {
+      clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text() === 'Get portrait link')!
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Copy failed — the link is shown below; copy it manually.')
+    const input = wrapper.find('input.portrait-link')
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe(signed)
+    vi.unstubAllGlobals()
+    wrapper.unmount()
+  })
+  it('portrait link: a manifest change drops the kept link so the next click re-mints', async () => {
+    // PATCH 5 (review round 1): the kept link must not survive the
+    // manifest changing out from under it (newest replaced, row gone).
+    const signed =
+      'https://table.example.test/api/campaigns/C1/media/E1/01JZZZZZZZZZZZZZZZZZZZZZZX.png?exp=9&sig=abc'
+    let manifest = portraitMedia()
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.endsWith('/portrait-url')) {
+        return { url: signed, expires_at: '2033-09-09T00:00:00Z' }
+      }
+      if (url.includes('/media')) return manifest
+      return populatedWorld()
+    })
+    vi.stubGlobal('navigator', {
+      clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
+    })
+    const jobs = useJobsStore()
+    jobs.upsert(imageJob('JI1', 'E1', { state: 'running' }))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .find((candidate) => candidate.text() === 'Get portrait link')!
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.find('input.portrait-link').exists()).toBe(true)
+    manifest = {
+      media: [{ ...portraitMedia().media[0]!, id: 'M2', filename: 'NEWER.png' }],
+    }
+    socketCalls[0]!.onMessage({ type: 'job_done', job_id: 'JI1', state: 'succeeded' })
+    await vi.waitFor(() => expect(wrapper.find('input.portrait-link').exists()).toBe(false))
+    vi.unstubAllGlobals()
+    wrapper.unmount()
+  })
   it('RECORD_IN_DATA: scalar profile fields never duplicate into Additional data', async () => {
     // Dogfood 2026-09-09: committed character data carries the full
     // record (generate parity), so data.name/role/personality/... rendered

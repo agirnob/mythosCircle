@@ -1000,3 +1000,635 @@ def test_entity_html_stat_block_order_is_canonical(client: Any) -> None:
     assert panel(a).index('ab-k">STR') < panel(a).index('ab-k">DEX') < panel(a).index('ab-k">CHA')
     # The appendix keeps the committed insertion order verbatim.
     assert a.index('"cha"') < a.index('"wis"') < a.index('"str"')
+
+# ---------------------------------------------------------------------------
+# spec-5-2: Owlbear/Forge export + signed portrait URLs
+# ---------------------------------------------------------------------------
+
+_FORGE_NS = "com.battle-system.forge"
+
+
+def _fk(bid: str) -> str:
+    """The extension-namespaced Forge metadata key for a BID."""
+    return f"{_FORGE_NS}/{bid}"
+
+
+_SERA_DATA: dict[str, Any] = {
+    "name": "Sera",
+    "role": "NPC",
+    "level_cr": "level 5",
+    "race_type": "Human",
+    "class_profession": "Wizard",
+    "alignment": "NG",
+    "appearance": "Sharp-eyed scholar.",
+    "personality": "Curious.",
+    "secret": "Sold the map.",
+    "rumor": "Seen at the docks.",
+    "party_hook": "Ask about the map.",
+    "equipment": [
+        {"name": "Spellbook", "description": "Leather-bound, singed."},
+        {"name": "Dagger", "description": "Silvered."},
+    ],
+    "stat_block": {
+        # Identity race/alignment DELIBERATELY diverge from the record
+        # (Elf/CE vs Human/NG): the export reads the record fields —
+        # identity numerics own ONLY level/CR (owner verdict).
+        "identity": {
+            "role": "NPC",
+            "race": "Elf",
+            "level": 5,
+            "class": "Wizard",
+            "alignment": "CE",
+        },
+        "attributes": {"str": 8, "dex": 14, "con": 12, "int": 17, "wis": 13, "cha": 10},
+        "combat": {"ac": 12, "hp": 27},
+        "skills": [
+            {"name": "Perception", "bonus": 3},
+            {"name": "Stealth", "bonus": -1},
+        ],
+        "traits": [{"name": "Keen Mind", "description": "Always knows north."}],
+        "actions": [{"name": "Fire Bolt", "description": "Ranged spell attack, 2d10 fire."}],
+        "spells": ["Fireball", "Mage Hand"],
+    },
+}
+
+_GNASHER_DATA: dict[str, Any] = {
+    "name": "Gnasher",
+    "role": "Monster",
+    "stat_block": {
+        "identity": {"role": "Monster", "race": "Beast", "cr": "1/2"},
+        "attributes": {"str": 15, "dex": 13, "con": 14, "int": 3, "wis": 10, "cha": 5},
+        "combat": {"ac": 13, "hp": 22},
+        "skills": [],
+        "traits": [],
+        "actions": [{"name": "Bite", "description": "Melee attack, 1d8+2."}],
+        "spells": [],
+    },
+}
+
+
+def _commit_owlbear_cast(campaign_id: str) -> tuple[str, str, str]:
+    """NPC Sera (full record) + Monster Gnasher (CR fraction, sparse) +
+    a place anchor. Returns (sera_id, gnasher_id, anchor_id)."""
+    sera_id, gnasher_id, anchor_id = new_id(), new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=sera_id, kind="character", name="Sera", text="Scholar.", data=dict(_SERA_DATA)
+            ),
+            models.EntityInput(
+                id=gnasher_id,
+                kind="character",
+                name="Gnasher",
+                text="Beast.",
+                data=dict(_GNASHER_DATA),
+            ),
+            models.EntityInput(id=anchor_id, kind="place", name="Docks", text="Piers."),
+        ],
+        edges=[
+            models.EdgeInput(src=sera_id, dst=anchor_id, type="located_in", counter=1),
+            models.EdgeInput(src=gnasher_id, dst=anchor_id, type="located_in", counter=1),
+        ],
+    )
+    return sera_id, gnasher_id, anchor_id
+
+
+def _owlbear(client: Any, campaign_id: str, entity_id: str) -> Any:
+    return client.get(
+        f"/api/campaigns/{campaign_id}/entities/{entity_id}/export", params={"format": "owlbear"}
+    )
+
+
+def test_owlbear_npc_happy(client: Any) -> None:
+    """HAPPY NPC (matrix): the Forge transfer payload populates every
+    mapped field with committed values; the export stays read-only."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    title = client.get(f"/api/campaigns/{campaign_id}/export").json()["campaign"]["title"]
+    before = _counts(campaign_id)
+    response = _owlbear(client, campaign_id, sera_id)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("attachment") and disposition.endswith('.json"')
+    payload = response.json()
+    assert payload["name"] == "Sera"
+    assert payload["author"] == title
+    assert set(payload) == {"name", "author", "metadata"}
+    metadata = payload["metadata"]
+    assert metadata[_fk("fabd")] is True  # namespaced, not top-level (review round 1)
+    assert metadata[_fk("Z001")] == 5
+    assert metadata[_fk("Z003")] == "NG"  # record wins over identity CE
+    assert metadata[_fk("Z004")] == "Human"  # record wins over identity Elf
+    assert metadata[_fk("Z005")] == 27 and metadata[_fk("Z006")] == 27
+    assert metadata[_fk("Z007")] == 12
+    assert metadata[_fk("Z014")] == "Perception +3, Stealth -1"
+    assert _fk("Z016") not in metadata  # NPCs never carry CR
+    assert [metadata[_fk(f"Z{bid:03d}")] for bid in range(17, 23)] == [8, 14, 12, 17, 13, 10]
+    assert [metadata[_fk(f"Z{bid:03d}")] for bid in range(23, 29)] == [-1, 2, 1, 3, 1, 0]
+    assert metadata[_fk("Z034")] == [
+        {"id": f"{sera_id[-8:]}-0", "name": "Keen Mind", "description": "Always knows north."}
+    ]
+    assert metadata[_fk("Z035")] == [
+        {
+            "id": f"{sera_id[-8:]}-0",
+            "name": "Fire Bolt",
+            "description": "Ranged spell attack, 2d10 fire.",
+        }
+    ]
+    assert _fk("Z038") not in metadata  # no boss section, no legendary slot
+    assert metadata[_fk("Z039")] == [
+        {"id": f"{sera_id[-8:]}-0", "name": "Fireball", "description": ""},
+        {"id": f"{sera_id[-8:]}-1", "name": "Mage Hand", "description": ""},
+    ]
+    assert metadata[_fk("Z040")] == [
+        {"id": f"{sera_id[-8:]}-0", "name": "Spellbook", "description": "Leather-bound, singed."},
+        {"id": f"{sera_id[-8:]}-1", "name": "Dagger", "description": "Silvered."},
+    ]
+    assert _counts(campaign_id) == before  # no revision, no event (AR18)
+
+
+def test_owlbear_monster_cr_fraction_and_determinism(client: Any) -> None:
+    """HAPPY Monster (matrix): CR ``1/2`` ships as ``0.5``, level is
+    omitted, absent lists stay absent; repeats are byte-identical."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    _, gnasher_id, _ = _commit_owlbear_cast(campaign_id)
+    first = _owlbear(client, campaign_id, gnasher_id)
+    second = _owlbear(client, campaign_id, gnasher_id)
+    assert first.status_code == 200 and second.content == first.content
+    metadata = first.json()["metadata"]
+    assert metadata[_fk("Z016")] == 0.5
+    assert _fk("Z001") not in metadata  # Monsters never carry level
+    assert _fk("Z003") not in metadata and _fk("Z004") not in metadata
+    assert _fk("Z014") not in metadata  # no skills, sparse omit
+    assert _fk("Z034") not in metadata and _fk("Z039") not in metadata
+    assert metadata[_fk("Z035")][0]["name"] == "Bite"
+    assert metadata[_fk("Z035")][0]["id"] == f"{gnasher_id[-8:]}-0"
+
+
+def test_owlbear_sparse_place_and_long_combat_keys(client: Any) -> None:
+    """SPARSE (matrix): a stat-block-less place exports a valid payload
+    with empty metadata; the long combat key spellings (armor_class /
+    hit_points, committed by the 5-1 sheet fixture) map like ac / hp."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    _, _, anchor_id = _commit_owlbear_cast(campaign_id)
+    anchor = _owlbear(client, campaign_id, anchor_id)
+    assert anchor.status_code == 200
+    assert anchor.json()["metadata"] == {_fk("fabd"): True}  # sparse, fabd always rides
+    long_id = new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=long_id,
+                kind="character",
+                name="Long",
+                data={"stat_block": {"combat": {"armor_class": 15, "hit_points": 40}}},
+            ),
+        ],
+        edges=[models.EdgeInput(src=long_id, dst=anchor_id, type="located_in", counter=1)],
+        base_revision=client.get(f"/api/campaigns/{campaign_id}/export").json()["revision"]["id"],
+    )
+    metadata = _owlbear(client, campaign_id, long_id).json()["metadata"]
+    assert metadata[_fk("Z005")] == 40 and metadata[_fk("Z006")] == 40
+    assert metadata[_fk("Z007")] == 15
+
+
+def test_owlbear_404_shapes_and_bad_format(client: Any) -> None:
+    """MISSING/FOREIGN (matrix): the owlbear lookup 404s exactly like the
+    json one (format-independent); a bad format stays 422."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    missing_owlbear = _owlbear(client, campaign_id, new_id())
+    missing_json = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{new_id()}/export", params={"format": "json"}
+    )
+    assert missing_owlbear.status_code == 404
+    assert missing_json.status_code == 404
+    assert missing_owlbear.json() == missing_json.json()  # format-independent lookup
+    foreign = _owlbear(client, new_id(), sera_id)
+    unknown_campaign = client.get(
+        f"/api/campaigns/{new_id()}/entities/{sera_id}/export", params={"format": "json"}
+    )
+    assert foreign.status_code == 404
+    assert foreign.json() == unknown_campaign.json()  # indistinguishable
+    bad = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{sera_id}/export", params={"format": "foundry"}
+    )
+    assert bad.status_code == 422
+    assert bad.json()["code"] == "validation_error"
+
+
+def test_owlbear_render_failure_is_logged_as_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """RENDER FAILURE (matrix, FR18): a raising owlbear renderer logs
+    exactly one export_failure event naming format=owlbear, then the
+    generic 500; world state untouched."""
+    from app.api import export_sheets
+    from app.main import app
+    from app.store import app_db_url, init_db
+
+    def boom(export: Any, entity_id: str) -> dict[str, Any]:
+        raise RuntimeError("simulated owlbear regression")
+
+    monkeypatch.setattr(export_sheets, "render_entity_owlbear", boom)
+    previous = app_db_url()
+    init_db(f"sqlite:///{tmp_path / 'owlbear-fail.db'}")
+    try:
+        with TestClient(
+            app, base_url="https://testserver", raise_server_exceptions=False
+        ) as boom_client:
+            _register_login(boom_client)
+            campaign_id = _create_campaign(boom_client).json()["id"]
+            sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+            before = _counts(campaign_id)
+            with caplog.at_level(logging.ERROR):
+                response = boom_client.get(
+                    f"/api/campaigns/{campaign_id}/entities/{sera_id}/export",
+                    params={"format": "owlbear"},
+                )
+            assert response.status_code == 500
+            assert response.json()["code"] == "internal_error"
+            events = [r for r in caplog.records if "export_failure" in r.getMessage()]
+            assert len(events) == 1
+            message = events[0].getMessage()
+            assert campaign_id in message and sera_id in message and "format=owlbear" in message
+            assert _counts(campaign_id) == before
+    finally:
+        init_db(previous)
+
+
+def _mint_url(client: Any, campaign_id: str, entity_id: str) -> dict[str, Any]:
+    response = client.get(f"/api/campaigns/{campaign_id}/entities/{entity_id}/portrait-url")
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_portrait_url_mint_and_signed_fetch(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HAPPY portrait (matrix): the mint route returns an absolute URL +
+    expiry; the URL serves the file with no session, inline, read-only."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", "test-secret-5-2")
+    monkeypatch.setenv("MYTHOSCIRCLE_BASE_URL", "https://table.example.test")
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    row = add_media(campaign_id, sera_id, f"{new_id()}.png", "image")
+    _write_media_file(tmp_path, campaign_id, row)
+    before = _counts(campaign_id)
+    body = _mint_url(client, campaign_id, sera_id)
+    assert body["url"].startswith("https://table.example.test/api/campaigns/")
+    assert f"/media/{sera_id}/{row.filename}?" in body["url"]
+    assert "exp=" in body["url"] and "sig=" in body["url"]
+    assert body["expires_at"].endswith("Z")
+    from urllib.parse import parse_qs, urlparse
+
+    exp = int(parse_qs(urlparse(body["url"]).query)["exp"][0])
+    import time as _time
+
+    assert 7 * 24 * 3600 - 5 <= exp - int(_time.time()) <= 7 * 24 * 3600  # ~7d TTL
+    client.cookies.clear()  # Forge presents no session
+    fetched = client.get(body["url"].replace("https://table.example.test", ""))
+    assert fetched.status_code == 200
+    assert fetched.headers["content-type"] == "image/png"
+    assert fetched.headers["content-disposition"].startswith("inline")
+    assert fetched.headers["cache-control"] == "private"  # bearer URL, no shared cache
+    assert fetched.content == b"payload"
+    assert _counts(campaign_id) == before  # mint + fetch write nothing
+
+
+def test_portrait_url_no_portrait_matches_unknown_entity(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NO portrait (matrix): an entity with no available image 404s the
+    mint route exactly like an unknown entity — while its owlbear
+    payload still exports 200."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", "test-secret-5-2")
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    assert _owlbear(client, campaign_id, sera_id).status_code == 200
+    bare = client.get(f"/api/campaigns/{campaign_id}/entities/{sera_id}/portrait-url")
+    unknown = client.get(f"/api/campaigns/{campaign_id}/entities/{new_id()}/portrait-url")
+    assert bare.status_code == 404 and unknown.status_code == 404
+    assert bare.json() == unknown.json()
+
+
+def test_portrait_url_newest_available_skips_broken(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mint picks the newest AVAILABLE image row (hero rule): a newer
+    row whose file is gone is skipped; all-broken reads as no portrait."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", "test-secret-5-2")
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    older = add_media(campaign_id, sera_id, f"{new_id()}.png", "image")
+    _write_media_file(tmp_path, campaign_id, older)
+    add_media(campaign_id, sera_id, f"{new_id()}.png", "image")  # newer, never written
+    assert older.filename in _mint_url(client, campaign_id, sera_id)["url"]
+    (tmp_path / "media" / campaign_id / sera_id / older.filename).unlink()
+    missing = client.get(f"/api/campaigns/{campaign_id}/entities/{sera_id}/portrait-url")
+    assert missing.status_code == 404
+
+
+def _signed_params(secret: str, campaign_id: str, entity_id: str, filename: str, exp: int) -> str:
+    import hashlib as _hashlib
+    import hmac as _hmac
+    msg = f"{campaign_id}.{entity_id}.{filename}.{exp}".encode()
+    sig = _hmac.new(secret.encode(), msg, _hashlib.sha256).hexdigest()
+    return f"exp={exp}&sig={sig}"
+
+
+def test_signed_url_failures_share_campaign_404(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIG bad/expired (matrix): tampered, expired, half-present, and
+    foreign-campaign signatures are all the campaign-missing 404 —
+    mutually identical, with no oracle."""
+    import time as _time
+
+    secret = "test-secret-5-2"
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", secret)
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    row = add_media(campaign_id, sera_id, f"{new_id()}.png", "image")
+    _write_media_file(tmp_path, campaign_id, row)
+    client.cookies.clear()
+
+    def fetch(query: str, cid: str = campaign_id) -> Any:
+        return client.get(f"/api/campaigns/{cid}/media/{sera_id}/{row.filename}?{query}")
+
+    good_exp = int(_time.time()) + 3600
+    good = _signed_params(secret, campaign_id, sera_id, row.filename, good_exp)
+    assert fetch(good).status_code == 200
+    tampered = fetch(f"exp={good_exp}&sig={'0' * 64}")
+    expired = fetch(_signed_params(secret, campaign_id, sera_id, row.filename, 1))
+    half = fetch(f"exp={good_exp}")
+    # A non-integer exp is a signed-path 404 like every other failure —
+    # never a 422 (the signed path has no typed contract; review round 1).
+    nonint = fetch(f"exp=abc&sig={'0' * 64}")
+    foreign = client.get(f"/api/campaigns/{new_id()}/media/{sera_id}/{row.filename}?{good}")
+    for response in (tampered, expired, half, nonint, foreign):
+        assert response.status_code == 404
+    assert tampered.json() == expired.json() == half.json() == nonint.json() == foreign.json()
+
+
+def test_signed_video_row_serves_mp4(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The signed path keeps the row-kind media type: a signed video URL
+    serves ``video/mp4`` (the mint route itself only ever mints images)."""
+    import time as _time
+
+    secret = "test-secret-5-2"
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", secret)
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    clip = add_media(campaign_id, sera_id, f"{new_id()}.mp4", "video")
+    _write_media_file(tmp_path, campaign_id, clip)
+    client.cookies.clear()
+    query = _signed_params(secret, campaign_id, sera_id, clip.filename, int(_time.time()) + 60)
+    fetched = client.get(f"/api/campaigns/{campaign_id}/media/{sera_id}/{clip.filename}?{query}")
+    assert fetched.status_code == 200
+    assert fetched.headers["content-type"] == "video/mp4"
+
+
+def test_portrait_url_no_secret_500s_with_one_log_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """NO secret (matrix): the mint route fails closed — one error log
+    line, then the generic 500 (never an unsigned URL). Its own client:
+    the generic 500 needs raise_server_exceptions=False (test_api.py
+    pattern); the FR18 test's isolated-DB dance."""
+    from app.main import app
+    from app.store import app_db_url, init_db
+
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.delenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", raising=False)
+    previous = app_db_url()
+    init_db(f"sqlite:///{tmp_path / 'portrait-secret.db'}")
+    try:
+        with TestClient(
+            app, base_url="https://testserver", raise_server_exceptions=False
+        ) as secret_client:
+            _register_login(secret_client)
+            campaign_id = _create_campaign(secret_client).json()["id"]
+            sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+            row = add_media(campaign_id, sera_id, f"{new_id()}.png", "image")
+            _write_media_file(tmp_path, campaign_id, row)
+            with caplog.at_level(logging.ERROR):
+                response = secret_client.get(
+                    f"/api/campaigns/{campaign_id}/entities/{sera_id}/portrait-url"
+                )
+            assert response.status_code == 500
+            assert response.json()["code"] == "internal_error"
+            events = [
+                r for r in caplog.records if "portrait_url_secret_missing" in r.getMessage()
+            ]
+            assert len(events) == 1
+    finally:
+        init_db(previous)
+
+
+def test_cookie_file_get_still_401_without_signature(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The optional-auth refactor keeps the cookie contract: no session
+    and no signature on an existing row is the same 401 (never a 404
+    oracle, never the file)."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", "test-secret-5-2")
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    row = add_media(campaign_id, sera_id, f"{new_id()}.png", "image")
+    _write_media_file(tmp_path, campaign_id, row)
+    client.cookies.clear()
+    response = client.get(f"/api/campaigns/{campaign_id}/media/{sera_id}/{row.filename}")
+    assert response.status_code == 401
+    assert response.json()["code"] == "unauthorized"
+
+
+def test_owlbear_bbeg_level_and_legendary(client: Any) -> None:
+    """BBEG (verification gap): level ships on Z001 like an NPC, and the
+    boss legendary_actions text ships on Z038 — the one slot the NPC and
+    Monster matrices never exercise."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    bbeg_id, anchor_id = new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=bbeg_id,
+                kind="character",
+                name="Vex",
+                data={
+                    "role": "BBEG",
+                    "stat_block": {
+                        "identity": {"role": "BBEG", "race": "Tiefling", "level": 9},
+                        "attributes": {
+                            "str": 12,
+                            "dex": 14,
+                            "con": 14,
+                            "int": 16,
+                            "wis": 12,
+                            "cha": 18,
+                        },
+                        "combat": {"ac": 15, "hp": 120},
+                        "skills": [],
+                        "traits": [],
+                        "actions": [],
+                        "spells": [],
+                    },
+                    "boss": {
+                        "lair_actions": "None.",
+                        "legendary_actions": "Vex takes 3 legendary actions.",
+                        "immunities": "None.",
+                        "vulnerabilities": "None.",
+                    },
+                },
+            ),
+            models.EntityInput(id=anchor_id, kind="place", name="Lair"),
+        ],
+        edges=[models.EdgeInput(src=bbeg_id, dst=anchor_id, type="located_in", counter=1)],
+    )
+    metadata = _owlbear(client, campaign_id, bbeg_id).json()["metadata"]
+    assert metadata[_fk("Z001")] == 9
+    assert _fk("Z016") not in metadata
+    assert metadata[_fk("Z038")] == "Vex takes 3 legendary actions."
+
+
+def test_owlbear_bare_skill_names_and_stripped_spells(client: Any) -> None:
+    """PATCH 7 (review round 1): a skill with a missing/unparseable bonus
+    keeps its bare name (no invented bonus); spell names ship stripped."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    odd_id, anchor_id = new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=odd_id,
+                kind="character",
+                name="Odd",
+                data={
+                    "stat_block": {
+                        "identity": {"role": "NPC", "race": "Human", "level": 1},
+                        "attributes": {
+                            "str": 10,
+                            "dex": 10,
+                            "con": 10,
+                            "int": 10,
+                            "wis": 10,
+                            "cha": 10,
+                        },
+                        "combat": {"ac": 10, "hp": 4},
+                        "skills": [
+                            {"name": "Perception", "bonus": 2},
+                            {"name": "History"},
+                            {"name": "Arcana", "bonus": "high"},
+                        ],
+                        "traits": [],
+                        "actions": [],
+                        "spells": ["  Fireball  "],
+                    },
+                },
+            ),
+            models.EntityInput(id=anchor_id, kind="place", name="Library"),
+        ],
+        edges=[models.EdgeInput(src=odd_id, dst=anchor_id, type="located_in", counter=1)],
+    )
+    metadata = _owlbear(client, campaign_id, odd_id).json()["metadata"]
+    assert metadata[_fk("Z014")] == "Perception +2, History, Arcana"
+    assert metadata[_fk("Z039")] == [
+        {"id": f"{odd_id[-8:]}-0", "name": "Fireball", "description": ""}
+    ]
+
+
+def test_portrait_url_signs_newest_image_despite_newer_video(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mint only ever signs images: a newer video row (a reveal clip
+    committed after the portrait) must not shadow the newest portrait."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", "test-secret-5-2")
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    portrait = add_media(campaign_id, sera_id, f"{new_id()}.png", "image")
+    _write_media_file(tmp_path, campaign_id, portrait)
+    clip = add_media(campaign_id, sera_id, f"{new_id()}.mp4", "video")
+    _write_media_file(tmp_path, campaign_id, clip)
+    assert portrait.filename in _mint_url(client, campaign_id, sera_id)["url"]
+
+
+def test_portrait_url_placeholder_origin_warns(
+    client: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PATCH 4 (review round 1): minting against the shipped placeholder
+    origin logs exactly one operator-misconfig warning (the URL is valid
+    but Forge can never fetch it); a configured origin stays silent."""
+    from app.core.config import DEFAULT_BASE_URL
+
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", "test-secret-5-2")
+    monkeypatch.delenv("MYTHOSCIRCLE_BASE_URL", raising=False)
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    row = add_media(campaign_id, sera_id, f"{new_id()}.png", "image")
+    _write_media_file(tmp_path, campaign_id, row)
+    with caplog.at_level(logging.WARNING):
+        body = _mint_url(client, campaign_id, sera_id)
+    assert body["url"].startswith(DEFAULT_BASE_URL)
+    warnings = [
+        r for r in caplog.records if "portrait_url_placeholder_origin" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+
+
+def test_portrait_url_origin_from_config_file(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PATCH 10d (review round 1): [server].base_url flows into the minted
+    origin end to end; without it the code default does. The config cache
+    is reset around the read so no other test observes the tmp file."""
+    from app.core.config import reset_runtime_config
+
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", "test-secret-5-2")
+    monkeypatch.delenv("MYTHOSCIRCLE_BASE_URL", raising=False)
+    config_path = tmp_path / "origin.toml"
+    config_path.write_text('[server]\nbase_url = "https://config.example.test"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(config_path))
+    reset_runtime_config()
+    try:
+        _register_login(client)
+        campaign_id = _create_campaign(client).json()["id"]
+        sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+        row = add_media(campaign_id, sera_id, f"{new_id()}.png", "image")
+        _write_media_file(tmp_path, campaign_id, row)
+        assert _mint_url(client, campaign_id, sera_id)["url"].startswith(
+            "https://config.example.test/api/campaigns/"
+        )
+    finally:
+        reset_runtime_config()

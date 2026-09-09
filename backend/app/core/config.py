@@ -41,6 +41,9 @@ COMFYUI_VIDEO_TIMEOUT_ENV = "MYTHOSCIRCLE_COMFYUI_VIDEO_TIMEOUT"
 DB_ENV = "MYTHOSCIRCLE_DB"
 LOG_FILE_ENV = "MYTHOSCIRCLE_LOG_FILE"
 MEDIA_DIR_ENV = "MYTHOSCIRCLE_MEDIA_DIR"
+#: Env override for the deployment's public origin (spec-5.2): the signed
+#: portrait URLs minted for Forge's portrait override must be absolute.
+BASE_URL_ENV = "MYTHOSCIRCLE_BASE_URL"
 IMAGE_BACKEND_ENV = "MYTHOSCIRCLE_IMAGE_BACKEND"
 COMFYUI_IMAGE_ENDPOINT_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_ENDPOINT"
 COMFYUI_IMAGE_WORKFLOW_PATH_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_WORKFLOW_PATH"
@@ -153,6 +156,10 @@ DEFAULT_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID = "114"
 DEFAULT_COMFYUI_VIDEO_INPUT_DIR = ""
 DEFAULT_COMFYUI_VIDEO_TIMEOUT = 1800.0
 DEFAULT_MEDIA_DIR = "/var/lib/mythoscircle/media"
+#: The deployment's public origin (spec-5.2): matches the shipped
+#: ``deploy/config.toml`` [server] base_url (the Caddy origin). Secrets
+#: never live here (AD-22) — this is a public URL prefix only.
+DEFAULT_BASE_URL = "https://world.example.tld"
 DEFAULT_THEMES = ["High Fantasy", "Grimdark", "Steampunk", "Planar"]
 DEFAULT_DB_URL = "sqlite:////var/lib/mythoscircle/mythoscircle.db"
 
@@ -191,6 +198,8 @@ class RuntimeConfig:
     db_url: str | None = None
     log_file: str | None = None
     media_dir: str = DEFAULT_MEDIA_DIR
+    #: The deployment's public origin (spec-5.2) — env > config > default.
+    base_url: str = DEFAULT_BASE_URL
 
 
 def config_path() -> Path:
@@ -235,6 +244,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
 def runtime_config() -> RuntimeConfig:
     """The resolved runtime config (cached; reset via ``reset_runtime_config``)."""
     data = load_config()
+    server = data.get("server") or {}
     world = data.get("world", {})
     queue = data.get("queue", {})
     llm = data.get("llm", {})
@@ -406,6 +416,7 @@ def runtime_config() -> RuntimeConfig:
     max_llm = _config_int(llm.get("max_llm_calls_per_job"), "llm.max_llm_calls_per_job", 64)
     max_media = _config_int(llm.get("max_media_calls_per_job"), "llm.max_media_calls_per_job", 8)
     media_dir = os.environ.get(MEDIA_DIR_ENV) or world.get("media_dir") or DEFAULT_MEDIA_DIR
+    base_url = os.environ.get(BASE_URL_ENV) or server.get("base_url") or DEFAULT_BASE_URL
 
     return RuntimeConfig(
         queue_max_pending=pending,
@@ -438,6 +449,7 @@ def runtime_config() -> RuntimeConfig:
         db_url=db_url,
         log_file=log_file,
         media_dir=media_dir,
+        base_url=base_url,
     )
 
 

@@ -393,8 +393,9 @@ export interface paths {
     /**
      * Export Entity
      * @description One committed entity — edges touching it and the revision head —
-     *     as JSON, Markdown, or a print-ready HTML sheet. The entity-level
-     *     projection is the engine Epic 5's VTT adapters consume (spec-5.1).
+     *     as JSON, Markdown, a print-ready HTML sheet, or the Owlbear/Forge
+     *     transfer payload. The entity-level projection is the engine Epic 5's
+     *     VTT adapters consume (spec-5.1, spec-5-2).
      */
     get: operations['export_entity_api_campaigns__campaign_id__entities__entity_id__export_get']
     put?: never
@@ -511,6 +512,31 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/campaigns/{campaign_id}/entities/{entity_id}/portrait-url': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Portrait Url
+     * @description Mint the Forge portrait URL: owner-only, absolute, expiring.
+     *     Unknown/foreign campaign is the campaign 404; an unknown entity or
+     *     one with no available portrait is the entity 404 (same envelope).
+     *     An unset secret is the generic 500 after one error log line — fail
+     *     closed, never mint unsigned. Read-only (AD-1/AD-11): no revision,
+     *     no event, no store write.
+     */
+    get: operations['portrait_url_api_campaigns__campaign_id__entities__entity_id__portrait_url_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/campaigns/{campaign_id}/media/{entity_id}/{filename}': {
     parameters: {
       query?: never
@@ -528,6 +554,14 @@ export interface paths {
      *     runner-minted ``<ulid>.png``; the row lookup is the traversal guard
      *     (a non-row name can never reach the filesystem), and separators are
      *     rejected outright.
+     *
+     *     With ``exp``/``sig`` (spec-5.2) a valid signature bypasses the
+     *     session entirely — the portrait URL is pasted into Forge, which
+     *     fetches with no cookie. EVERY signed-path failure (absent secret,
+     *     missing/expired/tampered params, unknown row, missing file) is the
+     *     campaign-missing 404: the signature, the row, and the disk check
+     *     are indistinguishable (no oracle). Without the params the cookie
+     *     path is unchanged, including its 401.
      */
     get: operations['get_file_api_campaigns__campaign_id__media__entity_id___filename__get']
     put?: never
@@ -866,6 +900,17 @@ export interface components {
       kind: string
       /** Created At */
       created_at: string
+    }
+    /**
+     * PortraitUrlResponse
+     * @description A signed, expiring portrait URL for Forge's per-unit portrait
+     *     override (spec-5.2) — absolute, fetchable with no session.
+     */
+    PortraitUrlResponse: {
+      /** Url */
+      url: string
+      /** Expires At */
+      expires_at: string
     }
     /** RegisterRequest */
     RegisterRequest: {
@@ -1605,7 +1650,7 @@ export interface operations {
   export_entity_api_campaigns__campaign_id__entities__entity_id__export_get: {
     parameters: {
       query?: {
-        format?: 'json' | 'markdown' | 'html'
+        format?: 'json' | 'markdown' | 'html' | 'owlbear'
       }
       header?: never
       path: {
@@ -1780,9 +1825,46 @@ export interface operations {
       }
     }
   }
-  get_file_api_campaigns__campaign_id__media__entity_id___filename__get: {
+  portrait_url_api_campaigns__campaign_id__entities__entity_id__portrait_url_get: {
     parameters: {
       query?: never
+      header?: never
+      path: {
+        campaign_id: string
+        entity_id: string
+      }
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PortraitUrlResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_file_api_campaigns__campaign_id__media__entity_id___filename__get: {
+    parameters: {
+      query?: {
+        exp?: string | null
+        sig?: string | null
+      }
       header?: never
       path: {
         campaign_id: string
