@@ -928,7 +928,7 @@ def _build_in_wave1_json() -> str:
                                 "wis": 10,
                                 "cha": 8,
                             },
-                            "combat": {"ac": 16, "hp": 44},
+                            "combat": {"ac": 16, "hp": 66},
                             "skills": [{"name": "Athletics", "bonus": 5}],
                         },
                     },

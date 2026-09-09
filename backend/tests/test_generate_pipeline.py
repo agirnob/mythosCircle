@@ -82,10 +82,10 @@ def world(tmp_path: Path) -> Iterator[str]:
 _VALID_STAT_BLOCK: dict[str, Any] = {
     "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter", "alignment": "LG"},
     "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
-    "combat": {"ac": 16, "hp": 44},
+    "combat": {"ac": 16, "hp": 66},
     "skills": [{"name": "Athletics", "bonus": 5}],
     "actions": [
-        {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+        {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 4d10+5 slashing"}
     ],
 }
 

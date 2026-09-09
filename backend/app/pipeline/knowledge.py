@@ -10,10 +10,9 @@ subset" latitude AR25 describes.
 ``validate_stat_block`` is the constraint enforcement: a pure function
 returning stable violation strings (``[]`` = valid). It checks the
 field-set shape (SRD 5.1), role-limited semantics (NPC/BBEG → level,
-Monster → CR), SRD vocabularies, and hard caps. Derived-value arithmetic
-(skill bonus == proficiency bonus + modifier) is deliberately NOT
-validated — that is Phase-3/Epic-3 consistency, not the constrained
-field set (spec-2.4 Design Notes).
+Monster → CR), SRD vocabularies, hard caps, and combat power (the
+``combat`` audit: damage/round outside the DMG band for the declared
+level/CR, or HP below half the band low). Derived-value arithmetic
 
 ``SPELLS`` maps spell name -> its full-list classes: the SRD 5.1 class
 lists (audited against two independent SRD 5.1 mirrors, which agree
@@ -28,6 +27,7 @@ model to use listed spells only.
 from types import MappingProxyType
 from typing import Any
 
+from app.pipeline import combat
 from app.store.candidates import ROLES as ROLES
 
 #: Roles in the AR24 identity anchor; NPC/BBEG carry ``level``, Monster
@@ -472,6 +472,51 @@ def _check_spells(value: Any, klass: str | None, role: str | None, errors: list[
             errors.append(f"spell {spell!r} is not on the {klass} spell list")
 
 
+def _check_power(block: Any, canonical_role: str | None, errors: list[str]) -> None:
+    """Combat-power enforcement (wires the ``combat`` audit into the verdict).
+
+    Pure and deterministic: violation strings carry the estimated DPR
+    against the band numbers, so the repair pass can address them. A
+    missing band (a level/CR outside the reference — the shape checks
+    already flag those) abstains silently, as does a block with zero
+    parseable damage anywhere (non-combatants are exempt). Level N keys
+    the CR N band. HP fails low-only (below half the band low is frail);
+    HP at or above the band never fails.
+    """
+    if not isinstance(block, dict) or canonical_role is None:
+        return
+    identity = block.get("identity")
+    if not isinstance(identity, dict):
+        return
+    key = identity.get("cr") if canonical_role == "Monster" else identity.get("level")
+    if isinstance(key, bool) or not isinstance(key, (int, str)):
+        return
+    dpr_band = combat.CR_DPR.get(key)
+    if dpr_band is None:
+        return
+    audit = combat.audit_stat_block({**block, "identity": {**identity, "role": canonical_role}})
+    if any(action.nominal_avg != 0.0 for action in audit.actions):
+        low, high = dpr_band
+        if audit.verdict == combat.VERDICT_UNDER:
+            errors.append(
+                f"under-powered for {audit.challenge}: estimated DPR "
+                f"{audit.dpr:.1f} vs {low:.0f}-{high:.0f} expected"
+            )
+        elif audit.verdict == combat.VERDICT_OVER:
+            errors.append(
+                f"over-powered for {audit.challenge}: estimated DPR "
+                f"{audit.dpr:.1f} vs {low:.0f}-{high:.0f} expected"
+            )
+        hp_band = combat.CR_HP.get(key)
+        combat_section = block.get("combat")
+        hp = combat_section.get("hp") if isinstance(combat_section, dict) else None
+        if hp_band is not None and type(hp) is int and combat.is_hp_frail(hp, hp_band):
+            low, high = hp_band
+            errors.append(
+                f"combat.hp {hp} is frail for {audit.challenge} (expected HP {low}-{high})"
+            )
+
+
 def validate_stat_block(block: Any) -> list[str]:
     """AR25 constraint checks for a minimal stat block; ``[]`` = valid.
 
@@ -558,4 +603,5 @@ def validate_stat_block(block: Any) -> list[str]:
         canonical_role,
         errors,
     )
+    _check_power(block, canonical_role, errors)
     return errors

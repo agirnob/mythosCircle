@@ -32,22 +32,25 @@ from app.pipeline.statblocks import (
 from app.pipeline.worker import JobPayloadError
 from app.store import models
 
-#: A valid AR25 minimal stat block (NPC, level 5 Human Fighter).
+#: A valid AR25 minimal stat block (NPC, level 5 Human Fighter). Power-floor
+#: compliant: 27 DPR inside the level-5 band (33-38, under at <26.4) and
+#: hp 66 at the frail line (half of the 131 band low).
 VALID: dict[str, Any] = {
     "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter", "alignment": "LG"},
     "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
-    "combat": {"ac": 16, "hp": 44},
+    "combat": {"ac": 16, "hp": 66},
     "skills": [{"name": "Athletics", "bonus": 5}],
     "actions": [
-        {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+        {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 4d10+5 slashing"}
     ],
 }
 
-#: A valid Monster block (goblin: CR 1/4, unaligned race type).
+#: A valid Monster block (goblin: CR 1/4, unaligned race type). No actions,
+#: so DPR abstains; hp 18 sits at the frail line (half of the 36 band low).
 MONSTER: dict[str, Any] = {
     "identity": {"role": "Monster", "cr": "1/4", "race": "Goblin", "alignment": "unaligned"},
     "attributes": {"str": 8, "dex": 14, "con": 10, "int": 9, "wis": 11, "cha": 8},
-    "combat": {"ac": 15, "hp": 7},
+    "combat": {"ac": 15, "hp": 18},
 }
 
 
@@ -75,7 +78,7 @@ def test_case_insensitive_vocabularies_pass() -> None:
             "alignment": "ng",
         },
         "attributes": {"str": 10, "dex": 10, "con": 10, "int": 14, "wis": 10, "cha": 10},
-        "combat": {"ac": 10, "hp": 20},
+        "combat": {"ac": 10, "hp": 51},
         "skills": [{"name": "arcana", "bonus": 6}],
         "spells": ["fireball"],
     }
@@ -94,7 +97,7 @@ def test_optional_sections_are_optional() -> None:
     minimal = {
         "identity": {"role": "NPC", "level": 1, "race": "Human"},
         "attributes": {"str": 10, "dex": 10, "con": 10, "int": 10, "wis": 10, "cha": 10},
-        "combat": {"ac": 10, "hp": 8},
+        "combat": {"ac": 10, "hp": 36},
     }
     assert validate_stat_block(minimal) == []
 
@@ -124,10 +127,12 @@ def test_level_bounds_enforced() -> None:
         errors = validate_stat_block({**VALID, "identity": {**VALID["identity"], "level": bad}})
         assert any("identity.level" in e for e in errors), bad
 
-
-def test_cr_bounds_and_fractions_enforced() -> None:
-    for cr in (0, CR_MAX, "1/8", "1/4", "1/2"):
-        block = {**MONSTER, "identity": {**MONSTER["identity"], "cr": cr}}
+    for cr, hp in ((0, 1), (CR_MAX, 283), ("1/8", 4), ("1/4", 18), ("1/2", 25)):
+        block = {
+            **MONSTER,
+            "identity": {**MONSTER["identity"], "cr": cr},
+            "combat": {**MONSTER["combat"], "hp": hp},
+        }
         assert validate_stat_block(block) == [], cr
     for bad in (-1, CR_MAX + 1, "1/3", "2.5", "five"):
         errors = validate_stat_block({**MONSTER, "identity": {**MONSTER["identity"], "cr": bad}})
@@ -201,13 +206,10 @@ def test_actions_traits_shape_enforced() -> None:
     errors = validate_stat_block({**VALID, "actions": [{"name": 7, "description": "x"}]})
     assert any("non-blank" in e for e in errors)
 
-
-def test_spells_require_class_and_are_role_limited() -> None:
-    """AR25's example: role=Wizard limits spells to the wizard list."""
     wizard: dict[str, Any] = {
         "identity": {"role": "BBEG", "level": 12, "race": "Human", "class": "Wizard"},
         "attributes": {"str": 8, "dex": 14, "con": 12, "int": 18, "wis": 12, "cha": 10},
-        "combat": {"ac": 15, "hp": 80},
+        "combat": {"ac": 15, "hp": 118},
         "spells": ["Fireball", "Shield"],
     }
     assert validate_stat_block(wizard) == []
@@ -370,9 +372,8 @@ def test_rules_text_carries_vocabularies() -> None:
 
 def test_rules_text_instructs_challenge_scaling() -> None:
     """Stats must follow the declared level/CR: the model is told a tougher
-    declaration needs tougher combat numbers and scores (not a flat block).
-    This is generation guidance, not validation — the validator still only
-    enforces ranges and vocabulary."""
+    declaration needs tougher combat numbers and scores (not a flat block),
+    with the DMG bands the validator enforces."""
     rules = stat_block_rules_text()
     assert "CHALLENGE SCALING" in rules
     assert "level" in rules and "CR" in rules
@@ -485,3 +486,177 @@ def test_stat_failure_message_names_characters_and_violations() -> None:
     assert "still invalid after the repair pass" in message
     assert "E0" in message and "E1" in message
     assert "attributes.str" in message
+
+
+# ---------------------------------------------------------------------------
+# Validator: combat-power enforcement
+# ---------------------------------------------------------------------------
+
+
+def _power_attributes() -> dict[str, int]:
+    return {"str": 10, "dex": 10, "con": 10, "int": 10, "wis": 10, "cha": 10}
+
+
+def test_underpowered_block_flagged_with_numbers() -> None:
+    """UNDER_FLAG / acceptance: a Void-Stalker-shaped CR 18 block fires
+    under-powered naming DPR vs 111-116."""
+    block = {
+        "identity": {"role": "Monster", "cr": 18, "race": "Void Stalker"},
+        "attributes": _power_attributes(),
+        "combat": {"ac": 18, "hp": 330},
+        "actions": [{"name": "Void Ray", "description": "3d10+6 necrotic"}],
+    }
+    assert validate_stat_block(block) == [
+        "under-powered for CR 18: estimated DPR 22.5 vs 111-116 expected"
+    ]
+
+
+def test_overpowered_block_flagged() -> None:
+    """OVER_FLAG: a level 5 dealing ~60 DPR fires over-powered vs 33-38."""
+    block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "attributes": _power_attributes(),
+        "actions": [{"name": "Slam", "description": "10d10+5 force"}],
+        "combat": {"ac": 16, "hp": 140},
+    }
+    assert validate_stat_block(block) == [
+        "over-powered for level 5: estimated DPR 60.0 vs 33-38 expected"
+    ]
+
+
+def test_on_target_block_passes() -> None:
+    """ON_TARGET: a CR 18 at ~100 DPR raises no power violation."""
+    block = {
+        "identity": {"role": "Monster", "cr": 18, "race": "Void Stalker"},
+        "attributes": _power_attributes(),
+        "combat": {"ac": 18, "hp": 330},
+        "actions": [{"name": "Void Ray", "description": "17d10+6 necrotic"}],
+    }
+    assert validate_stat_block(block) == []
+
+
+def test_multiattack_block_audited_through_validation() -> None:
+    """MULTIATTACK (validation level): 3 x Claw lands inside the CR 10
+    band, so no power violation joins the verdict."""
+    block = {
+        "identity": {"role": "Monster", "cr": 10, "race": "Beast"},
+        "attributes": _power_attributes(),
+        "combat": {"ac": 14, "hp": 210},
+        "actions": [
+            {"name": "Multiattack", "description": "makes three Claw attacks"},
+            {"name": "Claw", "description": "3d10+6 slashing"},
+        ],
+    }
+    assert validate_stat_block(block) == []
+
+
+def test_diceless_block_abstains_from_power() -> None:
+    """NO_DICE_ABSTAIN: a scholar with no damage expressions raises no
+    power violation (non-combatants exempt)."""
+    block = {
+        "identity": {"role": "NPC", "level": 10, "race": "Human"},
+        "attributes": _power_attributes(),
+        "combat": {"ac": 10, "hp": 110},
+        "actions": [{"name": "Lecture", "description": "a devastating argument"}],
+    }
+    assert validate_stat_block(block) == []
+
+
+def test_out_of_band_level_abstains_from_power() -> None:
+    """NO_BAND_ABSTAIN: level 99 fires the shape error but no power
+    violation joins the verdict."""
+    errors = validate_stat_block({**VALID, "identity": {**VALID["identity"], "level": 99}})
+    assert any("identity.level" in e for e in errors)
+    assert not any("powered" in e or "frail" in e for e in errors)
+
+
+def test_hp_frail_flagged_with_numbers() -> None:
+    """HP_FRAIL: a CR 18 with 40 HP fires frail naming HP vs 326-340."""
+    block = {
+        "identity": {"role": "Monster", "cr": 18, "race": "Void Stalker"},
+        "attributes": _power_attributes(),
+        "combat": {"ac": 18, "hp": 40},
+        "actions": [{"name": "Void Ray", "description": "17d10+6 necrotic"}],
+    }
+    assert validate_stat_block(block) == ["combat.hp 40 is frail for CR 18 (expected HP 326-340)"]
+
+
+def test_hp_tank_never_flagged() -> None:
+    """HP_TANK_OK: a CR 18 with 500 HP raises no power violation."""
+    block = {
+        "identity": {"role": "Monster", "cr": 18, "race": "Void Stalker"},
+        "attributes": _power_attributes(),
+        "combat": {"ac": 18, "hp": 500},
+        "actions": [{"name": "Void Ray", "description": "17d10+6 necrotic"}],
+    }
+    assert validate_stat_block(block) == []
+
+
+def test_bbeg_underpowered_flagged_on_level_band() -> None:
+    """The boss tier keys DPR off level like NPCs: a BBEG 12 dealing
+    6.5 DPR fires under-powered vs 75-80."""
+    block = {
+        "identity": {"role": "BBEG", "level": 12, "race": "Human"},
+        "attributes": _power_attributes(),
+        "actions": [{"name": "Dagger", "description": "1d8+2 piercing"}],
+        "combat": {"ac": 17, "hp": 230},
+    }
+    assert validate_stat_block(block) == [
+        "under-powered for level 12: estimated DPR 6.5 vs 75-80 expected"
+    ]
+
+
+def test_bbeg_overpowered_flagged_on_level_band() -> None:
+    """A BBEG 5 dealing ~60 DPR fires over-powered vs 33-38."""
+    block = {
+        "identity": {"role": "BBEG", "level": 5, "race": "Human"},
+        "attributes": _power_attributes(),
+        "actions": [{"name": "Slam", "description": "10d10+5 force"}],
+        "combat": {"ac": 16, "hp": 140},
+    }
+    assert validate_stat_block(block) == [
+        "over-powered for level 5: estimated DPR 60.0 vs 33-38 expected"
+    ]
+
+
+def test_non_string_action_description_returns_shape_error() -> None:
+    """A non-string description records the shape violation — the audit
+    coerces it, so validation never raises TypeError on malformed LLM
+    output the repair loop exists to handle."""
+    block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "attributes": _power_attributes(),
+        "actions": [{"name": "Slam", "description": 123}],
+        "combat": {"ac": 16, "hp": 140},
+    }
+    assert validate_stat_block(block) == ["actions entries must have a string 'description'"]
+
+
+def test_legendary_budget_flips_dpr_verdict() -> None:
+    """Same 27-DPR block: on-target without legendary actions,
+    over-powered with them (27 x 2 = 54 vs 33-38)."""
+    base: dict[str, Any] = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "attributes": _power_attributes(),
+        "actions": [{"name": "Longsword", "description": "4d10+5 slashing"}],
+        "combat": {"ac": 16, "hp": 140},
+    }
+    assert validate_stat_block(base) == []
+    bossed = {**base, "boss": {"legendary_actions": "A tail sweep each round."}}
+    assert validate_stat_block(bossed) == [
+        "over-powered for level 5: estimated DPR 54.0 vs 33-38 expected"
+    ]
+
+
+def test_save_half_and_aoe_adjustments_enforced() -> None:
+    """Nominal 21 DPR passes level 5 only through the adjustments
+    (21 x 0.75 x 2 = 31.5); raw nominal alone would flag under."""
+    block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "attributes": _power_attributes(),
+        "actions": [
+            {"name": "Burst", "description": "6d6 fire in a 20-ft radius, DC 13 save for half"}
+        ],
+        "combat": {"ac": 16, "hp": 140},
+    }
+    assert validate_stat_block(block) == []

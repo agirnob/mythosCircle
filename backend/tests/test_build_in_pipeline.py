@@ -77,14 +77,15 @@ def _enqueue(world: str, max_llm_calls: int | None = None, **payload: Any) -> st
 
 #: A valid AR25 minimal stat block for the wave-1 key figure Mira Vane
 #: (spec-2.4): NPC, level 5 Human Fighter — passes every constraint, so
-#: the wave commits without a repair pass.
+#: the wave commits without a repair pass. Power-floor compliant: 27 DPR
+#: inside the level-5 band and hp 66 at the frail line.
 _MIRA_STAT_BLOCK: dict[str, Any] = {
     "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter", "alignment": "LG"},
     "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
-    "combat": {"ac": 16, "hp": 44},
+    "combat": {"ac": 16, "hp": 66},
     "skills": [{"name": "Athletics", "bonus": 5}],
     "actions": [
-        {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+        {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 4d10+5 slashing"}
     ],
 }
 
@@ -1582,7 +1583,7 @@ def test_monster_with_level_repaired_in_one_pass(world: str) -> None:
     fixed_monster = {
         "identity": {"role": "Monster", "cr": "1/4", "race": "Goblin", "alignment": "unaligned"},
         "attributes": {"str": 8, "dex": 14, "con": 10, "int": 9, "wis": 11, "cha": 8},
-        "combat": {"ac": 15, "hp": 7},
+        "combat": {"ac": 15, "hp": 18},
     }
     output = _wave1_output()
     output["entities"][1]["data"] = {
@@ -1664,3 +1665,169 @@ def test_faction_stat_block_is_stripped(world: str) -> None:
     with session_scope() as session:
         bar = next(e for e in world_entities(session, world) if e.name == "The Gilded Bar")
     assert "stat_block" not in bar.data
+
+
+def test_underpowered_stat_block_repair_loop(world: str) -> None:
+    """POWER_REPAIR_LOOP: an under-powered wave-1 block is flagged; a
+    healthy repair commits (wave + one repair pass, succeeded), while a
+    still-mismatched repair fails the job naming the power gap."""
+    weak_block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 66},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "actions": [
+            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+        ],
+    }
+
+    def wave_with(block: dict[str, Any]) -> dict[str, Any]:
+        output = _wave1_output()
+        output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": block}
+        return output
+
+    # Repair heals it: the healthy block commits and the job succeeds.
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    responses = [
+        json.dumps(wave_with(weak_block)),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 2  # wave 1 + exactly one repair pass
+    assert "under-powered" in calls[1]  # the flagged violation
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"] == _MIRA_STAT_BLOCK
+
+    # Still mismatched after repair: the job fails naming the power gap.
+    calls2: list[str] = []
+    job_id2 = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    responses2 = [
+        json.dumps(wave_with(weak_block)),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
+    ]
+
+    def provider2(prompt: str, settings: LLMSettings) -> str:
+        calls2.append(prompt)
+        return responses2.pop(0)
+
+    assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
+    assert len(calls2) == 2
+    job2, _position2 = job_status(job_id2)
+    assert job2.state == "failed"
+    assert "still invalid after the repair pass" in (job2.error or "")
+    assert "under-powered" in (job2.error or "")
+
+
+def test_overpowered_stat_block_repair_loop(world: str) -> None:
+    """POWER_REPAIR_LOOP (over): a 60-DPR level-5 block is flagged; a
+    healthy repair commits, a still-mismatched repair fails naming
+    over-powered."""
+    over_block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 140},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "actions": [{"name": "Slam", "description": "10d10+5 force"}],
+    }
+
+    def wave_with(block: dict[str, Any]) -> dict[str, Any]:
+        output = _wave1_output()
+        output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": block}
+        return output
+
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    responses = [
+        json.dumps(wave_with(over_block)),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 2  # wave 1 + exactly one repair pass
+    assert "over-powered" in calls[1]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+
+    calls2: list[str] = []
+    job_id2 = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    responses2 = [
+        json.dumps(wave_with(over_block)),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": over_block}]}),
+    ]
+
+    def provider2(prompt: str, settings: LLMSettings) -> str:
+        calls2.append(prompt)
+        return responses2.pop(0)
+
+    assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
+    assert len(calls2) == 2
+    job2, _position2 = job_status(job_id2)
+    assert job2.state == "failed"
+    assert "over-powered" in (job2.error or "")
+
+
+def test_frail_stat_block_repair_loop(world: str) -> None:
+    """POWER_REPAIR_LOOP (frail): a 40-HP level-5 block with healthy DPR
+    is flagged frail only; a healthy repair commits, a still-frail
+    repair fails naming frail."""
+    frail_block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 40},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "actions": [
+            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 4d10+5 slashing"}
+        ],
+    }
+
+    def wave_with(block: dict[str, Any]) -> dict[str, Any]:
+        output = _wave1_output()
+        output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": block}
+        return output
+
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    responses = [
+        json.dumps(wave_with(frail_block)),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 2
+    assert "frail" in calls[1]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+
+    calls2: list[str] = []
+    job_id2 = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    responses2 = [
+        json.dumps(wave_with(frail_block)),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": frail_block}]}),
+    ]
+
+    def provider2(prompt: str, settings: LLMSettings) -> str:
+        calls2.append(prompt)
+        return responses2.pop(0)
+
+    assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
+    assert len(calls2) == 2
+    job2, _position2 = job_status(job_id2)
+    assert job2.state == "failed"
+    assert "frail" in (job2.error or "")

@@ -53,7 +53,7 @@ SETTINGS = LLMSettings(endpoint="http://test/v1", model="test-model")
 _VALID_STAT_BLOCK: dict[str, Any] = {
     "identity": {"role": "NPC", "level": 5, "race": "Human"},
     "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
-    "combat": {"ac": 16, "hp": 44},
+    "combat": {"ac": 16, "hp": 66},
 }
 
 
