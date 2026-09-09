@@ -87,12 +87,14 @@ def test_backup_flock_second_run_exits_uncontended() -> None:
         assert "already running" in second.stderr
 
 
-def test_caddyfile_serves_https_and_proxies() -> None:
-    """/api and /ws proxy to the loopback service; the site address is
-    https; the frontend web root is set (acceptance criterion 2, review
-    round 1 — the old 'tls' substring matched only a comment)."""
+def test_caddyfile_serves_tunnel_origin_and_proxies() -> None:
+    """/api and /ws proxy to the loopback service; the site is a plain-HTTP
+    tunnel origin (TLS lives at the Cloudflare edge — the CGNAT host has
+    no inbound 80/443 for ACME); the frontend web root is set (acceptance
+    criterion 2, review round 1 — the old 'tls' substring matched only a
+    comment)."""
     caddy = (DEPLOY / "Caddyfile").read_text()
-    assert "https://" in caddy
+    assert "http://world.miscco.uk" in caddy
     assert "reverse_proxy /api/* 127.0.0.1:8000" in caddy
     assert "reverse_proxy /ws/* 127.0.0.1:8000" in caddy
     assert "root * /var/www/mythoscircle/dist" in caddy

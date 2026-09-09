@@ -1,9 +1,15 @@
 # Caddy 2 site config — installed at /etc/caddy/Caddyfile (Story 1.7).
 #
 # Serves the frontend build and proxies the API (and its WebSockets)
-# to the single loopback FastAPI process. TLS is automatic.
-
-https://world.example.tld {
+# to the single loopback FastAPI process.
+#
+# CGNAT operator topology (cloudflared tunnel): this host has no inbound
+# 80/443, so Caddy never sees the internet and MUST NOT manage TLS
+# (no ACME challenge can reach it). TLS terminates at the Cloudflare
+# edge; cloudflared routes the public hostname to this loopback HTTP
+# listener. base_url in config.toml stays the https edge origin (minted
+# portrait URLs point at it); only this listener is plain HTTP.
+http://world.miscco.uk {
 	# Frontend: the Vite build output.
 	root * /var/www/mythoscircle/dist
 	encode gzip zstd

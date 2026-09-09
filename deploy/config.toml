@@ -7,8 +7,10 @@
 [server]
 host = "127.0.0.1"
 port = 8000
-# Public origin (matches the Caddyfile).
-base_url = "https://world.example.tld"
+# Public origin: the Cloudflare edge (what browsers and Forge fetch —
+# TLS terminates at the edge). Must match the tunnel's public hostname;
+# the Caddyfile origin behind the tunnel is plain HTTP over loopback.
+base_url = "https://world.miscco.uk"
 
 [world]
 data_dir = "/var/lib/mythoscircle"

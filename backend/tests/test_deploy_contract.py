@@ -40,15 +40,19 @@ def test_backup_and_restore_target_the_same_db() -> None:
 
 
 def test_api_binds_loopback_only() -> None:
-    """AR29/AR2: the API binds loopback-only; Caddy fronts TLS. Both the
-    operator config and the systemd unit pin 127.0.0.1 — a public bind
-    would expose auth over cleartext."""
+    """AR29/AR2: the API binds loopback-only; TLS terminates at the
+    Cloudflare edge and Caddy is a plain-HTTP tunnel origin (CGNAT: no
+    inbound 80/443, no ACME). Both the operator config and the systemd
+    unit pin 127.0.0.1 — a public bind would expose auth over
+    cleartext. base_url stays the https edge origin (minted portrait
+    URLs point at it)."""
     config = tomllib.loads((DEPLOY_DIR / "config.toml").read_text())
     assert config["server"]["host"] == "127.0.0.1"
+    assert config["server"]["base_url"] == "https://world.miscco.uk"
     service = (DEPLOY_DIR / "mythoscircle.service").read_text()
     assert "--host 127.0.0.1" in service
     caddy = (DEPLOY_DIR / "Caddyfile").read_text()
-    assert "tls" in caddy.lower()
+    assert "http://world.miscco.uk" in caddy
     assert "reverse_proxy" in caddy.lower()
 
 
