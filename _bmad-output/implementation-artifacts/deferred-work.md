@@ -256,5 +256,6 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
   orphans; second miss fails loudly. Mirrors record/stat one-pass semantics.
 - regenerate power (combat review deferral): WIRE validate_stat_block into
   regenerate._validate_output — bad re-rolls fail instead of stage; matches
-  prompt claims + combat inherits-everywhere decision.
-- portrait URL mechanism: PENDING (signed URLs vs manual upload).
+- portrait URL mechanism: SIGNED URLs — HMAC over path+expiry, origin-public
+  assumption holds (dynamic IP fine via DNS); base_url still placeholder
+  world.example.tld, set real hostname at 5-2 spec time.
