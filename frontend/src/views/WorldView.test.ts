@@ -1588,4 +1588,113 @@ describe('WorldView', () => {
     ])
     wrapper.unmount()
   })
+  it('RECORD_IN_DATA: scalar profile fields never duplicate into Additional data', async () => {
+    // Dogfood 2026-09-09: committed character data carries the full
+    // record (generate parity), so data.name/role/personality/... rendered
+    // once as profile rows AND again as an "Additional data" JSON dump.
+    const world = worldExport()
+    world.entities = [
+      {
+        id: 'E1',
+        kind: 'character',
+        name: 'Markov',
+        text: 'The resolute leader.',
+        media: [],
+        data: {
+          name: 'Markov',
+          role: 'NPC',
+          personality: 'Weary but indomitable.',
+          secret: 'Carries a forbidden relic.',
+          rumor: 'Was a general of the capital.',
+          party_hook: 'Seeks volunteers.',
+          level_cr: 'level 10',
+          race_type: 'Human',
+          class_profession: 'Paladin',
+          alignment: 'LG',
+          appearance: 'Towering, iron beard.',
+          world_integration: {
+            reputation: 'Highly respected.',
+            factions: 'Heroes Guild',
+            current_location: 'Town of Salem',
+            reaction_matrix: 'C0: Neutral',
+            on_defeat: 'Morale collapses.',
+          },
+        },
+      },
+    ]
+    apiFetchMock.mockResolvedValue(world)
+    const wrapper = mountView()
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('Weary but indomitable.')
+    expect(text).not.toContain('Additional data')
+    // The profile rows render exactly once — no JSON echo.
+    expect(text.match(/Weary but indomitable\./g)).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('WORLD_INTEGRATION: subfields render as labeled rows, not raw JSON', async () => {
+    // Dogfood 2026-09-09: the block rendered as a pretty JSON dump.
+    const world = worldExport()
+    world.entities = [
+      {
+        id: 'E1',
+        kind: 'character',
+        name: 'Markov',
+        text: 'The resolute leader.',
+        media: [],
+        data: {
+          name: 'Markov',
+          role: 'NPC',
+          personality: 'Weary.',
+          secret: 'A relic.',
+          world_integration: {
+            reputation: 'Highly respected.',
+            reaction_matrix: 'C0: Neutral',
+          },
+        },
+      },
+    ]
+    apiFetchMock.mockResolvedValue(world)
+    const wrapper = mountView()
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('World integration')
+    expect(text).toContain('Reputation')
+    expect(text).toContain('Highly respected.')
+    expect(text).toContain('Reaction matrix')
+    expect(text).not.toContain('"reputation"')
+    expect(text).not.toContain('"reaction_matrix"')
+    wrapper.unmount()
+  })
+
+  it('REGEN_SCOPE: whole-character default plus one section picker per entity', async () => {
+    // Dogfood 2026-09-09: WorldView only offered whole-entity regen —
+    // the backend has owned per-section re-rolls since spec-3.5.
+    const world = worldExport()
+    world.entities = [
+      {
+        id: 'E1',
+        kind: 'character',
+        name: 'Markov',
+        text: 'The resolute leader.',
+        media: [],
+        data: { name: 'Markov', role: 'NPC', personality: 'Weary.', secret: 'A relic.' },
+      },
+    ]
+    apiFetchMock.mockResolvedValue(world)
+    const wrapper = mountView()
+    await flushPromises()
+    const scope = wrapper.find('select[aria-label="Regenerate scope"]')
+    expect(scope.exists()).toBe(true)
+    const options = scope.findAll('option').map((option) => option.text())
+    expect(options[0]).toBe('Whole character')
+    expect(options).toContain('Personality')
+    expect(options).toContain('World integration')
+    expect(options).toContain('Stat block')
+    // Identity anchor is NOT regenerable — no Name/Role options.
+    expect(options).not.toContain('Name')
+    expect(options).not.toContain('Role')
+    wrapper.unmount()
+  })
 })

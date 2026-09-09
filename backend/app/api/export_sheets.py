@@ -295,10 +295,13 @@ def render_entity_markdown(export: WorldExport, entity_id: str) -> str:
     inbound = [edge for edge in export.edges if edge.dst == entity.id]
     if outbound or inbound:
         lines += ["", "### Relations", ""]
+    subject = names.get(entity.id, entity.id)
     for edge in outbound:
-        lines.append(f"- --{_edge_label(edge)}--> {names.get(edge.dst, edge.dst)}")
+        neighbor = names.get(edge.dst, edge.dst)
+        lines.append(f"- {subject} --{_edge_label(edge)}--> {neighbor}")
     for edge in inbound:
-        lines.append(f"- <--{_edge_label(edge)}-- {names.get(edge.src, edge.src)}")
+        neighbor = names.get(edge.src, edge.src)
+        lines.append(f"- {neighbor} <--{_edge_label(edge)}-- {subject}")
     lines += _media_lines(entity)
     lines.append("")
     return "\n".join(lines)
@@ -544,15 +547,15 @@ def _entity_sections(
             if rendered:
                 body.append(f"<section><h3>{_esc(_label(str(key)))}</h3>{rendered}</section>")
     relations = []
+    subject = _esc(names.get(entity.id, entity.id))
     for edge in export.edges:
+        label = _esc(_edge_label(edge))
         if edge.src == entity.id:
-            relations.append(
-                f"<li>--{_esc(_edge_label(edge))}--> {_esc(names.get(edge.dst, edge.dst))}</li>"
-            )
+            neighbor = _esc(names.get(edge.dst, edge.dst))
+            relations.append(f"<li>{subject} --{label}--> {neighbor}</li>")
         elif edge.dst == entity.id:
-            relations.append(
-                f"<li>&lt;--{_esc(_edge_label(edge))}-- {_esc(names.get(edge.src, edge.src))}</li>"
-            )
+            neighbor = _esc(names.get(edge.src, edge.src))
+            relations.append(f"<li>{neighbor} &lt;--{label}-- {subject}</li>")
     if relations:
         body.append(
             f"<section><h2>Relations</h2><ul class='relations'>{''.join(relations)}</ul></section>"

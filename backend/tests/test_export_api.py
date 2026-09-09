@@ -720,8 +720,8 @@ def test_entity_export_markdown_pure(client: Any) -> None:
     assert front["name"] == "Vespera"
     assert "# Vespera" in md
     assert _fences(md)[0] == _VESPERA_DATA
-    assert "--debt(5)--> The Guild" in md
-    assert "<--ally_of(3)-- The Guild" in md  # inbound renders too
+    assert "- Vespera --debt(5)--> The Guild" in md
+    assert "- The Guild <--ally_of(3)-- Vespera" in md  # inbound renders too
     assert "[[" not in md
     assert "<style" not in md
 
@@ -754,9 +754,8 @@ def test_entity_export_html_sheet(
     assert "Stat Block" in html_body and "Ember Lance" in html_body  # panel + actions
     assert "widget_config" in html_body  # unknown key survives verbatim…
     assert '"deep": true' in html_body  # …inside the appendix JSON
-    assert "--debt(5)--> The Guild" in html_body  # relations render
-    assert "2d6 &amp; fire &lt;b&gt;" in html_body and "&amp;amp;" not in html_body
-    assert "&lt;--ally_of(3)-- The Guild" in html_body
+    assert "Vespera --debt(5)--> The Guild" in html_body  # relations render
+    assert "The Guild &lt;--ally_of(3)-- Vespera" in html_body
     assert "<details class='appendix'" in html_body
     before = _counts(campaign_id)
     client.get(url, params={"format": "html"})

@@ -208,10 +208,6 @@ const editCounter = ref<number>(1)
 const relationBusy = ref(false)
 const relationErrors = ref<Record<string, string>>({})
 
-/** Spec-3.5: entity-id -> in-flight whole-character regeneration. */
-const regeneratingId = ref<string | null>(null)
-const regenerateErrors = ref<Record<string, string>>({})
-
 /**
  * Only AR24 sectioned records are regenerable (the enqueue validator
  * 422s everything else — a build-in entity has no sectioned profile).
@@ -225,16 +221,47 @@ function isRegenerable(entity: EntityExport): boolean {
   )
 }
 
+/** Spec-3.5: entity-id -> in-flight regeneration (whole or per-section). */
+const regeneratingId = ref<string | null>(null)
+const regenerateErrors = ref<Record<string, string>>({})
+
+/** The regenerable AR24 content sections (spec-3.5 REGEN_SECTIONS): the
+ * identity anchor (name, role, level_cr, race_type, class_profession,
+ * alignment) is NOT regenerable — hand-edit territory. */
+const REGEN_SECTIONS = [
+  'personality',
+  'secret',
+  'rumor',
+  'party_hook',
+  'appearance',
+  'background',
+  'goals',
+  'relationships',
+  'voice_style',
+  'catchphrases',
+  'stat_block',
+  'world_integration',
+  'boss',
+] as const
+
+/** Entity-id -> the regen scope: '' = whole character, otherwise exactly
+ * one section (the backend re-rolls exactly the listed sections and
+ * preserves everything else byte-identical). */
+const regenScope = ref<Record<string, string>>({})
+
 /**
- * Whole-character regeneration (spec-3.5): stage a regenerate job whose
- * new proposal surfaces on the accept screen (CandidatesView). The
- * committed entity is untouched until the DM accepts the proposal.
+ * Regeneration (spec-3.5): whole-character or one section. Stages a
+ * regenerate job whose new proposal surfaces on the accept screen
+ * (CandidatesView). The committed entity is untouched until the DM
+ * accepts the proposal.
  */
 async function regenerateEntity(entityId: string) {
   regenerateErrors.value[entityId] = ''
   regeneratingId.value = entityId
+  const scope = regenScope.value[entityId] ?? ''
+  const sections = scope === '' ? null : [scope]
   try {
-    await jobs.submitRegenerate(campaignId, { kind: 'entity', id: entityId }, null)
+    await jobs.submitRegenerate(campaignId, { kind: 'entity', id: entityId }, sections)
     await jobs.syncList(campaignId)
   } catch (err) {
     regenerateErrors.value[entityId] =
@@ -658,7 +685,24 @@ const FIELD_LABELS: Record<string, string> = {
   relationships: 'Relationships',
   voice_style: 'Voice style',
   catchphrases: 'Catchphrases',
+  reputation: 'Reputation',
+  factions: 'Factions',
+  current_location: 'Current location',
+  reaction_matrix: 'Reaction matrix',
+  on_defeat: 'On defeat',
+  stat_block: 'Stat block',
+  world_integration: 'World integration',
+  boss: 'Boss',
 }
+
+/** World-integration subfields in contract order (spec-3.3). */
+const WORLD_INTEGRATION_FIELDS = [
+  'reputation',
+  'factions',
+  'current_location',
+  'reaction_matrix',
+  'on_defeat',
+] as const
 
 /** Editable scalar string fields (identity anchor + narrative lore). */
 const CORE_FIELDS = ['personality', 'secret', 'rumor', 'party_hook'] as const
@@ -828,17 +872,19 @@ async function rebaseAndClose(entityId: string) {
 }
 
 function dataKeys(entity: EntityExport): string[] {
+  // Truly additional keys only: scalar profile fields (name, role,
+  // personality, …) live in data by contract (generate parity) but
+  // already render as profile rows — re-dumping them here duplicated
+  // the whole profile as JSON (dogfood 2026-09-09). Structured blocks
+  // render as their own sections below.
   const data = (entity.data ?? {}) as Record<string, unknown>
   const RESERVED = new Set(['kind', 'edges', 'text', 'base_revision'])
   return Object.keys(data).filter(
-    (key) => !(JSON_FIELDS as readonly string[]).includes(key) && !RESERVED.has(key),
+    (key) =>
+      !(JSON_FIELDS as readonly string[]).includes(key) &&
+      !(SCALAR_FIELDS as readonly string[]).includes(key) &&
+      !RESERVED.has(key),
   )
-}
-
-function profileFieldValue(entity: EntityExport, field: string): string {
-  const data = (entity.data ?? {}) as Record<string, unknown>
-  const value = data[field]
-  return typeof value === 'string' ? value : rawString(value)
 }
 
 function profileScalarFields(entity: EntityExport): string[] {
@@ -849,6 +895,34 @@ function profileScalarFields(entity: EntityExport): string[] {
 function jsonBlockPresent(entity: EntityExport, field: string): boolean {
   const data = (entity.data ?? {}) as Record<string, unknown>
   return data[field] !== undefined && data[field] !== null
+}
+function profileFieldValue(entity: EntityExport, field: string): string {
+  const data = (entity.data ?? {}) as Record<string, unknown>
+  const value = data[field]
+  return typeof value === 'string' ? value : rawString(value)
+}
+
+/** Present world-integration entries as [label, display] rows — the
+ * block renders like the profile, not as raw JSON (dogfood 2026-09-09).
+ * Unknown subkeys survive with their raw key (forward-compat). */
+function worldIntegrationEntries(entity: EntityExport): Array<[string, string]> {
+  const data = (entity.data ?? {}) as Record<string, unknown>
+  const block = data['world_integration']
+  if (typeof block !== 'object' || block === null || Array.isArray(block)) return []
+  const record = block as Record<string, unknown>
+  const rows: Array<[string, string]> = []
+  for (const field of WORLD_INTEGRATION_FIELDS) {
+    const value = record[field]
+    if (typeof value === 'string' && value.trim() !== '') {
+      rows.push([FIELD_LABELS[field] ?? field, value])
+    }
+  }
+  for (const key of Object.keys(record)) {
+    if ((WORLD_INTEGRATION_FIELDS as readonly string[]).includes(key)) continue
+    const value = record[key]
+    if (value !== undefined && value !== null) rows.push([key, rawString(value)])
+  }
+  return rows
 }
 
 function extrasObject(entity: EntityExport): Record<string, unknown> {
@@ -936,6 +1010,18 @@ function additionalDataBlock(entity: EntityExport): string {
               >
                 {{ regeneratingId === entity.id ? 'Regenerating…' : 'Regenerate' }}
               </button>
+              <select
+                v-if="isRegenerable(entity)"
+                v-model="regenScope[entity.id]"
+                :disabled="regeneratingId !== null"
+                aria-label="Regenerate scope"
+                title="Whole character or one section"
+              >
+                <option value="">Whole character</option>
+                <option v-for="section in REGEN_SECTIONS" :key="section" :value="section">
+                  {{ FIELD_LABELS[section] ?? section }}
+                </option>
+              </select>
               <button
                 v-if="editingProfileId !== entity.id"
                 type="button"
@@ -1098,7 +1184,15 @@ function additionalDataBlock(entity: EntityExport): string {
               </dl>
               <div v-if="jsonBlockPresent(entity, 'world_integration')" class="profile-block">
                 <h4>World integration</h4>
-                <pre>{{ profileFieldValue(entity, 'world_integration') }}</pre>
+                <dl>
+                  <template
+                    v-for="([label, value], index) in worldIntegrationEntries(entity)"
+                    :key="index"
+                  >
+                    <dt>{{ label }}</dt>
+                    <dd>{{ value }}</dd>
+                  </template>
+                </dl>
               </div>
               <div v-if="jsonBlockPresent(entity, 'boss')" class="profile-block">
                 <h4>Boss</h4>
