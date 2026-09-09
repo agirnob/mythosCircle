@@ -3,8 +3,8 @@
 Wave 1 digests the named sections (places, factions, key figures) into a
 fully networked core subgraph of ``character``/``faction``/``place``
 entities + typed edges and commits it atomically (one revision); every
-wave-1 character must first carry a valid minimal stat block, repaired in
-at most one bounded pass (AR25). Wave 2
+wave-1 character must first carry the full AR24 record and a valid minimal
+stat block, each repaired in at most one bounded pass (AR25). Wave 2
 digests ``notes`` into a second subgraph — every new entity wired by at
 least one typed edge into the committed core — committed against wave 1's
 revision (a DM edit landing between the waves raises
@@ -27,9 +27,10 @@ failure (the wave-1 core) stay — documented resilience, no compensating
 undo.
 """
 
+import dataclasses
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 from app.core import ids
@@ -57,6 +58,13 @@ from app.store import (
     models,
     report_progress,
 )
+from app.store.candidates import (
+    BOSS_FIELDS,
+    IDENTITY_FIELDS,
+    LORE_FIELDS,
+    WORLD_INTEGRATION_FIELDS,
+    payload_section_violations,
+)
 from app.store.db import session_scope
 from app.store.read import campaign_seed, latest_revision
 
@@ -65,6 +73,49 @@ logger = logging.getLogger(__name__)
 #: Entity kinds the build-in output contract accepts (spec-2.3).
 ENTITY_KINDS: frozenset[str] = frozenset({"character", "faction", "place"})
 
+
+def _character_record_lines() -> list[str]:
+    """The AR24 full-record contract, derived from the store's section
+    constants — ONE shape definition, shared with the generate/accept
+    validators (``payload_section_violations``). Dogfood fix 2026-09-09:
+    build-in characters used to commit with only a stat block — no
+    appearance, no lore sections, and sheets that read inconsistently.
+    The flat JSON-literal shape is the one proven on the generate path:
+    prose labels ("identity anchor: …") nudged the small model to nest
+    those fields under an ``identity`` object the validator never sees."""
+    anchor = ", ".join(f'"{field}": "..."' for field in IDENTITY_FIELDS if field != "level_cr")
+    lore = ", ".join(f'"{field}": "..."' for field in LORE_FIELDS if field != "appearance")
+    world = ", ".join(f'"{field}": "..."' for field in WORLD_INTEGRATION_FIELDS)
+    boss = ", ".join(f'"{field}": "..."' for field in BOSS_FIELDS)
+    return [
+        "CHARACTER RECORDS (AR24)",
+        "Every character's data is ONE FLAT JSON object — every named field",
+        "a non-blank string at the TOP LEVEL of data (never grouped under",
+        "'identity'/'lore' subsections), except stat_block and the two",
+        "section objects shown below:",
+        '  {"name": "<matching the entity name exactly>",',
+        '   "role": "NPC|BBEG|Monster",',
+        '   "level_cr": "level <n>" for NPC/BBEG or "CR <n>" for Monster',
+        "     (lowercase 'level', uppercase 'CR' exactly),",
+        f"   {anchor},",
+        '   "personality": "...",',
+        '   "secret": "a specific concealed fact",',
+        '   "rumor": "a concrete in-world claim",',
+        '   "party_hook": "a concrete way the party engages the figure",',
+        '   "appearance": "painter-grade prose: face, body, clothing, scars, marks",',
+        f"   {lore},",
+        '   "stat_block": {...per the STAT BLOCK RULES above; its',
+        "     identity.role matches the record role...},",
+        f'   "world_integration": {{{world}}},',
+        f'   "boss": {{{boss}}}',
+        "  }",
+        "boss is CONDITIONAL: required when role is BBEG or Monster (write",
+        '"None." in a field that does not apply), and omitted entirely for',
+        "NPC — never an empty boss object.",
+        "Factions and places carry none of this.",
+    ]
+
+
 #: Build-in payload sections, in prompt order (spec-2.1).
 SECTION_NAMES: tuple[str, ...] = ("places", "factions", "key_figures")
 
@@ -72,6 +123,201 @@ SECTION_NAMES: tuple[str, ...] = ("places", "factions", "key_figures")
 #: wave-1 entities, one hop deep, at most 24 entities.
 RETRIEVAL_DEPTH = 1
 RETRIEVAL_ENTITY_CAP = 24
+
+
+def _enforce_stat_blocks(
+    job: models.Job,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    entities: list[models.EntityInput],
+) -> tuple[list[models.EntityInput], bool]:
+    """The stat-block gate shared by both waves: collect issues, run exactly
+    one bounded repair pass when there are any, re-check. Returns
+    ``(entities, cancelled)`` — cancelled True means the job was cancelled
+    mid-gate and the caller must stop without committing this wave."""
+    issues = collect_stat_issues(entities)
+    if not issues:
+        return entities, False
+    if not _job_still_running(job):
+        return entities, True
+    repair_text = budget.call(lambda: provider(build_stat_repair_prompt(issues), settings=settings))
+    repaired = parse_stat_repair_output(repair_text, [issue.position for issue in issues])
+    entities = apply_stat_repairs(entities, repaired)
+    remaining = collect_stat_issues(entities)
+    if remaining:
+        raise JobPayloadError(stat_failure_message(remaining))
+    return entities, False
+
+
+@dataclasses.dataclass(frozen=True)
+class _RecordIssue:
+    """One wave character whose ``data`` fails the AR24 full-record shape."""
+
+    position: int
+    entity: models.EntityInput
+    violations: tuple[str, ...]
+
+
+def _collect_record_issues(
+    entities: Sequence[models.EntityInput],
+) -> list[_RecordIssue]:
+    """Flag every character entity lacking a valid full AR24 record
+    (the same shape ``store.candidates.payload_section_violations`` guards
+    on the generate path — ONE definition, dogfood fix 2026-09-09)."""
+    issues: list[_RecordIssue] = []
+    for position, entity in enumerate(entities):
+        if entity.kind != "character":
+            continue
+        violations = payload_section_violations(entity.data)
+        if violations:
+            issues.append(_RecordIssue(position, entity, tuple(violations)))
+    return issues
+
+
+def _build_record_repair_prompt(issues: Sequence[_RecordIssue]) -> str:
+    """The record gate's one bounded repair pass (AR25 semantics, same
+    shape as the stat repair): each flagged character's ref, name, current
+    record (stat_block excluded — that field is the other gate's domain)
+    and violations, plus the shared record contract."""
+    flagged: list[str] = []
+    for issue in issues:
+        current = {k: v for k, v in issue.entity.data.items() if k != "stat_block"}
+        violations = "\n".join(f"  - {violation}" for violation in issue.violations)
+        flagged.append(
+            f"E{issue.position} ({issue.entity.name!r}):\n"
+            f"current data: {json.dumps(current, sort_keys=True, separators=(',', ':'))}\n"
+            f"violations:\n{violations}"
+        )
+    return "\n".join(
+        [
+            "You are completing full character records for a TTRPG world.",
+            "Respond with exactly one JSON object — nothing else.",
+            "",
+            "\n".join(_character_record_lines()),
+            "",
+            "VIOLATIONS TO FIX",
+            "\n\n".join(flagged),
+            "",
+            "TASK",
+            "For EVERY character listed, supply the record fields that are",
+            "missing or wrong (a sectioned object may be returned whole).",
+            "Invent concrete in-world content that fits the name and the",
+            "current data. Never return a stat_block or a different name.",
+            "Use the refs exactly as given.",
+            "",
+            "OUTPUT CONTRACT",
+            'Respond with one JSON object: {"records": [{"ref": "E<position>",',
+            '  "data": {...}}, ...]} — exactly one entry per character listed,',
+            "one ref per entry, nothing else. The data object is FLAT:",
+            '  {"role": "NPC", "level_cr": "level 3", "appearance": "..."} —',
+            "never a nested identity/lore subsection.",
+        ]
+    )
+
+
+def _parse_record_repair_output(
+    text: str, flagged_positions: Sequence[int]
+) -> dict[int, dict[str, Any]]:
+    """Parse the repair response into {position: record patch}.
+
+    Same strictness as the stat repair: EXACTLY the flagged refs, each once;
+    a missing, unknown, or duplicate ref fails the job — never a partial merge.
+    """
+    stripped = _strip_fence(text)
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise JobPayloadError(f"record repair: output is not valid JSON ({exc})") from exc
+    if not isinstance(parsed, dict):
+        raise JobPayloadError("record repair: output must be a JSON object")
+    raw = parsed.get("records")
+    if not isinstance(raw, list):
+        raise JobPayloadError("record repair: output must have a 'records' list")
+    expected = set(flagged_positions)
+    repaired: dict[int, dict[str, Any]] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise JobPayloadError("record repair: each records entry must be an object")
+        ref = entry.get("ref")
+        if not isinstance(ref, str) or not ref.startswith("E"):
+            raise JobPayloadError(f"record repair: ref must be E<position>, got {ref!r}")
+        digits = ref[1:]
+        if not digits.isdecimal() or str(int(digits)) != digits:
+            raise JobPayloadError(f"record repair: ref must be E<position>, got {ref!r}")
+        position = int(digits)
+        if position not in expected:
+            raise JobPayloadError(f"record repair: ref E{position} was not flagged for repair")
+        if position in repaired:
+            raise JobPayloadError(f"record repair: ref E{position} appears more than once")
+        patch = entry.get("data")
+        if not isinstance(patch, dict):
+            raise JobPayloadError(f"record repair: ref E{position} data must be an object")
+        repaired[position] = patch
+    missing = sorted(expected - repaired.keys())
+    if missing:
+        names = ", ".join(f"E{position}" for position in missing)
+        raise JobPayloadError(f"record repair: missing repaired records for {names}")
+    return repaired
+
+
+def _apply_record_repairs(
+    entities: Sequence[models.EntityInput],
+    repaired: Mapping[int, dict[str, Any]],
+) -> list[models.EntityInput]:
+    """Merge repaired record fields into the validated wave.
+
+    The entity-level name stays authoritative and ``stat_block`` is never
+    touched by this gate — only record fields merge, everything else the
+    wave validated (edges, kinds, names) is untouched.
+    """
+    merged: list[models.EntityInput] = []
+    for position, entity in enumerate(entities):
+        if position in repaired:
+            patch = {k: v for k, v in repaired[position].items() if k not in ("stat_block", "name")}
+            entity = dataclasses.replace(entity, data={**entity.data, **patch})
+        merged.append(entity)
+    return merged
+
+
+def _record_failure_message(wave: int, issues: Sequence[_RecordIssue]) -> str:
+    """The fail-event message for a wave still failing records after the repair."""
+    parts = [
+        f"entity {issue.position} ({issue.entity.name}) fails the character record: "
+        + "; ".join(issue.violations)
+        for issue in issues
+    ]
+    return f"wave {wave}: " + " | ".join(parts)
+
+
+def _enforce_character_records(
+    job: models.Job,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    entities: list[models.EntityInput],
+    wave: int,
+) -> tuple[list[models.EntityInput], bool]:
+    """The character-record gate shared by both waves: collect violations,
+    run exactly one bounded repair pass when there are any, re-check.
+    Returns ``(entities, cancelled)`` — cancelled True means the job was
+    cancelled mid-gate and the caller must stop without committing this
+    wave. Runs BEFORE the stat gate so a repaired role is what the stat
+    block is next checked against."""
+    issues = _collect_record_issues(entities)
+    if not issues:
+        return entities, False
+    if not _job_still_running(job):
+        return entities, True
+    repair_text = budget.call(
+        lambda: provider(_build_record_repair_prompt(issues), settings=settings)
+    )
+    repaired = _parse_record_repair_output(repair_text, [issue.position for issue in issues])
+    entities = _apply_record_repairs(entities, repaired)
+    remaining = _collect_record_issues(entities)
+    if remaining:
+        raise JobPayloadError(_record_failure_message(wave, remaining))
+    return entities, False
 
 
 def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSettings) -> None:
@@ -114,22 +360,22 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # Only characters carry stat blocks (AR24, spec-2.4 review decision): a
     # stray block from a faction/place is stripped before validation or commit.
     entities_1 = strip_noncharacter_stat_blocks(entities_1)
-    # Stat-block enforcement (AR24/AR25, spec-2.4): every wave-1 character
-    # must carry a valid minimal stat block before the wave commits — or
-    # exactly one bounded repair pass; a block still invalid after the
-    # repair fails the job with an error event, zero commits.
-    stat_issues = collect_stat_issues(entities_1)
-    if stat_issues:
-        if not _job_still_running(job):
-            return
-        repair_text = budget.call(
-            lambda: provider(build_stat_repair_prompt(stat_issues), settings=settings)
-        )
-        repaired = parse_stat_repair_output(repair_text, [issue.position for issue in stat_issues])
-        entities_1 = apply_stat_repairs(entities_1, repaired)
-        remaining = collect_stat_issues(entities_1)
-        if remaining:
-            raise JobPayloadError(stat_failure_message(remaining))
+    # Record enforcement (dogfood fix 2026-09-09): every wave character
+    # carries the full AR24 record — violations go through exactly one
+    # bounded repair pass, same AR25 semantics as the stat gate below. It
+    # runs FIRST so a repaired role is what the stat block is checked against.
+    entities_1, cancelled = _enforce_character_records(
+        job, budget, provider, settings, entities_1, wave=1
+    )
+    if cancelled:
+        return
+    # Stat-block enforcement (AR24/AR25, spec-2.4): every character must carry
+    # a valid minimal stat block before the wave commits — or exactly one
+    # bounded repair pass; a block still invalid after the repair fails the
+    # job with an error event, zero commits.
+    entities_1, cancelled = _enforce_stat_blocks(job, budget, provider, settings, entities_1)
+    if cancelled:
+        return
     revision_1 = commit_subgraph(job.campaign_id, entities_1, edges_1, base_revision=wave1_base)
     waves: list[dict[str, Any]] = [_wave_result(1, revision_1.id, entities_1, edges_1)]
     # Cancel-race poll: a cancel that landed during wave 1's call/commit
@@ -157,6 +403,18 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         entities_2, edges_2 = _validate_subgraph(
             2, parsed_2, context=context_entities, core_count=core_count
         )
+        # The same gates as wave 1 (dogfood fix 2026-09-09): wave-2
+        # characters carry full AR24 records (record gate, then the
+        # stat-block gate) before committing.
+        entities_2 = strip_noncharacter_stat_blocks(entities_2)
+        entities_2, cancelled = _enforce_character_records(
+            job, budget, provider, settings, entities_2, wave=2
+        )
+        if cancelled:
+            return
+        entities_2, cancelled = _enforce_stat_blocks(job, budget, provider, settings, entities_2)
+        if cancelled:
+            return
         # Cancel-race poll: a cancel during the wave-2 call/validation must
         # not commit wave 2 — the failed wave writes nothing.
         if not _job_still_running(job):
@@ -219,11 +477,14 @@ def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) 
         "",
         spells_reference_text(),
         "",
+        *_character_record_lines(),
+        "",
         "OUTPUT CONTRACT",
         'Respond with one JSON object: {"entities": [...], "edges": [...]}.',
         'Each entity: {"ref": "E<index>", "kind": "character|faction|place", "name": "...",',
-        '  "text": "optional narrative", "data": {hard truths; characters MUST include',
-        '  "stat_block" per the STAT BLOCK RULES above; factions and places never do}}.',
+        '  "text": "optional narrative", "data": {the CHARACTER RECORDS for',
+        "  characters (stat_block included); factions and places carry hard truths",
+        "  only}}.",
         "Refs are positional and canonical: the first entity in the list is E0, the",
         "second E1, and so on (never E01, E007).",
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
@@ -284,10 +545,19 @@ def build_wave2_prompt(
         "CORE entity with a typed edge — no orphans. Other context entities are",
         "background only. Edges must connect two different entities — no self-loops.",
         "",
+        "STAT BLOCKS",
+        stat_block_rules_text(),
+        "",
+        spells_reference_text(),
+        "",
+        *_character_record_lines(),
+        "",
         "OUTPUT CONTRACT",
         'Respond with one JSON object: {"entities": [...], "edges": [...]}.',
         'Each new entity: {"ref": "N<index>", "kind": "character|faction|place",',
-        '  "name": "...", "text": "optional narrative", "data": {optional hard-truth object}}.',
+        '  "name": "...", "text": "optional narrative",',
+        '  "data": {the CHARACTER RECORDS for characters (stat_block included);',
+        "  factions and places carry hard truths only}}.",
         "Refs are positional and canonical: the first new entity in the list is N0,",
         "the second N1, and so on (never N01, N007).",
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
@@ -386,6 +656,12 @@ def _validate_subgraph(
         data = raw.get("data")
         if data is not None and not isinstance(data, dict):
             raise JobPayloadError(f"wave {wave}: entity {position} data must be an object")
+        if kind == "character":
+            # The entity-level name is authoritative inside the record too
+            # (generate parity: committed character data carries "name").
+            # The AR24 record SHAPE is not checked here: violations flow to
+            # the bounded repair pass in _enforce_character_records below.
+            data = {**(data or {}), "name": name.strip()}
         entity_id = ids.new_id()
         assigned_ids.append(entity_id)
         entity_inputs.append(

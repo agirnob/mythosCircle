@@ -31,6 +31,7 @@ from app.store.campaigns import (
     delete_campaign,
     get_campaign,
     list_campaigns,
+    seed_themes,
     update_campaign,
 )
 
@@ -70,6 +71,14 @@ class CampaignResponse(BaseModel):
 class CampaignListResponse(BaseModel):
     campaigns: list[CampaignResponse]
     next_cursor: str | None
+
+
+class ThemesResponse(BaseModel):
+    """The AR27 theme seed list (config ``campaigns.themes``) — the
+    create/update forms choose from this; free text is a 422 (dogfood
+    fix 2026-09-09: the store always validated, the form never showed)."""
+
+    themes: list[str]
 
 
 def _to_response(campaign: models.Campaign) -> CampaignResponse:
@@ -124,6 +133,15 @@ def list_own(
         campaigns=[_to_response(c) for c in campaigns],
         next_cursor=encode_cursor(next_cursor) if next_cursor is not None else None,
     )
+
+
+@router.get("/api/campaigns/themes", response_model=ThemesResponse)
+def list_themes(
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> ThemesResponse:
+    """The themes a campaign may carry — registered before the
+    ``/{campaign_id}`` route so the literal path wins the match."""
+    return ThemesResponse(themes=seed_themes())
 
 
 @router.get("/api/campaigns/{campaign_id}")

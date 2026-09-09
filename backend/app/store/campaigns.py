@@ -29,10 +29,17 @@ from app.store.db import session_scope
 #: falling back to ``app.core.config.DEFAULT_THEMES`` when the config ships
 #: an empty list. This module holds no copy of the seed (epic-1 retro item
 #: 4: one canonical code seed; an empty config falls back to it).
+def seed_themes() -> list[str]:
+    """The theme seed list in config order (an empty config falls back to
+    the code seed — epic-1 retro item 4: one canonical seed). The API
+    serves this for the create-form picker; validation uses the set."""
+    themes = configured_themes()
+    return list(themes) if themes else list(DEFAULT_THEMES)
+
+
 def configured_seed_themes() -> frozenset[str]:
     """The themes actually validated against — config list, code seed fallback."""
-    themes = configured_themes()
-    return frozenset(themes) if themes else frozenset(DEFAULT_THEMES)
+    return frozenset(seed_themes())
 
 
 DEFAULT_LIST_LIMIT = 50

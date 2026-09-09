@@ -88,11 +88,54 @@ _MIRA_STAT_BLOCK: dict[str, Any] = {
     ],
 }
 
+#: The conditional boss section (AR24) for Monster/BBEG records.
+_BOSS_SECTION: dict[str, Any] = {
+    "lair_actions": "On initiative 20, the harbor fog rises.",
+    "legendary_actions": "One legendary whirlpool stride per round.",
+    "immunities": "None.",
+    "vulnerabilities": "Piercing damage from ranged weapons.",
+}
+
+
+def _character_record(name: str, **overrides: Any) -> dict[str, Any]:
+    """A complete AR24 character record (dogfood fix 2026-09-09): build-in
+    characters now commit the full sectioned record — the same shape
+    ``store.candidates.payload_section_violations`` guards on the generate
+    path. Pass stat_block=/boss=/role= overrides to vary it."""
+    record: dict[str, Any] = {
+        "name": name,
+        "role": "NPC",
+        "level_cr": "level 5",
+        "race_type": "Human",
+        "class_profession": "Fighter",
+        "alignment": "LG",
+        "personality": "Courteous, watchful, quietly furious.",
+        "secret": "She drowned her brother's claim in the harbor.",
+        "rumor": "The Guild's ledgers miss a year of her name.",
+        "party_hook": "She hires the party to carry a sealed ledger out of the city.",
+        "appearance": "A lean woman with a wet-sand braid and a brow scar.",
+        "background": "A former harbor clerk, now deep with the Gilded Bar.",
+        "goals": "Buy back her family's house before the tide turns.",
+        "relationships": "Owes the Guild; trusts no one else.",
+        "voice_style": "Low, precise, unhurried.",
+        "catchphrases": "Tides take, tides give.",
+        "world_integration": {
+            "reputation": "Known to the Guild, trusted by no one.",
+            "factions": "The Gilded Bar (member).",
+            "current_location": "The Gilded Bar, back room.",
+            "reaction_matrix": "Greets strangers flatly; pays debts early.",
+            "on_defeat": "Flees to the harbor with the ledger.",
+        },
+    }
+    record.update(overrides)
+    return record
+
 
 def _wave1_output() -> dict[str, Any]:
     """A valid wave-1 output: two core entities wired by typed edges; the
-    character (key figure) carries an AR25-valid minimal stat block
-    (spec-2.4) so the wave commits without a repair pass."""
+    character (key figure) carries the full AR24 record + an AR25-valid
+    minimal stat block (spec-2.4, dogfood fix 2026-09-09) so the wave
+    commits without a repair pass."""
     return {
         "entities": [
             {"ref": "E0", "kind": "faction", "name": "The Gilded Bar", "text": "smoke and coin"},
@@ -100,7 +143,11 @@ def _wave1_output() -> dict[str, Any]:
                 "ref": "E1",
                 "kind": "character",
                 "name": "Mira Vane",
-                "data": {"goal": "tea house", "stat_block": _MIRA_STAT_BLOCK},
+                "data": {
+                    **_character_record("Mira Vane"),
+                    "goal": "tea house",
+                    "stat_block": _MIRA_STAT_BLOCK,
+                },
             },
         ],
         "edges": [
@@ -116,7 +163,12 @@ def _wave2_output() -> dict[str, Any]:
     return {
         "entities": [
             {"ref": "N0", "kind": "place", "name": "The Drowned Rat", "text": "a dockside inn"},
-            {"ref": "N1", "kind": "character", "name": "Captain Harlow"},
+            {
+                "ref": "N1",
+                "kind": "character",
+                "name": "Captain Harlow",
+                "data": {**_character_record("Captain Harlow"), "stat_block": _MIRA_STAT_BLOCK},
+            },
         ],
         "edges": [
             {"src": "N0", "dst": "C0", "type": "located_in"},
@@ -132,8 +184,18 @@ def _wave2_output_orphan() -> dict[str, Any]:
     return {
         "entities": [
             {"ref": "N0", "kind": "place", "name": "The Drowned Rat"},
-            {"ref": "N1", "kind": "character", "name": "Captain Harlow"},
-            {"ref": "N2", "kind": "character", "name": "Nowhere Man"},
+            {
+                "ref": "N1",
+                "kind": "character",
+                "name": "Captain Harlow",
+                "data": {**_character_record("Captain Harlow"), "stat_block": _MIRA_STAT_BLOCK},
+            },
+            {
+                "ref": "N2",
+                "kind": "character",
+                "name": "Nowhere Man",
+                "data": {**_character_record("Nowhere Man"), "stat_block": _MIRA_STAT_BLOCK},
+            },
         ],
         "edges": [
             {"src": "N0", "dst": "C0", "type": "located_in"},
@@ -376,8 +438,8 @@ def test_self_loop_edges_rejected(world: str) -> None:
     edge and commits nothing."""
     output = {
         "entities": [
-            {"ref": "E0", "kind": "character", "name": "Solo"},
-            {"ref": "E1", "kind": "character", "name": "Alone"},
+            {"ref": "E0", "kind": "place", "name": "Solo"},
+            {"ref": "E1", "kind": "place", "name": "Alone"},
         ],
         "edges": [
             {"src": "E0", "dst": "E0", "type": "ally_of"},
@@ -438,7 +500,14 @@ def test_orphan_wave1_fails_naming_entity(world: str) -> None:
     """An entity with no edge within the wave-1 subgraph fails the job
     naming the orphan; that wave zero commits."""
     output = _wave1_output()
-    output["entities"].append({"ref": "E2", "kind": "character", "name": "Rootless Stranger"})
+    output["entities"].append(
+        {
+            "ref": "E2",
+            "kind": "character",
+            "name": "Rootless Stranger",
+            "data": {**_character_record("Rootless Stranger"), "stat_block": _MIRA_STAT_BLOCK},
+        }
+    )
     job_id = _enqueue(world, places=["Greymarch"])
     run_next_job(provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS)
     job, _position = job_status(job_id)
@@ -541,7 +610,7 @@ def test_build_wave1_prompt_deterministic() -> None:
     # validator enforces (AD-16).
     assert "STAT BLOCKS" in first and stat_block_rules_text() in first
     assert spells_reference_text() in first and "SRD SPELLS BY CLASS" in first
-    assert "characters MUST include" in first and '"stat_block"' in first
+    assert "CHARACTER RECORDS" in first and "stat_block" in first
     assert seed_a.id not in first and seed_a.created_at not in first
 
 
@@ -590,6 +659,8 @@ def test_build_wave2_prompt_deterministic() -> None:
     # The serialized context survives the prompt and never leaks ids.
     assert context_a[0][0].id not in first and context_a[0][1].id not in first
     assert seed.id not in first
+    # The record contract + stat rules now gate wave 2 as well (2026-09-09).
+    assert "CHARACTER RECORDS" in first and "STAT BLOCKS" in first
     assert "WORLD CONTEXT" in first and "entity[0]" in first
     # The context's edges serialize (member_of — the only context edge),
     # while the vocabulary list separately carries every edge type.
@@ -820,7 +891,10 @@ def test_invalid_stat_block_repaired_in_one_pass(world: str) -> None:
     output = _wave1_output()
     bad_block = dict(_MIRA_STAT_BLOCK)
     bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
-    output["entities"][1]["data"] = {"stat_block": bad_block}
+    output["entities"][1]["data"] = {
+        **_character_record("Mira Vane"),
+        "stat_block": bad_block,
+    }
     responses = [
         json.dumps(output),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
@@ -848,7 +922,7 @@ def test_missing_stat_block_repaired(world: str) -> None:
     flagged 'stat_block section missing'; the repair pass supplies the
     block and the wave commits."""
     output = _wave1_output()
-    output["entities"][1]["data"] = {"goal": "tea house"}  # drop the block
+    output["entities"][1]["data"] = _character_record("Mira Vane")  # drop the block
     responses = [
         json.dumps(output),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
@@ -878,7 +952,7 @@ def test_still_invalid_stat_block_fails_zero_commits(world: str) -> None:
     output = _wave1_output()
     bad_block = dict(_MIRA_STAT_BLOCK)
     bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
-    output["entities"][1]["data"] = {"stat_block": bad_block}
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_block}
     responses = [
         json.dumps(output),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
@@ -903,7 +977,7 @@ def test_stat_repair_budget_exceeded_fails_before_http(world: str) -> None:
     output = _wave1_output()
     bad_block = dict(_MIRA_STAT_BLOCK)
     bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
-    output["entities"][1]["data"] = {"stat_block": bad_block}
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_block}
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"], max_llm_calls=1)
     run_next_job(provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS)
     job, _position = job_status(job_id)
@@ -917,7 +991,7 @@ def test_stat_repair_bad_ref_fails(world: str) -> None:
     """STAT_REPAIR_BAD_REF: the repair response refs a position that was
     not flagged (or an unknown one) — the job fails, zero commits."""
     output = _wave1_output()
-    output["entities"][1]["data"] = {"goal": "tea house"}  # missing stat_block
+    output["entities"][1]["data"] = _character_record("Mira Vane")  # missing stat_block
     responses = [
         json.dumps(output),
         json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": _MIRA_STAT_BLOCK}]}),
@@ -938,7 +1012,7 @@ def test_stat_repair_fence_wrapped_succeeds(world: str) -> None:
     """STAT_REPAIR_FENCE: a markdown-fenced repair output is stripped
     before parsing (same tolerance as wave output)."""
     output = _wave1_output()
-    output["entities"][1]["data"] = {"goal": "tea house"}
+    output["entities"][1]["data"] = _character_record("Mira Vane")
     repair = (
         "```json\n"
         + json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]})
@@ -958,25 +1032,119 @@ def test_stat_repair_fence_wrapped_succeeds(world: str) -> None:
     assert "stat_block" in mira.data
 
 
-def test_wave2_characters_without_stat_block_commit(world: str) -> None:
-    """WAVE2_CHARACTERS_UNREQUIRED: stat-block enforcement is wave-1 key
-    figures only — a wave-2 character without a stat block still commits
-    (Epic 3's AR19 candidates carry the full stat-block contract)."""
-    wave2 = _wave2_output()
-    # Captain Harlow (N1, character) currently has no stat_block — as-is.
-    responses = [json.dumps(_wave1_output()), json.dumps(wave2)]
-    job_id = _enqueue(world, notes="the docks teem with the Drowned Rat and Captain Harlow")
-    processed = run_next_job(
+def test_wave2_characters_require_full_records(world: str) -> None:
+    """WAVE2_RECORDS (dogfood fix 2026-09-09): wave-2 characters carry the
+    same full AR24 record + stat block as wave 1 — a bare character gets
+    exactly one bounded record repair, and one still incomplete after it
+    fails the wave naming the entity and the missing section (the wave-1
+    core stays), while a complete one commits with the record."""
+    bare = _wave2_output()
+    bare["entities"][1] = {"ref": "N1", "kind": "character", "name": "Captain Harlow"}
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(bare),
+        # one repair pass, still incomplete (personality only) -> fail
+        json.dumps({"records": [{"ref": "E1", "data": {"personality": "gruff dockmaster"}}]}),
+    ]
+    job_id = _enqueue(world, notes="the docks teem with Captain Harlow")
+    run_next_job(
         provider=lambda prompt, settings, responses=responses: responses.pop(0),
         settings=SETTINGS,
     )
-    assert processed == job_id
     job, _position = job_status(job_id)
-    assert job.state == "succeeded"
-    assert job.result is not None and job.result["entity_count"] == 4
+    assert job.state == "failed"
+    assert "wave 2" in (job.error or "")
+    assert "Captain Harlow" in (job.error or "") and "appearance" in (job.error or "")
+    with session_scope() as session:
+        # the seed is not a revision (AD-1 exception): wave 1 alone.
+        assert len(list(revision_chain(session, world))) == 1  # wave-1 only
+
+    responses2 = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
+    job_id2 = _enqueue(world, notes="the docks teem with the Drowned Rat and Captain Harlow")
+    processed = run_next_job(
+        provider=lambda prompt, settings, responses=responses2: responses.pop(0),
+        settings=SETTINGS,
+    )
+    assert processed == job_id2
+    job2, _position = job_status(job_id2)
+    assert job2.state == "succeeded"
+    assert job2.result is not None and job2.result["entity_count"] == 4
     with session_scope() as session:
         harlow = next(e for e in world_entities(session, world) if e.name == "Captain Harlow")
-    assert "stat_block" not in harlow.data
+    assert harlow.data["appearance"]  # the record committed…
+    assert harlow.data["stat_block"] == _MIRA_STAT_BLOCK  # …with the stat block
+
+
+def test_wave1_records_repaired_in_one_pass(world: str) -> None:
+    """RECORD_REPAIR (2026-09-09 live: gemma shipped a wave-1 subgraph with
+    NO records): a character lacking the AR24 record gets exactly one
+    bounded repair pass and commits with the merged record. A stat_block in
+    the repair patch is discarded — the record gate never touches stats."""
+    output = _wave1_output()
+    output["entities"][1]["data"] = {"stat_block": _MIRA_STAT_BLOCK}  # no record
+    responses = [
+        json.dumps(output),
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "ref": "E1",
+                        "data": {**_character_record("Mira Vane"), "stat_block": {"junk": True}},
+                    }
+                ]
+            }
+        ),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 2  # wave 1 + the record repair; stat gate stays silent
+    assert "CHARACTER RECORDS" in calls[1] and "Mira Vane" in calls[1]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["appearance"]  # the repaired record committed…
+    assert mira.data["stat_block"] == _MIRA_STAT_BLOCK  # …untouched by the patch
+
+
+def test_record_repair_missing_ref_fails(world: str) -> None:
+    """RECORD_REPAIR_MISSING_REF: the repair response must list exactly the
+    flagged refs — an empty 'records' list fails the job, zero commits."""
+    output = _wave1_output()
+    output["entities"][1]["data"] = {"stat_block": _MIRA_STAT_BLOCK}
+    responses = [json.dumps(output), json.dumps({"records": []})]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(
+        provider=lambda prompt, settings, responses=responses: responses.pop(0),
+        settings=SETTINGS,
+    )
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "missing repaired records for E1" in (job.error or "")
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+    responses2 = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
+    job_id2 = _enqueue(world, notes="the docks teem with the Drowned Rat and Captain Harlow")
+    processed = run_next_job(
+        provider=lambda prompt, settings, responses=responses2: responses.pop(0),
+        settings=SETTINGS,
+    )
+    assert processed == job_id2
+    job2, _position = job_status(job_id2)
+    assert job2.state == "succeeded"
+    assert job2.result is not None and job2.result["entity_count"] == 4
+    with session_scope() as session:
+        harlow = next(e for e in world_entities(session, world) if e.name == "Captain Harlow")
+    assert harlow.data["appearance"]  # the record committed…
+    assert harlow.data["stat_block"] == _MIRA_STAT_BLOCK  # …with the stat block
 
 
 def test_monster_with_level_repaired_in_one_pass(world: str) -> None:
@@ -994,7 +1162,18 @@ def test_monster_with_level_repaired_in_one_pass(world: str) -> None:
         "combat": {"ac": 15, "hp": 7},
     }
     output = _wave1_output()
-    output["entities"][1]["data"] = {"stat_block": bad_monster}
+    output["entities"][1]["data"] = {
+        **_character_record(
+            "Mira Vane",
+            role="Monster",
+            level_cr="CR 5",
+            race_type="Goblin",
+            class_profession="Goblin warband",
+            alignment="NE",
+            boss=dict(_BOSS_SECTION),
+        ),
+        "stat_block": bad_monster,
+    }
     responses = [
         json.dumps(output),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": fixed_monster}]}),
@@ -1022,7 +1201,7 @@ def test_cancel_before_stat_repair_is_noop(world: str) -> None:
     validation and the repair call is a no-op — no repair call, no wave-1
     commit, the job stays cancelled."""
     output = _wave1_output()
-    output["entities"][1]["data"] = {"goal": "tea house"}  # flagged for repair
+    output["entities"][1]["data"] = _character_record("Mira Vane")  # flagged for repair
     calls: list[str] = []
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
 

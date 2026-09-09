@@ -115,6 +115,27 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/campaigns/themes': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List Themes
+     * @description The themes a campaign may carry — registered before the
+     *     ``/{campaign_id}`` route so the literal path wins the match.
+     */
+    get: operations['list_themes_api_campaigns_themes_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/campaigns/{campaign_id}': {
     parameters: {
       query?: never
@@ -863,6 +884,16 @@ export interface components {
       /** Created At */
       created_at: string
     }
+    /**
+     * ThemesResponse
+     * @description The AR27 theme seed list (config ``campaigns.themes``) — the
+     *     create/update forms choose from this; free text is a 422 (dogfood
+     *     fix 2026-09-09: the store always validated, the form never showed).
+     */
+    ThemesResponse: {
+      /** Themes */
+      themes: string[]
+    }
     /** ValidationError */
     ValidationError: {
       /** Location */
@@ -1076,6 +1107,37 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['CampaignResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  list_themes_api_campaigns_themes_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: {
+        mythoscircle_session?: string | null
+      }
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ThemesResponse']
         }
       }
       /** @description Validation Error */

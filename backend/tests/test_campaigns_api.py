@@ -81,6 +81,21 @@ def test_create_bad_theme_422(client: Any) -> None:
     assert "seed list" in response.json()["message"]
 
 
+def test_themes_endpoint_lists_the_seed(client: Any) -> None:
+    """GET /api/campaigns/themes (dogfood fix 2026-09-09): the form picker's
+    source — auth-gated, config-ordered, and the literal path must win the
+    route match over /{campaign_id} (a swallowed themes request would 404
+    as a campaign id)."""
+    assert client.get("/api/campaigns/themes").status_code == 401
+    _register_login(client)
+    from app.store.campaigns import seed_themes
+
+    response = client.get("/api/campaigns/themes")
+    assert response.status_code == 200
+    assert response.json() == {"themes": seed_themes()}
+    assert "High Fantasy" in response.json()["themes"]
+
+
 def test_list_requires_auth_and_scopes(client: Any) -> None:
     _register_login(client, "dm@example.com")
     _create_campaign(client, title="Mine")

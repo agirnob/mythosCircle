@@ -9,6 +9,9 @@ export const useCampaignsStore = defineStore('campaigns', {
   state: () => ({
     campaigns: [] as Campaign[],
     current: null as Campaign | null,
+    /** The AR27 theme seed list (GET /api/campaigns/themes) — the create
+     * form picks from it; free text is a 422 server-side. */
+    themes: [] as string[],
     loading: false,
     error: null as string | null,
   }),
@@ -43,6 +46,11 @@ export const useCampaignsStore = defineStore('campaigns', {
       } catch (err) {
         this.error = err instanceof ApiError ? err.message : 'Could not load the campaign.'
       }
+    },
+    async fetchThemes() {
+      const response =
+        await apiFetch<components['schemas']['ThemesResponse']>('/api/campaigns/themes')
+      this.themes = response.themes
     },
   },
 })

@@ -219,3 +219,9 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-1-export-engine-pure-projection.md`
   summary: Sheet-hero vs UI-portrait divergence — the HTML sheet embeds the newest AVAILABLE image by rowid, the UI portraitFor picks newest created_at regardless of availability.
   evidence: Verification-gap + blind review layers both traced it; observable only once entities carry image history (unbounded accumulation is the 4-2/4-3 deferred item). The two rules converge under a keep-latest retention ruling — unify the selectors when 4-retro-item-13 lands. [backend/app/api/export_sheets.py _hero_portrait_src, frontend/src/stores/world.ts portraitFor]
+
+## Deferred from: build-in record-gate dogfood live smoke (2026-09-09)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-core-first-two-wave-build-in-pipeline.md`
+  summary: Wave-2 structural violations (an orphan entity with no edge to the core) still hard-fail the whole wave — the live gemma run committed the wave-1 core, then dropped wave 2 over 'Kaelen the Mute' carrying no edges. Records and stat blocks now each get one bounded repair pass; structural violations have none.
+  evidence: `run_build_in` wave 2 dies in `_validate_subgraph`'s orphan check (JobPayloadError), job fails with wave 1 committed (documented resilience). Candidate fixes: one bounded wave-2 re-prompt naming the orphans, or auto-dropping entities whose only defect is the missing edge — an AR25-scope decision for the owner. [backend/app/pipeline/build_in.py]

@@ -308,6 +308,46 @@ def render_entity_markdown(export: WorldExport, entity_id: str) -> str:
 # HTML sheets
 # ---------------------------------------------------------------------------
 
+#: The six ability scores in canonical order (SRD 5.1 field set).
+_ABILITY_ORDER: tuple[str, ...] = ("str", "dex", "con", "int", "wis", "cha")
+
+#: Display order for stat-block parts — PRESENTATION ONLY: committed data is
+#: never reordered (the appendix keeps the exact shape). Models and the
+#: repair pass commit keys in varying order; the sheet must not look
+#: different because of it (dogfood fix 2026-09-09).
+_STAT_BLOCK_ORDER: tuple[str, ...] = (
+    "identity",
+    "attributes",
+    "combat",
+    "skills",
+    "actions",
+    "traits",
+    "spells",
+)
+
+#: Field order for the known section dicts; unknown keys follow in
+#: committed order.
+_KEY_ORDER: dict[str, tuple[str, ...]] = {
+    "attributes": _ABILITY_ORDER,
+    "identity": ("role", "level", "cr", "race", "class", "alignment"),
+    "combat": ("ac", "armor_class", "hp", "hit_points", "speed", "initiative"),
+    "world_integration": (
+        "reputation",
+        "factions",
+        "current_location",
+        "reaction_matrix",
+        "on_defeat",
+    ),
+    "boss": ("lair_actions", "legendary_actions", "immunities", "vulnerabilities"),
+}
+
+
+def _ordered(value: dict[str, Any], order: tuple[str, ...]) -> list[tuple[str, Any]]:
+    """Known keys first in ``order``, the rest in committed order."""
+    picked = [(key, value[key]) for key in order if key in value]
+    seen = {key for key, _ in picked}
+    return picked + [(key, item) for key, item in value.items() if key not in seen]
+
 
 def _esc(value: Any) -> str:
     return _html.escape(str(value), quote=False)
@@ -357,9 +397,9 @@ def _render_list(value: list[Any]) -> str:
     return f'<ul class="entries">{"".join(items)}</ul>'
 
 
-def _render_mapping(value: dict[str, Any]) -> str:
+def _render_mapping(value: dict[str, Any], order: tuple[str, ...] = ()) -> str:
     parts = []
-    for key, item in value.items():
+    for key, item in _ordered(value, order):
         if _is_scalar(item):
             parts.append(f"<dt>{_esc(_label(str(key)))}</dt><dd>{_inline(item)}</dd>")
         else:
@@ -367,7 +407,7 @@ def _render_mapping(value: dict[str, Any]) -> str:
     return f'<dl class="fields">{"".join(parts)}</dl>'
 
 
-def _render_value(value: Any) -> str:
+def _render_value(value: Any, key: str = "") -> str:
     if value is None:
         return ""
     if isinstance(value, str):
@@ -375,7 +415,7 @@ def _render_value(value: Any) -> str:
     if isinstance(value, list):
         return _render_list(value)
     if isinstance(value, dict):
-        return _render_mapping(value)
+        return _render_mapping(value, _KEY_ORDER.get(str(key), ()))
     return f"<p>{_inline(value)}</p>"
 
 
@@ -383,7 +423,7 @@ def _abilities_grid(value: dict[str, Any]) -> str:
     cells = [
         f'<div class="ab"><span class="ab-k">{_esc(str(k).upper())}</span>'
         f'<span class="ab-v">{_inline(v)}</span></div>'
-        for k, v in value.items()
+        for k, v in _ordered(value, _ABILITY_ORDER)
     ]
     return f'<div class="abilities">{"".join(cells)}</div>'
 
@@ -395,11 +435,14 @@ def _stat_block_panel(stat_block: Any) -> str:
     if not isinstance(stat_block, dict):
         return f"<section>{_render_value(stat_block)}</section>"
     parts = ["<h3>Stat Block</h3>"]
-    for key, value in stat_block.items():
+    for key, value in _ordered(stat_block, _STAT_BLOCK_ORDER):
         if key == "attributes" and isinstance(value, dict):
             parts.append(_abilities_grid(value))
         elif isinstance(value, dict):
-            parts.append(f"<h4>{_esc(_label(str(key)))}</h4>{_render_mapping(value)}")
+            parts.append(
+                f"<h4>{_esc(_label(str(key)))}</h4>"
+                f"{_render_mapping(value, _KEY_ORDER.get(key, ()))}"
+            )
         else:
             rendered = _render_value(value)
             if rendered:
@@ -497,7 +540,7 @@ def _entity_sections(
         ):
             continue
         else:
-            rendered = _render_value(value)
+            rendered = _render_value(value, str(key))
             if rendered:
                 body.append(f"<section><h3>{_esc(_label(str(key)))}</h3>{rendered}</section>")
     relations = []

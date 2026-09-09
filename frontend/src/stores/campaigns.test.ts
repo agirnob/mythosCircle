@@ -69,4 +69,15 @@ describe('campaigns store', () => {
     ).rejects.toBeInstanceOf(ApiError)
     expect(campaigns.campaigns).toEqual([])
   })
+  it('fetchThemes loads the seed list the create form picks from', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ themes: ['High Fantasy', 'Grimdark'] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const campaigns = useCampaignsStore()
+    await campaigns.fetchThemes()
+    expect(campaigns.themes).toEqual(['High Fantasy', 'Grimdark'])
+  })
 })

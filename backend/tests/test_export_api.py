@@ -944,3 +944,60 @@ def test_entity_html_non_string_identity_still_visible(client: Any) -> None:
         f"/api/campaigns/{campaign_id}/entities/{odd_id}/export", params={"format": "html"}
     ).text
     assert "<h3>Level cr</h3>" in html_body and ">12<" in html_body
+
+
+def _sb_block() -> dict[str, Any]:
+    return {
+        "identity": {"role": "NPC", "race": "Human", "level": 1},
+        "attributes": {"str": 10, "dex": 10, "con": 10, "int": 10, "wis": 10, "cha": 10},
+        "combat": {"ac": 10, "hp": 1},
+        "skills": [],
+        "actions": [],
+        "traits": [],
+        "spells": [],
+    }
+
+
+def test_entity_html_stat_block_order_is_canonical(client: Any) -> None:
+    """ORDER DRIFT (dogfood 2026-09-09): two characters whose committed
+    stat_blocks differ ONLY in key order (model/repair variance) render the
+    same sheet — the renderer owns display order; the JSON appendix keeps
+    the committed shape verbatim, order included."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    a_id, b_id, anchor_id = new_id(), new_id(), new_id()
+    block = _sb_block()
+    shuffled = dict(reversed(list(block.items())))
+    shuffled["attributes"] = dict(reversed(list(block["attributes"].items())))
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(id=a_id, kind="character", name="Aa", data={"stat_block": shuffled}),
+            models.EntityInput(
+                id=b_id, kind="character", name="Bb", data={"stat_block": dict(block)}
+            ),
+            models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
+        ],
+        edges=[
+            models.EdgeInput(src=a_id, dst=anchor_id, type="located_in", counter=1),
+            models.EdgeInput(src=b_id, dst=anchor_id, type="located_in", counter=1),
+        ],
+    )
+
+    def sheet(entity_id: str) -> str:
+        return client.get(
+            f"/api/campaigns/{campaign_id}/entities/{entity_id}/export", params={"format": "html"}
+        ).text
+
+    def panel(h: str) -> str:
+        start = h.index('class="stat-block"')
+        return h[start : h.index("</section>", start)]
+
+    a, b = sheet(a_id), sheet(b_id)
+    expected = ["Identity", "Combat", "Skills", "Actions", "Traits", "Spells"]
+    assert re.findall(r"<h4>(.*?)</h4>", panel(a)) == expected
+    assert re.findall(r"<h4>(.*?)</h4>", panel(b)) == expected
+    # The abilities grid leads with STR even when cha was committed first.
+    assert panel(a).index('ab-k">STR') < panel(a).index('ab-k">DEX') < panel(a).index('ab-k">CHA')
+    # The appendix keeps the committed insertion order verbatim.
+    assert a.index('"cha"') < a.index('"wis"') < a.index('"str"')

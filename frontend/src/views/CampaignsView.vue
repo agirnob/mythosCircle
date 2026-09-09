@@ -14,6 +14,7 @@ const description = ref('')
 const customLore = ref('')
 const createError = ref<string | null>(null)
 const creating = ref(false)
+const themeError = ref<string | null>(null)
 
 async function create() {
   createError.value = null
@@ -45,6 +46,14 @@ onMounted(async () => {
   if (campaigns.error) {
     loadError.value = campaigns.error
   }
+  // The theme picker's source (dogfood fix 2026-09-09): the store
+  // validates against this seed list server-side, so the form must offer
+  // exactly these — free text was the wrong affordance.
+  try {
+    await campaigns.fetchThemes()
+  } catch (err) {
+    themeError.value = err instanceof ApiError ? err.message : 'Could not load the themes.'
+  }
 })
 </script>
 
@@ -60,7 +69,12 @@ onMounted(async () => {
       </label>
       <label>
         Theme
-        <input v-model="theme" type="text" required placeholder="Dark fantasy heist" />
+        <select v-model="theme" required>
+          <option value="" disabled>Choose a theme…</option>
+          <option v-for="option in campaigns.themes" :key="option" :value="option">
+            {{ option }}
+          </option>
+        </select>
       </label>
       <label>
         Description
@@ -78,6 +92,7 @@ onMounted(async () => {
           placeholder="Secrets, history, hooks to seed the world."
         ></textarea>
       </label>
+      <p v-if="themeError" class="error">{{ themeError }}</p>
       <p v-if="createError" class="error">{{ createError }}</p>
       <button type="submit" :disabled="creating">
         {{ creating ? 'Creating…' : 'Create world' }}
