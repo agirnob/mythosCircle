@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.core import config as config_mod
-from app.core.config import env_float, env_int, runtime_config
+from app.core.config import env_bool_optional, env_float, env_int, runtime_config
 
 #: Environment variables overriding the queue limits. The pending-cap and
 #: LLM keys live canonically in ``app.core.config`` (AD-22); these are the
@@ -55,11 +55,15 @@ LLM_ENDPOINT = config_mod.LLM_ENDPOINT_ENV
 LLM_MODEL = config_mod.LLM_MODEL_ENV
 LLM_API_KEY = "MYTHOSCIRCLE_LLM_API_KEY"
 LLM_TIMEOUT = config_mod.LLM_TIMEOUT_ENV
+LLM_MAX_TOKENS = config_mod.LLM_MAX_TOKENS_ENV
+LLM_THINKING = config_mod.LLM_THINKING_ENV
 
 #: Code defaults (spec-1.4; config.toml [llm] overrides in 1.7).
 DEFAULT_LLM_ENDPOINT = config_mod.DEFAULT_LLM_ENDPOINT
 DEFAULT_LLM_MODEL = config_mod.DEFAULT_LLM_MODEL
 DEFAULT_LLM_TIMEOUT = config_mod.DEFAULT_LLM_TIMEOUT
+DEFAULT_LLM_MAX_TOKENS = config_mod.DEFAULT_LLM_MAX_TOKENS
+DEFAULT_LLM_THINKING = config_mod.DEFAULT_LLM_THINKING
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,12 @@ class LLMSettings:
     model: str = DEFAULT_LLM_MODEL
     api_key: str | None = None
     timeout: float = DEFAULT_LLM_TIMEOUT
+    #: Hard ceiling on one completion (never unbounded — see config.py).
+    max_tokens: int = DEFAULT_LLM_MAX_TOKENS
+    #: Tri-state reasoning control: ``None`` sends no ``chat_template_kwargs``
+    #: at all (a backend rejecting unknown fields keeps working), ``False``
+    #: turns the model's thinking channel off, ``True`` asks for it.
+    enable_thinking: bool | None = DEFAULT_LLM_THINKING
 
 
 def llm_settings() -> LLMSettings:
@@ -88,6 +98,8 @@ def llm_settings() -> LLMSettings:
         model=(model_env if model_env else resolved.llm_model).strip() or resolved.llm_model,
         api_key=os.environ.get(LLM_API_KEY) or None,
         timeout=env_float(LLM_TIMEOUT, resolved.llm_timeout),
+        max_tokens=env_int(LLM_MAX_TOKENS, resolved.llm_max_tokens, minimum=1),
+        enable_thinking=env_bool_optional(LLM_THINKING, resolved.llm_thinking),
     )
 
 

@@ -4,6 +4,8 @@ Deterministic — the httpx transport is injected (MockTransport); the
 adapter never touches a real server.
 """
 
+import json
+
 import httpx
 import pytest
 
@@ -161,3 +163,89 @@ def test_chat_completion_malformed_payload_raises_provider_error() -> None:
     with pytest.raises(ProviderError) as excinfo:
         chat_completion("hi", settings=DEFAULT, transport=httpx.MockTransport(handler))
     assert excinfo.value.kind == "http"
+
+
+def test_chat_completion_sends_max_tokens_ceiling() -> None:
+    """Every call carries a generation ceiling — an uncapped call on a
+    reasoning model runs until the whole-call timeout (2026-09-10)."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.read().decode()))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    chat_completion(
+        "hi",
+        settings=LLMSettings(max_tokens=4096),
+        transport=httpx.MockTransport(handler),
+    )
+    assert seen["max_tokens"] == 4096
+
+
+def test_chat_completion_thinking_off_sends_template_kwarg() -> None:
+    """enable_thinking=False is what actually stops the reasoning channel
+    (true would be ignored by the server's default)."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.read().decode()))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    chat_completion(
+        "hi",
+        settings=LLMSettings(enable_thinking=False),
+        transport=httpx.MockTransport(handler),
+    )
+    assert seen["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_chat_completion_unset_thinking_sends_no_field() -> None:
+    """None = omit the field entirely, so a backend that rejects unknown
+    request fields (OpenAI, Azure) still works — the AR9/AD-14 swap."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.read().decode()))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    chat_completion(
+        "hi",
+        settings=LLMSettings(enable_thinking=None),
+        transport=httpx.MockTransport(handler),
+    )
+    assert "chat_template_kwargs" not in seen
+
+
+def test_chat_completion_truncation_is_a_named_error() -> None:
+    """finish_reason=length means the answer is a fragment. Reported as
+    'truncated' here, not as a baffling 'not valid JSON (Unterminated
+    string)' deep inside the build-in pipeline."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [
+                {"message": {"content": '{"entities": [{"ref": "E0"'}, "finish_reason": "length"},
+            ]},
+        )
+
+    with pytest.raises(ProviderError) as excinfo:
+        chat_completion("hi", settings=DEFAULT, transport=httpx.MockTransport(handler))
+    assert excinfo.value.kind == "truncated"
+    assert "max_tokens" in str(excinfo.value)
+
+
+def test_chat_completion_stop_finish_reason_is_not_truncation() -> None:
+    """A normal stop is a complete answer — the truncation guard must not
+    fire on it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [
+                {"message": {"content": "done"}, "finish_reason": "stop"},
+            ]},
+        )
+
+    text = chat_completion("hi", settings=DEFAULT, transport=httpx.MockTransport(handler))
+    assert text == "done"

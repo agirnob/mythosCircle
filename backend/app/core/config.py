@@ -25,6 +25,8 @@ MAX_PENDING_ENV = "MYTHOSCIRCLE_MAX_PENDING_PER_CAMPAIGN"
 LLM_ENDPOINT_ENV = "MYTHOSCIRCLE_LLM_ENDPOINT"
 LLM_MODEL_ENV = "MYTHOSCIRCLE_LLM_MODEL"
 LLM_TIMEOUT_ENV = "MYTHOSCIRCLE_LLM_TIMEOUT"
+LLM_MAX_TOKENS_ENV = "MYTHOSCIRCLE_LLM_MAX_TOKENS"
+LLM_THINKING_ENV = "MYTHOSCIRCLE_LLM_THINKING"
 IMAGE_ENDPOINT_ENV = "MYTHOSCIRCLE_IMAGE_ENDPOINT"
 IMAGE_MODEL_ENV = "MYTHOSCIRCLE_IMAGE_MODEL"
 IMAGE_TIMEOUT_ENV = "MYTHOSCIRCLE_IMAGE_TIMEOUT"
@@ -68,6 +70,25 @@ def env_int(name: str, default: int, minimum: int = 0) -> int:
     return value
 
 
+def env_bool_optional(name: str, default: bool | None) -> bool | None:
+    """Parse a tri-state boolean env var (unset -> ``default``).
+
+    Only the documented spellings are accepted; anything else fails loudly
+    exactly like ``env_int`` — a typo must never silently pick a sampling
+    mode. ``None`` is a meaningful value, not a missing one: it means
+    "send no reasoning-control field at all".
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean, got {raw!r}")
+
+
 def env_float(name: str, default: float, minimum: float = 0.0) -> float:
     """Parse a float env var; malformed or non-positive values fail loudly.
 
@@ -96,6 +117,19 @@ DEFAULT_MAX_PENDING = 10
 DEFAULT_LLM_ENDPOINT = "http://127.0.0.1:8080/v1"
 DEFAULT_LLM_MODEL = "mythos-14b-q5"
 DEFAULT_LLM_TIMEOUT = 120.0
+#: Hard ceiling on one completion's generated tokens. The 26B reasoning
+#: model generates indefinitely without one: a live dev call ran past 600s
+#: emitting only reasoning and never reached an answer (2026-09-10). A
+#: truncated call is a NAMED provider error, never a confusing "not valid
+#: JSON" failure further down the pipeline.
+DEFAULT_LLM_MAX_TOKENS = 8192
+#: Tri-state reasoning control for chat templates that accept
+#: ``enable_thinking``. ``None`` = omit the field entirely, so a backend
+#: that rejects unknown request fields (OpenAI, Azure) keeps working and
+#: AR9/AD-14's "swapping engines is a config change" promise stays true.
+#: The local gemma stack sets ``false``: with thinking on, one call spent
+#: 8000 tokens / 26,580 characters reasoning and wrote zero content.
+DEFAULT_LLM_THINKING: bool | None = None
 #: Documented PLACEHOLDER defaults (spec-4.1 ask-first item): the dev
 #: image server + model choice is an owner decision at build — until
 #: confirmed, these are inert placeholders and tests inject a mock
@@ -172,6 +206,8 @@ class RuntimeConfig:
     llm_endpoint: str = DEFAULT_LLM_ENDPOINT
     llm_model: str = DEFAULT_LLM_MODEL
     llm_timeout: float = DEFAULT_LLM_TIMEOUT
+    llm_max_tokens: int = DEFAULT_LLM_MAX_TOKENS
+    llm_thinking: bool | None = DEFAULT_LLM_THINKING
     max_llm_calls_per_job: int = 64
     max_media_calls_per_job: int = 8
     image_endpoint: str = DEFAULT_IMAGE_ENDPOINT
@@ -254,16 +290,23 @@ def runtime_config() -> RuntimeConfig:
     comfyui_video = data.get("comfyui_video", {})
     campaigns = data.get("campaigns", {})
 
-    def _config_int(value: Any, name: str, default: int) -> int:
+    def _config_int(value: Any, name: str, default: int, minimum: int = 0) -> int:
         if value is None:
             return default
         try:
             parsed = int(value)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"config {name} must be an integer, got {value!r}") from exc
-        if parsed < 0:
-            raise ValueError(f"config {name} must be >= 0, got {parsed}")
+        if parsed < minimum:
+            raise ValueError(f"config {name} must be >= {minimum}, got {parsed}")
         return parsed
+
+    def _config_bool(value: Any, name: str, default: bool | None) -> bool | None:
+        if value is None:
+            return default
+        if not isinstance(value, bool):
+            raise ValueError(f"config {name} must be a boolean, got {value!r}")
+        return value
 
     def _config_float(value: Any, name: str, default: float) -> float:
         if value is None:
@@ -290,6 +333,17 @@ def runtime_config() -> RuntimeConfig:
     timeout = env_float(
         LLM_TIMEOUT_ENV,
         _config_float(llm.get("timeout"), "llm.timeout", DEFAULT_LLM_TIMEOUT),
+    )
+    # Generation ceiling: env > config > default. minimum=1 so a 0 (which
+    # would forbid any output at all) fails loudly instead of silently.
+    max_tokens = env_int(
+        LLM_MAX_TOKENS_ENV,
+        _config_int(llm.get("max_tokens"), "llm.max_tokens", DEFAULT_LLM_MAX_TOKENS, minimum=1),
+        minimum=1,
+    )
+    thinking = env_bool_optional(
+        LLM_THINKING_ENV,
+        _config_bool(llm.get("thinking"), "llm.thinking", DEFAULT_LLM_THINKING),
     )
     image_endpoint = os.environ.get(IMAGE_ENDPOINT_ENV) or str(
         image.get("endpoint", DEFAULT_IMAGE_ENDPOINT)
@@ -423,6 +477,8 @@ def runtime_config() -> RuntimeConfig:
         llm_endpoint=endpoint,
         llm_model=model,
         llm_timeout=timeout,
+        llm_max_tokens=max_tokens,
+        llm_thinking=thinking,
         image_endpoint=image_endpoint,
         image_model=image_model,
         image_timeout=image_timeout,

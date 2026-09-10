@@ -39,9 +39,10 @@ class ProviderError(Exception):
     """A provider call failed — the job fails, never retried (spec-1.4).
 
     ``kind`` is ``"connection"`` (unreachable/timeout), ``"http"``
-    (non-2xx response), or ``"timeout"`` (poll exhaustion — the
-    ComfyUI provider's only caller, spec-4.4); ``status_code`` is set
-    for http errors so the error message can surface the server's
+    (non-2xx response), ``"timeout"`` (poll exhaustion — the
+    ComfyUI provider's only caller, spec-4.4), or ``"truncated"`` (the
+    model hit the generation ceiling mid-answer, 2026-09-10); ``status_code``
+    is set for http errors so the error message can surface the server's
     status.
     """
 
@@ -52,6 +53,8 @@ class ProviderError(Exception):
             message = f"provider returned HTTP {status_code}"
         elif kind == "timeout":
             message = "provider timed out waiting for generation"
+        elif kind == "truncated":
+            message = "provider stopped at the max_tokens ceiling (output is incomplete)"
         else:
             message = "provider connection error"
         super().__init__(message)
@@ -65,11 +68,14 @@ def chat_completion(
 ) -> str:
     """Call the configured endpoint and return the assistant's text.
 
-    POSTs ``{model, messages:[{system}, {user}]}`` to
-    ``{endpoint}/chat/completions``. Bare ``httpx`` transport failures
+    POSTs ``{model, max_tokens, messages:[{system}, {user}]}`` to
+    ``{endpoint}/chat/completions``, plus ``chat_template_kwargs`` when a
+    reasoning mode is configured. Bare ``httpx`` transport failures
     (DNS, refused, timeout) -> ``ProviderError("connection")``; non-2xx
-    -> ``ProviderError("http", status_code=...)``. The transport is
-    injectable for deterministic tests (``httpx.MockTransport``).
+    -> ``ProviderError("http", status_code=...)``; an answer cut off at
+    the generation ceiling -> ``ProviderError("truncated")``, which is a
+    named failure rather than a downstream "not valid JSON". The transport
+    is injectable for deterministic tests (``httpx.MockTransport``).
     """
     try:
         client = httpx.Client(
@@ -86,11 +92,18 @@ def chat_completion(
     )
     body: dict[str, Any] = {
         "model": settings.model,
+        "max_tokens": settings.max_tokens,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
     }
+    if settings.enable_thinking is not None:
+        # A reasoning model with thinking on will spend its whole budget
+        # reasoning and never emit content (measured 2026-09-10: 8000 tokens,
+        # 26,580 chars, zero content). Sent only when configured — ``None``
+        # keeps the body free of a field some backends reject outright.
+        body["chat_template_kwargs"] = {"enable_thinking": settings.enable_thinking}
     with client:
         try:
             response = client.post(_CHAT_COMPLETIONS_PATH, json=body, headers=headers)
@@ -102,12 +115,18 @@ def chat_completion(
         raise ProviderError("http", status_code=response.status_code)
     try:
         payload = response.json()
-        content = payload["choices"][0]["message"]["content"]
+        choice = payload["choices"][0]
+        content = choice["message"]["content"]
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         # A 200 with a non-JSON body (HTML error page, empty) or a
         # malformed payload is still a provider error, never a raw
         # JSONDecodeError escaping the provider's contract.
         raise ProviderError("http", status_code=response.status_code) from exc
+    if choice.get("finish_reason") == "length":
+        # The ceiling was reached: whatever came back is a fragment. Say so
+        # here — downstream this would surface as a baffling "not valid JSON
+        # (Unterminated string)" in the middle of a JSON document.
+        raise ProviderError("truncated", status_code=response.status_code)
     if not isinstance(content, str) or not content.strip():
         raise ProviderError("http", status_code=response.status_code)
     return content
