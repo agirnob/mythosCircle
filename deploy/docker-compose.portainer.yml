@@ -36,18 +36,21 @@ services:
       MYTHOSCIRCLE_MEDIA_URL_SECRET: ${MYTHOSCIRCLE_MEDIA_URL_SECRET:?MYTHOSCIRCLE_MEDIA_URL_SECRET is required}
       # LLM lives on the dev PC (Unsloth Studio); the laptop reaches it
       # over the LAN. Requires one /v1/load per Unsloth restart.
-      MYTHOSCIRCLE_LLM_ENDPOINT: http://192.168.1.108:8888/v1
+      # Reverse tunnel (mythos-gpu-tunnel on .108): .108 loopback services
+      # surface on laptop LAN ports (.108 itself is firewall-filtered).
+      MYTHOSCIRCLE_LLM_ENDPOINT: http://192.168.1.21:8889/v1
       MYTHOSCIRCLE_LLM_MODEL: unsloth/gemma-4-12B-it-qat-GGUF
       MYTHOSCIRCLE_LLM_TIMEOUT: "2400"
       # Render backends live on the dev PC (.108), not the laptop: Unsloth
-      # + ComfyUI bind loopback there, socat forwarders expose them on LAN.
+      # + ComfyUI bind loopback there; the reverse tunnel surfaces them on
+      # laptop ports (see LLM note above).
       # input_dir stays UNSET (default ""): video RENDER fails fast
       # cross-machine (local-copy staging can't reach the .108 input dir)
       # while drafts + portraits work; upload-based staging is queued work.
       MYTHOSCIRCLE_IMAGE_BACKEND: comfyui
-      MYTHOSCIRCLE_COMFYUI_IMAGE_ENDPOINT: http://192.168.1.108:7896
+      MYTHOSCIRCLE_COMFYUI_IMAGE_ENDPOINT: http://192.168.1.21:7897
       MYTHOSCIRCLE_VIDEO_BACKEND: comfyui
-      MYTHOSCIRCLE_COMFYUI_VIDEO_ENDPOINT: http://192.168.1.108:7896
+      MYTHOSCIRCLE_COMFYUI_VIDEO_ENDPOINT: http://192.168.1.21:7897
     volumes:
       - mythos-data:/data
 
