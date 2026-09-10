@@ -211,6 +211,13 @@ _DPR_RECIPES: str = "\n".join(
         "True non-combatants: write zero dice anywhere and the block is exempt from the",
         "power check — with no +/-N damage modifiers either (a lone `+5 damage` still",
         "counts; only `actions` are audited) — one weak attack is worse than none.",
+        "spells need identity.class from the SRD list (never for Monster): set one class",
+        "whose list holds every spell, drop uncovered spells, or delete the spells array.",
+        "HP floor follows the DPR row (CR 1/4: 36+, CR 1/2: 50+, CR 5: 131+); harmless",
+        "Tiny creatures: CR 0 with zero dice anywhere (exempt from the power check, any",
+        "hp passes — but a single die averages over 1.2 DPR and overs, so truly none).",
+        "Tiny NPC/BBEG that must stay leveled: zero dice and hp at/above half the band",
+        "low (level 1: 36+).",
     ]
 )
 

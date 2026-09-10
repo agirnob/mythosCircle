@@ -795,3 +795,61 @@ def test_repair_prompt_target_renders_point_band_open_ended() -> None:
     prompt = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="CR 30")])
     assert "record target: CR 30 -> hit DPR band 303+" in prompt
     assert "303-303" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Repair prompt: spells + tiny-creature valves (spec-stat-repair-spells-tiny)
+# ---------------------------------------------------------------------------
+def test_repair_prompt_spells_valve_present() -> None:
+    """SPELLS_VALVE: classless spells are the systematic repair miss — the
+    prompt names the coupling (one class, drop uncovered, or delete) outright."""
+    prompt = build_stat_repair_prompt([_record_entity(0, role="NPC", level_cr="level 5")])
+    assert (
+        "spells need identity.class from the SRD list (never for Monster): set one class\n"
+        "whose list holds every spell, drop uncovered spells, or delete the spells array." in prompt
+    )
+
+
+def test_repair_prompt_tiny_valve_present() -> None:
+    """TINY_VALVE: frail tiny HP needs the CR-row floor plus the CR-0
+    diceless escape; numbers quoted from combat.CR_HP (1/4: 36, 1/2: 50,
+    5: 131) and CR_DPR (CR 0 overs above 1.2)."""
+    prompt = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="CR 1/4")])
+    assert "HP floor follows the DPR row (CR 1/4: 36+, CR 1/2: 50+, CR 5: 131+)" in prompt
+    assert "Tiny creatures: CR 0 with zero dice anywhere" in prompt
+    assert "a single die averages over 1.2 DPR and overs" in prompt
+    assert (
+        "Tiny NPC/BBEG that must stay leveled: zero dice and hp at/above half the band\n"
+        "low (level 1: 36+)." in prompt
+    )
+
+
+def test_repair_prompt_valve_numbers_match_combat_tables() -> None:
+    """The valve's quoted lows are the live CR_HP lows, not stale prose."""
+    from app.pipeline.combat import CR_HP
+
+    assert CR_HP["1/4"][0] == 36
+    assert CR_HP["1/2"][0] == 50
+    assert CR_HP[5][0] == 131
+    assert CR_HP[0] == (1, 6)
+
+
+def test_repair_prompt_prior_pins_intact() -> None:
+    """PIN_KEEP: the earlier recipe/valve lines survive byte-identical."""
+    prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="level 5")])
+    assert "You MAY lower identity.level" in prompt
+    assert "zero dice anywhere and the block is exempt" in prompt
+    assert "one weak attack is worse than none" in prompt
+    assert "counts double (assumed 2 targets)" in prompt
+    assert "Adjustment factors multiply" in prompt
+    assert "boss.legendary_actions adds one full extra attack" in prompt
+    assert "level 1: 71+" in prompt and "20: 356+" in prompt
+    assert "CR targets use the same table row" in prompt
+    assert "below half the low" in prompt and "fails frail" in prompt
+    assert "interpolate between the neighboring recipes" in prompt
+    assert "Prefer hitting the record target band" in prompt
+    assert "the HIGHEST such level" in prompt
+    assert "never level 1 for an archmage concept" in prompt
+    assert "no +/-N damage modifiers" in prompt
+    assert "only `actions` are audited" in prompt
+    assert "hit each character's record target band" in prompt

@@ -1624,6 +1624,93 @@ def test_monster_with_level_repaired_in_one_pass(world: str) -> None:
     assert mira.data["stat_block"]["identity"]["cr"] == "1/4"
 
 
+def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> None:
+    """SPELLS_TINY_VALVE_LOOP (spec-stat-repair-spells-tiny review): the live
+    miss — classless spells plus a frail tiny block — repairs in one pass.
+    Mira keeps evocative spells with no coupling class; Boo the hamster
+    (CR 1/4, hp 15, one weak bite) trips the frail line. The mock adds the
+    coupling class and drops Boo to a CR-0 diceless block; the gate succeeds
+    with two provider calls total."""
+    bad_spells = dict(_MIRA_STAT_BLOCK)
+    bad_spells["identity"] = {k: v for k, v in _MIRA_STAT_BLOCK["identity"].items() if k != "class"}
+    bad_spells["spells"] = ["Fireball", "Magic Missile"]
+    fixed_spells = {
+        **bad_spells,
+        "identity": {**bad_spells["identity"], "class": "Wizard"},
+    }
+    tiny_attributes = {"str": 8, "dex": 14, "con": 10, "int": 9, "wis": 11, "cha": 8}
+    bad_tiny = {
+        "identity": {"role": "Monster", "cr": "1/4", "race": "Hamster", "alignment": "unaligned"},
+        "attributes": dict(tiny_attributes),
+        "combat": {"ac": 13, "hp": 15},
+        "actions": [
+            {"name": "Bite", "description": "Melee Weapon Attack: +3 to hit, 1d4+1 piercing"}
+        ],
+    }
+    fixed_tiny = {
+        "identity": {"role": "Monster", "cr": 0, "race": "Hamster", "alignment": "unaligned"},
+        "attributes": dict(tiny_attributes),
+        "combat": {"ac": 13, "hp": 15},
+    }
+    output = _wave1_output()
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_spells}
+    output["entities"].append(
+        {
+            "ref": "E2",
+            "kind": "character",
+            "name": "Boo",
+            "data": {
+                **_character_record(
+                    "Boo",
+                    role="Monster",
+                    level_cr="CR 1/4",
+                    race_type="Hamster",
+                    class_profession="Cheese thief",
+                    alignment="unaligned",
+                    boss=dict(_BOSS_SECTION),
+                ),
+                "stat_block": bad_tiny,
+            },
+        }
+    )
+    output["edges"].extend(
+        [
+            {"src": "E0", "dst": "E2", "type": "member_of", "counter": 1},
+            {"src": "E2", "dst": "E0", "type": "debt", "counter": 3},
+        ]
+    )
+    responses = [
+        json.dumps(output),
+        json.dumps(
+            {
+                "stat_blocks": [
+                    {"ref": "E1", "stat_block": fixed_spells},
+                    {"ref": "E2", "stat_block": fixed_tiny},
+                ]
+            }
+        ),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 2  # wave 1 + exactly one repair pass
+    assert "spells require identity.class" in calls[1]
+    assert "frail" in calls[1]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        by_name = {e.name: e for e in world_entities(session, world)}
+    assert by_name["Mira Vane"].data["stat_block"]["identity"]["class"] == "Wizard"
+    assert by_name["Mira Vane"].data["stat_block"]["spells"] == ["Fireball", "Magic Missile"]
+    assert by_name["Boo"].data["stat_block"]["identity"]["cr"] == 0
+
+
 def test_cancel_before_stat_repair_is_noop(world: str) -> None:
     """STAT_CANCEL_BEFORE_REPAIR: a cancel landing between wave-1
     validation and the repair call is a no-op — no repair call, no wave-1
