@@ -30,6 +30,7 @@ undo.
 import dataclasses
 import json
 import logging
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
@@ -629,6 +630,10 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     writes progress or a terminal state on the cancelled job. Any failure
     (provider, budget, malformed output, invalid subgraph, stale base)
     propagates so the worker fails the job; earlier committed waves stay.
+    Wave 2 alone has a repair pass for structure (spec: wave-2 orphan
+    re-prompt): a wave-2 subgraph that is valid except for orphan entities
+    gets one full re-emit naming the orphans; a still-orphan (or
+    entity-dropping) re-emit fails the job with wave 1 committed.
     """
     with session_scope() as session:
         seed = campaign_seed(session, job.campaign_id)
@@ -707,9 +712,30 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         )
         text_2 = budget.call(lambda: provider(prompt_2, settings=settings))
         parsed_2 = parse_build_output(text_2, wave=2)
-        entities_2, edges_2 = _validate_subgraph(
-            2, parsed_2, context=context_entities, core_count=core_count
-        )
+        first_names = _wave_entity_names(parsed_2)
+        try:
+            entities_2, edges_2 = _validate_subgraph(
+                2, parsed_2, context=context_entities, core_count=core_count
+            )
+        # NOTE: this handler must precede any `except JobPayloadError` —
+        # _Wave2OrphanError subclasses it, so a broader handler first would
+        # swallow the retry signal and orphans would fail immediately.
+        except _Wave2OrphanError as exc:
+            # ORPHAN_RETRY (spec: wave-2 orphan re-prompt) — the only
+            # _validate_subgraph rejection with a repair pass: one full
+            # re-emit naming the orphans, through the same budget and the
+            # same name/record/stat gates below. A still-orphan re-emit
+            # raises again and fails the job with wave 1 committed; any
+            # other rejection was never caught and stays immediate.
+            if not _job_still_running(job):
+                return
+            retry_prompt = _build_wave2_orphan_retry_prompt(prompt_2, exc.orphans, core_count)
+            text_2 = budget.call(lambda: provider(retry_prompt, settings=settings))
+            parsed_2 = parse_build_output(text_2, wave=2)
+            _raise_on_reemit_entity_change(first_names, _wave_entity_names(parsed_2))
+            entities_2, edges_2 = _validate_subgraph(
+                2, parsed_2, context=context_entities, core_count=core_count
+            )
         # The same gates as wave 1 (dogfood fix 2026-09-09): wave-2 names
         # (name gate), then characters carry full AR24 records (record
         # gate, then the stat-block gate) before committing.
@@ -911,6 +937,72 @@ def parse_build_output(text: str, wave: int = 1) -> dict[str, Any]:
     return parsed
 
 
+def _build_wave2_orphan_retry_prompt(
+    base_prompt: str, orphans: Sequence[tuple[str, int]], core_count: int
+) -> str:
+    """The one bounded wave-2 orphan re-prompt (spec: wave-2 orphan
+    re-prompt): the base wave-2 prompt plus a PREVIOUS RESPONSE ORPHANS
+    line naming each orphan by name and N ref, so the re-emit wires every
+    new entity to the core. The re-emit is a full {"entities","edges"}
+    object with the refs exactly as given."""
+    named = ", ".join(f"{name!r} (N{position})" for name, position in orphans)
+    core_label = f"C0..C{core_count - 1}" if core_count > 0 else "no visible core"
+    lines = [
+        base_prompt,
+        "",
+        "PREVIOUS RESPONSE ORPHANS: "
+        f"{named} — every new entity MUST have >= 1 edge to a CORE entity "
+        f"({core_label}) — keep entities in the same order with the same refs; "
+        "re-emit the full "
+        '{"entities","edges"} object with the refs exactly as given.',
+    ]
+    return "\n".join(lines)
+
+
+def _wave_entity_names(parsed: dict[str, Any]) -> list[str]:
+    """Entity names of a parsed wave in order (missing/non-string names read
+    as ``""``) — the re-emit drop guard compares these multisets."""
+    names = []
+    for raw in parsed.get("entities", []):
+        name = raw.get("name") if isinstance(raw, dict) else None
+        names.append(name if isinstance(name, str) else "")
+    return names
+
+
+def _raise_on_reemit_entity_change(first_names: Sequence[str], second_names: Sequence[str]) -> None:
+    """The re-emit drop guard (step-04 review): the re-emit must carry the
+    same entity name multiset as the first attempt — a model that drops the
+    orphan instead of wiring it fails loudly here (no third attempt, wave 1
+    stays committed), naming what changed."""
+    if Counter(second_names) == Counter(first_names):
+        return
+    dropped = sorted((Counter(first_names) - Counter(second_names)).elements())
+    added = sorted((Counter(second_names) - Counter(first_names)).elements())
+    parts = []
+    if dropped:
+        parts.append("dropped " + ", ".join(repr(name) for name in dropped))
+    if added:
+        parts.append("added " + ", ".join(repr(name) for name in added))
+    raise JobPayloadError(
+        f"wave 2: re-emit changed the wave entities ({'; '.join(parts)}) — "
+        "re-emit the full wave with every entity wired to the core"
+    )
+
+
+class _Wave2OrphanError(JobPayloadError):
+    """The orphan-only retry signal for wave 2 (spec: wave-2 orphan
+    re-prompt): raised instead of a plain ``JobPayloadError`` when a wave-2
+    subgraph is valid except for entities with no edge to the core. The
+    wave-2 runner catches exactly this type for its one bounded re-emit;
+    every other ``_validate_subgraph`` rejection stays immediate. Carries
+    the orphan ``(name, position)`` pairs so the re-prompt can name them.
+    """
+
+    def __init__(self, message: str, *, orphans: list[tuple[str, int]]) -> None:
+        super().__init__(message)
+        self.orphans = orphans
+
+
 def _validate_subgraph(
     wave: int,
     parsed: dict[str, Any],
@@ -932,7 +1024,11 @@ def _validate_subgraph(
     Wave 2's new-entity refs are ``N<position>``; edges may also reference
     the committed context as ``C<position>``, and every entity must have
     >= 1 edge whose other endpoint is a core entity
-    (``context[0:core_count]`` — the wave-1 entities).
+    (``context[0:core_count]`` — the wave-1 entities). A wave-2 subgraph
+    that is valid except for such orphans raises ``_Wave2OrphanError``
+    (never a plain ``JobPayloadError``) carrying the orphan ``(name,
+    position)`` pairs — the runner's one bounded re-emit catches exactly
+    that type; every other rejection stays immediate.
     """
     raw_entities = parsed.get("entities")
     raw_edges = parsed.get("edges")
@@ -1049,9 +1145,16 @@ def _validate_subgraph(
         orphans = [p for p in range(len(entity_inputs)) if p not in anchored_positions]
         reason = "orphan entity(ies) with no edge to the core world"
     if orphans:
-        names = ", ".join(f"{entity_inputs[p].name!r} (E{p})" for p in orphans)
+        names = ", ".join(f"{entity_inputs[p].name!r} ({prefix}{p})" for p in orphans)
         if wave == 2:
-            names += f" — core anchors are C0..C{core_count - 1} (the visible core)"
+            if core_count > 0:
+                names += f" — core anchors are C0..C{core_count - 1} (the visible core)"
+            else:
+                names += " — no visible core"
+            raise _Wave2OrphanError(
+                f"wave {wave}: {reason}: {names}",
+                orphans=[(entity_inputs[p].name, p) for p in orphans],
+            )
         raise JobPayloadError(f"wave {wave}: {reason}: {names}")
 
     return entity_inputs, edge_inputs

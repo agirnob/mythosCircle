@@ -23,6 +23,8 @@ from app.pipeline.build_in import (
     _build_record_repair_prompt,
     _collect_record_issues,
     _repair_retry_prompt,
+    _validate_subgraph,
+    _Wave2OrphanError,
     build_wave1_prompt,
     build_wave2_prompt,
 )
@@ -520,26 +522,6 @@ def test_orphan_wave1_fails_naming_entity(world: str) -> None:
     assert "Rootless Stranger" in (job.error or "")
     with session_scope() as session:
         assert revision_chain(session, world) == []
-
-
-def test_orphan_wave2_fails_but_core_stays(world: str) -> None:
-    """A wave-2 entity anchored only to wave peers fails the job naming the
-    orphan; the wave-1 core stays committed (documented resilience, no
-    compensating undo)."""
-    responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output_orphan())]
-
-    def provider(prompt: str, settings: LLMSettings) -> str:
-        return responses.pop(0)
-
-    job_id = _enqueue(world, notes="more world")
-    run_next_job(provider=provider, settings=SETTINGS)
-    job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert "Nowhere Man" in (job.error or "")
-    with session_scope() as session:
-        assert len(revision_chain(session, world)) == 1  # wave 2 zero commits
-        entities = world_entities(session, world)
-    assert {e.name for e in entities} == {"The Gilded Bar", "Mira Vane"}  # core intact
 
 
 # ---------------------------------------------------------------------------
@@ -2166,3 +2148,294 @@ def test_record_repair_budget_exhausted_mid_chunks(world: str) -> None:
     assert len(calls) == 2  # the second chunk never reached the provider
     with session_scope() as session:
         assert revision_chain(session, world) == []
+
+
+# ---------------------------------------------------------------------------
+# WAVE-2 ORPHAN RE-PROMPT (spec: wave-2 orphan re-prompt)
+# ---------------------------------------------------------------------------
+
+
+def test_wave2_orphan_retry_heals_and_commits(world: str) -> None:
+    """ORPHAN_RETRY: a wave-2 output with one orphan triggers exactly one
+    re-emit naming it; the healed re-emit wires the orphan to the core
+    (same entities — the drop guard forbids omitting it) and commits."""
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(_wave2_output_orphan()),
+        json.dumps(_wave2_output_orphan_healed()),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, notes="more world")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 3  # wave 1 + wave 2 + the one orphan re-emit
+    assert "PREVIOUS RESPONSE ORPHANS" in calls[2]
+    assert "'Nowhere Man' (N2)" in calls[2]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["entity_count"] == 5
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 2
+        names = {e.name for e in world_entities(session, world)}
+    assert names == {
+        "The Gilded Bar",
+        "Mira Vane",
+        "The Drowned Rat",
+        "Captain Harlow",
+        "Nowhere Man",
+    }
+
+
+def test_wave2_orphan_second_miss_fails_core_stays(world: str) -> None:
+    """SECOND_MISS: a re-emit that is still orphan fails the job naming the
+    orphans; wave 1 stays committed, wave 2 writes nothing."""
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(_wave2_output_orphan()),
+        json.dumps(_wave2_output_orphan()),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, notes="more world")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 3  # exactly one re-emit — never a third attempt
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "Nowhere Man" in (job.error or "")
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 1  # wave 2 zero commits
+        entities = world_entities(session, world)
+    assert {e.name for e in entities} == {"The Gilded Bar", "Mira Vane"}  # core intact
+
+
+def test_wave2_clean_wave_makes_no_extra_call(world: str) -> None:
+    """CLEAN_WAVE: no orphans — zero extra calls, identical behavior to
+    before the re-prompt existed."""
+    responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
+    calls: list[str] = []
+    job_id = _enqueue(world, notes="more world")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 2
+    assert all("PREVIOUS RESPONSE ORPHANS" not in prompt for prompt in calls)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 2
+
+
+def test_wave2_orphan_message_uses_n_prefix(world: str) -> None:
+    """PREFIX: the wave-2 orphan failure names the orphan with its N ref —
+    never the wave-1 E prefix."""
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(_wave2_output_orphan()),
+        json.dumps(_wave2_output_orphan()),
+    ]
+    job_id = _enqueue(world, notes="more world")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        return responses.pop(0)
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "'Nowhere Man' (N2)" in (job.error or "")
+    assert "(E2)" not in (job.error or "")
+
+
+def _wave2_output_orphan_healed() -> dict[str, Any]:
+    """The orphan output with the orphan wired to the core: same entities
+    in the same order (the re-emit drop guard requires it), plus an N2->C0
+    edge so every entity anchors."""
+    output = _wave2_output_orphan()
+    output["edges"].append({"src": "N2", "dst": "C0", "type": "relationship"})
+    return output
+
+
+def test_wave2_orphan_retry_reemit_dropping_orphan_fails(world: str) -> None:
+    """REMIT_DROP: a re-emit that omits the orphan instead of wiring it
+    fails loudly naming the drop — no third attempt, wave 1 stays."""
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(_wave2_output_orphan()),
+        json.dumps(_wave2_output()),  # the orphan silently gone
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, notes="more world")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 3  # exactly one re-emit — never a third attempt
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "Nowhere Man" in (job.error or "") and "dropped" in (job.error or "")
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 1  # wave 2 zero commits
+        entities = world_entities(session, world)
+    assert {e.name for e in entities} == {"The Gilded Bar", "Mira Vane"}  # core intact
+
+
+def test_wave2_orphan_message_without_core() -> None:
+    """NO_CORE_SUFFIX: with no visible core the wave-2 orphan error never
+    renders C0..C-1 — it says so plainly and still names N refs."""
+    parsed = {
+        "entities": [
+            {"ref": "N0", "kind": "place", "name": "The Drowned Rat"},
+            {
+                "ref": "N1",
+                "kind": "character",
+                "name": "Captain Harlow",
+                "data": {**_character_record("Captain Harlow"), "stat_block": _MIRA_STAT_BLOCK},
+            },
+        ],
+        "edges": [{"src": "N0", "dst": "N1", "type": "relationship"}],
+    }
+    with pytest.raises(_Wave2OrphanError) as excinfo:
+        _validate_subgraph(2, parsed, context=(), core_count=0)
+    assert "C0..C-1" not in str(excinfo.value)
+    assert "no visible core" in str(excinfo.value)
+    assert "'Captain Harlow' (N1)" in str(excinfo.value)
+
+
+def test_wave2_orphan_retry_budget_exhausted(world: str) -> None:
+    """RETRY_BUDGET: max_llm_calls=2 — wave 1 plus the first wave-2 attempt
+    exhaust the budget, so the re-emit is refused before any HTTP request
+    and the job fails naming the budget with the core intact."""
+    responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output_orphan())]
+    calls: list[str] = []
+    job_id = _enqueue(world, notes="more world", max_llm_calls=2)
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "budget" in (job.error or "").lower()
+    assert len(calls) == 2  # the re-emit never reached the provider
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 1
+        assert {e.name for e in world_entities(session, world)} == {
+            "The Gilded Bar",
+            "Mira Vane",
+        }
+
+
+def test_wave2_orphan_retry_cancel_skips_reemit(world: str) -> None:
+    """RETRY_CANCEL: a cancel landing during the first wave-2 call stops the
+    runner before the re-emit — no further provider calls, no commit beyond
+    the core, and the job stays cancelled with no terminal conflict."""
+    calls: list[str] = []
+    job_id = _enqueue(world, notes="more world")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return json.dumps(_wave1_output())
+        cancel_job(job_id)  # lands during the first wave-2 call
+        return json.dumps(_wave2_output_orphan())
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "cancelled"  # never failed/succeeded — no terminal conflict
+    assert len(calls) == 2  # wave 1 + first wave-2 attempt only
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 1  # wave-1 core committed
+
+
+def test_wave2_nonorphan_failure_gets_no_retry(world: str) -> None:
+    """NO_RETRY_NONORPHAN: a wave-2 bad-ref rejection fails immediately —
+    exactly 2 calls, no PREVIOUS RESPONSE ORPHANS marker."""
+    bad = _wave2_output()
+    bad["entities"][0]["ref"] = "X0"
+    responses = [json.dumps(_wave1_output()), json.dumps(bad)]
+    calls: list[str] = []
+    job_id = _enqueue(world, notes="more world")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert len(calls) == 2
+    assert all("PREVIOUS RESPONSE ORPHANS" not in prompt for prompt in calls)
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 1  # wave 2 zero commits
+
+
+def test_wave2_mixed_orphan_and_bad_edge_gets_no_retry(world: str) -> None:
+    """NO_RETRY_MIXED: an orphan plus a bad edge type still fails immediately
+    (the edge rejection fires before the orphan check) — exactly 2 calls."""
+    mixed = _wave2_output_orphan()
+    mixed["edges"][0]["type"] = "hates"
+    responses = [json.dumps(_wave1_output()), json.dumps(mixed)]
+    calls: list[str] = []
+    job_id = _enqueue(world, notes="more world")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "vocabulary" in (job.error or "")  # the edge rejection, not the orphan
+    assert len(calls) == 2
+    assert all("PREVIOUS RESPONSE ORPHANS" not in prompt for prompt in calls)
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 1  # wave 2 zero commits
+
+
+def test_wave2_orphan_retry_reemit_repaired_by_gates(world: str) -> None:
+    """RETRY_GATES: the re-emit flows through the normal gates — a re-emit
+    with an incomplete record gets the record repair and still commits."""
+    healed = _wave2_output_orphan_healed()
+    del healed["entities"][1]["data"]["appearance"]
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(_wave2_output_orphan()),
+        json.dumps(healed),
+        json.dumps({"records": [{"ref": "E1", "data": _character_record("Captain Harlow")}]}),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, notes="more world")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 4  # wave 1 + wave 2 + re-emit + the record repair
+    assert "PREVIOUS RESPONSE ORPHANS" in calls[2]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["entity_count"] == 5
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 2
+        harlow = next(e for e in world_entities(session, world) if e.name == "Captain Harlow")
+    assert harlow.data["appearance"]  # the repaired record committed
