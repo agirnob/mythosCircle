@@ -9,6 +9,11 @@ WORKDIR /srv/backend
 COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --locked --no-dev
 COPY backend/app ./app
+# Workflow JSONs + prompt guides: code resolves them as
+# <repo-root>/deploy/... (config.py / service.py parents[3]), which is
+# /srv/deploy/... in this layout — no path env overrides needed.
+COPY deploy/workflows /srv/deploy/workflows/
+COPY deploy/guides /srv/deploy/guides/
 EXPOSE 8000
 # AD-3 single writer: run exactly one api replica (see compose).
 # All state is env-driven (env > config > default); the shipped

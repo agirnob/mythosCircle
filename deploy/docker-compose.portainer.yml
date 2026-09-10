@@ -39,6 +39,15 @@ services:
       MYTHOSCIRCLE_LLM_ENDPOINT: http://192.168.1.108:8888/v1
       MYTHOSCIRCLE_LLM_MODEL: unsloth/gemma-4-12B-it-qat-GGUF
       MYTHOSCIRCLE_LLM_TIMEOUT: "2400"
+      # Render backends live on the dev PC (.108), not the laptop: Unsloth
+      # + ComfyUI bind loopback there, socat forwarders expose them on LAN.
+      # input_dir stays UNSET (default ""): video RENDER fails fast
+      # cross-machine (local-copy staging can't reach the .108 input dir)
+      # while drafts + portraits work; upload-based staging is queued work.
+      MYTHOSCIRCLE_IMAGE_BACKEND: comfyui
+      MYTHOSCIRCLE_COMFYUI_IMAGE_ENDPOINT: http://192.168.1.108:7896
+      MYTHOSCIRCLE_VIDEO_BACKEND: comfyui
+      MYTHOSCIRCLE_COMFYUI_VIDEO_ENDPOINT: http://192.168.1.108:7896
     volumes:
       - mythos-data:/data
 
