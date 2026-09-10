@@ -1,0 +1,170 @@
+{
+  "model_version": "prototype-1",
+  "identity": {
+    "name": "Sir Thalassos of the Sunken Maw",
+    "role": "NPC",
+    "race": "Human",
+    "class": "Paladin",
+    "level": 17,
+    "alignment": "LG",
+    "tags": [
+      "divine_caster",
+      "durable",
+      "holy_warrior"
+    ]
+  },
+  "narrative": {
+    "appearance": "His plate armor is encrusted with salt and barnacles, weeping brine from every joint. A heavy cloak of kelp-woven silk clings to his shoulders like wet seaweed.",
+    "personality": "He speaks with the crushing weight of the deep ocean, calm yet relentlessly inevitable. He views all life as a temporary bubble destined to pop beneath the waves.",
+    "background": "Once a celebrated captain of the harbor guard, he survived a shipwreck by making a pact with the entity slumbering in the abyss.",
+    "goals": "To ensure the rising tides reclaim the corrupt spires of the city to appease his master.",
+    "secret": "He is slowly turning into salt and coral from the inside out.",
+    "rumor": "They say if you press your ear to his breastplate, you can hear the crushing pressure of the deep sea.",
+    "party_hook": "He offers the party passage through the treacherous reef if they can recover a lost relic from a sunken cathedral.",
+    "voice_style": "A low, bubbling rasp that sounds like stones grinding under heavy currents.",
+    "catchphrases": "The tide claims all."
+  },
+  "world_integration": {
+    "reputation": "A grim sentinel of the docks, feared by smugglers and respected by the desperate.",
+    "current_location": "A salt-stained chapel built into the rotting pier of the lower docks.",
+    "reaction_matrix": "Hostile to those who pollute the harbor, indifferent to the law, and protective of the drowning."
+  },
+  "stats": {
+    "proficiency_bonus": 6,
+    "abilities": {
+      "str": 20,
+      "con": 18,
+      "wis": 18,
+      "cha": 14,
+      "dex": 12,
+      "int": 8
+    },
+    "modifiers": {
+      "str": 5,
+      "con": 4,
+      "wis": 4,
+      "cha": 2,
+      "dex": 1,
+      "int": -1
+    },
+    "saves": {
+      "str": 7,
+      "dex": 3,
+      "con": 6,
+      "int": 1,
+      "wis": 12,
+      "cha": 10
+    },
+    "initiative": 1,
+    "passive_perception": 14,
+    "combat": {
+      "ac": 21,
+      "hp": 170,
+      "hit_dice": "17d10 + 68"
+    },
+    "spellcasting": {
+      "dc": 16,
+      "attack_bonus": 8,
+      "slots": [
+        4,
+        3,
+        3,
+        3,
+        1
+      ]
+    },
+    "skills": [
+      {
+        "name": "Intimidation",
+        "bonus": 8
+      },
+      {
+        "name": "Religion",
+        "bonus": 5
+      }
+    ]
+  },
+  "attacks": [
+    {
+      "name": "Oathblade",
+      "kind": "melee_weapon",
+      "weapon": "greatsword",
+      "weight": "heavy",
+      "to_hit": 13,
+      "reach_ft": 5,
+      "targets": 1,
+      "damage": [
+        {
+          "dice": "2d6",
+          "count": 2,
+          "sides": 6,
+          "bonus": 7,
+          "average": 14.0,
+          "type": "slashing"
+        }
+      ],
+      "description": "Melee Weapon Attack: +13 to hit, reach 5 ft., one target. Hit: 14 (2d6 + 7) slashing damage."
+    },
+    {
+      "name": "Crushing Tide",
+      "kind": "melee_weapon",
+      "weapon": "mace",
+      "weight": "standard",
+      "to_hit": 13,
+      "reach_ft": 5,
+      "targets": 1,
+      "damage": [
+        {
+          "dice": "1d6",
+          "count": 1,
+          "sides": 6,
+          "bonus": 7,
+          "average": 10.5,
+          "type": "bludgeoning"
+        }
+      ],
+      "description": "Melee Weapon Attack: +13 to hit, reach 5 ft., one target. Hit: 10.5 (1d6 + 7) bludgeoning damage."
+    }
+  ],
+  "spells": [
+    "Banishment",
+    "Bless",
+    "Command",
+    "Death Ward",
+    "Revivify",
+    "Shield of Faith"
+  ],
+  "features": [
+    "Divine Smite",
+    "Fighting Style",
+    "Channel Divinity",
+    "Extra Attack",
+    "Aura of Protection",
+    "Aura of Courage",
+    "Improved Divine Smite",
+    "Cleansing Touch",
+    "Purity of Spirit"
+  ],
+  "resources": {
+    "lay_on_hands": 85,
+    "cleansing_touch": 2,
+    "channel_divinity": 2
+  },
+  "power": {
+    "base_dpr": 37.0,
+    "smite_dpr": 59.5,
+    "nova_dpr": 82.0,
+    "round_trip_sources": [
+      "2d6",
+      "+ 7"
+    ],
+    "rank_totals": {
+      "str": 6,
+      "dex": -1,
+      "con": 6,
+      "int": -5,
+      "wis": 5,
+      "cha": 5
+    }
+  }
+}

@@ -265,3 +265,12 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-record-repair-chunking.md`
   summary: Consider chunking the stat-gate repair if giant-output JSON flakes ever appear there.
   evidence: Step-04 review noted stat/name gates share the single-shot large-response shape; record gate flaked at 14 records (dropped brace), stat blocks are smaller and have never flaked — spec Ask First gates the split on observed failure.
+
+## Deferred from: build-in stress ladder vs 26B, step 1 (2026-09-10)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-core-first-two-wave-build-in-pipeline.md`
+  summary: Wave-level malformed JSON fails the job with no retry — the gates (name/record/stat) and the wave-2 orphan re-emit each get one bounded second chance, but a wave-1 control-char/truncation parse failure (parse_build_output JobPayloadError) is terminal. Stress step 1 (10 chars/10 places/6 factions, scratch stack, gemma-4-26B): attempt 1 died this way (control char at ~char 9705). Candidate fix mirrors _run_repair: one bounded wave re-emit quoting the JSON error.
+  evidence: 0/3 identical-payload attempts at 10/10/6 committed anything; scratch api on :8001, jobs 01M269E7J051Q9C3N2Z1Z5ED2G (malformed), 01M269M3Q0ASAFHEPWP85KSH9F (DPR under), 01M269VGR6CRQTJKKV05KWA3CH (DPR over). [backend/app/pipeline/build_in.py parse_build_output, run_build_in wave-1 call]
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-core-first-two-wave-build-in-pipeline.md`
+  summary: The single stat-repair pass cannot steer DPR into band from either direction — attempt 2 under-powered (DPR 16 vs 27-32 at level 4) and attempt 3 over-powered (DPR 21 vs 9-14 at level 1) both survived the DPR-recipe repair unchanged. The model picks levels arbitrarily and the one-shot repair does not converge. Needs an owner decision: steer harder (exact target number in repair prompt, pinned level set), allow a second repair pass, or widen bands — 25/50-scale rungs are pointless until this converges at 10-scale.
+  evidence: Same 0/3 stress run as above; DPR recipes + record targets shipped 54e3a8b did not save either attempt. Code-side scaling is clean (validation 1ms at 120 entities; prompts 4-5k tokens at all scales), so the bottleneck is purely model-output calibration. [backend/app/pipeline/build_in.py _enforce_stat_blocks, backend/app/pipeline/statblocks.py]
