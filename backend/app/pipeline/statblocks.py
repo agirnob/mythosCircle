@@ -218,6 +218,13 @@ _DPR_RECIPES: str = "\n".join(
         "hp passes — but a single die averages over 1.2 DPR and overs, so truly none).",
         "Tiny NPC/BBEG that must stay leveled: zero dice and hp at/above half the band",
         "low (level 1: 36+).",
+        "Challenge number is REQUIRED inside identity, never omitted: Monster carries",
+        'identity.cr as a bare integer 0-30 (fractions as quoted strings "1/8", "1/4",',
+        '"1/2" — a bare 1/2 is invalid JSON); NPC/BBEG carry identity.level as a',
+        "bare integer 1-20; never floats, quoted numbers, booleans, or null (no 0.5,",
+        'no "8", no 5.0);',
+        "never carry the other role's key. (The record target line's",
+        '"CR 5" is display text — the identity value is 5.)',
     ]
 )
 

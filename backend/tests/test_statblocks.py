@@ -853,3 +853,50 @@ def test_repair_prompt_prior_pins_intact() -> None:
     assert "no +/-N damage modifiers" in prompt
     assert "only `actions` are audited" in prompt
     assert "hit each character's record target band" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Repair prompt: challenge-number valve (spec-stat-repair-cr-valve)
+# ---------------------------------------------------------------------------
+def test_repair_prompt_challenge_valve_present() -> None:
+    """CR_VALVE: the challenge number is never omittable — Monster identity.cr,
+    NPC/BBEG identity.level, bare integers, never the other role's key."""
+    prompt = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="")])
+    assert (
+        "Challenge number is REQUIRED inside identity, never omitted: Monster carries\n"
+        'identity.cr as a bare integer 0-30 (fractions as quoted strings "1/8", "1/4",\n'
+        '"1/2" — a bare 1/2 is invalid JSON); NPC/BBEG carry identity.level as a\n'
+        "bare integer 1-20; never floats, quoted numbers, booleans, or null (no 0.5,\n"
+        'no "8", no 5.0);\n'
+        "never carry the other role's key. (The record target line's\n"
+        '"CR 5" is display text — the identity value is 5.)' in prompt
+    )
+
+
+def test_repair_prompt_challenge_valve_prior_pins_intact() -> None:
+    """PIN_KEEP: the challenge valve lands alongside every earlier pin."""
+    prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="level 5")])
+    assert "Challenge number is REQUIRED inside identity, never omitted" in prompt
+    assert "You MAY lower identity.level" in prompt
+    assert "zero dice anywhere and the block is exempt" in prompt
+    assert "one weak attack is worse than none" in prompt
+    assert "counts double (assumed 2 targets)" in prompt
+    assert "Adjustment factors multiply" in prompt
+    assert "boss.legendary_actions adds one full extra attack" in prompt
+    assert "declare an identity.level your damage supports" in prompt
+    assert (
+        "spells need identity.class from the SRD list (never for Monster): set one class\n"
+        "whose list holds every spell, drop uncovered spells, or delete the spells array." in prompt
+    )
+    assert "Tiny creatures: CR 0 with zero dice anywhere" in prompt
+
+
+def test_challenge_valve_round_trip_missing_cr_then_cr8() -> None:
+    """A Monster block missing cr fails on identity.cr; the same block with
+    cr 8 added passes — the prescribed exit validates end to end."""
+    identity = {k: v for k, v in MONSTER["identity"].items() if k != "cr"}
+    combat = {**MONSTER["combat"], "hp": 100}
+    missing = {**MONSTER, "identity": identity, "combat": combat}
+    assert any("identity.cr" in e for e in validate_stat_block(missing))
+    fixed = {**missing, "identity": {**identity, "cr": 8}}
+    assert validate_stat_block(fixed) == []
