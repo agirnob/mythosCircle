@@ -3,8 +3,8 @@
 # compose path deploy/docker-compose.yml), plus the two stack env vars
 # below. Or: docker compose -f deploy/docker-compose.yml up -d --build.
 #
-# Traffic: Cloudflare tunnel -> NPM (plain HTTP) -> web:8080 (this stack).
-# NPM needs exactly ONE proxy host: world.miscco.uk -> http://192.168.1.21:8080,
+# Traffic: Cloudflare tunnel -> NPM (plain HTTP) -> web:8081 (this stack).
+# NPM needs exactly ONE proxy host: world.miscco.uk -> http://192.168.1.21:8081,
 # websockets ON, no custom locations — the sidecar proxies /api/* to api.
 # The tunnel ingress (Zero Trust dashboard) points world.miscco.uk at
 # NPM's HTTP port as http://192.168.1.21:80 (confirm jointly); no origin
@@ -24,8 +24,8 @@ services:
     restart: unless-stopped
     # AD-3 single writer: NEVER scale past 1 replica.
     ports:
-      # Laptop-local debug only (curl the health route over ssh).
-      - "127.0.0.1:8000:8000"
+      # Laptop-local debug only (Portainer holds host :8000).
+      - "127.0.0.1:8001:8000"
     environment:
       MYTHOSCIRCLE_DB: sqlite:////data/mythoscircle.db
       MYTHOSCIRCLE_MEDIA_DIR: /data/media
@@ -47,8 +47,8 @@ services:
     image: mythoscircle-web:local
     restart: unless-stopped
     ports:
-      # NPM's single upstream for world.miscco.uk.
-      - "8080:80"
+      # NPM's single upstream for world.miscco.uk (qbittorrent holds :8080).
+      - "8081:80"
     depends_on:
       - api
 

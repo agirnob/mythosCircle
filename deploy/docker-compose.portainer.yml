@@ -8,13 +8,15 @@
 # (built on the dev PC via the Dockerfiles in deploy/docker/). Keep the
 # services, env names, and volume below in sync with docker-compose.yml.
 #
-# Traffic: Cloudflare tunnel -> NPM (plain HTTP) -> web:8080 (this stack).
-# NPM proxy host: world.miscco.uk -> http://192.168.1.21:8080, websockets
+# Traffic: existing Cloudflare tunnel -> NPM (plain HTTP) -> web:8081.
+# NPM proxy host: world.miscco.uk -> http://192.168.1.21:8081, websockets
 # ON, no custom locations, no SSL cert. The sidecar proxies /api/* to api.
+# No cloudflared service here: the laptop's existing tunnel already
+# terminates to NPM — the dashboard only needs the world.miscco.uk
+# ingress pointed at NPM's HTTP port.
 #
 # Stack env (Portainer "Environment variables", AD-22 — never in git):
 #   MYTHOSCIRCLE_MEDIA_URL_SECRET=<openssl rand -hex 32>  (REQUIRED: mint 500s without it)
-#   CLOUDFLARE_TUNNEL_TOKEN=<Zero Trust -> Tunnels -> token>  (REQUIRED for cloudflared)
 name: mythoscircle
 
 services:
@@ -24,8 +26,8 @@ services:
     restart: unless-stopped
     # AD-3 single writer: NEVER scale past 1 replica.
     ports:
-      # Laptop-local debug only (curl the health route over ssh).
-      - "127.0.0.1:8000:8000"
+      # Laptop-local debug only (Portainer holds host :8000).
+      - "127.0.0.1:8001:8000"
     environment:
       MYTHOSCIRCLE_DB: sqlite:////data/mythoscircle.db
       MYTHOSCIRCLE_MEDIA_DIR: /data/media
@@ -45,19 +47,10 @@ services:
     pull_policy: never
     restart: unless-stopped
     ports:
-      # NPM's single upstream for world.miscco.uk.
-      - "8080:80"
+      # NPM's single upstream for world.miscco.uk (qbittorrent holds :8080).
+      - "8081:80"
     depends_on:
       - api
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN is required}
-    depends_on:
-      - web
 
 volumes:
   mythos-data:
