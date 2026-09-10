@@ -1,21 +1,22 @@
 # Sir Thalassos of the Sunken Maw — Human Paladin 17
 *LG · tags: divine_caster, durable, holy_warrior*
 
-**AC** 21  **HP** 170 (17d10 + 68)  **Prof** +6  **Init** +1  **Passive Perception** 14
+**AC** 21  **HP** 324 (24d10 + 192)  **Prof** +6  **Init** +3  **Passive Perception** 15
 
-**Abilities** STR 20 (+5) · DEX 12 (+1) · CON 18 (+4) · INT 8 (-1) · WIS 18 (+4) · CHA 14 (+2)
+**Abilities** STR 28 (+9) · DEX 16 (+3) · CON 26 (+8) · INT 12 (+1) · WIS 20 (+5) · CHA 24 (+7)
 
-**Saves** STR +7 · DEX +3 · CON +6 · INT +1 · WIS +12 · CHA +10   *(Aura of Protection: +CHA to all)*
+**Saves** STR +16 · DEX +10 · CON +15 · INT +8 · WIS +18 · CHA +20   *(Aura of Protection: +CHA to all)*
 
-**Skills** Intimidation +8 · Religion +5
+**Skills** Intimidation +13 · Religion +7
 
-**Spellcasting** DC 16 · attack +8 · slots 4/3/3/3/1 (1st–5th)
+**Spellcasting** DC 21 · attack +13 · slots 4/3/3/3/1 (1st–5th)
 
 ## Attacks
-- **Oathblade** (heavy, greatsword) — Melee Weapon Attack: +13 to hit, reach 5 ft., one target. Hit: 14 (2d6 + 7) slashing damage.
-- **Crushing Tide** (standard, mace) — Melee Weapon Attack: +13 to hit, reach 5 ft., one target. Hit: 10.5 (1d6 + 7) bludgeoning damage.
+- **Multiattack** — The knight makes 3 attacks with the Oathblade.
+- **Oathblade** — Melee Weapon Attack: +18 to hit, reach 5 ft., one target. Hit: 19 (2d6 + 12) slashing damage plus 16.5 (3d10) radiant damage.
+- **Crushing Tide** — Melee Weapon Attack: +18 to hit, reach 5 ft., one target. Hit: 15.5 (1d6 + 12) bludgeoning damage.
 
-**DPR** base 37.0 (2 swings + Improved Divine Smite) · one 4th-level smite 59.5 · nova (2 smites) 82.0
+**DPR** 106.5 vs band 105-110 · +one 4th-level smite 129.0 · +two 174.0 · **validator: clean**
 
 ## Spells
 Banishment, Bless, Command, Death Ward, Revivify, Shield of Faith
@@ -23,7 +24,7 @@ Banishment, Bless, Command, Death Ward, Revivify, Shield of Faith
 ## Features
 Divine Smite, Fighting Style, Channel Divinity, Extra Attack, Aura of Protection, Aura of Courage, Improved Divine Smite, Cleansing Touch, Purity of Spirit
 
-**Resources** Lay on Hands 85 · Cleansing Touch 2/rest · Channel Divinity 2/rest
+**Resources** Lay on Hands 85 · Cleansing Touch 7/rest · Channel Divinity 2/rest
 
 ## Narrative
 - **Appearance** — His plate armor is encrusted with salt and barnacles, weeping brine from every joint. A heavy cloak of kelp-woven silk clings to his shoulders like wet seaweed.

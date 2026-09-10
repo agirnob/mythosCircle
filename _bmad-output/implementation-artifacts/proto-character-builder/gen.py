@@ -8,6 +8,7 @@ Slots in the model's attack text (`{dice}`, `{to_hit}`, ...) are filled by code.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import zlib
@@ -15,7 +16,9 @@ from typing import Any
 
 sys.path.insert(0, "/home/main/Projects/mythosCircle/backend")
 from app.pipeline import knowledge as K  # noqa: E402
-from app.pipeline.combat import CR_DPR, CR_HP, _die_avg, parse_damage_expression  # noqa: E402
+from app.pipeline.combat import (  # noqa: E402
+    CR_DPR, CR_HP, _die_avg, audit_stat_block, parse_damage_expression)
+from app.pipeline.knowledge import validate_stat_block  # noqa: E402
 
 ENDPOINT = "http://127.0.0.1:8888/v1/chat/completions"
 MODEL = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
@@ -39,14 +42,29 @@ ARCHETYPE_WEIGHTS: dict[str, dict[str, int]] = {
     "skirmisher": {"dex": 3, "con": 1, "wis": 1, "str": 0, "int": 0, "cha": -1},
 }
 
-#: slot caps by challenge tier, best-ranked ability first — the dump slot is
-#: genuinely low (8), which a fixed descending array cannot express.
+#: Slot caps by challenge tier, best-ranked ability first. THREAT scale, not
+#: point-buy: an NPC/BBEG is a monster-grade opponent, so a high-challenge
+#: NPC sits on the DMG table (ancients run STR 27-28 / CON 25-26), not on
+#: the 20 cap that binds player characters. Only the lowest tier is
+#: PC-adjacent — which is where point-buy actually applies.
 SCORE_CAPS: dict[str, list[int]] = {
-    "1-4": [16, 15, 14, 12, 10, 8],
-    "5-8": [18, 17, 15, 13, 11, 8],
-    "9-14": [19, 18, 17, 14, 12, 8],
-    "15+": [20, 18, 18, 14, 12, 8],
+    "1-4": [17, 16, 14, 12, 10, 8],
+    "5-8": [20, 19, 17, 15, 12, 9],
+    "9-14": [24, 22, 20, 17, 14, 10],
+    "15+": [28, 26, 24, 20, 16, 12],
 }
+
+#: AC by tier — the DMG monster AC column, not armor arithmetic.
+AC_BY_TIER: dict[str, int] = {"1-4": 15, "5-8": 17, "9-14": 19, "15+": 21}
+
+#: Attacks in the round's routine by tier (a monster's Multiattack count).
+SWINGS_BY_TIER: dict[str, int] = {"1-4": 2, "5-8": 2, "9-14": 3, "15+": 3}
+
+#: Weapon enhancement by tier.
+MAGIC_BY_TIER: dict[str, int] = {"1-4": 1, "5-8": 1, "9-14": 2, "15+": 3}
+
+#: The damage type an archetype's extra damage carries.
+CLASS_RIDER: dict[str, str] = {"Paladin": "radiant"}
 
 #: class table (hit die, saves, skill picks, paladin slot row, features)
 CLASS_TABLE: dict[str, dict[str, Any]] = {
@@ -54,11 +72,17 @@ CLASS_TABLE: dict[str, dict[str, Any]] = {
         "hit_die": 10,
         "save_prof": ("wis", "cha"),
         #: the class anchors the primary stat; tags only modulate it
-        "priority": {"str": 2, "cha": 2, "con": 1, "wis": 0, "dex": 0, "int": -1},
+        "priority": {"str": 2, "cha": 3, "con": 1, "wis": 0, "dex": 0, "int": -1},
         "skill_list": ("Athletics", "Insight", "Intimidation", "Medicine", "Persuasion", "Religion"),
         "skill_picks": 2,
-        # half-caster: slots by class level
-        "slots": {17: (4, 3, 3, 3, 1)},
+        # half-caster: the full SRD slot row by class level (1st..5th)
+        "slots": {
+            1: (), 2: (2,), 3: (3,), 4: (3,), 5: (4, 2), 6: (4, 2), 7: (4, 3),
+            8: (4, 3), 9: (4, 3, 2), 10: (4, 3, 2), 11: (4, 3, 3), 12: (4, 3, 3),
+            13: (4, 3, 3, 1), 14: (4, 3, 3, 1), 15: (4, 3, 3, 2), 16: (4, 3, 3, 2),
+            17: (4, 3, 3, 3, 1), 18: (4, 3, 3, 3, 1), 19: (4, 3, 3, 3, 2),
+            20: (4, 3, 3, 3, 2),
+        },
         "extra_attacks": 2,
         "features": [
             (2, "Divine Smite"), (2, "Fighting Style"), (3, "Channel Divinity"),
@@ -268,10 +292,68 @@ def call_model(paladin_spells: list[str], skills: list[str]) -> dict[str, Any]:
 # CODE: assemble the sheet
 # ---------------------------------------------------------------------------
 
-def build(words: dict[str, Any], level: int = 17, magic_bonus: int = 2) -> dict[str, Any]:
+def solve_hit_dice(die: int, con_mod: int, band: tuple[int, int]) -> tuple[int, int]:
+    """A hit-dice count whose average HP lands in the monster band."""
+    die_avg = _die_avg(die)
+    best: tuple[float, int, int] | None = None
+    for count in range(1, 81):
+        hp = int(count * die_avg + count * con_mod)
+        low, high = band
+        if low <= hp <= high:
+            return count, hp
+        gap = min(abs(hp - low), abs(hp - high))
+        if best is None or gap < best[0]:
+            best = (gap, count, hp)
+    assert best is not None
+    return best[1], best[2]
+
+
+#: Rider dice candidates, weakest first. The zero entry matters: a low-challenge
+#: creature whose weapon ALREADY lands in band must not get damage bolted on.
+_RIDERS: tuple[tuple[int, int], ...] = ((0, 0),) + tuple(
+    (count, sides) for count in range(1, 9) for sides in (4, 6, 8, 10, 12)
+)
+
+
+def solve_routine(
+    weapon_avg: float, target: float, band: tuple[float, float], preferred_swings: int
+) -> tuple[int, int, int, float]:
+    """Pick (swings, rider count, rider sides, rider average) that lands in band.
+
+    Searches the action economy, not just the damage: a level-1 threat swinging
+    a greatsword already overshoots its band, so the solver must be able to
+    drop to one attack. Falls back to the closest fit when nothing lands.
+    """
+    low, high = band
+    best: tuple[tuple[float, float], int, int, int, float] | None = None
+    fallback: tuple[float, int, int, int, float] | None = None
+    for swings in (preferred_swings, 1, 2, 3, 4):
+        if swings < 1:
+            continue
+        for count, sides in _RIDERS:
+            rider_avg = count * _die_avg(sides)
+            total = swings * (weapon_avg + rider_avg)
+            gap = abs(total - target)
+            if fallback is None or gap < fallback[0]:
+                fallback = (gap, swings, count, sides, rider_avg)
+            if low <= total <= high:
+                penalty = (abs(swings - preferred_swings), gap)
+                if best is None or penalty < best[0]:
+                    best = (penalty, swings, count, sides, rider_avg)
+    assert fallback is not None
+    if best is None:
+        _, swings, count, sides, rider_avg = fallback
+        return swings, count, sides, rider_avg
+    _, swings, count, sides, rider_avg = best
+    return swings, count, sides, rider_avg
+
+
+def build(words: dict[str, Any], level: int = 17) -> dict[str, Any]:
     cls = "Paladin"
     table = CLASS_TABLE[cls]
+    tier = tier_for(level)
     prof = 2 + (level - 1) // 4
+    magic_bonus = MAGIC_BY_TIER[tier]
 
     ranked, totals = rank_abilities(words["tags"], table.get("priority"))
     # crc32, not hash(): str hashing is salted per process and must not leak
@@ -280,10 +362,14 @@ def build(words: dict[str, Any], level: int = 17, magic_bonus: int = 2) -> dict[
     scores = assign_scores(ranked, level, jitter_seed=jitter_seed)
     mods = {a: modifier(s) for a, s in scores.items()}
 
-    con_mod = mods["con"]
-    hp = table["hit_die"] + (level - 1) * (table["hit_die"] // 2 + 1 + con_mod)
-    hit_dice = f"{level}d{table['hit_die']} + {level * con_mod}"
-    armor = 18 + 2 + 1  # plate + shield + Defense style
+    # HP, AC and the round's damage all aim at the DMG monster row for this
+    # challenge — the NPC is a threat, so the table sets the magnitude and the
+    # archetype only sets the shape.
+    dice_count, hp = solve_hit_dice(table["hit_die"], mods["con"], CR_HP[level])
+    hit_dice = f"{dice_count}d{table['hit_die']} + {dice_count * mods['con']}"
+    armor = AC_BY_TIER[tier]
+    band_low, band_high = CR_DPR[level]
+    target = (band_low + band_high) / 2
 
     save_prof = set(table["save_prof"])
     aura = mods["cha"]  # Aura of Protection: +CHA mod to every save
@@ -297,20 +383,41 @@ def build(words: dict[str, Any], level: int = 17, magic_bonus: int = 2) -> dict[
     spell_dc = 8 + prof + mods["cha"]
     spell_attack = prof + mods["cha"]
 
-    weapon_bonus = mods["str"]
+    weapon_bonus = mods["str"] + magic_bonus
     attacks = []
-    for entry in words["attacks"]:
+    primary_avg = 0.0
+    for index, entry in enumerate(words["attacks"]):
         weapon = WEAPONS[entry["weapon"]]
         count, sides = weapon["dice"]
-        to_hit = weapon_bonus + prof + magic_bonus
+        to_hit = mods["str"] + prof + magic_bonus
         dice = f"{count}d{sides}"
-        average = round(count * _die_avg(sides) + weapon_bonus + magic_bonus, 1)
+        average = round(count * _die_avg(sides) + weapon_bonus, 1)
+        damage = [{"dice": dice, "count": count, "sides": sides,
+                   "bonus": weapon_bonus, "average": average, "type": weapon["type"]}]
+        # Only the strongest attack carries the budget; the rest are the
+        # creature's alternative actions (the auditor reads exactly that way).
+        if index == 0:
+            swings, rider_count, rider_sides, rider_avg = solve_routine(
+                average, target, (band_low, band_high), SWINGS_BY_TIER[tier])
+            if rider_count:
+                damage.append({"dice": f"{rider_count}d{rider_sides}", "count": rider_count,
+                               "sides": rider_sides, "bonus": 0, "average": rider_avg,
+                               "type": CLASS_RIDER[cls]})
+            primary_avg = average + rider_avg
         rendered = _fill(entry["text"], {
             "to_hit": to_hit, "dice": dice, "average": _fmt(average),
-            "bonus": weapon_bonus + magic_bonus, "damage_type": weapon["type"],
+            "bonus": weapon_bonus, "damage_type": weapon["type"],
             "save": "Constitution",
             "dc": spell_dc, "reach": 10 if weapon.get("reach") else 5, "targets": 1,
         })
+        if index == 0 and rider_count:
+            # The template closes its own sentence; the rider is a continuation
+            # of the damage clause, not a new sentence ("... damage plus ...").
+            rendered = rendered.rstrip()
+            if rendered.endswith("."):
+                rendered = rendered[:-1]
+            rendered += (f" plus {_fmt(rider_avg)} ({rider_count}d{rider_sides}) "
+                         f"{CLASS_RIDER[cls]} damage.")
         attacks.append({
             "name": entry["name"],
             "kind": "melee_weapon",
@@ -319,27 +426,43 @@ def build(words: dict[str, Any], level: int = 17, magic_bonus: int = 2) -> dict[
             "to_hit": to_hit,
             "reach_ft": 10 if weapon.get("reach") else 5,
             "targets": 1,
-            "damage": [{"dice": dice, "count": count, "sides": sides,
-                        "bonus": weapon_bonus + magic_bonus,
-                        "average": average, "type": weapon["type"]}],
+            "damage": damage,
             # `description` is the AR24 field name AND what the Forge exporter
             # already reads -> damage reaches the token with no exporter change.
             "description": rendered,
         })
 
-    # DPR: Extra Attack (2 swings) + Improved Divine Smite (+1d8 per hit)
-    ids = _die_avg(8) if level >= 11 else 0.0
-    swings = table["extra_attacks"]
-    base_dpr = swings * (attacks[0]["damage"][0]["average"] + ids)
-    smite_dpr = base_dpr + _die_avg(8) * 5  # one 4th-level Divine Smite
+    if swings > 1:
+        routine = [{
+            "name": "Multiattack",
+            "description": (f"The knight makes {swings} attacks with the "
+                            f"{attacks[0]['name']}."),
+        }, *attacks]
+    else:
+        routine = list(attacks)
+    base_dpr = swings * primary_avg
+    smite_dpr = base_dpr + _die_avg(8) * 5
     nova_dpr = base_dpr + _die_avg(8) * 5 * swings
 
     # round-trip proof: the rendered text must re-parse to what code computed
     reparsed, sources = parse_damage_expression(attacks[0]["description"])
-    assert abs(reparsed - attacks[0]["damage"][0]["average"]) < 1e-9, (reparsed, attacks[0])
+    assert abs(reparsed - primary_avg) < 1e-9, (reparsed, primary_avg)
+
+    # the shipped auditor is the backstop: the generated block must pass it
+    block = {
+        "identity": {"role": "NPC", "level": level, "race": words["race"], "class": cls},
+        "attributes": scores,
+        "combat": {"ac": armor, "hp": hp},
+        "skills": skills,
+        "actions": routine,
+        "traits": [],
+        "spells": [],
+    }
+    violations = validate_stat_block(block)
+    audit = audit_stat_block(block)
 
     return {
-        "model_version": "prototype-1",
+        "model_version": "prototype-2",
         "identity": {"name": words["name"], "role": "NPC", "race": words["race"],
                      "class": cls, "level": level, "alignment": words["alignment"],
                      "tags": words["tags"]},
@@ -360,12 +483,15 @@ def build(words: dict[str, Any], level: int = 17, magic_bonus: int = 2) -> dict[
                              "slots": list(slots_row)},
             "skills": skills,
         },
+        "routine": routine,
         "attacks": attacks,
         "spells": sorted(words["spells"]),
         "features": [name for lvl, name in table["features"] if lvl <= level],
         "resources": {"lay_on_hands": 5 * level, "cleansing_touch": mods["cha"],
                       "channel_divinity": 2},
         "power": {"base_dpr": base_dpr, "smite_dpr": smite_dpr, "nova_dpr": nova_dpr,
+                  "band": (band_low, band_high), "hp_band": CR_HP[level],
+                  "audited_dpr": audit.dpr, "violations": violations,
                   "round_trip_sources": list(sources), "rank_totals": totals},
     }
 
@@ -415,17 +541,19 @@ def render(sheet: dict[str, Any]) -> str:
         "",
         f"**Spellcasting** DC {stats['spellcasting']['dc']} · attack "
         f"{stats['spellcasting']['attack_bonus']:+d} · slots "
-        + "/".join(str(n) for n in stats["spellcasting"]["slots"]) + " (1st–5th)",
+        + ("/".join(str(n) for n in stats["spellcasting"]["slots"]) or "none")
+        + (" (1st–5th)" if stats["spellcasting"]["slots"] else ""),
         "",
         "## Attacks",
     ]
-    for attack in sheet["attacks"]:
-        lines.append(f"- **{attack['name']}** ({attack['weight']}, {attack['weapon']}) — "
-                     f"{attack['description']}")
+    for attack in sheet["routine"]:
+        lines.append(f"- **{attack['name']}** — {attack['description']}")
     lines += [
         "",
-        f"**DPR** base {power['base_dpr']:.1f} (2 swings + Improved Divine Smite) · "
-        f"one 4th-level smite {power['smite_dpr']:.1f} · nova (2 smites) {power['nova_dpr']:.1f}",
+        f"**DPR** {power['audited_dpr']:.1f} vs band {power['band'][0]:.0f}-"
+        f"{power['band'][1]:.0f} · +one 4th-level smite {power['smite_dpr']:.1f} · "
+        f"+two {power['nova_dpr']:.1f} · **validator: "
+        f"{'clean' if not power['violations'] else power['violations']}**",
         "",
         "## Spells",
         ", ".join(sheet["spells"]),
@@ -451,29 +579,32 @@ def render(sheet: dict[str, Any]) -> str:
 if __name__ == "__main__":
     paladin_spells = sorted(s for s, cs in K.SPELLS.items() if "Paladin" in cs)
     skills = list(CLASS_TABLE["Paladin"]["skill_list"])
-    import os
-    if os.path.exists("/tmp/paladin/words.json"):
-        words = json.load(open("/tmp/paladin/words.json"))
+    here = os.path.dirname(os.path.abspath(__file__))
+    words_path = os.path.join(here, "words.json")
+    if os.path.exists(words_path):
+        words = json.load(open(words_path))
         print("[words: cached]", file=sys.stderr)
     else:
         words = call_model(paladin_spells, skills)
-        json.dump(words, open("/tmp/paladin/words.json", "w"), indent=1)
+        json.dump(words, open(words_path, "w"), indent=1)
     sheet = build(words)
 
-    with open("/tmp/paladin/paladin-l17.json", "w") as handle:
+    with open(os.path.join(here, "paladin-l17.json"), "w") as handle:
         json.dump(sheet, handle, indent=2)
-    with open("/tmp/paladin/paladin-l17.md", "w") as handle:
+    with open(os.path.join(here, "paladin-l17.md"), "w") as handle:
         handle.write(render(sheet))
 
-    band = CR_DPR[17]
-    hp_band = CR_HP[17]
+    power = sheet["power"]
     print(render(sheet))
     print("=" * 72)
-    print(f"rank from tags {words['tags']}: " + " > ".join(
-        sorted(ABILITY, key=lambda a: (-sheet['power']['rank_totals'][a], ABILITY.index(a)))))
-    print(f"round-trip: rendered attack re-parsed as {sheet['power']['round_trip_sources']} "
-          f"== code's {sheet['attacks'][0]['damage'][0]['average']}")
-    print(f"current validator bands at level 17: DPR {band}, HP {hp_band}")
-    print(f"this sheet: base DPR {sheet['power']['base_dpr']:.1f}, "
-          f"hp {sheet['stats']['combat']['hp']} -> base is UNDER the monster band, "
-          f"nova {sheet['power']['nova_dpr']:.1f} only just enters it")
+    print(f"rank: class anchor + tags {words['tags']} -> " + " > ".join(
+        sorted(ABILITY, key=lambda a: (-power['rank_totals'][a], ABILITY.index(a)))))
+    print(f"round-trip: rendered Oathblade re-parses to {power['round_trip_sources']} "
+          f"= {power['base_dpr'] / 3:.1f} per hit (code computed "
+          f"{sheet['attacks'][0]['damage'][0]['average']} weapon + "
+          f"{sheet['attacks'][0]['damage'][1]['average']} rider)")
+    print(f"auditor (shipped combat.py): DPR {power['audited_dpr']:.1f} vs band "
+          f"{power['band'][0]:.0f}-{power['band'][1]:.0f}; hp "
+          f"{sheet['stats']['combat']['hp']} vs band {power['hp_band'][0]}-"
+          f"{power['hp_band'][1]}")
+    print(f"validate_stat_block -> {power['violations'] or 'CLEAN (0 violations)'}")

@@ -1,5 +1,5 @@
 {
-  "model_version": "prototype-1",
+  "model_version": "prototype-2",
   "identity": {
     "name": "Sir Thalassos of the Sunken Maw",
     "role": "NPC",
@@ -32,39 +32,39 @@
   "stats": {
     "proficiency_bonus": 6,
     "abilities": {
-      "str": 20,
-      "con": 18,
-      "wis": 18,
-      "cha": 14,
-      "dex": 12,
-      "int": 8
+      "str": 28,
+      "con": 26,
+      "cha": 24,
+      "wis": 20,
+      "dex": 16,
+      "int": 12
     },
     "modifiers": {
-      "str": 5,
-      "con": 4,
-      "wis": 4,
-      "cha": 2,
-      "dex": 1,
-      "int": -1
+      "str": 9,
+      "con": 8,
+      "cha": 7,
+      "wis": 5,
+      "dex": 3,
+      "int": 1
     },
     "saves": {
-      "str": 7,
-      "dex": 3,
-      "con": 6,
-      "int": 1,
-      "wis": 12,
-      "cha": 10
+      "str": 16,
+      "dex": 10,
+      "con": 15,
+      "int": 8,
+      "wis": 18,
+      "cha": 20
     },
-    "initiative": 1,
-    "passive_perception": 14,
+    "initiative": 3,
+    "passive_perception": 15,
     "combat": {
       "ac": 21,
-      "hp": 170,
-      "hit_dice": "17d10 + 68"
+      "hp": 324,
+      "hit_dice": "24d10 + 192"
     },
     "spellcasting": {
-      "dc": 16,
-      "attack_bonus": 8,
+      "dc": 21,
+      "attack_bonus": 13,
       "slots": [
         4,
         3,
@@ -76,21 +76,25 @@
     "skills": [
       {
         "name": "Intimidation",
-        "bonus": 8
+        "bonus": 13
       },
       {
         "name": "Religion",
-        "bonus": 5
+        "bonus": 7
       }
     ]
   },
-  "attacks": [
+  "routine": [
+    {
+      "name": "Multiattack",
+      "description": "The knight makes 3 attacks with the Oathblade."
+    },
     {
       "name": "Oathblade",
       "kind": "melee_weapon",
       "weapon": "greatsword",
       "weight": "heavy",
-      "to_hit": 13,
+      "to_hit": 18,
       "reach_ft": 5,
       "targets": 1,
       "damage": [
@@ -98,19 +102,27 @@
           "dice": "2d6",
           "count": 2,
           "sides": 6,
-          "bonus": 7,
-          "average": 14.0,
+          "bonus": 12,
+          "average": 19.0,
           "type": "slashing"
+        },
+        {
+          "dice": "3d10",
+          "count": 3,
+          "sides": 10,
+          "bonus": 0,
+          "average": 16.5,
+          "type": "radiant"
         }
       ],
-      "description": "Melee Weapon Attack: +13 to hit, reach 5 ft., one target. Hit: 14 (2d6 + 7) slashing damage."
+      "description": "Melee Weapon Attack: +18 to hit, reach 5 ft., one target. Hit: 19 (2d6 + 12) slashing damage plus 16.5 (3d10) radiant damage."
     },
     {
       "name": "Crushing Tide",
       "kind": "melee_weapon",
       "weapon": "mace",
       "weight": "standard",
-      "to_hit": 13,
+      "to_hit": 18,
       "reach_ft": 5,
       "targets": 1,
       "damage": [
@@ -118,12 +130,62 @@
           "dice": "1d6",
           "count": 1,
           "sides": 6,
-          "bonus": 7,
-          "average": 10.5,
+          "bonus": 12,
+          "average": 15.5,
           "type": "bludgeoning"
         }
       ],
-      "description": "Melee Weapon Attack: +13 to hit, reach 5 ft., one target. Hit: 10.5 (1d6 + 7) bludgeoning damage."
+      "description": "Melee Weapon Attack: +18 to hit, reach 5 ft., one target. Hit: 15.5 (1d6 + 12) bludgeoning damage."
+    }
+  ],
+  "attacks": [
+    {
+      "name": "Oathblade",
+      "kind": "melee_weapon",
+      "weapon": "greatsword",
+      "weight": "heavy",
+      "to_hit": 18,
+      "reach_ft": 5,
+      "targets": 1,
+      "damage": [
+        {
+          "dice": "2d6",
+          "count": 2,
+          "sides": 6,
+          "bonus": 12,
+          "average": 19.0,
+          "type": "slashing"
+        },
+        {
+          "dice": "3d10",
+          "count": 3,
+          "sides": 10,
+          "bonus": 0,
+          "average": 16.5,
+          "type": "radiant"
+        }
+      ],
+      "description": "Melee Weapon Attack: +18 to hit, reach 5 ft., one target. Hit: 19 (2d6 + 12) slashing damage plus 16.5 (3d10) radiant damage."
+    },
+    {
+      "name": "Crushing Tide",
+      "kind": "melee_weapon",
+      "weapon": "mace",
+      "weight": "standard",
+      "to_hit": 18,
+      "reach_ft": 5,
+      "targets": 1,
+      "damage": [
+        {
+          "dice": "1d6",
+          "count": 1,
+          "sides": 6,
+          "bonus": 12,
+          "average": 15.5,
+          "type": "bludgeoning"
+        }
+      ],
+      "description": "Melee Weapon Attack: +18 to hit, reach 5 ft., one target. Hit: 15.5 (1d6 + 12) bludgeoning damage."
     }
   ],
   "spells": [
@@ -147,16 +209,27 @@
   ],
   "resources": {
     "lay_on_hands": 85,
-    "cleansing_touch": 2,
+    "cleansing_touch": 7,
     "channel_divinity": 2
   },
   "power": {
-    "base_dpr": 37.0,
-    "smite_dpr": 59.5,
-    "nova_dpr": 82.0,
+    "base_dpr": 106.5,
+    "smite_dpr": 129.0,
+    "nova_dpr": 174.0,
+    "band": [
+      105.0,
+      110.0
+    ],
+    "hp_band": [
+      311,
+      325
+    ],
+    "audited_dpr": 106.5,
+    "violations": [],
     "round_trip_sources": [
       "2d6",
-      "+ 7"
+      "3d10",
+      "+ 12"
     ],
     "rank_totals": {
       "str": 6,
@@ -164,7 +237,7 @@
       "con": 6,
       "int": -5,
       "wis": 5,
-      "cha": 5
+      "cha": 6
     }
   }
 }
