@@ -39,11 +39,13 @@ from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
 from app.pipeline.fencing import json_error, parse_json_object
 from app.pipeline.fencing import strip_fence as _strip_fence
+from app.pipeline.knowledge import ROLES
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import (
     apply_stat_repairs,
     build_stat_repair_prompt,
     collect_stat_issues,
+    conform_stat_power,
     parse_stat_repair_output,
     spells_reference_text,
     stat_block_rules_text,
@@ -247,6 +249,15 @@ def _enforce_stat_blocks(
     )
     entities = apply_stat_repairs(entities, repaired)
     remaining = collect_stat_issues(entities)
+    if remaining:
+        # The repair pass is one LLM shot at arithmetic a model cannot do:
+        # measured live, blocks came back 5.5 vs 15-20, 16 vs 27-32 and
+        # 50 vs 93-98 — never in band (2026-09-10). Before failing the job,
+        # give the block one deterministic chance to meet its own DMG row.
+        # Only power-band violations are touched; the model's words, actions
+        # and identity survive untouched (see statblocks.conform_power).
+        entities = conform_stat_power(entities, remaining)
+        remaining = collect_stat_issues(entities)
     if remaining:
         raise JobPayloadError(stat_failure_message(remaining))
     return entities, False
@@ -790,6 +801,8 @@ def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) 
         trimmed = [entry.strip() for entry in entries if isinstance(entry, str) and entry.strip()]
         sections.append(f"{section} ({len(trimmed)}):")
         sections.extend(f"- {entry}" for entry in trimmed)
+    notes = payload.get("notes", "")
+    notes = notes.strip() if isinstance(notes, str) else ""
     lines = [
         "You are digesting a TTRPG world-build-in submission into the world graph.",
         "Respond with exactly one JSON object — nothing else.",
@@ -802,6 +815,23 @@ def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) 
         "",
         "SUBMITTED SECTIONS",
         *sections,
+        # Wave 1 builds the entities named above, so a DM note that fixes a
+        # level, role, or power for one of them has to land HERE — a note
+        # saying "sanberi is level 18" that only wave 2 ever saw is why a
+        # level-18 key figure got a level-2 record and an unreachable DPR
+        # band (2026-09-10). New subjects stay wave 2's job.
+        *(
+            (
+                "",
+                "DM NOTES (authoritative directives about the entities above: any",
+                "level, role, class, or power named here OVERRIDES what you would",
+                "otherwise infer. Do not create entities for new subjects named only",
+                "here — a later wave digests those.)",
+                notes,
+            )
+            if notes
+            else ()
+        ),
         "",
         "TASK",
         "Create the core subgraph: entities for the notable key figures, places, and",
@@ -819,10 +849,22 @@ def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) 
         "",
         "OUTPUT CONTRACT",
         'Respond with one JSON object: {"entities": [...], "edges": [...]}.',
-        'Each entity: {"ref": "E<index>", "kind": "character|faction|place", "name": "...",',
-        '  "text": "optional narrative", "data": {the CHARACTER RECORDS for',
-        "  characters (stat_block included); factions and places carry hard truths",
-        "  only}}.",
+        "A character keeps its whole record INSIDE the data object — never beside it:",
+        '{"ref": "E2", "kind": "character", "name": "Sanberi", "text": "optional narrative",',
+        '  "data": {"role": "NPC", "level_cr": "level 18", "race_type": "Human",',
+        '           "class_profession": "Paladin", "alignment": "LG", "personality": "...",',
+        '           "secret": "...", "rumor": "...", "party_hook": "...", "appearance": "...",',
+        '           "background": "...", "goals": "...", "relationships": "...",',
+        '           "voice_style": "...", "catchphrases": "...",',
+        '           "world_integration": {"reputation": "...", "factions": "...",',
+        '                                 "current_location": "...", "reaction_matrix": "...",',
+        '                                 "on_defeat": "..."},',
+        '           "stat_block": {the STAT BLOCK RULES above}}}',
+        "role, level_cr, race_type, class_profession, alignment, and stat_block are keys",
+        "of data — never keys of the entity itself. An entity carrying them at the top",
+        "level loses them: the record is read from data and nowhere else.",
+        'A place or faction is flat: {"ref": "E0", "kind": "place", "name": "City of Gallorb",',
+        '  "text": "the hard truth about it"} — data is optional for those two kinds.',
         "Refs are positional and canonical: the first entity in the list is E0, the",
         "second E1, and so on (never E01, E007).",
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
@@ -892,10 +934,22 @@ def build_wave2_prompt(
         "",
         "OUTPUT CONTRACT",
         'Respond with one JSON object: {"entities": [...], "edges": [...]}.',
-        'Each new entity: {"ref": "N<index>", "kind": "character|faction|place",',
-        '  "name": "...", "text": "optional narrative",',
-        '  "data": {the CHARACTER RECORDS for characters (stat_block included);',
-        "  factions and places carry hard truths only}}.",
+        "A character keeps its whole record INSIDE the data object — never beside it:",
+        '{"ref": "N1", "kind": "character", "name": "Captain Harlow", "text": "optional",',
+        '  "data": {"role": "NPC", "level_cr": "level 6", "race_type": "Human",',
+        '           "class_profession": "Fighter", "alignment": "LN", "personality": "...",',
+        '           "secret": "...", "rumor": "...", "party_hook": "...", "appearance": "...",',
+        '           "background": "...", "goals": "...", "relationships": "...",',
+        '           "voice_style": "...", "catchphrases": "...",',
+        '           "world_integration": {"reputation": "...", "factions": "...",',
+        '                                 "current_location": "...", "reaction_matrix": "...",',
+        '                                 "on_defeat": "..."},',
+        '           "stat_block": {the STAT BLOCK RULES above}}}',
+        'kind is exactly "character", "faction", or "place" — never a role word like',
+        '"Monster" or "NPC": the role belongs to data.role, and an entity carrying',
+        "record keys at the top level loses them — the record is read from data alone.",
+        'A place or faction is flat: {"ref": "N0", "kind": "faction", "name": "The Guild",',
+        '  "text": "the hard truth about it"} — data is optional for those two kinds.',
         "Refs are positional and canonical: the first new entity in the list is N0,",
         "the second N1, and so on (never N01, N007).",
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
@@ -1003,6 +1057,35 @@ class _Wave2OrphanError(JobPayloadError):
         self.orphans = orphans
 
 
+def canonicalize_entity_kind(value: Any) -> tuple[str, str | None] | None:
+    """Fold an entity kind to its contract form, tolerating model slips.
+
+    The contract kinds are lowercase (``character``/``faction``/``place``).
+    Two slips are unambiguous and worth absorbing rather than killing a
+    whole wave over (dogfood 2026-09-10: ``kind: "monster"`` failed every
+    build-in at wave 2):
+
+    * a case variant of a contract kind ("Place" -> "place");
+    * the ROLE written in ``kind`` ("Monster", "NPC", "BBEG") — every entry
+      of ``ROLES`` is a character-kind entity, so the reading is forced, and
+      the role is returned so the caller can seed ``data.role`` from it.
+
+    Returns ``(kind, role)`` where ``role`` is ``None`` unless the value was
+    a role word, or ``None`` when the value names neither. Same spirit as
+    ``canonicalize_reaction_matrix``: repair the shape the model certainly
+    meant, never guess at one it did not.
+    """
+    if not isinstance(value, str):
+        return None
+    folded = value.strip().lower()
+    if folded in ENTITY_KINDS:
+        return folded, None
+    for role in ROLES:
+        if folded == role.lower():
+            return "character", role
+    return None
+
+
 def _validate_subgraph(
     wave: int,
     parsed: dict[str, Any],
@@ -1050,11 +1133,13 @@ def _validate_subgraph(
             raise JobPayloadError(
                 f"wave {wave}: entity {position} ref must be {prefix}{position}, got {ref!r}"
             )
-        kind = raw.get("kind")
-        if kind not in ENTITY_KINDS:
+        canonical = canonicalize_entity_kind(raw.get("kind"))
+        if canonical is None:
             raise JobPayloadError(
-                f"wave {wave}: entity {position} kind {kind!r} not in {sorted(ENTITY_KINDS)}"
+                f"wave {wave}: entity {position} kind {raw.get('kind')!r} "
+                f"not in {sorted(ENTITY_KINDS)}"
             )
+        kind, role_from_kind = canonical
         text = raw.get("text")
         if text is not None and not isinstance(text, str):
             raise JobPayloadError(f"wave {wave}: entity {position} text must be a string")
@@ -1086,6 +1171,12 @@ def _validate_subgraph(
             # {"C<i>": "<reaction>"} mapping, which the shared validator
             # would flag and burn the record gate's one repair pass on).
             data = canonicalize_reaction_matrix({**(data or {}), "name": clean_name})
+            if role_from_kind is not None:
+                # The model named the role in `kind` instead of the record:
+                # keep that information where the record and gates read it.
+                existing_role = data.get("role")
+                if not (isinstance(existing_role, str) and existing_role.strip()):
+                    data["role"] = role_from_kind
         entity_id = ids.new_id()
         assigned_ids.append(entity_id)
         entity_inputs.append(

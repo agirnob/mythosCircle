@@ -19,6 +19,7 @@ import pytest
 
 from app.core import ids
 from app.core.settings import LLMSettings
+from app.pipeline import combat
 from app.pipeline.build_in import (
     _build_record_repair_prompt,
     _collect_record_issues,
@@ -27,10 +28,17 @@ from app.pipeline.build_in import (
     _Wave2OrphanError,
     build_wave1_prompt,
     build_wave2_prompt,
+    canonicalize_entity_kind,
 )
 from app.pipeline.fencing import json_error
+from app.pipeline.knowledge import validate_stat_block
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
-from app.pipeline.statblocks import spells_reference_text, stat_block_rules_text
+from app.pipeline.statblocks import (
+    conform_power,
+    is_conformable,
+    spells_reference_text,
+    stat_block_rules_text,
+)
 from app.pipeline.worker import run_next_job
 from app.store import (
     InvalidJobInputError,
@@ -588,8 +596,16 @@ def test_build_wave1_prompt_deterministic() -> None:
         "factions": ["The Guild", "  "],
     }
     assert build_wave1_prompt(seed_a, shuffled) == first
-    # Wave 1 never sees notes; unknown keys are ignored.
-    assert build_wave1_prompt(seed_a, {**payload, "notes": "secret notes"}) == first
+    # Wave 1 DOES see the notes (2026-09-10): a DM note fixing a key
+    # figure's level has to reach the wave that builds that figure, or the
+    # record gets an invented level and an unreachable DPR band. Blank
+    # notes still render byte-identically (asserted below).
+    with_notes = build_wave1_prompt(seed_a, {**payload, "notes": "secret notes"})
+    assert with_notes != first
+    assert "DM NOTES" in with_notes and "secret notes" in with_notes
+    assert build_wave1_prompt(seed_a, {**payload, "notes": "   "}) == first
+    # Unknown keys are still ignored.
+    assert build_wave1_prompt(seed_a, {**payload, "ambient": "x"}) == first
     # The prompt carries the closed vocabulary + counter semantics (2.2).
     assert "EDGE VOCABULARY" in first and "member_of" in first and "debt: amount" in first
     # spec-2.4: the wave-1 prompt embeds the stat-block contract — the
@@ -652,9 +668,10 @@ def test_build_wave2_prompt_deterministic() -> None:
     # The context's edges serialize (member_of — the only context edge),
     # while the vocabulary list separately carries every edge type.
     assert "entity[0] -[member_of counter=1]-> entity[1]" in first
-    # Wave-2's new entities use N<index> refs (never wave-1's E labels)
+    # Wave-2's new entities use N refs (never wave-1's E labels); the contract
+    # shows a worked example rather than a placeholder (2026-09-10).
     # and the prompt names the core anchors as C<index>.
-    assert '"ref": "N<index>"' in first
+    assert '"ref": "N1"' in first and '"ref": "N0"' in first
     assert "N0" in first and "C0..C1" in first
 
 
@@ -1740,10 +1757,85 @@ def test_faction_stat_block_is_stripped(world: str) -> None:
     assert "stat_block" not in bar.data
 
 
+def test_entity_kind_slips_are_canonicalized() -> None:
+    """``kind`` carries the contract kind, but models slip two unambiguous
+    ways: a case variant of a contract kind, and the ROLE word ("monster" —
+    every entry of ROLES is a character-kind entity). Both fold; anything
+    else is still rejected. Dogfood 2026-09-10: ``kind: "monster"`` failed
+    every build-in at wave 2."""
+    assert canonicalize_entity_kind("character") == ("character", None)
+    assert canonicalize_entity_kind("faction") == ("faction", None)
+    assert canonicalize_entity_kind("Place") == ("place", None)
+    assert canonicalize_entity_kind("MONSTER") == ("character", "Monster")
+    assert canonicalize_entity_kind("monster") == ("character", "Monster")
+    assert canonicalize_entity_kind(" BBEG ") == ("character", "BBEG")
+    # Not a kind and not a role — the wave still fails loudly.
+    assert canonicalize_entity_kind("dragon") is None
+    assert canonicalize_entity_kind(None) is None
+    assert canonicalize_entity_kind(7) is None
+
+
+def test_role_word_kind_seeds_the_record_role() -> None:
+    """A role written in ``kind`` is folded to a character AND seeded into
+    data.role, so the record the gates read keeps what the model meant."""
+    parsed = {
+        "entities": [
+            {"ref": "E0", "kind": "monster", "name": "The Doom", "text": "a giant"},
+            {"ref": "E1", "kind": "place", "name": "Gallorb"},
+        ],
+        "edges": [{"src": "E0", "dst": "E1", "type": "located_in", "counter": 1}],
+    }
+    entities, edges = _validate_subgraph(1, parsed)
+    assert len(edges) == 1
+    doom = entities[0]
+    assert doom.kind == "character"
+    assert doom.data["role"] == "Monster"
+
+
+def test_conform_power_fixes_dpr_and_frail_hp() -> None:
+    """The deterministic conform repairs both power violations the model's
+    single repair pass does not converge on: damage under the band and an HP
+    floor below half the band low (live 2026-09-10: 5.5 vs 15-20, 50 vs
+    93-98). The model's own action, identity and prose survive — only the
+    numbers move."""
+    block = {
+        "identity": {"role": "NPC", "level": 2, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 14, "hp": 20},
+        "skills": [],
+        "traits": [],
+        "spells": [],
+        "actions": [
+            {
+                "name": "Dagger",
+                "description": (
+                    "Melee Weapon Attack: +4 to hit. Hit: 5.5 (1d4 + 3) piercing damage."
+                ),
+            }
+        ],
+    }
+    violations = validate_stat_block(block)
+    assert is_conformable(violations)  # a DPR miss AND a frail HP floor
+    conformed = conform_power(block)
+    assert conformed is not None
+    assert validate_stat_block(conformed) == []
+    audit = combat.audit_stat_block(conformed)
+    assert audit.band is not None and audit.band[0] <= audit.dpr <= audit.band[1]
+    hp_band = combat.hp_band(block["identity"])
+    assert hp_band is not None and not combat.is_hp_frail(conformed["combat"]["hp"], hp_band)
+    assert conformed["actions"][0]["name"] == "Dagger"
+    assert conformed["identity"] == block["identity"]
+    # Shape problems are never this pass's job — they stay the model's.
+    assert not is_conformable(["skills entries must be objects with a 'name'"])
+    assert not is_conformable(["combat.hp must be a positive integer"])
+    assert not is_conformable([])
+
+
 def test_underpowered_stat_block_repair_loop(world: str) -> None:
     """POWER_REPAIR_LOOP: an under-powered wave-1 block is flagged; a
-    healthy repair commits (wave + one repair pass, succeeded), while a
-    still-mismatched repair fails the job naming the power gap."""
+    healthy repair commits (wave + one repair pass, succeeded); when the
+    repair does not converge, the deterministic power-conform lands the
+    block in band and the job still succeeds (2026-09-10)."""
     weak_block = {
         "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
@@ -1780,7 +1872,11 @@ def test_underpowered_stat_block_repair_loop(world: str) -> None:
         mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
     assert mira.data["stat_block"] == _MIRA_STAT_BLOCK
 
-    # Still mismatched after repair: the job fails naming the power gap.
+    # Still mismatched after repair: the deterministic power-conform lands the
+    # block in its DMG band and the job SUCCEEDS. A model cannot be asked to
+    # hit an interval reliably (measured live 2026-09-10: 5.5 vs 15-20,
+    # 16 vs 27-32, 50 vs 93-98 — never once in band), so the gate no longer
+    # fails a job on arithmetic the code can do itself.
     calls2: list[str] = []
     job_id2 = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
     responses2 = [
@@ -1795,9 +1891,23 @@ def test_underpowered_stat_block_repair_loop(world: str) -> None:
     assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
     assert len(calls2) == 2
     job2, _position2 = job_status(job_id2)
-    assert job2.state == "failed"
-    assert "still invalid after the repair pass" in (job2.error or "")
-    assert "under-powered" in (job2.error or "")
+    assert job2.state == "succeeded"
+    with session_scope() as session:
+        # This world already holds the first job's Mira Vane — read the entity
+        # THIS job committed by its id, never by name.
+        committed = [
+            e
+            for e in world_entities(session, world)
+            if e.id in job2.result["waves"][0]["entity_ids"]
+        ]
+    conformed = next(e for e in committed if e.kind == "character").data["stat_block"]
+    assert validate_stat_block(conformed) == []
+    audit = combat.audit_stat_block(conformed)
+    assert audit.band is not None
+    assert audit.band[0] <= audit.dpr <= audit.band[1]
+    # The model's own action survives; only the numbers moved.
+    assert conformed["actions"][0]["name"] == "Longsword"
+    assert conformed["identity"] == weak_block["identity"]
 
 
 def test_overpowered_stat_block_repair_loop(world: str) -> None:
@@ -1902,8 +2012,20 @@ def test_frail_stat_block_repair_loop(world: str) -> None:
     assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
     assert len(calls2) == 2
     job2, _position2 = job_status(job_id2)
-    assert job2.state == "failed"
-    assert "frail" in (job2.error or "")
+    # A frail HP floor no longer fails the job: the deterministic conform
+    # lifts hp to the band floor (2026-09-10).
+    assert job2.state == "succeeded"
+    with session_scope() as session:
+        committed = [
+            e
+            for e in world_entities(session, world)
+            if e.id in job2.result["waves"][0]["entity_ids"]
+        ]
+    conformed = next(e for e in committed if e.kind == "character").data["stat_block"]
+    hp_band = combat.hp_band(conformed["identity"])
+    assert hp_band is not None
+    assert not combat.is_hp_frail(conformed["combat"]["hp"], hp_band)
+    assert validate_stat_block(conformed) == []
 
 
 # ---------------------------------------------------------------------------

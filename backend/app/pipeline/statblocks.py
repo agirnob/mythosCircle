@@ -424,6 +424,196 @@ def strip_noncharacter_stat_blocks(
     ]
 
 
+#: Damage types the deterministic power-conform reaches for when it must
+#: add a clause the model did not write. Thematic where the class is known
+#: and neutral otherwise — it never overrides a type already in the block.
+_CONFORM_DAMAGE_TYPES: dict[str, str] = {
+    "Paladin": "radiant",
+    "Cleric": "radiant",
+    "Warlock": "necrotic",
+    "Druid": "poison",
+    "Rogue": "poison",
+    "Ranger": "piercing",
+    "Fighter": "slashing",
+    "Barbarian": "slashing",
+    "Monk": "bludgeoning",
+    "Bard": "psychic",
+    "Wizard": "force",
+    "Sorcerer": "force",
+}
+_DEFAULT_CONFORM_DAMAGE = "force"
+
+#: Violation shapes this pass can fix. Under-powered is a prefix; the frail
+#: message reads "combat.hp 52 is frail for level 4 (...)", so it matches on
+#: the substring. Everything else (shape, vocabulary, role rules) belongs to
+#: the model's one repair pass.
+_CONFORMABLE_PREFIXES = ("under-powered for ",)
+_CONFORMABLE_SUBSTRINGS = (" is frail for ",)
+
+#: Upper bound on rider-picking iterations; the solve is exact, so one pass
+#: normally suffices and this only catches a mis-modelled multiplier.
+_CONFORM_MAX_ROUNDS = 4
+
+
+def is_conformable(violations: Sequence[str]) -> bool:
+    """Whether every violation is a power-band miss this pass can repair."""
+    if not violations:
+        return False
+    return all(
+        violation.startswith(_CONFORMABLE_PREFIXES)
+        or any(marker in violation for marker in _CONFORMABLE_SUBSTRINGS)
+        for violation in violations
+    )
+
+
+def _rider_dice(target: float) -> tuple[int, int, float]:
+    """The dice expression whose average lands closest to ``target``."""
+    best: tuple[float, int, int, float] | None = None
+    for count in range(1, 21):
+        for sides in (4, 6, 8, 10, 12):
+            average = count * combat._die_avg(sides)
+            gap = abs(average - target)
+            if best is None or gap < best[0]:
+                best = (gap, count, sides, average)
+    assert best is not None
+    return best[1], best[2], best[3]
+
+
+def _append_damage_clause(block: dict[str, Any], action_name: str, text: str) -> bool:
+    """Append a canonical 5e damage clause to one action's description."""
+    actions = block.get("actions")
+    if not isinstance(actions, list):
+        return False
+    for action in actions:
+        if isinstance(action, dict) and action.get("name") == action_name:
+            description = action.get("description")
+            description = description if isinstance(description, str) else ""
+            description = description.rstrip()
+            if description.endswith("."):
+                description = description[:-1]
+            action["description"] = f"{description} {text}"
+            return True
+    return False
+
+
+def conform_power(block: Any) -> dict[str, Any] | None:
+    """Rewrite a block's NUMBERS so the DMG row for its challenge is met.
+
+    The model writes the block; a model cannot be asked to hit an interval
+    reliably — the one LLM repair pass measurably does not converge
+    (2026-09-10 live jobs died at 5.5 vs 15-20, 16 vs 27-32, 50 vs 93-98).
+    This is the deterministic half: identity, prose and the action list are
+    untouched; only the round's damage numbers and a frail HP floor move,
+    and only until the SHIPPED auditor agrees. The marginal multiplier is
+    measured from the auditor itself rather than re-derived, so a Multiattack
+    routine, a legendary budget, or a save-for-half adjustment is all
+    accounted for without this function knowing about any of them.
+
+    Returns the conformed block, or ``None`` when it cannot be conformed —
+    no reference band for the declared challenge, no damaging action to
+    carry the budget, or damage ABOVE the band (trimming an over-powered
+    block is deliberately out of scope: the model's own repair pass may
+    lower the declared challenge instead).
+    """
+    if not isinstance(block, dict):
+        return None
+    identity = block.get("identity")
+    if not isinstance(identity, dict):
+        return None
+    band = combat.expected_band(identity)
+    if band is None:
+        return None
+    low, high = band
+
+    conformed: dict[str, Any] = json.loads(json.dumps(block))  # JSON-safe deep copy
+
+    hp_band = combat.hp_band(identity)
+    combat_block = conformed.get("combat")
+    if isinstance(combat_block, dict) and hp_band is not None:
+        hp = combat_block.get("hp")
+        if isinstance(hp, int) and combat.is_hp_frail(hp, hp_band):
+            combat_block["hp"] = hp_band[0]
+
+    audit = combat.audit_stat_block(conformed)
+    if audit.band is None or audit.dpr > high:
+        return None
+    if audit.dpr >= low:
+        return conformed if not validate_stat_block(conformed) else None
+
+    damaging = [a for a in audit.actions if a.expected_avg > 0]
+    if not damaging:
+        return None
+    strongest = max(damaging, key=lambda a: a.expected_avg)
+
+    klass = identity.get("class")
+    damage_type = _CONFORM_DAMAGE_TYPES.get(klass or "", _DEFAULT_CONFORM_DAMAGE)
+
+    target = (low + high) / 2
+    for _round in range(_CONFORM_MAX_ROUNDS):
+        before = combat.audit_stat_block(conformed).dpr
+        if before >= low:
+            break
+        probe_count, probe_sides, probe_avg = _rider_dice(10.0)
+        probe = f"plus {probe_avg:g} ({probe_count}d{probe_sides}) {damage_type} damage."
+        if not _append_damage_clause(conformed, strongest.name, probe):
+            return None
+        after = combat.audit_stat_block(conformed).dpr
+        multiplier = (after - before) / probe_avg
+        if multiplier <= 0:
+            return None
+        need = (target - before) / multiplier
+        # Undo the probe by rewriting the clause we just appended.
+        actions = conformed.get("actions")
+        assert isinstance(actions, list)
+        replaced = False
+        for action in actions:
+            if not isinstance(action, dict) or action.get("name") != strongest.name:
+                continue
+            description = action.get("description")
+            if isinstance(description, str) and description.endswith(probe):
+                count, sides, average = _rider_dice(need)
+                action["description"] = description[: -len(probe)] + (
+                    f"plus {average:g} ({count}d{sides}) {damage_type} damage."
+                )
+                replaced = True
+            break
+        if not replaced:
+            return None
+
+    final = combat.audit_stat_block(conformed)
+    if final.band is None or not (low <= final.dpr <= high):
+        return None
+    return conformed if not validate_stat_block(conformed) else None
+
+
+def conform_stat_power(
+    entities: Sequence[models.EntityInput], issues: Sequence[StatIssue]
+) -> list[models.EntityInput]:
+    """Apply :func:`conform_power` to every conformable flagged character.
+
+    Entities whose violations are shape problems are left exactly as the
+    repair pass left them — this pass never touches anything but numbers.
+    """
+    fixed: dict[int, dict[str, Any]] = {}
+    for issue in issues:
+        if not is_conformable(issue.violations):
+            continue
+        block = (issue.entity.data or {}).get("stat_block")
+        conformed = conform_power(block)
+        if conformed is not None:
+            fixed[issue.position] = conformed
+    if not fixed:
+        return list(entities)
+    out: list[models.EntityInput] = []
+    for position, entity in enumerate(entities):
+        block = fixed.get(position)
+        if block is None or entity.kind != "character":
+            out.append(entity)
+            continue
+        out.append(dataclasses.replace(entity, data={**entity.data, "stat_block": block}))
+    return out
+
+
 def stat_failure_message(issues: Sequence[StatIssue]) -> str:
     """The fail-event message for a wave still invalid after the repair.
 
