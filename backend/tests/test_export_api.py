@@ -1106,18 +1106,17 @@ def test_owlbear_npc_happy(client: Any) -> None:
     _register_login(client)
     campaign_id = _create_campaign(client).json()["id"]
     sera_id, _, _ = _commit_owlbear_cast(campaign_id)
-    title = client.get(f"/api/campaigns/{campaign_id}/export").json()["campaign"]["title"]
     before = _counts(campaign_id)
     response = _owlbear(client, campaign_id, sera_id)
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     disposition = response.headers["content-disposition"]
     assert disposition.startswith("attachment") and disposition.endswith('.json"')
-    payload = response.json()
-    assert payload["name"] == "Sera"
-    assert payload["author"] == title
-    assert set(payload) == {"name", "author", "metadata"}
-    metadata = payload["metadata"]
+    metadata = response.json()
+    # Flat metadata object (live-verified): the unit name rides INSIDE
+    # metadata; there is no envelope and no author slot.
+    assert metadata[_fk("name")] == "Sera"
+    assert "author" not in metadata
     assert metadata[_fk("fabd")] is True  # namespaced, not top-level (review round 1)
     assert metadata[_fk("Z001")] == 5
     assert metadata[_fk("Z003")] == "NG"  # record wins over identity CE
@@ -1159,7 +1158,7 @@ def test_owlbear_monster_cr_fraction_and_determinism(client: Any) -> None:
     first = _owlbear(client, campaign_id, gnasher_id)
     second = _owlbear(client, campaign_id, gnasher_id)
     assert first.status_code == 200 and second.content == first.content
-    metadata = first.json()["metadata"]
+    metadata = first.json()
     assert metadata[_fk("Z016")] == 0.5
     assert _fk("Z001") not in metadata  # Monsters never carry level
     assert _fk("Z003") not in metadata and _fk("Z004") not in metadata
@@ -1178,7 +1177,7 @@ def test_owlbear_sparse_place_and_long_combat_keys(client: Any) -> None:
     _, _, anchor_id = _commit_owlbear_cast(campaign_id)
     anchor = _owlbear(client, campaign_id, anchor_id)
     assert anchor.status_code == 200
-    assert anchor.json()["metadata"] == {_fk("fabd"): True}  # sparse, fabd always rides
+    assert anchor.json() == {_fk("name"): "Docks", _fk("fabd"): True}  # sparse, fabd always rides
     long_id = new_id()
     commit_subgraph(
         campaign_id,
@@ -1193,7 +1192,7 @@ def test_owlbear_sparse_place_and_long_combat_keys(client: Any) -> None:
         edges=[models.EdgeInput(src=long_id, dst=anchor_id, type="located_in", counter=1)],
         base_revision=client.get(f"/api/campaigns/{campaign_id}/export").json()["revision"]["id"],
     )
-    metadata = _owlbear(client, campaign_id, long_id).json()["metadata"]
+    metadata = _owlbear(client, campaign_id, long_id).json()
     assert metadata[_fk("Z005")] == 40 and metadata[_fk("Z006")] == 40
     assert metadata[_fk("Z007")] == 15
 
@@ -1508,7 +1507,7 @@ def test_owlbear_bbeg_level_and_legendary(client: Any) -> None:
         ],
         edges=[models.EdgeInput(src=bbeg_id, dst=anchor_id, type="located_in", counter=1)],
     )
-    metadata = _owlbear(client, campaign_id, bbeg_id).json()["metadata"]
+    metadata = _owlbear(client, campaign_id, bbeg_id).json()
     assert metadata[_fk("Z001")] == 9
     assert _fk("Z016") not in metadata
     assert metadata[_fk("Z038")] == "Vex takes 3 legendary actions."
@@ -1554,7 +1553,7 @@ def test_owlbear_bare_skill_names_and_stripped_spells(client: Any) -> None:
         ],
         edges=[models.EdgeInput(src=odd_id, dst=anchor_id, type="located_in", counter=1)],
     )
-    metadata = _owlbear(client, campaign_id, odd_id).json()["metadata"]
+    metadata = _owlbear(client, campaign_id, odd_id).json()
     assert metadata[_fk("Z014")] == "Perception +2, History, Arcana"
     assert metadata[_fk("Z039")] == [
         {"id": f"{odd_id[-8:]}-0", "name": "Fireball", "description": ""}

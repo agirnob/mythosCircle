@@ -71,6 +71,16 @@ context:
 
 BID table (measured from the live Forge default-5e AI Template dictionary, 2026-09-09; `com.battle-system.forge/` prefix on all keys): `name` ← entity.name; `author` ← campaign.title; `fabd: true` (observed constant); Z001 ← `identity.level` (NPC/BBEG, else omit); Z003 ← record `alignment`; Z004 ← record `race_type`; Z005/Z006 ← `combat.hp`; Z007 ← `combat.ac`; Z014 ← skills as `"name +bonus"` join; Z016 ← `identity.cr` with fraction→decimal (Monster, else omit); Z017–Z022 ← attributes; Z023–Z028 ← derived saves; Z034 ← traits, Z035 ← actions, Z038 ← `boss.legendary_actions` if present, Z039 ← spell names with `""` descriptions; Z040 ← record `equipment` if a name/description list else omit. Everything else omitted (speeds, senses, languages, resistances, proficiency, Z036/Z037 bonus/reactions — no stored source; sparse imports validly). DM flow: download `.json` → Forge Import paste; copy portrait URL → Party-view portrait override. Under a minute, table-ready.
 
+## Live correction 2026-09-10 (first real Forge import)
+The `{name, author, metadata}` envelope REJECTS in the Import modal
+(“must include a valid unit name”): the modal parses the paste AS the
+metadata object and requires `com.battle-system.forge/name` inside it.
+Shipped shape is the FLAT metadata object (`/name` first, then Z-slots,
+`fabd` retained — the flat paste imports with it). `author` has no
+dictionary slot and is dropped. Sparse-omit and the Z038-prose string
+both confirmed tolerated by the same import. Matrix rows above stay
+frozen as the pre-import record.
+
 ## Verification
 
 **Commands:**

@@ -734,10 +734,10 @@ def _forge_entries(entity_id: str, items: Any) -> list[dict[str, str]]:
 
 def render_entity_owlbear(export: WorldExport, entity_id: str) -> dict[str, Any]:
     """The Forge transfer payload for one committed entity (spec-5-2):
-    ``{name, author, metadata}`` with the observed ``fabd`` constant
-    inside the namespaced metadata — the Import modal's full-transfer
-    shape (a raw metadata object also imports, but the file carries the
-    whole unit).
+    the FLAT metadata object itself — ``com.battle-system.forge/name``
+    first, then the mapped Z-slots, with the observed ``fabd`` constant
+    inside the namespaced metadata (both observed live payloads carry it;
+    the flat paste imports, the {name, author, metadata} envelope rejects).
     Level/CR derive from ``stat_block.identity`` numerics (owner
     verdict: top-level ``level_cr`` is display-only and never read
     here). Only character-shaped records map — anything unmapped is
@@ -841,8 +841,8 @@ def render_entity_owlbear(export: WorldExport, entity_id: str) -> dict[str, Any]
     # payloads carry ``com.battle-system.forge/fabd: true`` — review
     # round 1), not as a bare top-level key.
     metadata[_forge_key("fabd")] = True
-    return {
-        "name": entity.name,
-        "author": export.campaign.title,
-        "metadata": metadata,
-    }
+    # Flat metadata object (live-verified 2026-09-10): the Import modal
+    # parses the paste AS the metadata object and requires the unit name
+    # inside it — the {name, author, metadata} envelope rejects with
+    # "must include a valid unit name". Author has no dictionary slot.
+    return {_forge_key("name"): entity.name, **metadata}
