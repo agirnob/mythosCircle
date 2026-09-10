@@ -660,3 +660,138 @@ def test_save_half_and_aoe_adjustments_enforced() -> None:
         "combat": {"ac": 16, "hp": 140},
     }
     assert validate_stat_block(block) == []
+
+
+# ---------------------------------------------------------------------------
+# Repair prompt: DPR guidance (spec-stat-repair-dpr-guidance)
+# ---------------------------------------------------------------------------
+
+
+def _record_entity(
+    position: int, *, role: Any, level_cr: Any, name: str = "Mira Vane"
+) -> StatIssue:
+    """One MISSING-block issue carrying an AR24 record (role/level_cr)."""
+    entity = models.EntityInput(
+        kind="character", name=name, data={"role": role, "level_cr": level_cr}
+    )
+    return StatIssue(position, entity, ("stat_block section missing",))
+
+
+def test_repair_prompt_missing_with_level_names_band() -> None:
+    """MISSING_WITH_LEVEL: a level-5 record names its 33-38 band; a level-20
+    record names 123-140."""
+    prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="level 5")])
+    assert "record target: level 5 -> hit DPR band 33-38" in prompt
+    prompt20 = build_stat_repair_prompt([_record_entity(0, role="BBEG", level_cr="level 20")])
+    assert "record target: level 20 -> hit DPR band 123-140" in prompt20
+
+
+def test_repair_prompt_missing_no_level_omits_target_keeps_recipes() -> None:
+    """MISSING_NO_LEVEL: blank, garbled, and out-of-range level_cr yield no
+    target line — but the generic recipes and the declare-a-level valve do."""
+    for level_cr in ("", "   ", "lvl five", "level 99", "CR 5", "level twenty"):
+        prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr=level_cr)])
+        assert "record target:" not in prompt, level_cr
+    prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="")])
+    assert "MISSING" in prompt
+    assert "DAMAGE RECIPES" in prompt
+    assert "d4 2.5" in prompt and "d12 6.5" in prompt
+    assert "makes three attacks" in prompt and "makes four attacks" in prompt
+    assert "declare an identity.level your damage supports" in prompt
+
+
+def test_repair_prompt_monster_target_names_cr_band() -> None:
+    """MONSTER_TARGET: a CR 5 record names its 33-38 band; a fractional CR
+    names its own band; a mismatched record (Monster with level text) omits."""
+    prompt = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="CR 5")])
+    assert "record target: CR 5 -> hit DPR band 33-38" in prompt
+    fractional = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="CR 1/2")])
+    assert "record target: CR 1/2 -> hit DPR band 6-8" in fractional
+    mismatched = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="level 5")])
+    assert "record target:" not in mismatched
+
+
+def test_repair_prompt_dpr_guidance_deterministic_and_valved() -> None:
+    """DETERMINISM: the target lines, recipes, and escape valves render
+    byte-identical across calls."""
+    issues = [
+        _record_entity(0, role="NPC", level_cr="level 5"),
+        _record_entity(2, role="Monster", level_cr="CR 5"),
+    ]
+    first = build_stat_repair_prompt(issues)
+    assert build_stat_repair_prompt(issues) == first
+    assert first.count("record target:") == 2
+    assert "You MAY lower identity.level" in first
+    assert "zero dice anywhere and the block is exempt" in first
+    assert "one weak attack is worse than none" in first
+    # The existing OUTPUT CONTRACT is untouched.
+    assert first.endswith("one ref per entry, nothing else.")
+
+
+# ---------------------------------------------------------------------------
+# Repair prompt: DPR guidance round 2 (review patches)
+# ---------------------------------------------------------------------------
+
+
+def test_repair_prompt_recipes_cover_audit_adjustments() -> None:
+    """Every audit adjustment the prompt teaches is pinned: AoE doubling,
+    the legendary extra attack, HP minimums, interpolation, precedence,
+    the bounded fallback, and the modifiers-aware diceless valve."""
+    prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="level 5")])
+    assert "hit each character's record target band" in prompt
+    assert "counts double (assumed 2 targets)" in prompt
+    assert "Adjustment factors multiply" in prompt
+    assert "boss.legendary_actions adds one full extra attack" in prompt
+    assert "size base damage" in prompt and "one attack lower" in prompt
+    assert "level 1: 71+" in prompt and "20: 356+" in prompt
+    assert "CR targets use the same table row" in prompt
+    assert "below half the low" in prompt and "fails frail" in prompt
+    assert "interpolate between the neighboring recipes" in prompt
+    assert "Prefer hitting the record target band" in prompt
+    assert "the HIGHEST such level" in prompt
+    assert "never level 1 for an archmage concept" in prompt
+    assert "no +/-N damage modifiers" in prompt
+    assert "only `actions` are audited" in prompt
+
+
+def test_repair_prompt_target_word_boundaries() -> None:
+    """`cr`/`level` need word boundaries: embedded matches never name a band."""
+    assert "record target:" not in build_stat_repair_prompt(
+        [_record_entity(2, role="Monster", level_cr="sacred 5")]
+    )
+    assert "record target:" not in build_stat_repair_prompt(
+        [_record_entity(1, role="NPC", level_cr="sublevel 5")]
+    )
+
+
+def test_repair_prompt_target_tolerates_missing_whitespace() -> None:
+    """`CR5` / `level5` still resolve to their bands."""
+    prompt = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="CR5")])
+    assert "record target: CR 5 -> hit DPR band 33-38" in prompt
+    prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="level5")])
+    assert "record target: level 5 -> hit DPR band 33-38" in prompt
+
+
+def test_repair_prompt_target_rejects_decimal_challenges() -> None:
+    """`CR 0.5` / `level 5.5` omit instead of truncating to `CR 0` / `level 5`."""
+    assert "record target:" not in build_stat_repair_prompt(
+        [_record_entity(2, role="Monster", level_cr="CR 0.5")]
+    )
+    assert "record target:" not in build_stat_repair_prompt(
+        [_record_entity(1, role="NPC", level_cr="level 5.5")]
+    )
+
+
+def test_repair_prompt_target_tolerates_fractional_spacing() -> None:
+    """`CR 1 / 2` (and tab-separated variants) resolve like `CR 1/2`."""
+    prompt = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="CR 1 / 2")])
+    assert "record target: CR 1/2 -> hit DPR band 6-8" in prompt
+    prompt = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="CR 1\t/\t2")])
+    assert "record target: CR 1/2 -> hit DPR band 6-8" in prompt
+
+
+def test_repair_prompt_target_renders_point_band_open_ended() -> None:
+    """CR 30's point band (303.0, 303.0) renders as `303+`, not `303-303`."""
+    prompt = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="CR 30")])
+    assert "record target: CR 30 -> hit DPR band 303+" in prompt
+    assert "303-303" not in prompt

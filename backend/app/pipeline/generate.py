@@ -174,7 +174,14 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
         models.EntityInput(
             kind="character",
             name=valid_map[index]["name"],
-            data={"stat_block": valid_map[index]["stat_block"]},
+            data={
+                "stat_block": valid_map[index]["stat_block"],
+                **{
+                    key: value
+                    for key in ("role", "level_cr")
+                    if (value := valid_map[index].get(key)) is not None
+                },
+            },
         )
         if index in valid_map
         else models.EntityInput(kind="faction", name=_display_name(raw, index))

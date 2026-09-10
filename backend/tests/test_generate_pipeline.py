@@ -1707,3 +1707,28 @@ def test_stage_candidates_rejects_foreign_job(world: str) -> None:
     job = enqueue_job(other, "generate", {"ask": "elsewhere"})
     with pytest.raises(InvalidCandidateError, match="belongs to campaign"):
         stage_candidates(world, job.id, [_candidate_record(world)])
+
+
+def test_repair_prompt_carries_record_dpr_target(world: str) -> None:
+    """The generate-path mirror carries the staged record role/level_cr, so
+    the one bounded repair pass names the DPR target band (round-2 patch:
+    the mirror used to strip everything but the stat block, and the target
+    line never rendered on this path)."""
+    _commit_world(world)
+    output = _generate_output()
+    bad_block = json.loads(json.dumps(_VALID_STAT_BLOCK))
+    bad_block["attributes"]["str"] = 40
+    output["candidates"][0]["stat_block"] = bad_block
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return json.dumps(output)
+        return json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": _VALID_STAT_BLOCK}]})
+
+    job_id = _run(world, provider)
+    assert len(calls) == 2  # generate + exactly one bounded repair pass
+    assert "record target: level 5 -> hit DPR band 33-38" in calls[1]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"

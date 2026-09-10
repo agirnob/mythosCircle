@@ -19,10 +19,12 @@ of scope (Epic 3's AR19 candidates carry stat blocks).
 
 import dataclasses
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from app.pipeline import combat
 from app.pipeline.fencing import parse_json_object
 from app.pipeline.knowledge import (
     ABILITY_MAX,
@@ -169,6 +171,99 @@ def spells_reference_text(classes: Sequence[str] | None = None) -> str:
     return "\n".join(lines)
 
 
+#: Canonical record roles keyed by folded ``data["role"]`` text (the AR24
+#: identity anchor). Anything outside this map is unparseable — no target.
+_RECORD_ROLES: dict[str, str] = {"npc": "NPC", "bbeg": "BBEG", "monster": "Monster"}
+
+#: Static damage recipes (spec-stat-repair-dpr-guidance, Design Notes).
+#: Every number is checked against the parser's own math: dice average to
+#: (1 + size) / 2 with flat +N in full; a Multiattack routine contributes
+#: its count times the strongest OTHER damaging action (the routine text
+#: carries ONLY the count, never dice); recharge / per-day actions average
+#: over 3 rounds (x1/3); save-for-half averages x0.75. Static by design —
+#: the prompt stays a pure deterministic function of ``issues``.
+_DPR_RECIPES: str = "\n".join(
+    [
+        "Dice averages: d4 2.5, d6 3.5, d8 4.5, d10 5.5, d12 6.5; a flat +N adds in full.",
+        "The auditor counts a Multiattack routine as its count times the strongest OTHER",
+        "damaging action (the routine text carries ONLY the count, never dice); a",
+        "recharge / per-day action averages over 3 rounds (x1/3); a save-for-half",
+        "effect averages x0.75; an area attack (cone/radius/line/sphere/cube/area/",
+        "within/burst) counts double (assumed 2 targets). Adjustment factors multiply.",
+        "Non-blank boss.legendary_actions adds one full extra attack — size base damage",
+        "one attack lower when the boss has one.",
+        "HP floor: combat.hp at/above the band low (level 1: 71+, 5: 131+, 10: 206+,",
+        "15: 281+, 20: 356+; CR targets use the same table row) — below half the low",
+        "fails frail.",
+        "Worked recipes (nominal averages, tolerance is 0.8x low to 1.2x high):",
+        "- level 1 (band 9-14): one attack `2d6+3` (~10).",
+        "- level 5 (band 33-38): Multiattack `makes three attacks` + `2d8+4` (~13) x3 = ~39.",
+        "- level 10 (band 63-68): Multiattack `makes three attacks` + `4d10+5` (~27) x3 = ~81",
+        "  (within the 1.2x over-tolerance, 81.6).",
+        "- level 20 (band 123-140): Multiattack `makes four attacks` + `5d10+6` (~33.5) x4 = ~134.",
+        "Unlisted levels/CRs interpolate between the neighboring recipes.",
+        "Prefer hitting the record target band; lower identity.level only if the damage",
+        "cannot reach it. You MAY lower identity.level to a band the damage satisfies",
+        "(record level_cr text is display-only; the export derives level/CR from the",
+        "stat_block numerics).",
+        "With no record target above, declare an identity.level your damage supports —",
+        "the HIGHEST such level (never level 1 for an archmage concept).",
+        "True non-combatants: write zero dice anywhere and the block is exempt from the",
+        "power check — with no +/-N damage modifiers either (a lone `+5 damage` still",
+        "counts; only `actions` are audited) — one weak attack is worse than none.",
+    ]
+)
+
+
+def _record_target_line(entity: models.EntityInput) -> str | None:
+    """One character's DPR target from its AR24 record (``role``/``level_cr``).
+
+    Pure/deterministic: folds the display-only record text into a band key
+    (``level <n>`` for NPC/BBEG, ``CR <n>`` — int or 1/8, 1/4, 1/2 — for
+    Monster) and reads the band off ``combat.CR_DPR``. Returns ``None``
+    when the record is unparseable or bandless (blank/garbled ``level_cr``,
+    unknown role, out-of-range challenge) — the caller then omits the line
+    and the generic recipes carry the repair.
+    """
+    data = entity.data if isinstance(entity.data, dict) else {}
+    role_raw = data.get("role")
+    level_cr_raw = data.get("level_cr")
+    if not isinstance(role_raw, str) or not isinstance(level_cr_raw, str):
+        return None
+    canonical = _RECORD_ROLES.get(role_raw.strip().lower())
+    if canonical is None:
+        return None
+    text = level_cr_raw.strip()
+    if canonical == "Monster":
+        match = re.search(r"\bcr\s*(\d+\s*/\s*\d+|\d+)(?![\d.])", text, re.IGNORECASE)
+        if match is None:
+            return None
+        key: Any = re.sub(r"\s+", "", match.group(1))
+        if "/" in key:
+            if key not in CR_FRACTIONS:
+                return None
+        else:
+            key = int(key)
+            if not 0 <= key <= CR_MAX:
+                return None
+        challenge = f"CR {key}"
+    else:
+        match = re.search(r"\blevel\s*(\d+)(?![\d.])", text, re.IGNORECASE)
+        if match is None:
+            return None
+        key = int(match.group(1))
+        if not 1 <= key <= LEVEL_MAX:
+            return None
+        challenge = f"level {key}"
+    band = combat.CR_DPR.get(key)
+    if band is None:
+        return None
+    low, high = band
+    if low == high:
+        return f"record target: {challenge} -> hit DPR band {low:.0f}+"
+    return f"record target: {challenge} -> hit DPR band {low:.0f}-{high:.0f}"
+
+
 def build_stat_repair_prompt(issues: Sequence[StatIssue]) -> str:
     """The one bounded repair pass's prompt (AR25).
 
@@ -184,10 +279,12 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue]) -> str:
             if block is not None
             else "MISSING"
         )
+        target = _record_target_line(issue.entity)
+        target_line = f"\n{target}" if target is not None else ""
         violations = "\n".join(f"  - {violation}" for violation in issue.violations)
         flagged.append(
             f"E{issue.position} ({issue.entity.name!r}):\n"
-            f"current stat_block: {current}\n"
+            f"current stat_block: {current}{target_line}\n"
             f"violations:\n{violations}"
         )
     classes = _flagged_classes(issues) or None
@@ -203,6 +300,9 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue]) -> str:
             "",
             "VIOLATIONS TO FIX",
             "\n\n".join(flagged),
+            "",
+            "DAMAGE RECIPES (parser-checked — hit each character's record target band)",
+            _DPR_RECIPES,
             "",
             "TASK",
             "For EVERY character listed, provide a corrected data.stat_block that",
