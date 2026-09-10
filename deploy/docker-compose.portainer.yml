@@ -41,6 +41,9 @@ services:
       MYTHOSCIRCLE_LLM_ENDPOINT: http://192.168.1.21:8889/v1
       MYTHOSCIRCLE_LLM_MODEL: unsloth/gemma-4-12B-it-qat-GGUF
       MYTHOSCIRCLE_LLM_TIMEOUT: "2400"
+      # Unsloth demands Bearer off-loopback; key comes from stack env
+      # (required — fail closed like the media secret).
+      MYTHOSCIRCLE_LLM_API_KEY: ${MYTHOSCIRCLE_LLM_API_KEY:?MYTHOSCIRCLE_LLM_API_KEY is required}
       # Render backends live on the dev PC (.108), not the laptop: Unsloth
       # + ComfyUI bind loopback there; the reverse tunnel surfaces them on
       # laptop ports (see LLM note above).
