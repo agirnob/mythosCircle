@@ -117,12 +117,18 @@ DEFAULT_MAX_PENDING = 10
 DEFAULT_LLM_ENDPOINT = "http://127.0.0.1:8080/v1"
 DEFAULT_LLM_MODEL = "mythos-14b-q5"
 DEFAULT_LLM_TIMEOUT = 120.0
-#: Hard ceiling on one completion's generated tokens. The 26B reasoning
-#: model generates indefinitely without one: a live dev call ran past 600s
-#: emitting only reasoning and never reached an answer (2026-09-10). A
-#: truncated call is a NAMED provider error, never a confusing "not valid
-#: JSON" failure further down the pipeline.
-DEFAULT_LLM_MAX_TOKENS = 8192
+#: Hard ceiling on one completion's generated tokens. This is a BACKSTOP,
+#: not the guard against a reasoning model rambling — that is
+#: ``DEFAULT_LLM_THINKING`` below, which stops the reasoning channel
+#: outright. What the ceiling catches is generation that never terminates
+#: (a loop, a malformed template): unbounded, such a call runs until the
+#: whole-call timeout and returns nothing (measured 2026-09-10: one call
+#: emitted 8000 tokens / 26,580 characters of reasoning and zero content).
+#: A truncated call is a NAMED provider error, never a confusing "not valid
+#: JSON" failure further down the pipeline. Sized well above any real
+#: output — a 14-character build-in wave is ~3k tokens — and inside the
+#: dev model's 262k context.
+DEFAULT_LLM_MAX_TOKENS = 65536
 #: Tri-state reasoning control for chat templates that accept
 #: ``enable_thinking``. ``None`` = omit the field entirely, so a backend
 #: that rejects unknown request fields (OpenAI, Azure) keeps working and

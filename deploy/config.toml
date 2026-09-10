@@ -30,12 +30,13 @@ model = "mythos-14b-q5"
 # ~2min of decode alone — the 120s default aborted mid-generation
 # (client disconnect -> provider connection error, 2026-09-04).
 timeout = 900
-# Hard ceiling on ONE completion's generated tokens. The dev model is a
-# reasoning model: with thinking on it spent 8000 tokens and 26,580
-# characters reasoning and never emitted a single character of content, so
-# an uncapped call runs until the whole-call timeout. Truncation is
-# reported as its own error, never a downstream JSON parse failure.
-max_tokens = 8192
+# Hard ceiling on ONE completion's generated tokens — a backstop against
+# generation that never terminates, not the guard against a reasoning model
+# rambling (that is `thinking` below, which stops the channel outright).
+# Sized well above any real output: a 14-character build-in wave is ~3k
+# tokens, and the dev model holds 262k context. Truncation is reported as
+# its own error, never a downstream JSON parse failure.
+max_tokens = 65536
 # Tri-state reasoning control (enable_thinking) for the local chat template:
 # false = answers immediately (~200 tok/s, 7x faster than thinking on),
 # true = ask for the thinking channel, <absent> = send no such field at all
