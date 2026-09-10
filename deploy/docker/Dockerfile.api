@@ -14,8 +14,14 @@ COPY backend/app ./app
 # /srv/deploy/... in this layout — no path env overrides needed.
 COPY deploy/workflows /srv/deploy/workflows/
 COPY deploy/guides /srv/deploy/guides/
+# The shipped config: code resolves it as <repo-root>/deploy/config.toml,
+# i.e. /srv/deploy/config.toml here, and it carries the tuned generation
+# defaults (max_tokens, thinking). Without it those silently fall back to
+# code defaults the operator cannot see. Precedence is unchanged —
+# MYTHOSCIRCLE_* env from the stack still wins over this file.
+COPY deploy/config.toml /srv/deploy/config.toml
 EXPOSE 8000
 # AD-3 single writer: run exactly one api replica (see compose).
-# All state is env-driven (env > config > default); the shipped
-# deploy/config.toml is not needed inside the image.
+# All state is env-driven (env > config > default); config.toml above
+# carries the tuned defaults, and stack env overrides it.
 CMD [".venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
