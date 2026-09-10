@@ -86,3 +86,38 @@ def parse_json_object(text: str) -> dict[str, Any] | None:
         if isinstance(parsed, dict):
             return parsed
     return None
+
+
+def json_error(text: str) -> str | None:
+    """The JSON decode failure in ``text``, or None when parseable.
+
+    Mirrors ``parse_json_object``'s candidate order (the fence-stripped
+    text, then the first balanced object extracted from it): the first
+    candidate that parses as an object returns None, and otherwise the
+    LAST failing candidate's error wins — a prose-wrapped or fenced
+    response quotes the inner object's defect, not the surrounding
+    backticks or prose. Returns ``str(exc)`` so a retry prompt can quote
+    the exact failure; ``"not a JSON object"`` when no candidate exists,
+    when there are no braces to decode, or when the text parses as a
+    non-object; a bare ``RecursionError`` stringifies empty, so that
+    branch falls back to naming the nesting depth.
+    """
+    candidates: list[str | None] = [strip_fence(text), extract_json_object(text)]
+    error: str | None = None
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            error = str(exc) if "{" in candidate else "not a JSON object"
+        except RecursionError as exc:
+            error = str(exc) or "JSON nested too deeply to decode"
+            continue
+        else:
+            if isinstance(parsed, dict):
+                return None
+            error = "not a JSON object"
+    if error is None:
+        return "not a JSON object"
+    return error

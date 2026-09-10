@@ -36,7 +36,7 @@ from typing import Any, cast
 from app.core import ids
 from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
-from app.pipeline.fencing import parse_json_object
+from app.pipeline.fencing import json_error, parse_json_object
 from app.pipeline.fencing import strip_fence as _strip_fence
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import (
@@ -131,32 +131,49 @@ SECTION_NAMES: tuple[str, ...] = ("places", "factions", "key_figures")
 RETRIEVAL_DEPTH = 1
 RETRIEVAL_ENTITY_CAP = 24
 
+#: Record-repair chunk bound (chunking spec 2026-09-10): the record gate
+#: splits flagged records into per-call chunks of at most this many so
+#: every repair response stays short (a 14-record single response drops
+#: braces stochastically and its same-size retry fails the same way).
+RECORD_REPAIR_CHUNK_SIZE = 4
 
-def _repair_retry_prompt(base_prompt: str, bad_text: str, retry_note: str) -> str:
+
+def _repair_retry_prompt(
+    base_prompt: str, bad_text: str, retry_note: str, decode_error: str | None = None
+) -> str:
     """The one bounded retry when a repair response is not parseable JSON:
-    the same base prompt plus the invalid text, explicit JSON rules, and
-    one gate-specific shape note (dogfood 2026-09-09: gemma's record-repair
-    response embedded an excluded stat_block whose traits/actions members
-    were bare strings — invalid JSON — and the whole wave failed over it).
-    The note is per-gate: the record gate excludes the stat block, the
-    stat gate requires it — one shared text mis-instructs both."""
-    return "\n".join(
+    the same base prompt plus the invalid text, explicit JSON rules, the
+    decoder's error line, and one gate-specific shape note (dogfood
+    2026-09-09: gemma's record-repair response embedded an excluded
+    stat_block whose traits/actions members were bare strings — invalid
+    JSON — and the whole wave failed over it). The note is per-gate: the
+    record gate excludes the stat block, the stat gate requires it — one
+    shared text mis-instructs both. The error line (chunking spec
+    2026-09-10: ``JSON error: <str(exc)>`` after the rules) names the exact
+    decode failure so the model can fix that spot instead of re-emitting
+    the same giant output; omitted only when no decode error is known."""
+    lines = [
+        base_prompt,
+        "",
+        "YOUR PREVIOUS RESPONSE COULD NOT BE PARSED AS JSON. Correct it:",
+        "return the SAME entries listed above as ONE valid JSON object — nothing else.",
+        'JSON rules: every object member is "key": value — a bare string',
+        'as an object member is INVALID (e.g. {"A: title"} must become',
+        '{"A: title": "..."} or an array of objects); escape any literal',
+        'double quote inside a value as \\"; no prose before or after the',
+        "object.",
+    ]
+    if decode_error is not None:
+        lines.append(f"JSON error: {decode_error}")
+    lines.extend(
         [
-            base_prompt,
-            "",
-            "YOUR PREVIOUS RESPONSE COULD NOT BE PARSED AS JSON. Correct it:",
-            "return the SAME entries as ONE valid JSON object — nothing else.",
-            'JSON rules: every object member is "key": value — a bare string',
-            'as an object member is INVALID (e.g. {"A: title"} must become',
-            '{"A: title": "..."} or an array of objects); escape any literal',
-            'double quote inside a value as \\"; no prose before or after the',
-            "object.",
             retry_note,
             "",
             "YOUR PREVIOUS INVALID RESPONSE:",
             bad_text.strip(),
         ]
     )
+    return "\n".join(lines)
 
 
 def _run_repair[R: Mapping[int, Any]](
@@ -184,8 +201,11 @@ def _run_repair[R: Mapping[int, Any]](
     repaired = parse(repair_text, positions)
     if repaired is not None:
         return repaired
+    decode_error = json_error(repair_text)
     retry_text = budget.call(
-        lambda: provider(_repair_retry_prompt(prompt, repair_text, retry_note), settings=settings)
+        lambda: provider(
+            _repair_retry_prompt(prompt, repair_text, retry_note, decode_error), settings=settings
+        )
     )
     repaired = parse(retry_text, positions)
     if repaired is None:
@@ -553,8 +573,14 @@ def _enforce_character_records(
     wave: int,
 ) -> tuple[list[models.EntityInput], bool]:
     """The character-record gate shared by both waves: collect violations,
-    run exactly one bounded repair pass when there are any, re-check.
-    Returns ``(entities, cancelled)`` — cancelled True means the job was
+    repair them in bounded per-chunk calls, re-check. Each chunk holds at
+    most ``RECORD_REPAIR_CHUNK_SIZE`` flagged records and reuses the same
+    prompt builder, parser, and one-retry helper — a chunk's prompt is
+    byte-identical in shape to the old single prompt for that subset, just
+    shorter, so a dropped brace fails only its chunk and only that chunk
+    is re-called. Merged patches apply together; contract violations
+    inside well-formed JSON still fail immediately. Returns
+    ``(entities, cancelled)`` — cancelled True means the job was
     cancelled mid-gate and the caller must stop without committing this
     wave. Runs BEFORE the stat gate so a repaired role is what the stat
     block is next checked against."""
@@ -563,18 +589,29 @@ def _enforce_character_records(
         return entities, False
     if not _job_still_running(job):
         return entities, True
-    repaired = _run_repair(
-        budget=budget,
-        provider=provider,
-        settings=settings,
-        prompt=_build_record_repair_prompt(issues),
-        parse=_parse_record_repair_output,
-        positions=[issue.position for issue in issues],
-        label="record",
-        retry_note="For records, NEVER include a stat_block — it belongs to a "
-        "separate pass and is discarded here.",
-    )
-    entities = _apply_record_repairs(entities, repaired)
+    chunked = len(issues) > RECORD_REPAIR_CHUNK_SIZE
+    merged: dict[int, dict[str, Any]] = {}
+    for start in range(0, len(issues), RECORD_REPAIR_CHUNK_SIZE):
+        if not _job_still_running(job):
+            return entities, True
+        chunk = issues[start : start + RECORD_REPAIR_CHUNK_SIZE]
+        label = "record"
+        if chunked:
+            refs = ", ".join(f"E{issue.position}" for issue in chunk)
+            label = f"record chunk {refs}"
+        repaired = _run_repair(
+            budget=budget,
+            provider=provider,
+            settings=settings,
+            prompt=_build_record_repair_prompt(chunk),
+            parse=_parse_record_repair_output,
+            positions=[issue.position for issue in chunk],
+            label=label,
+            retry_note="For records, NEVER include a stat_block — it belongs to a "
+            "separate pass and is discarded here.",
+        )
+        merged.update(repaired)
+    entities = _apply_record_repairs(entities, merged)
     remaining = _collect_record_issues(entities)
     if remaining:
         raise JobPayloadError(_record_failure_message(wave, remaining))

@@ -20,9 +20,13 @@ import pytest
 from app.core import ids
 from app.core.settings import LLMSettings
 from app.pipeline.build_in import (
+    _build_record_repair_prompt,
+    _collect_record_issues,
+    _repair_retry_prompt,
     build_wave1_prompt,
     build_wave2_prompt,
 )
+from app.pipeline.fencing import json_error
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import spells_reference_text, stat_block_rules_text
 from app.pipeline.worker import run_next_job
@@ -1831,3 +1835,247 @@ def test_frail_stat_block_repair_loop(world: str) -> None:
     job2, _position2 = job_status(job_id2)
     assert job2.state == "failed"
     assert "frail" in (job2.error or "")
+
+
+# ---------------------------------------------------------------------------
+# RECORD-REPAIR CHUNKING (spec 2026-09-10)
+# ---------------------------------------------------------------------------
+
+
+def _recordless_wave1_output(count: int) -> dict[str, Any]:
+    """A wave-1 output with ``count`` record-less characters (E1..E<count>)
+    plus the E0 faction: every character carries a valid stat block and a
+    name but no AR24 record, so the record gate flags exactly the
+    characters while the name/stat gates stay silent. Every entity is an
+    edge endpoint, so validation passes."""
+    entities: list[dict[str, Any]] = [
+        {"ref": "E0", "kind": "faction", "name": "The Gilded Bar", "text": "smoke and coin"}
+    ]
+    edges: list[dict[str, Any]] = []
+    for position in range(1, count + 1):
+        entities.append(
+            {
+                "ref": f"E{position}",
+                "kind": "character",
+                "name": f"Hero{position}",
+                "data": {"stat_block": _MIRA_STAT_BLOCK},
+            }
+        )
+        edges.append({"src": "E0", "dst": f"E{position}", "type": "member_of", "counter": 1})
+        edges.append({"src": f"E{position}", "dst": "E0", "type": "debt", "counter": 3})
+    return {"entities": entities, "edges": edges}
+
+
+def _record_chunk_response(positions: list[int]) -> str:
+    """A valid record-repair response covering exactly ``positions``."""
+    return json.dumps(
+        {
+            "records": [
+                {"ref": f"E{position}", "data": _character_record(f"Hero{position}")}
+                for position in positions
+            ]
+        }
+    )
+
+
+def test_record_repair_chunk_split(world: str) -> None:
+    """CHUNK_SPLIT: 14 flagged records repair in 4 chunk calls (4+4+4+2)
+    whose merged patches commit — the old single 14-record response
+    stochastically dropped a brace and its same-size retry failed the
+    same way."""
+    output = _recordless_wave1_output(14)
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return json.dumps(output)
+        chunk_index = len(calls) - 2  # 0-based among the repair calls
+        first = 1 + chunk_index * 4
+        return _record_chunk_response(list(range(first, min(first + 4, 15))))
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 5  # wave 1 + 4 record-repair chunks
+    repair_calls = calls[1:]
+    expected_chunks = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14]]
+    for prompt, expected in zip(repair_calls, expected_chunks, strict=True):
+        for position in expected:
+            assert f"E{position} ('Hero{position}')" in prompt
+        for other in [p for chunk in expected_chunks for p in chunk if p not in expected]:
+            assert f"E{other} ('Hero{other}')" not in prompt
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        entities = world_entities(session, world)
+    assert len(entities) == 15
+    hero7 = next(e for e in entities if e.name == "Hero7")
+    assert hero7.data["appearance"] and hero7.data["stat_block"] == _MIRA_STAT_BLOCK
+
+
+def test_record_repair_chunk_retry_isolated(world: str) -> None:
+    """CHUNK_RETRY: a malformed chunk is retried alone — the retry quotes
+    the JSON decode error and names only its chunk's refs; the other
+    chunk is called exactly once and the wave proceeds."""
+    output = _recordless_wave1_output(5)
+    malformed = '{"records": [{"ref": "E1", "data": {"role": "NPC"'  # truncated: no close
+    responses = [
+        json.dumps(output),
+        malformed,
+        _record_chunk_response([1, 2, 3, 4]),
+        _record_chunk_response([5]),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 4  # wave 1 + bad chunk + its retry + the other chunk
+    assert "YOUR PREVIOUS INVALID RESPONSE" in calls[2]
+    assert "JSON error:" in calls[2]
+    assert "E5 ('Hero5')" not in calls[2]  # the retry re-elicits only its chunk
+    assert "YOUR PREVIOUS INVALID RESPONSE" not in calls[3]  # no retry burned there
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        hero5 = next(e for e in world_entities(session, world) if e.name == "Hero5")
+    assert hero5.data["appearance"]
+
+
+def test_record_repair_chunk_fail_names_refs(world: str) -> None:
+    """CHUNK_FAIL: a chunk malformed twice fails the job naming that
+    chunk's refs; zero commits."""
+    output = _recordless_wave1_output(5)
+    malformed = '{"records": [{"ref": "E5", "data": {"role": "NPC"'  # truncated: no close
+    responses = [
+        json.dumps(output),
+        _record_chunk_response([1, 2, 3, 4]),
+        malformed,
+        malformed,
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(
+        provider=lambda prompt, settings, responses=responses: responses.pop(0),
+        settings=SETTINGS,
+    )
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "record chunk E5" in (job.error or "")
+    assert "not valid JSON after one retry" in (job.error or "")
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+
+def test_record_repair_small_wave_single_call(world: str) -> None:
+    """SMALL_WAVE: 4 flagged records stay exactly one repair call — the
+    chunking boundary changes nothing below it (existing single-record
+    ``len(calls) == 2`` pins cover the rest)."""
+    output = _recordless_wave1_output(4)
+    responses = [json.dumps(output), _record_chunk_response([1, 2, 3, 4])]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 2  # wave 1 + the single record repair
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+
+
+def test_repair_retry_prompt_names_json_error() -> None:
+    """ERROR_LINE: the shared retry prompt quotes the decoder's error on
+    its own line after the rules; ``json_error`` reports the
+    fence-stripped failure and None when parseable."""
+    assert json_error(json.dumps({"records": []})) is None
+    assert json_error("just prose, no braces") == "not a JSON object"
+    assert json_error(json.dumps([1, 2])) == "not a JSON object"
+    err = json_error('{"records": [{"ref": "E1", "data": {"role": "NPC"')
+    assert err is not None and "JSON error:" not in err  # raw decoder text
+    prompt = _repair_retry_prompt("BASE", "BAD", "NOTE", err)
+    assert f"JSON error: {err}" in prompt
+    assert prompt.index(f"JSON error: {err}") > prompt.index("no prose before or after")
+    assert "YOUR PREVIOUS INVALID RESPONSE" in prompt
+    assert "JSON error:" not in _repair_retry_prompt("BASE", "BAD", "NOTE")
+
+
+def test_record_repair_chunk_prompts_deterministic() -> None:
+    """DETERMINISM: the same flagged records chunk into byte-identical prompts."""
+
+    def chunk_prompts() -> list[str]:
+        entities = [
+            models.EntityInput(kind="character", name=f"Hero{i}", data={}) for i in range(6)
+        ]
+        issues = _collect_record_issues(entities)
+        assert len(issues) == 6
+        return [_build_record_repair_prompt(issues[i : i + 4]) for i in (0, 4)]
+
+    first, second = chunk_prompts(), chunk_prompts()
+    assert len(first) == 2  # 4 + 2
+    assert first == second
+
+
+def test_json_error_prefers_inner_candidate() -> None:
+    """JSON_ERROR_INNER: a fenced truncated object reports the same error
+    as the bare inner text, and a prose-wrapped object with an inner typo
+    quotes the inner defect — never the backticks or the prose."""
+    inner = '{"records": [{"ref": "E1", "data": {"role": "NPC"'
+    fenced = "```json\n" + inner + "\n```"
+    assert json_error(fenced) == json_error(inner)
+    typo_inner = '{"records": {"a": 1,}}'  # balanced braces, trailing comma
+    wrapped = "Here is the completed record:\n" + typo_inner + "\nHope this helps!"
+    assert json_error(wrapped) == json_error(typo_inner)
+    assert "Here is the completed record" not in (json_error(wrapped) or "")
+
+
+def test_record_repair_cancel_between_chunks(world: str) -> None:
+    """CHUNK_CANCEL: a cancel landing after the first chunk stops the gate
+    before the next chunk — no further provider calls, no commit, and the
+    job stays cancelled with no terminal conflict."""
+    output = _recordless_wave1_output(5)
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return json.dumps(output)
+        if len(calls) == 2:
+            cancel_job(job_id)  # lands during the first chunk's call
+            return _record_chunk_response([1, 2, 3, 4])
+        raise AssertionError("no chunk after cancel may reach the provider")
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "cancelled"  # never failed/succeeded — no terminal conflict
+    assert len(calls) == 2  # wave 1 + first chunk only
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+
+def test_record_repair_budget_exhausted_mid_chunks(world: str) -> None:
+    """CHUNK_BUDGET: max_llm_calls=2 — wave 1 plus the first chunk exhaust
+    the budget, so the second chunk is refused before any HTTP request and
+    the job fails naming the budget with zero commits."""
+    output = _recordless_wave1_output(5)
+    responses = [json.dumps(output), _record_chunk_response([1, 2, 3, 4])]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"], max_llm_calls=2)
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "budget" in (job.error or "").lower()
+    assert len(calls) == 2  # the second chunk never reached the provider
+    with session_scope() as session:
+        assert revision_chain(session, world) == []

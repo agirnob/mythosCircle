@@ -262,3 +262,6 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-2-owlbear-export.md`
   summary: Damaged HP state has no export representation — Z005/Z006 both mirror the single stored combat.hp.
   evidence: 5-2 review (blind hunter): no stored current-vs-max split exists in the commit path, so the Forge payload cannot carry in-combat damage; stat-model evolution, not export scope.
+- source_spec: `_bmad-output/implementation-artifacts/spec-record-repair-chunking.md`
+  summary: Consider chunking the stat-gate repair if giant-output JSON flakes ever appear there.
+  evidence: Step-04 review noted stat/name gates share the single-shot large-response shape; record gate flaked at 14 records (dropped brace), stat blocks are smaller and have never flaked — spec Ask First gates the split on observed failure.
