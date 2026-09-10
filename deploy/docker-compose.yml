@@ -1,0 +1,65 @@
+# mythosCircle Portainer stack — Docker flow for the 192.168.1.21 laptop.
+# Deploy: Portainer -> Stacks -> Add stack -> Repository (this repo,
+# compose path deploy/docker-compose.yml), plus the two stack env vars
+# below. Or: docker compose -f deploy/docker-compose.yml up -d --build.
+#
+# Traffic: Cloudflare tunnel -> NPM (plain HTTP) -> web:8080 (this stack).
+# NPM needs exactly ONE proxy host: world.miscco.uk -> http://192.168.1.21:8080,
+# websockets ON, no custom locations — the sidecar proxies /api/* to api.
+# The tunnel ingress (Zero Trust dashboard) points world.miscco.uk at
+# NPM's HTTP port as http://192.168.1.21:80 (confirm jointly); no origin
+# cert needed, the tunnel itself is encrypted. NPM SSL: none.
+#
+# Stack env (Portainer "Environment variables", AD-22 — never in git):
+#   MYTHOSCIRCLE_MEDIA_URL_SECRET=<openssl rand -hex 32>  (REQUIRED: mint 500s without it)
+#   CLOUDFLARE_TUNNEL_TOKEN=<Zero Trust -> Tunnels -> token>  (REQUIRED for cloudflared)
+name: mythoscircle
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    image: mythoscircle-api:local
+    restart: unless-stopped
+    # AD-3 single writer: NEVER scale past 1 replica.
+    ports:
+      # Laptop-local debug only (curl the health route over ssh).
+      - "127.0.0.1:8000:8000"
+    environment:
+      MYTHOSCIRCLE_DB: sqlite:////data/mythoscircle.db
+      MYTHOSCIRCLE_MEDIA_DIR: /data/media
+      MYTHOSCIRCLE_LOG_FILE: /data/logs/app.jsonl
+      MYTHOSCIRCLE_BASE_URL: https://world.miscco.uk
+      MYTHOSCIRCLE_MEDIA_URL_SECRET: ${MYTHOSCIRCLE_MEDIA_URL_SECRET:?MYTHOSCIRCLE_MEDIA_URL_SECRET is required}
+      # LLM lives on the dev PC (Unsloth Studio); the laptop reaches it
+      # over the LAN. Requires one /v1/load per Unsloth restart.
+      MYTHOSCIRCLE_LLM_ENDPOINT: http://192.168.1.108:8888/v1
+      MYTHOSCIRCLE_LLM_MODEL: unsloth/gemma-4-12B-it-qat-GGUF
+      MYTHOSCIRCLE_LLM_TIMEOUT: "2400"
+    volumes:
+      - mythos-data:/data
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+    image: mythoscircle-web:local
+    restart: unless-stopped
+    ports:
+      # NPM's single upstream for world.miscco.uk.
+      - "8080:80"
+    depends_on:
+      - api
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN is required}
+    depends_on:
+      - web
+
+volumes:
+  mythos-data:

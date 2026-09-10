@@ -1,0 +1,16 @@
+# mythosCircle API image — FastAPI + uvicorn (Docker flow for Portainer).
+# Build from the repo root so the backend/ context resolves:
+#   docker build -f deploy/docker/Dockerfile.api .
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN pip install --no-cache-dir uv
+WORKDIR /srv/backend
+COPY backend/pyproject.toml backend/uv.lock ./
+RUN uv sync --locked --no-dev
+COPY backend/app ./app
+EXPOSE 8000
+# AD-3 single writer: run exactly one api replica (see compose).
+# All state is env-driven (env > config > default); the shipped
+# deploy/config.toml is not needed inside the image.
+CMD [".venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
