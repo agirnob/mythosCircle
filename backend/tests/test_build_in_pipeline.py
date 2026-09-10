@@ -1757,6 +1757,65 @@ def test_faction_stat_block_is_stripped(world: str) -> None:
     assert "stat_block" not in bar.data
 
 
+def test_flat_record_is_relocated_not_dropped() -> None:
+    """A model that writes the record BESIDE ``data`` has still written it.
+
+    Dropping it is what let the record gate re-invent a different character
+    entirely (dogfood 2026-09-11: a key figure submitted as "the hero
+    paladin sanberi" committed as a level-2 Cartographer, because its wave-1
+    record sat one level too high and ``data`` was silently {})."""
+    parsed = {
+        "entities": [
+            {
+                "ref": "E0",
+                "kind": "character",
+                "name": "Sanberi",
+                # Every record key written flat, exactly as the model does it.
+                "role": "NPC",
+                "level_cr": "level 18",
+                "race_type": "Human",
+                "class_profession": "Paladin",
+                "alignment": "LG",
+                "personality": "stoic",
+                "secret": "fuelled by a shard",
+                "stat_block": {"identity": {"role": "NPC", "level": 18}},
+                "world_integration": {"reputation": "a symbol of hope"},
+            },
+            {"ref": "E1", "kind": "place", "name": "City of Gallorb", "text": "soot and copper"},
+        ],
+        "edges": [{"src": "E0", "dst": "E1", "type": "located_in", "counter": 1}],
+    }
+    entities, _edges = _validate_subgraph(1, parsed)
+    sanberi = entities[0]
+    assert sanberi.kind == "character"
+    assert sanberi.name == "Sanberi"
+    # The record survived the trip instead of vanishing into an empty data.
+    assert sanberi.data["class_profession"] == "Paladin"
+    assert sanberi.data["level_cr"] == "level 18"
+    assert sanberi.data["race_type"] == "Human"
+    assert sanberi.data["secret"] == "fuelled by a shard"
+    assert sanberi.data["stat_block"] == {"identity": {"role": "NPC", "level": 18}}
+    assert sanberi.data["world_integration"] == {"reputation": "a symbol of hope"}
+    assert sanberi.data["name"] == "Sanberi"  # record name mirrors the entity
+    # A flat place carries no record keys: nothing is invented for it.
+    assert entities[1].data == {}
+
+
+def test_nested_record_wins_over_a_flat_duplicate() -> None:
+    """When a model writes both, the nested form is the contract."""
+    parsed = {
+        "entities": [
+            {"ref": "E0", "kind": "character", "name": "Mira", "role": "BBEG",
+             "data": {"role": "NPC", "level_cr": "level 3"}},
+            {"ref": "E1", "kind": "place", "name": "Greymarch"},
+        ],
+        "edges": [{"src": "E0", "dst": "E1", "type": "located_in", "counter": 1}],
+    }
+    entities, _edges = _validate_subgraph(1, parsed)
+    assert entities[0].data["role"] == "NPC"
+    assert entities[0].data["level_cr"] == "level 3"
+
+
 def test_entity_kind_slips_are_canonicalized() -> None:
     """``kind`` carries the contract kind, but models slip two unambiguous
     ways: a case variant of a contract kind, and the ROLE word ("monster" —

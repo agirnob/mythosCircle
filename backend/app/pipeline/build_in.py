@@ -1057,6 +1057,41 @@ class _Wave2OrphanError(JobPayloadError):
         self.orphans = orphans
 
 
+#: Every key an AR24 character record owns. A model that writes them BESIDE
+#: ``data`` instead of inside it has still written the record — the shape is
+#: unambiguous, so it is relocated rather than dropped. Dropping it is what
+#: let the record gate re-invent an entirely different character from scraps:
+#: dogfood 2026-09-11, a key figure submitted as "the hero paladin sanberi"
+#: committed as a level-2 Cartographer because its wave-1 record was flat.
+_RECORD_KEYS: frozenset[str] = (
+    frozenset({"role", "stat_block", "world_integration", "boss"})
+    | frozenset(IDENTITY_FIELDS)
+    | frozenset(LORE_FIELDS)
+    | frozenset(WORLD_INTEGRATION_FIELDS)
+    | frozenset(BOSS_FIELDS)
+    | frozenset({"personality", "secret", "rumor", "party_hook"})
+)
+
+
+def canonicalize_entity_record(raw: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Fold a character record written beside ``data`` into it.
+
+    Returns the merged record (or ``None`` when the entity wrote none of the
+    record keys at all, leaving ``data`` exactly as it was). Keys already
+    inside ``data`` win: the nested form is the contract, and a model that
+    wrote both meant the nested one. Same spirit as
+    ``canonicalize_reaction_matrix`` — repair the shape the model certainly
+    meant instead of discarding work it actually did.
+    """
+    stray = {key: raw[key] for key in _RECORD_KEYS if key in raw}
+    if not stray:
+        return None
+    nested = raw.get("data")
+    if isinstance(nested, dict):
+        return {**stray, **nested}
+    return stray
+
+
 def canonicalize_entity_kind(value: Any) -> tuple[str, str | None] | None:
     """Fold an entity kind to its contract form, tolerating model slips.
 
@@ -1170,6 +1205,8 @@ def _validate_subgraph(
             # (dogfood 2026-09-09: the compact model ships a
             # {"C<i>": "<reaction>"} mapping, which the shared validator
             # would flag and burn the record gate's one repair pass on).
+            relocated = canonicalize_entity_record(raw)
+            data = relocated if relocated is not None else data
             data = canonicalize_reaction_matrix({**(data or {}), "name": clean_name})
             if role_from_kind is not None:
                 # The model named the role in `kind` instead of the record:
