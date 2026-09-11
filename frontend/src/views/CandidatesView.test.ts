@@ -667,6 +667,51 @@ describe('CandidatesView', () => {
     expect(wrapper.findAll('button').some((b) => b.text() === 'Cancel edit')).toBe(true)
   })
 
+  it('badges a re-roll card with the section it re-rolls', async () => {
+    // Two re-roll cards for one character read near-identically (each stages
+    // the WHOLE record); the badge is what tells them apart (2026-09-11).
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/candidates')) {
+        return { candidates: [SABLE], next_cursor: null }
+      }
+      if (url.includes('/api/jobs')) {
+        return {
+          jobs: [
+            {
+              id: 'J1',
+              campaign_id: 'C1',
+              kind: 'regenerate',
+              state: 'succeeded',
+              created_at: '2026-09-04T19:06:00Z',
+              payload: { target: { kind: 'entity', id: 'E1' }, sections: ['secret'] },
+            },
+          ],
+          next_cursor: null,
+        }
+      }
+      return {
+        campaign: {
+          id: 'C1',
+          title: 'Greymarch',
+          theme: 'dread',
+          description: '',
+          custom_lore: '',
+          created_at: '2026-09-04T19:00:00Z',
+        },
+        revision: { id: '01JZZZZZZZZZZZZZZZZZZZZZZZ', created_at: '2026-09-04T19:05:00Z' },
+        entities: [
+          { id: 'E1', kind: 'character', name: 'Mira Vane', text: 'The barkeep.', data: {} },
+        ],
+        edges: [],
+      }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Re-roll of Secret')
+    wrapper.unmount()
+  })
+
   it('re-roll buttons disable while a roll is in flight', async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => {

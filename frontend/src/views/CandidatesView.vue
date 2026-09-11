@@ -182,6 +182,21 @@ const recentRegenerate = computed(() =>
     .slice(0, 5),
 )
 
+/**
+ * What a re-roll card is a re-roll OF, e.g. "Re-roll of Secret".
+ *
+ * A per-section re-roll stages the ENTIRE record, so the card cannot show
+ * its own scope — the job's payload is where the requested sections live.
+ * Null for a card that came from a plain generate ask (no regenerate job).
+ */
+function reRollLabel(candidate: Candidate): string | null {
+  const job = jobs.byId[candidate.job_id]
+  if (!job || job.kind !== 'regenerate') return null
+  const sections = (job.payload as { sections?: string[] } | null)?.sections
+  if (!sections?.length) return 'Re-roll of the whole character'
+  return `Re-roll of ${sections.map((section) => FIELD_LABELS[section] ?? section).join(', ')}`
+}
+
 type Job = components['schemas']['JobResponse']
 
 function stateText(job: Job): string {
@@ -728,6 +743,14 @@ function enqueuePortraitAfterAccept(accepted: Candidate, payload: Record<string,
                 · {{ FIELD_LABELS[field] }}: {{ candidate.payload[field] }}
               </template>
             </template>
+          </p>
+          <!-- A re-roll of one section stages the WHOLE record, so without
+               this badge two cards for one character are indistinguishable
+               (2026-09-11: a stat-block card and a catchphrases card sat side
+               by side reading near-identically). The job payload is the only
+               place the requested sections are recorded. -->
+          <p v-if="reRollLabel(candidate)" class="muted small re-roll-badge">
+            {{ reRollLabel(candidate) }}
           </p>
         </header>
 
