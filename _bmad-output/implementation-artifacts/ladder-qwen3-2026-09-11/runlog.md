@@ -359,3 +359,12 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   boundary (first wins, info log; different type/counter stays loud) +
   `test_wave_duplicate_edge_rows_collapse_to_one`. Gates: 1185 backend
   passed, ruff + mypy clean. Next: rung-25 attempt 2.
+
+## Rung 25 — attempt 2 — SUCCEEDED, 40 calls (GREEN)
+
+- Wave 1 committed 25/25 + 29 edges (dedup fired on stutter, info log);
+  wave 2 committed 3 + 6 through anchor + stat gates. 28 entities, 35
+  edges, closed vocabulary (located_in/member_of/relationship/rival_of/
+  ally_of/enemy_of), 3 over-powered stamps. 40 calls, inside the 64
+  budget. Tee'd calls + prompts in `/tmp/mythos-ladder/calls-c5/`.
+- Next: rung 50 on identical code.
