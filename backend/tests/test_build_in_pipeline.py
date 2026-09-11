@@ -1245,10 +1245,10 @@ def test_missing_stat_block_repaired(world: str) -> None:
 
 
 def test_still_invalid_stat_block_fails_zero_commits(world: str) -> None:
-    """STAT_STILL_INVALID: a block still invalid after BOTH bounded repair
-    passes is never committed — the job fails naming the character and its
-    violations (fail event, AR25), zero revisions. The second repair
-    re-reads the block its own first attempt wrote (a shape violation the
+    """STAT_STILL_INVALID: a block still invalid after all THREE bounded
+    repair passes is never committed — the job fails naming the character
+    and its violations (fail event, AR25), zero revisions. Each repair
+    re-reads the block the previous attempt wrote (a shape violation the
     deterministic conform cannot touch: STR 40 is a hard cap)."""
     output = _wave1_output()
     bad_block = dict(_MIRA_STAT_BLOCK)
@@ -1256,6 +1256,7 @@ def test_still_invalid_stat_block_fails_zero_commits(world: str) -> None:
     output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_block}
     responses = [
         json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
     ]
@@ -1267,8 +1268,9 @@ def test_still_invalid_stat_block_fails_zero_commits(world: str) -> None:
         return responses.pop(0)
 
     run_next_job(provider=provider, settings=SETTINGS)
-    assert len(calls) == 3  # wave 1 + both bounded repair passes, never a third
+    assert len(calls) == 4  # wave 1 + all three bounded repair passes, never a fourth
     assert "VIOLATIONS STILL UNFIXED" in calls[2]
+    assert "THIRD REPAIR PASS" in calls[3]
     assert "attributes.str" in calls[2]
     job, _position = job_status(job_id)
     assert job.state == "failed"
@@ -1282,7 +1284,8 @@ def test_second_stat_repair_pass_heals_the_block(world: str) -> None:
     """STAT_SECOND_PASS (owner decision 2026-09-11): when the first repair
     comes back still invalid, the gate spends ONE more call — the prompt
     re-reads the block that first attempt wrote plus the violations that
-    survived it — and the healed second repair commits. Never a third."""
+    survived it — and the healed second repair commits with no third call
+    (the loop breaks once nothing is flagged)."""
     weak_block = {
         "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
@@ -1323,16 +1326,18 @@ def test_second_stat_repair_pass_heals_the_block(world: str) -> None:
     assert mira.data["stat_block"] == _MIRA_STAT_BLOCK
 
 
-def test_second_stat_repair_pass_exhausted_fails(world: str) -> None:
-    """STAT_SECOND_PASS_EXHAUSTED: two failed repair passes plus the
-    deterministic conform still leave a shape violation — the job fails
-    naming it, with no fourth call and zero commits."""
+def test_third_stat_repair_pass_exhausted_fails(world: str) -> None:
+    """STAT_THIRD_PASS_EXHAUSTED (repair-sequence spec step 2): three failed
+    repair passes plus the deterministic conform still leave a shape
+    violation — the job fails naming it, with no fifth call and zero
+    commits. The third prompt re-reads the second attempt's block."""
     output = _wave1_output()
     bad_block = dict(_MIRA_STAT_BLOCK)
     bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
     output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_block}
     responses = [
         json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
     ]
@@ -1344,12 +1349,107 @@ def test_second_stat_repair_pass_exhausted_fails(world: str) -> None:
         return responses.pop(0)
 
     run_next_job(provider=provider, settings=SETTINGS)
-    assert len(calls) == 3  # the budget is two passes, not a loop
+    assert len(calls) == 4  # wave 1 + three bounded passes, never a fourth repair
+    assert "THIRD REPAIR PASS" in calls[3]
     job, _position = job_status(job_id)
     assert job.state == "failed"
     assert "attributes.str" in (job.error or "")
     with session_scope() as session:
         assert revision_chain(session, world) == []
+
+
+def test_third_stat_repair_pass_heals_the_block(world: str) -> None:
+    """STAT_THIRD_PASS (repair-sequence spec step 2): two still-invalid
+    repairs do not fail the job — the gate spends its third and final call,
+    whose prompt re-reads the SECOND attempt's block plus the surviving
+    violations, and the healed third repair commits."""
+    weak_block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 66},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "actions": [
+            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+        ],
+    }
+    output = _wave1_output()
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": weak_block}
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 4  # wave 1 + all three passes
+    assert "VIOLATIONS TO FIX" in calls[1]
+    assert "SECOND REPAIR PASS" in calls[2]
+    assert "THIRD REPAIR PASS" in calls[3]
+    # The third pass re-reads the second attempt's block (not the wave's)
+    # with the violation that survived it.
+    assert "under-powered" in calls[3]
+    assert json.dumps(weak_block, sort_keys=True, separators=(",", ":")) in calls[3]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"] == _MIRA_STAT_BLOCK
+
+
+def test_stat_repair_calls_carry_one_entity_each(world: str) -> None:
+    """STAT_PER_ENTITY (repair-sequence spec step 2): with two failing
+    characters, each repair call's prompt names exactly ONE flagged ref —
+    the sibling's block is untouched by that call — and both healed blocks
+    merge by ref into the committed wave."""
+    weak_block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 66},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "actions": [
+            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+        ],
+    }
+    output = _wave1_output()
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": weak_block}
+    output["entities"].append(
+        {
+            "ref": "E2",
+            "kind": "character",
+            "name": "Bosun Cobb",
+            "data": _character_record("Bosun Cobb"),  # missing stat_block
+        }
+    )
+    responses = [json.dumps(output)]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira", "Cobb"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return responses.pop(0)
+        # Per-entity repair: answer exactly the single ref this prompt names.
+        assert ("E1 (" in prompt) != ("E2 (" in prompt)
+        ref = "E1" if "E1 (" in prompt else "E2"
+        return json.dumps({"stat_blocks": [{"ref": ref, "stat_block": _MIRA_STAT_BLOCK}]})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 3  # wave 1 + one repair call per failing entity
+    assert "E2" not in calls[1]  # the E1 call never names its sibling
+    assert "E1" not in calls[2]  # nor the E2 call
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        by_name = {e.name: e for e in world_entities(session, world)}
+    assert by_name["Mira Vane"].data["stat_block"] == _MIRA_STAT_BLOCK
+    assert by_name["Bosun Cobb"].data["stat_block"] == _MIRA_STAT_BLOCK
 
 
 def test_structured_damage_carries_a_block_without_prose_dice(world: str) -> None:
@@ -2098,7 +2198,9 @@ def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> Non
     (CR 1/4, hp 15, one weak bite) trips the frail line. The mock adds the
     coupling class and lifts Boo's hp into its CR band (the EDIT SCOPE fix —
     a cr rewrite riding with the repair is drift the gate now strips); the
-    gate succeeds with two provider calls total."""
+    gate succeeds with three provider calls total — wave 1 plus one repair
+    call PER FAILING ENTITY (repair-sequence spec step 2), each prompt
+    naming only its own block."""
     bad_spells = dict(_MIRA_STAT_BLOCK)
     bad_spells["identity"] = {k: v for k, v in _MIRA_STAT_BLOCK["identity"].items() if k != "class"}
     bad_spells["spells"] = ["Fireball", "Magic Missile"]
@@ -2152,14 +2254,8 @@ def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> Non
     )
     responses = [
         json.dumps(output),
-        json.dumps(
-            {
-                "stat_blocks": [
-                    {"ref": "E1", "stat_block": fixed_spells},
-                    {"ref": "E2", "stat_block": fixed_tiny},
-                ]
-            }
-        ),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": fixed_spells}]}),
+        json.dumps({"stat_blocks": [{"ref": "E2", "stat_block": fixed_tiny}]}),
     ]
     calls: list[str] = []
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
@@ -2170,9 +2266,12 @@ def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> Non
 
     processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == job_id
-    assert len(calls) == 2  # wave 1 + exactly one repair pass
+    assert len(calls) == 3  # wave 1 + one repair call per failing entity
     assert "spells require identity.class" in calls[1]
-    assert "frail" in calls[1]
+    assert "E2 (" not in calls[1]  # the E1 call never names its sibling
+    assert "is frail for" in calls[2]
+    assert "spells require identity.class" not in calls[2]  # nor vice versa
+    assert "E1 (" not in calls[2]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     with session_scope() as session:
@@ -2611,6 +2710,7 @@ def test_underpowered_stat_block_repair_loop(world: str) -> None:
         json.dumps(wave_with(weak_block)),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
     ]
 
     def provider2(prompt: str, settings: LLMSettings) -> str:
@@ -2618,7 +2718,7 @@ def test_underpowered_stat_block_repair_loop(world: str) -> None:
         return responses2.pop(0)
 
     assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
-    assert len(calls2) == 3  # wave 1 + both bounded repair passes, no more
+    assert len(calls2) == 4  # wave 1 + all three bounded repair passes, no more
     job2, _position2 = job_status(job_id2)
     assert job2.state == "succeeded"
     assert job2.result is not None
@@ -2680,6 +2780,7 @@ def test_overpowered_stat_block_repair_loop(world: str) -> None:
         json.dumps(wave_with(over_block)),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": over_block}]}),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": over_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": over_block}]}),
     ]
 
     def provider2(prompt: str, settings: LLMSettings) -> str:
@@ -2687,7 +2788,7 @@ def test_overpowered_stat_block_repair_loop(world: str) -> None:
         return responses2.pop(0)
 
     assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
-    assert len(calls2) == 3  # wave 1 + both bounded repair passes, no more
+    assert len(calls2) == 4  # wave 1 + all three bounded repair passes, no more
     job2, _position2 = job_status(job_id2)
     assert job2.state == "failed"
     assert "over-powered" in (job2.error or "")
@@ -2735,6 +2836,7 @@ def test_frail_stat_block_repair_loop(world: str) -> None:
         json.dumps(wave_with(frail_block)),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": frail_block}]}),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": frail_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": frail_block}]}),
     ]
 
     def provider2(prompt: str, settings: LLMSettings) -> str:
@@ -2742,7 +2844,7 @@ def test_frail_stat_block_repair_loop(world: str) -> None:
         return responses2.pop(0)
 
     assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
-    assert len(calls2) == 3  # wave 1 + both bounded repair passes, no more
+    assert len(calls2) == 4  # wave 1 + all three bounded repair passes, no more
     job2, _position2 = job_status(job_id2)
     # A frail HP floor no longer fails the job: the deterministic conform
     # lifts hp to the band floor (2026-09-10).

@@ -408,7 +408,8 @@ def scope_for_violations(violations: Sequence[str]) -> frozenset[str]:
 
 def build_stat_repair_prompt(issues: Sequence[StatIssue], *, attempt: int = 1) -> str:
     """One bounded repair pass's prompt (AR25; the second pass added
-    2026-09-11 by owner decision).
+    2026-09-11 by owner decision, the third by the repair-sequence spec
+    step 2 — per-entity calls, so ``issues`` is normally one entry).
 
     A pure, deterministic function of the flagged issues and the attempt
     number: each character's canonical ref, name, current stat block (or
@@ -418,8 +419,9 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue], *, attempt: int = 1) -
     plus the shared rules. On ``attempt=2`` the "current stat_block" is the
     one the FIRST repair produced and the violations are the ones that
     SURVIVED it — the model is correcting its own edit against exactly
-    what is still wrong, which is what the owner asked for. No ids,
-    timestamps, or job state.
+    what is still wrong, which is what the owner asked for. ``attempt=3``
+    is the same semantics one pass later: the block shown is the one the
+    SECOND repair produced. No ids, timestamps, or job state.
     """
     flagged: list[str] = []
     for issue in issues:
@@ -449,10 +451,19 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue], *, attempt: int = 1) -
     classes = _flagged_classes(issues) or None
     if attempt == 1:
         violations_header = ["VIOLATIONS TO FIX"]
-    else:
+    elif attempt == 2:
         violations_header = [
             "VIOLATIONS STILL UNFIXED — SECOND REPAIR PASS",
             "The stat_block shown under each character is the one YOUR FIRST",
+            "REPAIR produced, and it still fails every violation listed below",
+            "it. Change the NUMBERS — attack count, dice faces, flat bonus,",
+            "combat.hp, combat.ac — because a reworded description changes no",
+            "number the validator reads.",
+        ]
+    else:
+        violations_header = [
+            "VIOLATIONS STILL UNFIXED — THIRD REPAIR PASS",
+            "The stat_block shown under each character is the one YOUR SECOND",
             "REPAIR produced, and it still fails every violation listed below",
             "it. Change the NUMBERS — attack count, dice faces, flat bonus,",
             "combat.hp, combat.ac — because a reworded description changes no",
@@ -470,6 +481,13 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue], *, attempt: int = 1) -
             "",
             *violations_header,
             "\n\n".join(flagged),
+            "",
+            "POWER DISCIPLINE (validator-checked — an over-powered block fails",
+            "the job with no further repair: aim for the MIDDLE of each record",
+            "target band, NEVER above its top. Move DPR with damage dice, damage",
+            "bonus, to_hit, and attack count — NEVER by raising identity.level",
+            "or identity.cr. Fix an identity.level violation by writing a bare",
+            "integer 1-20 in identity.level and changing nothing else.",
             "",
             "DAMAGE RECIPES (parser-checked — hit each character's record target band)",
             _DPR_RECIPES,

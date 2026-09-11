@@ -389,6 +389,50 @@ def test_second_pass_prompt_carries_what_survived() -> None:
     assert second != first
 
 
+def test_third_pass_prompt_rereads_second_attempt() -> None:
+    """THIRD_PASS_PROMPT (repair-sequence spec step 2): the third repair
+    pass has the second pass's semantics one pass later — it re-reads the
+    block the SECOND attempt wrote, names the surviving violations, and
+    carries its own header. The first- and second-pass shapes stay
+    byte-identical to what the earlier pins assert."""
+    block = {**VALID, "attributes": {**VALID["attributes"], "str": 40}}
+    issues = [
+        StatIssue(
+            1,
+            _entity("character", data={"stat_block": block}),
+            ("attributes.str must be an integer in [1, 30]", "under-powered for level 5"),
+        ),
+    ]
+    third = build_stat_repair_prompt(issues, attempt=3)
+    assert "VIOLATIONS STILL UNFIXED — THIRD REPAIR PASS" in third
+    assert "VIOLATIONS TO FIX" not in third
+    assert "SECOND REPAIR PASS" not in third
+    assert "YOUR SECOND" in third
+    assert "attributes.str must be an integer in [1, 30]" in third
+    assert "under-powered for level 5" in third
+    assert json.dumps(block, sort_keys=True, separators=(",", ":")) in third
+    assert "STAT BLOCK RULES" in third and "OUTPUT CONTRACT" in third
+
+
+def test_repair_prompt_pins_power_discipline() -> None:
+    """POWER_DISCIPLINE (ladder attempts 9-11): repairs overshoot the band
+    top (E9 11.5->60, E5 4.5->10.5->31.5) and fix power by editing level
+    (E9 4->10, E6/E9 level garbage) — over-powered is unrepairable by
+    design, so the prompt aims at mid-band with an explicit ceiling and
+    names the dial (damage, never level)."""
+    issue = StatIssue(
+        1,
+        _entity("character", data={"stat_block": dict(VALID)}),
+        ("under-powered for level 5",),
+    )
+    prompt = build_stat_repair_prompt([issue])
+    assert "aim for the MIDDLE of each record" in prompt
+    assert "NEVER above its top" in prompt
+    assert "NEVER by raising identity.level" in prompt
+    assert "writing a bare" in prompt
+    assert "integer 1-20 in identity.level and changing nothing else" in prompt
+
+
 # ---------------------------------------------------------------------------
 # Repair scope map + EDIT SCOPE lines + repair schema (spec: edgeless repair scope)
 # ---------------------------------------------------------------------------

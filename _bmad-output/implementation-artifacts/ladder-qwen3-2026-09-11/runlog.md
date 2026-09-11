@@ -160,3 +160,48 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   observed in telemetry AND in committed rows). Green partly variance
   (anchor wired first-try-equivalent via a behaving re-emit), but the
   strip's fingerprint is in the DB. Step 2 unlocked.
+
+## Rung 10 — attempt 10, step-2 code — FAILED, 14 calls (wave-1 death)
+
+- Wave 1: per-entity machinery visible live — pass 1 six ~10k calls
+  (3-5s each, all parsed), pass 2 four calls, pass 3 three calls (THIRD
+  header exercised). E6/E7/E8 converged across passes. Terminal: E5
+  Ssketh L3 over-powered DPR 31.5 vs 21-26 (passes: 4.5 → 10.5 → 31.5,
+  each repair overcorrected past the band); E9 Cobb identity.level
+  non-integer (a repair wrote garbage into an in-scope section — strip
+  is blind intra-section).
+- New top-killer pattern (2nd instance; attempt 9's E9 11.5→60 was the
+  first): repairs overshoot the band top, and over-powered is
+  unrepairable by design. The repair prompt names the band floor but
+  steers past its ceiling — prompt prose, a spec Non-goal.
+- Verdict: step-2 gate FAILED (death set did not shrink-or-hold). No
+  evidence of step-2 regression either (attempt-9's overshoot was
+  batched-code). Step 3 stays locked per spec. Tee'd calls + prompts in
+  `/tmp/mythos-ladder/calls-b2/`.
+
+## Rung 10 — attempt 11, step-2 code — FAILED, 15 calls (wave-1 death)
+
+- Wave 1 only. Pass 1 flagged E4/E5/E6/E7/E8/E9 (DPR 5.5-19); pass 2
+  E6/E7/E8/E9; pass 3 E6/E8/E9. Terminal: E6 Wren identity.level
+  non-integer — pass-1 repair broke it, and pass-2/3 (scope exactly
+  ['identity'], violation naming identity.level) edited proficiency,
+  hp, and descriptions instead of the level field. All stripped, level
+  still broken. Second consecutive level-breakage death (attempt 10:
+  E9 Cobb).
+- Companion drift: E9's repair raised its level 4→10 chasing the band
+  (intra-scope identity drift, strip-blind); E8 climbed 6.5→43.5→57
+  toward its 75-80 band while dropping its class link.
+- Verdict: re-roll answers the variance question — NOT variance, same
+  failure family twice. Step-2 gate 0/2. Per-entity machinery clean
+  (15 calls, all parsed, 3-5s each). The wall is repair steering: no
+  ceiling, and the model fixes power by editing level instead of
+  damage. Tee'd calls + prompts in `/tmp/mythos-ladder/calls-b3/`.
+
+## Env note (2026-09-11, verification scope)
+
+- System node broke mid-session (libada.so.3→.so.4 distro upgrade;
+  `node`/`npm` exit 127, no passwordless sudo to reinstall). `make lint`
+  fails at the frontend eslint step and vue-tsc cannot launch — both
+  environmental, zero frontend files dirty. Backend gates authoritative
+  meanwhile: `pytest -q`, ruff check, ruff format, mypy. Owner action:
+  finish the system update / reinstall nodejs, then re-run frontend gates.

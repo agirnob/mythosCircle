@@ -108,15 +108,28 @@ everyone and died on names alone.
 
 - Unit (each step): strip semantics (converging numbers kept, rider sections
   dropped, breach still logged); per-entity merge-by-ref (sibling blocks
-  untouched, attempt-3 prompt shape); edges-only parse plus anchor validation
-  (frozen-entity rename unrepresentable, still-orphan fails, cancel returns
-  None). Existing suites stay green (`pytest -q`, `make lint`, `make
-  typecheck`); breach/drop-guard tests are rewritten, never re-pinned.
+  untouched, attempt-3 prompt shape); power-discipline lines pinned;
+  edges-only parse plus anchor validation (frozen-entity rename
+  unrepresentable, still-orphan fails, cancel returns None). Existing
+  suites stay green (`pytest -q`, `make lint`, `make typecheck`);
+  breach/drop-guard tests are rewritten, never re-pinned.
 - Ladder gate (each step, identical `rung-10.json` on gemma): baseline is
   wave-1 commits 4/5, jobs 0/8, breach classes as logged. Step 1 greens on
   commits held + strips observed in telemetry; step 2 on terminal stat-death
   sets shrunk-or-held; step 3 on a wiring-green job (or a death naming only
   stats, never anchors/renames). Next step builds only off its gate evidence.
+
+## Deviation (owner-approved 2026-09-11, ladder attempts 10-11)
+
+- Step 2's gate failed twice in one family (repair overshoot past the
+  band top ×3, level-breakage ×2, level-escalation ×1), so prompt
+  steering came into scope despite the Non-goal: the repair prompt
+  carries POWER DISCIPLINE (aim mid-band, never above the top;
+  move DPR with damage, never by raising level; level violations fixed
+  with the level field alone). Note the prompt already sanctioned
+  level edits ("You MAY lower identity.level",
+  "declare an identity.level your damage supports") — the model was
+  obeying, not drifting, so the strip correctly never saw it.
 
 ## Design Notes
 

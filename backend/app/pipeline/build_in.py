@@ -241,20 +241,32 @@ def _enforce_stat_blocks(
     wave: int | None = None,
 ) -> tuple[list[models.EntityInput], bool]:
     """The stat-block gate shared by both waves and the regenerate path:
-    collect issues, run up to TWO bounded repair passes, re-check, then the
+    collect issues, run up to THREE bounded repair passes, re-check, then the
     deterministic power conform. Returns ``(entities, cancelled)`` —
     cancelled True means the job was cancelled mid-gate and the caller must
     stop without committing this wave.
 
-    Two passes, not one (owner decision 2026-09-11, renegotiating
-    spec-2.4's "exactly one"): the model's single shot at arithmetic it
-    cannot do was the most common live build failure (measured 2026-09-10:
-    5.5 vs 15-20, 16 vs 27-32, 50 vs 93-98 — never in band), and the second
-    pass is cheap next to losing the DM's whole build. The second pass
-    re-reads the block ITS FIRST ATTEMPT wrote and exactly which violations
-    survived it (`build_stat_repair_prompt(..., attempt=2)`); a third pass
-    does not exist, and the model still never gets to fix wording — the
-    deterministic conform is the last word before the job fails.
+    Three passes, not one (owner decision 2026-09-11 for the second,
+    repair-sequence spec step 2 for the third): the model's single shot at
+    arithmetic it cannot do was the most common live build failure
+    (measured 2026-09-10: 5.5 vs 15-20, 16 vs 27-32, 50 vs 93-98 — never
+    in band), and a repair call is cheap next to losing the DM's whole
+    build. Each pass re-reads the block the PREVIOUS attempt wrote and
+    exactly which violations survived it
+    (`build_stat_repair_prompt(..., attempt=N)`); the deterministic conform
+    is the last word before the job fails, and the model still never gets
+    to fix wording.
+
+    Each repair call carries exactly ONE failing entity (prompt, parse, and
+    merge by ref), after the ``RECORD_REPAIR_CHUNK_SIZE`` precedent: a
+    multi-entity repair response stays long enough to drop braces
+    stochastically, and one block's drift no longer rides on another's
+    converging numbers — the step-1 strip still runs between the breach log
+    and the merge for every per-entity merge. Worst-case budget at rung-10
+    scale (6 characters per wave: wave + name + 2 record chunks + 6 x 3
+    stat calls = 22 per wave, 23 on wave 2 with the orphan re-emit, 45 per
+    job) fits the 64-call enqueue default with headroom, so the default
+    stays.
     """
     # A block whose dice sit in a non-standard ``damage`` key reports ZERO
     # damage to the auditor, which the non-combatant exemption then swallows
@@ -273,23 +285,34 @@ def _enforce_stat_blocks(
         repair_settings = settings
     else:
         repair_settings = dataclasses.replace(settings, response_format=repair_response_format)
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         if not issues:
             break
         if not _job_still_running(job):
             return entities, True
         before = {issue.position: issue.entity.data.get("stat_block") for issue in issues}
-        repaired = _run_repair(
-            budget=budget,
-            provider=provider,
-            settings=repair_settings,
-            prompt=build_stat_repair_prompt(issues, attempt=attempt),
-            parse=parse_stat_repair_output,
-            positions=[issue.position for issue in issues],
-            label="stat",
-            retry_note='Return ONLY a "stat_blocks" list — each entry '
-            '{"ref": "E<position>", "stat_block": {...}} with the full corrected block.',
-        )
+        # One call per failing entity (spec step 2, after the record-chunk
+        # precedent): the prompt names a single block, the parser demands
+        # exactly its ref, and the merge below lands by ref — a sibling's
+        # drift can no longer ride on another block's converging numbers.
+        # A cancel racing the per-entity sequence stops without merging
+        # this attempt (the merge lands only after the loop).
+        repaired: dict[int, dict[str, Any]] = {}
+        for issue in issues:
+            if not _job_still_running(job):
+                return entities, True
+            single = _run_repair(
+                budget=budget,
+                provider=provider,
+                settings=repair_settings,
+                prompt=build_stat_repair_prompt([issue], attempt=attempt),
+                parse=parse_stat_repair_output,
+                positions=[issue.position],
+                label="stat",
+                retry_note='Return ONLY a "stat_blocks" list — one entry '
+                '{"ref": "E<position>", "stat_block": {...}} with the full corrected block.',
+            )
+            repaired.update(single)
         _log_stat_repair_scope_breaches(
             issues, before, repaired, job_id=job.id, attempt=attempt, wave=wave
         )
@@ -845,9 +868,9 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     if cancelled:
         return
     # Stat-block enforcement (AR24/AR25, spec-2.4): every character must carry
-    # a valid minimal stat block before the wave commits — or exactly one
-    # bounded repair pass; a block still invalid after the repair fails the
-    # job with an error event, zero commits.
+    # a valid minimal stat block before the wave commits — or up to three
+    # bounded per-entity repair passes; a block still invalid after the
+    # repairs fails the job with an error event, zero commits.
     entities_1, cancelled = _enforce_stat_blocks(
         job,
         budget,
