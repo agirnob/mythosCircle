@@ -368,3 +368,12 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   ally_of/enemy_of), 3 over-powered stamps. 40 calls, inside the 64
   budget. Tee'd calls + prompts in `/tmp/mythos-ladder/calls-c5/`.
 - Next: rung 50 on identical code.
+
+## Rung 50 — attempt 1 — SUCCEEDED, 26 calls (SHORT count)
+
+- Job green (26 calls, wave 1 edgeless-commit path, wave 2 anchor,
+  31 entities / 29 edges / closed vocabulary / 0 stamps needed), BUT
+  the seed asked 50 (30+8+12) and the model emitted 28. The wave schema
+  pins shape, never count — a scale gap in the contract, not a code
+  bug. Tee'd calls + prompts in `/tmp/mythos-ladder/calls-c6/`.
+- Open: does rung-50 green mean job-success or 50-emitted?
