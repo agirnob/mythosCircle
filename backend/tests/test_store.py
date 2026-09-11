@@ -1316,6 +1316,20 @@ def test_commit_orphan_on_empty_world_rejected(world: str) -> None:
         commit_subgraph(world, [models.EntityInput(kind="place", name="Lone Hill")])
 
 
+def test_commit_allow_orphans_commits_edgeless(world: str) -> None:
+    """EDGELESS_WAVE1 (store): ``allow_orphans=True`` commits a bare entity
+    with zero edges — the build-in wave-1 edgeless commit (owner verdict
+    2026-09-11). The default stays rejecting (pinned above); only the
+    explicit opt-in passes the FR2 backstop."""
+    revision = commit_subgraph(
+        world, [models.EntityInput(kind="place", name="Lone Hill")], [], allow_orphans=True
+    )
+    assert revision.id == _head(world)
+    entities, edges = _state(world)
+    assert [row[1] for row in entities.values()] == ["Lone Hill"]
+    assert edges == {}
+
+
 def test_commit_self_loop_rejected(world: str) -> None:
     """A self-loop edge is rejected outright (FR2, owner decision
     2026-09-03): the pipeline forbids self-loops (spec-2.3) and the

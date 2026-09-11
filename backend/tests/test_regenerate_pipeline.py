@@ -228,9 +228,11 @@ def test_stat_block_reroll_runs_the_ar25_gate(world: tuple[str, str, str]) -> No
     campaign_id, mira_id, _guild_id = world
     job_id = _enqueue(campaign_id, {"kind": "entity", "id": mira_id}, ["stat_block"])
     calls: list[str] = []
+    formats: list[Any] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
         calls.append(prompt)
+        formats.append(settings.response_format)
         # First call: the re-roll itself, with a prose-only attack. Later
         # calls (the stat repair) return the same unusable block.
         return _regen_output(
@@ -255,6 +257,9 @@ def test_stat_block_reroll_runs_the_ar25_gate(world: tuple[str, str, str]) -> No
     _job, _position = job_status(job_id)
     # The gate ran: the flagged block was sent for repair at least once.
     assert len(calls) >= 2
+    # The shared gate's repair schema is build-in-only (spec Never list):
+    # every call on this path — re-roll and repairs — carries plain settings.
+    assert formats == [None] * len(formats)
 
 
 def test_whole_entity_regen_stages_new_row_world_untouched(

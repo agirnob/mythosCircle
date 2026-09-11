@@ -307,17 +307,119 @@ def _record_target_line(entity: models.EntityInput) -> str | None:
     return f"record target: {challenge} -> hit DPR band {low:.0f}-{high:.0f}"
 
 
+_FULL_REPAIR_SCOPE: frozenset[str] = frozenset(
+    {
+        "identity",
+        "attributes",
+        "combat",
+        "skills",
+        "actions",
+        "traits",
+        "spells",
+        "saves",
+        "initiative",
+        "passive_perception",
+        "proficiency_bonus",
+        "spellcasting",
+        "resources",
+        "features",
+    }
+)
+#: Every top-level stat_block section the validator reads (see
+#: ``knowledge.validate_stat_block``): ``combat`` owns hp/ac (plus hit_dice),
+#: ``actions`` owns damage numbers, ``identity`` owns the challenge
+#: declaration (level/CR). Only a missing/non-object block scopes this wide —
+#: every other violation names its sections (never a silent whole-block
+#: fallback for a new kind).
+
+#: Power-band scope: a DPR miss is fixed with damage numbers, hp/ac, or the
+#: challenge declaration — never wording, skills, or spells.
+_POWER_REPAIR_SCOPE: frozenset[str] = frozenset({"actions", "combat", "identity"})
+
+#: Violation prefixes mapped to the editable sections that fix them
+#: (codebase idiom: ``_CONFORMABLE_PREFIXES`` below). Order matters:
+#: ``spellcasting`` precedes the bare ``spell`` catch-all, else the
+#: mechanics field would scope to spells+identity.
+#: Violation prefixes mapped to the editable sections that fix them
+#: (codebase idiom: ``_CONFORMABLE_PREFIXES`` below). Order matters:
+#: first match wins, so the general ``stat_block`` prefix sits LAST — a
+#: future field-specific ``stat_block.<section>...`` message must scope
+#: narrowly instead of falling into whole-block. (Today no message has
+#: that shape; the 60-row coverage test pins every current mapping, so
+#: any reorder breakage fails loudly there.) A new validator message about
+#: mechanics field would scope to spells+identity.
+_SCOPE_PREFIXES: tuple[tuple[str, frozenset[str]], ...] = (
+    ("under-powered for ", _POWER_REPAIR_SCOPE),
+    ("over-powered for ", _POWER_REPAIR_SCOPE),
+    ("no readable damage for ", frozenset({"actions"})),
+    ("identity", frozenset({"identity"})),
+    ("attributes", frozenset({"attributes"})),
+    ("combat", frozenset({"combat"})),
+    ("saves", frozenset({"saves"})),
+    ("initiative", frozenset({"initiative"})),
+    ("passive_perception", frozenset({"passive_perception"})),
+    ("proficiency_bonus", frozenset({"proficiency_bonus"})),
+    ("spellcasting", frozenset({"spellcasting"})),
+    ("resources", frozenset({"resources"})),
+    ("features", frozenset({"features"})),
+    ("actions", frozenset({"actions"})),
+    ("traits", frozenset({"traits"})),
+    ("skills", frozenset({"skills"})),
+    # Spells may need identity.class set (or the role changed) to fix, so
+    # both sections stay editable — the breach log still sees the diff.
+    ("spell", frozenset({"spells", "identity"})),
+    ("stat_block", _FULL_REPAIR_SCOPE),
+)
+
+
+def scope_for_violations(violations: Sequence[str]) -> frozenset[str]:
+    """The editable top-level stat_block sections for these violations.
+
+    Pure function shared by the repair prompt (EDIT SCOPE lines) and the
+    gate's breach log — one map, never two literals to keep in sync.
+    Raises ``ValueError`` on an unmapped violation (fail-closed: a new
+    validator message must extend ``_SCOPE_PREFIXES`` — the scope-map
+    coverage test enforces it — never a silent whole-block fallback).
+    """
+    if not violations:
+        raise ValueError(
+            "stat repair: no edit scope for an empty violation list — "
+            "an issue always carries its violations"
+        )
+    scope: set[str] = set()
+    for violation in violations:
+        for prefix, sections in _SCOPE_PREFIXES:
+            if violation.startswith(prefix):
+                scope |= sections
+                break
+        else:
+            # Safety net mirroring ``_CONFORMABLE_SUBSTRINGS``: the frail
+            # message is caught by the "combat" prefix today, but an
+            # hp-scoped rewording must never fall through to ValueError.
+            if " is frail for " in violation:
+                scope |= {"combat"}
+            else:
+                raise ValueError(
+                    f"stat repair: no edit scope for violation {violation!r} — "
+                    "extend _SCOPE_PREFIXES"
+                )
+    return frozenset(scope)
+
+
 def build_stat_repair_prompt(issues: Sequence[StatIssue], *, attempt: int = 1) -> str:
     """One bounded repair pass's prompt (AR25; the second pass added
     2026-09-11 by owner decision).
 
     A pure, deterministic function of the flagged issues and the attempt
     number: each character's canonical ref, name, current stat block (or
-    MISSING), and its violations, plus the shared rules. On ``attempt=2``
-    the "current stat_block" is the one the FIRST repair produced and the
-    violations are the ones that SURVIVED it — the model is correcting its
-    own edit against exactly what is still wrong, which is what the owner
-    asked for. No ids, timestamps, or job state.
+    MISSING), its violations, and its EDIT SCOPE line (the
+    ``scope_for_violations`` sections for those violations — the repair
+    names its editable fields so pass 1 stops inflating healthy numbers),
+    plus the shared rules. On ``attempt=2`` the "current stat_block" is the
+    one the FIRST repair produced and the violations are the ones that
+    SURVIVED it — the model is correcting its own edit against exactly
+    what is still wrong, which is what the owner asked for. No ids,
+    timestamps, or job state.
     """
     flagged: list[str] = []
     for issue in issues:
@@ -330,10 +432,19 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue], *, attempt: int = 1) -
         target = _record_target_line(issue.entity)
         target_line = f"\n{target}" if target is not None else ""
         violations = "\n".join(f"  - {violation}" for violation in issue.violations)
+        scope = scope_for_violations(issue.violations)
+        if scope >= _FULL_REPAIR_SCOPE:
+            scope_line = "EDIT SCOPE: whole stat_block (missing block — write the complete block)"
+        else:
+            scope_line = (
+                f"EDIT SCOPE: {', '.join(sorted(scope))} — change ONLY these "
+                "sections; leave every other section byte-identical"
+            )
         flagged.append(
             f"E{issue.position} ({issue.entity.name!r}):\n"
             f"current stat_block: {current}{target_line}\n"
-            f"violations:\n{violations}"
+            f"violations:\n{violations}\n"
+            f"{scope_line}"
         )
     classes = _flagged_classes(issues) or None
     if attempt == 1:
@@ -374,6 +485,165 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue], *, attempt: int = 1) -
             "one ref per entry, nothing else.",
         ]
     )
+
+
+def build_stat_repair_schema() -> dict[str, Any]:
+    """The strict response schema carried on stat-repair calls (spec: edgeless
+    repair scope) — the ``response_format`` wrapper follows the wave calls'
+    measured ``json_schema`` convention; the inner schema is flat and
+    ``$ref``-free (GBNF subset). Trait items require name+description and
+    damage parts require their full six fields, so a bare-string or
+    name-only shape (the runlog's E4 chase across both passes) is
+    unemittable on enforcing backends; ``strict: True`` with closed
+    objects everywhere except the free-form ``resources`` map. No
+    ``minItems`` anywhere, so a true non-combatant's empty lists stay
+    legal. Parsing and all gates stay the backstop — the schema is the
+    optimization, for non-enforcing backends nothing changes.
+    """
+    damage_part: dict[str, Any] = {
+        "type": "object",
+        "required": ["dice", "count", "sides", "bonus", "average", "type"],
+        "properties": {
+            "dice": {"type": "string"},
+            "count": {"type": "integer"},
+            "sides": {"type": "integer"},
+            "bonus": {"type": "integer"},
+            "average": {"type": "number"},
+            "type": {"type": "string"},
+        },
+        "additionalProperties": False,
+    }
+    action_item: dict[str, Any] = {
+        "type": "object",
+        "required": ["name", "description"],
+        "properties": {
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "to_hit": {"type": "integer"},
+            "damage": {"type": "array", "items": damage_part},
+        },
+        "additionalProperties": False,
+    }
+    named_item: dict[str, Any] = {
+        "type": "object",
+        "required": ["name", "description"],
+        "properties": {
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+        },
+        "additionalProperties": False,
+    }
+    skill_item: dict[str, Any] = {
+        "type": "object",
+        "required": ["name", "bonus"],
+        "properties": {
+            "name": {"type": "string"},
+            "bonus": {"type": "integer"},
+        },
+        "additionalProperties": False,
+    }
+    stat_block: dict[str, Any] = {
+        "type": "object",
+        "required": ["identity", "attributes", "combat"],
+        "properties": {
+            "identity": {
+                "type": "object",
+                "required": ["role", "race"],
+                "properties": {
+                    "role": {"type": "string"},
+                    "level": {"type": "integer"},
+                    "cr": {"type": ["integer", "string"]},
+                    "race": {"type": "string"},
+                    "class": {"type": "string"},
+                    "alignment": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            "attributes": {
+                "type": "object",
+                "required": ["str", "dex", "con", "int", "wis", "cha"],
+                "properties": {
+                    "str": {"type": "integer"},
+                    "dex": {"type": "integer"},
+                    "con": {"type": "integer"},
+                    "int": {"type": "integer"},
+                    "wis": {"type": "integer"},
+                    "cha": {"type": "integer"},
+                },
+                "additionalProperties": False,
+            },
+            "combat": {
+                "type": "object",
+                "required": ["ac", "hp"],
+                "properties": {
+                    "ac": {"type": "integer"},
+                    "hp": {"type": "integer"},
+                    "hit_dice": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            "skills": {"type": "array", "items": skill_item},
+            "actions": {"type": "array", "items": action_item},
+            "traits": {"type": "array", "items": named_item},
+            "spells": {"type": "array", "items": {"type": "string"}},
+            "saves": {
+                "type": "object",
+                "properties": {
+                    "str": {"type": "integer"},
+                    "dex": {"type": "integer"},
+                    "con": {"type": "integer"},
+                    "int": {"type": "integer"},
+                    "wis": {"type": "integer"},
+                    "cha": {"type": "integer"},
+                },
+                "additionalProperties": False,
+            },
+            "initiative": {"type": "integer"},
+            "passive_perception": {"type": "integer"},
+            "proficiency_bonus": {"type": "integer"},
+            "spellcasting": {
+                "type": "object",
+                "properties": {
+                    "dc": {"type": "integer"},
+                    "attack_bonus": {"type": "integer"},
+                    "slots": {"type": "array", "items": {"type": "integer"}},
+                },
+                "additionalProperties": False,
+            },
+            # Free-form name -> integer pools: the keys are DM/model-chosen,
+            # so this one object stays open (never a shape the repair must
+            # fix — the validator only checks value types).
+            "resources": {"type": "object"},
+            "features": {"type": "array", "items": {"type": "string"}},
+        },
+        "additionalProperties": False,
+    }
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "stat_repair",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "required": ["stat_blocks"],
+                "properties": {
+                    "stat_blocks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["ref", "stat_block"],
+                            "properties": {
+                                "ref": {"type": "string"},
+                                "stat_block": stat_block,
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    }
 
 
 def parse_stat_repair_output(

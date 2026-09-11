@@ -266,6 +266,23 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
   summary: Consider chunking the stat-gate repair if giant-output JSON flakes ever appear there.
   evidence: Step-04 review noted stat/name gates share the single-shot large-response shape; record gate flaked at 14 records (dropped brace), stat blocks are smaller and have never flaked — spec Ask First gates the split on observed failure.
 
+## Owner verdicts 2026-09-11 (edgeless wave-1)
+
+- wave-1 orphan (ladder rung 10): DROP confirmed — the 2026-09-09 "ONE
+  bounded wave-2 re-prompt" verdict's wave-1 extension (2026-09-11,
+  same-mechanism re-emit) is reversed: edgeless wave-1 entities commit
+  as-is with one straight call and no re-emit; the DM prunes. Rationale:
+  rung 10 attempt 3 died over E8 unwired twice — wiring the model will
+  not invent. The wave-2 half stands (anchor, signal, one re-emit, drop
+  guard byte-identical). Implementation also pins edge `type` as a schema
+  enum single-sourced from `store.EDGE_TYPES` and scopes the stat repair
+  to per-issue EDIT SCOPE lines plus a strict repair-response schema
+  (breaches log, never fail).
+  evidence: `spec-build-in-edgeless-repair-scope.md`; supersede-note in
+  `spec-wave2-orphan-reprompt.md` Spec Change Log 2026-09-11.
+  [backend/app/pipeline/build_in.py, backend/app/pipeline/statblocks.py,
+  backend/app/store/commit.py `allow_orphans`]
+
 ## Deferred from: build-in stress ladder vs 26B, step 1 (2026-09-10)
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-3-core-first-two-wave-build-in-pipeline.md`

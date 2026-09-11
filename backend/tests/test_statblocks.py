@@ -19,11 +19,14 @@ from app.pipeline.knowledge import (
     validate_stat_block,
 )
 from app.pipeline.statblocks import (
+    _FULL_REPAIR_SCOPE,
     StatIssue,
     apply_stat_repairs,
     build_stat_repair_prompt,
+    build_stat_repair_schema,
     collect_stat_issues,
     parse_stat_repair_output,
+    scope_for_violations,
     spells_reference_text,
     stat_block_rules_text,
     stat_failure_message,
@@ -384,6 +387,195 @@ def test_second_pass_prompt_carries_what_survived() -> None:
     # The rules and the output contract are unchanged between passes.
     assert "STAT BLOCK RULES" in second and "OUTPUT CONTRACT" in second
     assert second != first
+
+
+# ---------------------------------------------------------------------------
+# Repair scope map + EDIT SCOPE lines + repair schema (spec: edgeless repair scope)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("violation", "expected"),
+    [
+        # The only whole-block case: a missing/non-object block.
+        ("stat_block section missing", "whole"),
+        ("stat_block must be an object", "whole"),
+        # POWER_SCOPE: damage numbers/hp/ac/challenge only.
+        (
+            "under-powered for level 5: estimated DPR 16.0 vs 33-38 expected",
+            {"actions", "combat", "identity"},
+        ),
+        (
+            "over-powered for level 1: estimated DPR 21.0 vs 9-14 expected",
+            {"actions", "combat", "identity"},
+        ),
+        ("combat.hp 52 is frail for level 4 (expected HP 71-85)", {"combat"}),
+        (
+            "no readable damage for level 5: the actions read as attacks but state no dice",
+            {"actions"},
+        ),
+        # Identity anchor.
+        ("identity section missing or not an object", {"identity"}),
+        ("identity.role must be one of ['BBEG', 'Monster', 'NPC']", {"identity"}),
+        ("identity.cr must be an integer in [0, 30] or one of ['1/2', '1/4', '1/8']", {"identity"}),
+        ("identity.cr is not allowed for role NPC/BBEG (use level)", {"identity"}),
+        ("identity.level must be an integer in [1, 20]", {"identity"}),
+        ("identity.race must be a non-blank string", {"identity"}),
+        ("identity.race must be one of the SRD races: ['Elf', 'Human']", {"identity"}),
+        ("identity.class must be one of ['Bard', 'Fighter']", {"identity"}),
+        ("identity.alignment must be one of ['CE', 'LG']", {"identity"}),
+        # Attributes / combat.
+        ("attributes section missing or not an object", {"attributes"}),
+        ("attributes.str must be an integer in [1, 30]", {"attributes"}),
+        ("combat section missing or not an object", {"combat"}),
+        ("combat.ac must be a positive integer", {"combat"}),
+        ("combat.hp must be a positive integer", {"combat"}),
+        (
+            'combat.hit_dice must be a string holding a dice expression like "18d10 + 90"',
+            {"combat"},
+        ),
+        # Optional mechanics.
+        ("saves must be an object keyed by ability score", {"saves"}),
+        ("saves key 'luck' must be one of ['str', 'dex', 'con', 'int', 'wis', 'cha']", {"saves"}),
+        ("saves.con must be an integer in [-10, 40]", {"saves"}),
+        ("initiative must be an integer in [-10, 30]", {"initiative"}),
+        ("passive_perception must be an integer in [1, 40]", {"passive_perception"}),
+        ("proficiency_bonus must be an integer in [1, 12]", {"proficiency_bonus"}),
+        ("spellcasting must be an object", {"spellcasting"}),
+        ("spellcasting.dc must be an integer in [-5, 40]", {"spellcasting"}),
+        ("spellcasting.slots must be a list of integers in [0, 20]", {"spellcasting"}),
+        ("features must be a list of non-blank feature names", {"features"}),
+        # Structured damage parts ride the actions scope.
+        ("actions[0].damage must be a non-empty list of damage parts", {"actions"}),
+        ("actions[0].damage[1] must be an object", {"actions"}),
+        (
+            'actions[0].damage[1] needs a dice expression ("2d6") or count/sides integers',
+            {"actions"},
+        ),
+        ('actions[0].damage[1].dice must be a dice expression like "2d6"', {"actions"}),
+        ("actions[0].damage[1].bonus must be an integer", {"actions"}),
+        ("actions[0].damage[1].average must be a non-negative number", {"actions"}),
+        ("actions[0].damage[1].type must be a non-blank damage type", {"actions"}),
+        # Named lists.
+        ("skills must be a list", {"skills"}),
+        ("skills entries must be objects with a 'name'", {"skills"}),
+        ("skills name 'Acrobatikz' not in the SRD list", {"skills"}),
+        ("skills entries must have a non-blank string 'name'", {"skills"}),
+        ("skills name 'Athletics' duplicated", {"skills"}),
+        ("skills bonus for 'Athletics' must be an integer", {"skills"}),
+        ("actions must be a list", {"actions"}),
+        ("actions entries must be objects with a 'name'", {"actions"}),
+        ("actions entries must have a non-blank string 'name'", {"actions"}),
+        ("actions name 'Slash' duplicated", {"actions"}),
+        ("actions entries must have a string 'description'", {"actions"}),
+        ("traits must be a list", {"traits"}),
+        ("traits entries must be objects with a 'name'", {"traits"}),
+        ("traits entries must have a non-blank string 'name'", {"traits"}),
+        ("traits name 'Sneak' duplicated", {"traits"}),
+        ("traits entries must have a string 'description'", {"traits"}),
+        # Spells may need identity.class set to fix, so both stay editable.
+        ("spells must be a list of spell names", {"spells", "identity"}),
+        (
+            "spells are not allowed for role Monster (express magic as actions or traits)",
+            {"spells", "identity"},
+        ),
+        ("spells require identity.class (a class from the SRD class list)", {"spells", "identity"}),
+        ("spell names must be non-blank strings", {"spells", "identity"}),
+        ("spell 'Fireball' duplicated", {"spells", "identity"}),
+        ("spell 'Fireball' is not in the local SRD reference", {"spells", "identity"}),
+        ("spell 'Cure Wounds' is not on the Wizard spell list", {"spells", "identity"}),
+    ],
+)
+def test_scope_map_covers_every_violation_template(violation: str, expected: Any) -> None:
+    """SCOPE_MAP_GAP: every violation string the validator can emit maps to
+    its editable sections — a new validator message with no row here fails
+    until the scope map extends (fail-closed at test time, never a silent
+    whole-block fallback for a new kind)."""
+    scope = scope_for_violations([violation])
+    if expected == "whole":
+        assert scope == _FULL_REPAIR_SCOPE
+    else:
+        assert scope == expected
+
+
+def test_scope_map_empty_violations_raises() -> None:
+    """An empty violation list authorizes nothing — fail closed instead of
+    scoping a full-block rewrite (production never builds such an issue;
+    collect_* only flags non-empty violations)."""
+    with pytest.raises(ValueError, match="no edit scope"):
+        scope_for_violations([])
+
+
+def test_scope_map_unions_and_rejects_unknown() -> None:
+    """Two issues' scopes union; an unmapped string raises instead of
+    scoping wide."""
+    assert scope_for_violations(
+        [
+            "attributes.str must be an integer in [1, 30]",
+            "traits entries must have a string 'description'",
+        ]
+    ) == {"attributes", "traits"}
+    with pytest.raises(ValueError, match="no edit scope"):
+        scope_for_violations(["a brand-new validator message"])
+
+
+def test_repair_prompt_names_edit_scope_per_issue() -> None:
+    """POWER_SCOPE / TRAITS_SCOPE / MISSING_SCOPE: each flagged character
+    carries an EDIT SCOPE line naming exactly its editable sections."""
+    power = StatIssue(
+        0,
+        _entity("character", data={"stat_block": VALID}),
+        ("over-powered for level 5: estimated DPR 60.0 vs 33-38 expected",),
+    )
+    traits = StatIssue(
+        1,
+        _entity("character", data={"stat_block": VALID}),
+        ("traits entries must have a string 'description'",),
+    )
+    missing = StatIssue(2, _entity("character", data={}), ("stat_block section missing",))
+    prompt = build_stat_repair_prompt([power, traits, missing])
+    assert "EDIT SCOPE: actions, combat, identity" in prompt
+    assert "EDIT SCOPE: traits" in prompt
+    assert "EDIT SCOPE: whole stat_block" in prompt
+    assert "leave every other section byte-identical" in prompt
+
+
+def test_stat_repair_schema_pins_wire_literals() -> None:
+    """REPAIR_SHAPE: the repair-response schema's load-bearing literals are
+    pinned by value — trait items require name+description and damage
+    parts require their full six fields, so the E4-class shapes are
+    unemittable on enforcing backends; no minItems anywhere, so a true
+    non-combatant's empty lists stay legal."""
+    schema = build_stat_repair_schema()
+    assert schema["type"] == "json_schema"
+    named = schema["json_schema"]
+    assert named["name"] == "stat_repair" and named["strict"] is True
+    envelope = named["schema"]
+    assert envelope["required"] == ["stat_blocks"]
+    assert envelope["additionalProperties"] is False
+    entry = envelope["properties"]["stat_blocks"]["items"]
+    assert entry["required"] == ["ref", "stat_block"]
+    assert entry["additionalProperties"] is False
+    block = entry["properties"]["stat_block"]
+    assert block["required"] == ["identity", "attributes", "combat"]
+    assert block["additionalProperties"] is False
+    traits = block["properties"]["traits"]["items"]
+    assert traits["required"] == ["name", "description"]
+    assert traits["additionalProperties"] is False
+    damage = block["properties"]["actions"]["items"]["properties"]["damage"]["items"]
+    assert damage["required"] == ["dice", "count", "sides", "bonus", "average", "type"]
+    assert damage["additionalProperties"] is False
+
+    def schema_keys(node: Any) -> list[str]:
+        found = list(node) if isinstance(node, dict) else []
+        for value in node.values() if isinstance(node, dict) else []:
+            found.extend(schema_keys(value))
+            if isinstance(value, list):
+                for item in value:
+                    found.extend(schema_keys(item))
+        return found
+
+    assert "minItems" not in schema_keys(schema)
 
 
 def test_rules_text_carries_vocabularies() -> None:

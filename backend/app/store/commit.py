@@ -305,6 +305,8 @@ def commit_subgraph(
     entities: Sequence[models.EntityInput] = (),
     edges: Sequence[models.EdgeInput] = (),
     base_revision: str | None = None,
+    *,
+    allow_orphans: bool = False,
 ) -> models.Revision:
     """Commit a staged subgraph atomically; returns the new revision.
 
@@ -317,10 +319,23 @@ def commit_subgraph(
     ``UnknownEdgeError`` (an explicit edge id names no edge of this
     campaign — explicit ids update, they never create), or
     ``OrphanEntityError`` (FR2: a newly created entity with zero edges
-    into staged or existing state).
+    into staged or existing state — unless ``allow_orphans``).
+
+    ``allow_orphans`` skips the FR2 create-only check for this commit
+    alone. Only the build-in wave-1 runner passes it (owner verdict
+    2026-09-11: edgeless wave-1 commits, the DM prunes); every other
+    caller — DM edits, wave 2, candidate accepts — keeps the default
+    rejection.
     """
     with session_scope() as session:
-        return _commit(session, campaign_id, list(entities), list(edges), base_revision)
+        return _commit(
+            session,
+            campaign_id,
+            list(entities),
+            list(edges),
+            base_revision,
+            allow_orphans=allow_orphans,
+        )
 
 
 def _commit(
@@ -329,6 +344,8 @@ def _commit(
     entities: list[models.EntityInput],
     edges: list[models.EdgeInput],
     base_revision: str | None,
+    *,
+    allow_orphans: bool = False,
 ) -> models.Revision:
     if session.get(models.Campaign, campaign_id) is None:
         raise UnknownCampaignError(campaign_id)
@@ -411,9 +428,10 @@ def _commit(
     # commits are unaffected; wave-1's first commit (empty world) commits
     # because its edges are staged in the same subgraph. Self-loops never
     # connect: the pipeline forbids them outright and they do not weave
-    # the entity into the world.
+    # the entity into the world. Skipped only under ``allow_orphans``
+    # (build-in wave 1, owner verdict 2026-09-11).
     new_entity_ids = {staged_id for staged_id, _entity, existing in staged if existing is None}
-    if new_entity_ids:
+    if new_entity_ids and not allow_orphans:
         connected: set[str] = set()
         for edge in edges:
             if edge.src != edge.dst:

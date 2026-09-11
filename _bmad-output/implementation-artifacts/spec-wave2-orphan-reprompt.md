@@ -69,6 +69,14 @@ context: []
   every other boundary (one re-prompt only, no partial commits, no auto-drop,
   other rejection kinds immediate) is unchanged. Owner veto restores fail-fast
   by deleting the wave-1 `except _OrphanRetryError` block.
+- 2026-09-11 — WAVE-1 HALF SUPERSEDED (spec-build-in-edgeless-repair-scope,
+  owner verdict: drop confirmed 2026-09-11): the wave-1 re-emit above is
+  reversed — rung 10 attempt 3 died over E8 unwired twice, and wiring the
+  model will not invent is not worth a lost build. Wave-1 edgeless
+  entities commit as-is (one straight call, no re-emit; the commit passes
+  `allow_orphans` through the store FR2 backstop explicitly); the DM
+  prunes. The wave-2 half of this spec (anchor rule, signal, one bounded
+  re-emit, drop guard) stands byte-identical in behavior.
 
 ## Design Notes
 

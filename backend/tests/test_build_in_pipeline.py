@@ -23,6 +23,7 @@ from app.pipeline import combat
 from app.pipeline.build_in import (
     _build_record_repair_prompt,
     _collect_record_issues,
+    _log_stat_repair_scope_breaches,
     _OrphanRetryError,
     _repair_retry_prompt,
     _validate_subgraph,
@@ -35,6 +36,8 @@ from app.pipeline.fencing import json_error
 from app.pipeline.knowledge import validate_stat_block
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import (
+    StatIssue,
+    build_stat_repair_schema,
     canonicalize_action_damage,
     conform_power,
     is_conformable,
@@ -43,6 +46,7 @@ from app.pipeline.statblocks import (
 )
 from app.pipeline.worker import run_next_job
 from app.store import (
+    EDGE_TYPES,
     InvalidJobInputError,
     app_db_url,
     cancel_job,
@@ -174,29 +178,16 @@ def _wave1_output() -> dict[str, Any]:
     }
 
 
-def _wave1_output_orphans() -> dict[str, Any]:
+def _wave1_output_edgeless() -> dict[str, Any]:
     """A wave-1 output whose last two entities carry no edge at all — the
     live 2026-09-11 shape (a wired core with unwired factions/places
-    appended after it); the no-orphan rule rejects the first attempt."""
+    appended after it); wave 1 commits it edgeless (owner verdict
+    2026-09-11 — the DM prunes)."""
     output = _wave1_output()
     output["entities"].extend(
         [
             {"ref": "E2", "kind": "faction", "name": "Myconid Colony"},
             {"ref": "E3", "kind": "place", "name": "Grymforge"},
-        ]
-    )
-    return output
-
-
-def _wave1_output_orphans_healed() -> dict[str, Any]:
-    """The orphan output with both tail entities wired into the subgraph —
-    same entities in the same order (the re-emit drop guard requires it),
-    each carrying an internal edge."""
-    output = _wave1_output_orphans()
-    output["edges"].extend(
-        [
-            {"src": "E2", "dst": "E0", "type": "ally_of", "counter": 2},
-            {"src": "E1", "dst": "E3", "type": "located_in"},
         ]
     )
     return output
@@ -429,7 +420,9 @@ def test_wave_calls_carry_envelope_schema(world: str) -> None:
 def test_wave2_and_reemit_carry_envelope_schema(world: str) -> None:
     """WAVE2_AND_REEMIT_CARRY: wave 2 and the orphan re-emit carry the
     envelope schema too — reverting either call site to plain settings
-    fails this (the wave-1-only test never executes those lines)."""
+    fails this (the wave-1-only test never executes those lines). The
+    re-emit half runs on wave 2: wave 1 commits edgeless and never
+    re-emits (spec: edgeless repair scope)."""
     expected = build_wave_schema()
     seen: list[Any] = []
     responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
@@ -447,27 +440,28 @@ def test_wave2_and_reemit_carry_envelope_schema(world: str) -> None:
 
     seen_reemit: list[Any] = []
     responses_reemit = [
-        json.dumps(_wave1_output_orphans()),
-        json.dumps(_wave1_output_orphans_healed()),
+        json.dumps(_wave1_output()),
+        json.dumps(_wave2_output_orphan()),
+        json.dumps(_wave2_output_orphan_healed()),
     ]
 
     def fake_reemit(prompt: str, settings: LLMSettings) -> str:
         seen_reemit.append(settings.response_format)
         return responses_reemit.pop(0)
 
-    job_id2 = _enqueue(world, places=["Greymarch"])
+    job_id2 = _enqueue(world, notes="more world")
     processed2 = run_next_job(provider=fake_reemit, settings=SETTINGS)
     assert processed2 == job_id2
     job2, _position = job_status(job_id2)
     assert job2.state == "succeeded"
-    assert seen_reemit == [expected, expected]
+    assert seen_reemit == [expected, expected, expected]
 
 
 def test_wave_envelope_schema_pins_wire_literals() -> None:
     """The envelope's load-bearing literals are pinned by value — the
     carry test compares the builder to itself, so a flipped literal
-    (additionalProperties True, a dropped required key) would stay green
-    without this pin."""
+    (additionalProperties True, a dropped required key, a widened edge
+    type) would stay green without this pin."""
     schema = build_wave_schema()
     assert schema["type"] == "json_schema"
     named = schema["json_schema"]
@@ -481,12 +475,20 @@ def test_wave_envelope_schema_pins_wire_literals() -> None:
     edges = envelope["properties"]["edges"]["items"]
     assert edges["required"] == ["src", "dst", "type"]
     assert edges["additionalProperties"] is False
+    # BAD_TYPE_WIRE: the edge type is an enum single-sourced from the
+    # store vocabulary — an invented type is unemittable on
+    # grammar-enforcing backends. Pinned by value so a widened type
+    # (or a stale copy of the vocabulary) fails here, not live.
+    assert edges["properties"]["type"] == {"enum": sorted(EDGE_TYPES)}
 
 
-def test_repair_calls_keep_plain_settings(world: str) -> None:
-    """REPAIR_PLAIN_SETTINGS: the stat-repair call carries no schema —
-    passing the wave settings into a gate would constrain a
-    {"stat_blocks": [...]} response to the wave envelope undetected."""
+def test_stat_repair_calls_carry_repair_schema(world: str) -> None:
+    """REPAIR_SCHEMA_CARRY (spec: edgeless repair scope): the wave call
+    carries the wave envelope while the stat-repair call carries the
+    strict repair-response schema — passing the wave settings into the
+    gate would constrain a {"stat_blocks": [...]} response to the wave
+    envelope undetected, and plain settings would leave the E4-class
+    shapes emittable."""
     output = _wave1_output()
     bad_block = dict(_MIRA_STAT_BLOCK)
     bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
@@ -511,7 +513,114 @@ def test_repair_calls_keep_plain_settings(world: str) -> None:
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert seen[0] == build_wave_schema()
-    assert seen[1] is None
+    assert seen[1] == build_stat_repair_schema()
+
+
+def test_wave2_stat_repair_carries_repair_schema(world: str) -> None:
+    """WAVE2_REPAIR_CARRY: the wave-2 stat-repair call carries the strict
+    repair-response schema too — the wave-1-only carry test never executes
+    the wave-2 gate lines, so dropping the kwarg there stayed green."""
+    wave2 = _wave2_output()
+    bad_block = dict(_MIRA_STAT_BLOCK)
+    bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
+    wave2["entities"][1]["data"] = {
+        **_character_record("Captain Harlow"),
+        "stat_block": bad_block,
+    }
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(wave2),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+    seen: list[Any] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"], notes="more world")
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        seen.append(settings.response_format)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert seen == [build_wave_schema(), build_wave_schema(), build_stat_repair_schema()]
+
+
+def test_gate_repair_breach_logs_through_run(caplog: pytest.LogCaptureFixture, world: str) -> None:
+    """BREACH_GATE_WIRING: a repair that drifts outside its EDIT SCOPE on a
+    live job emits the scope-breach warning through run_next_job — deleting
+    the gate call site would silence telemetry while the helper test stays
+    green."""
+    output = _wave1_output()
+    bad_block = dict(_MIRA_STAT_BLOCK)
+    bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
+    output["entities"][1]["data"] = {
+        **_character_record("Mira Vane"),
+        "stat_block": bad_block,
+    }
+    drifted_block = {
+        **_MIRA_STAT_BLOCK,
+        "traits": [{"name": "Sneak Attack", "description": "once per turn"}],
+    }
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": drifted_block}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        return responses.pop(0)
+
+    with caplog.at_level("WARNING", logger="app.pipeline.build_in"):
+        processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert "scope breach" in caplog.text and "traits" in caplog.text
+
+
+def test_stat_repair_scope_breach_logs_log_only(caplog: pytest.LogCaptureFixture) -> None:
+    """SCOPE_BREACH_LOG: a repair that rewrites a section outside its EDIT
+    SCOPE logs a warning naming the paths — and nothing else happens
+    (log-only: never a new failure class, never merge rejection; the
+    re-audit stays authoritative)."""
+    before = dict(_MIRA_STAT_BLOCK)
+    entity = models.EntityInput(
+        kind="character",
+        name="Mira Vane",
+        data={**_character_record("Mira Vane"), "stat_block": before},
+    )
+    issue = StatIssue(1, entity, ("attributes.str must be an integer in [1, 30]",))
+    # In-scope edit (attributes only) → quiet.
+    fixed = {**before, "attributes": {**before["attributes"], "str": 14}}
+    with caplog.at_level("WARNING", logger="app.pipeline.build_in"):
+        _log_stat_repair_scope_breaches(
+            [issue], {1: before}, {1: fixed}, job_id="job-1", attempt=1, wave=1
+        )
+    assert "scope breach" not in caplog.text
+    # Out-of-scope edit (traits rewritten on an attributes-only issue) → warning.
+    caplog.clear()
+    drifted = {**fixed, "traits": [{"name": "Sneak Attack", "description": "once"}]}
+    with caplog.at_level("WARNING", logger="app.pipeline.build_in"):
+        _log_stat_repair_scope_breaches(
+            [issue], {1: before}, {1: drifted}, job_id="job-1", attempt=1, wave=1
+        )
+    assert "scope breach" in caplog.text and "traits" in caplog.text
+    assert "job-1" in caplog.text and "wave 1" in caplog.text and "attempt 1" in caplog.text
+    # Nested drift under an unchanged top-level key (the E8-class bonus
+    # rewrite) → warning naming the path, not silence.
+    caplog.clear()
+    part = {"dice": "1d8", "count": 1, "sides": 8, "bonus": 4, "average": 8.5, "type": "slashing"}
+    old_armed = {**before, "actions": [{**before["actions"][0], "damage": [part]}]}
+    new_armed = {
+        **old_armed,
+        "actions": [{**old_armed["actions"][0], "damage": [{**part, "bonus": 69}]}],
+    }
+    with caplog.at_level("WARNING", logger="app.pipeline.build_in"):
+        _log_stat_repair_scope_breaches(
+            [issue], {1: old_armed}, {1: new_armed}, job_id="job-1", attempt=2, wave=1
+        )
+    assert "scope breach" in caplog.text and "actions[0].damage[0].bonus" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -586,9 +695,10 @@ def test_non_canonical_refs_rejected(world: str) -> None:
 
 
 def test_self_loop_edges_rejected(world: str) -> None:
-    """A self-loop never satisfies the orphan rule: edges must connect
-    distinct entities, so an all-self-loop subgraph fails naming the
-    edge and commits nothing."""
+    """A self-loop is rejected outright: edges must connect distinct
+    entities, so an all-self-loop subgraph fails naming the edge and
+    commits nothing (wave-1's edgeless commit changes nothing here —
+    edgeless is unwired, never self-wired)."""
     output = {
         "entities": [
             {"ref": "E0", "kind": "place", "name": "Solo"},
@@ -645,43 +755,49 @@ def test_bad_vocab_fails_naming_type_zero_commits(world: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ORPHAN (spec: wave-2 orphan re-prompt; wave 1 added 2026-09-11)
+# EDGELESS WAVE 1 (spec: edgeless repair scope, owner verdict 2026-09-11 —
+# the 2026-09-11 wave-1 re-emit is reversed: wiring the model will not
+# invent is not worth a lost build; the DM prunes. Wave-2 anchor tests
+# live under WAVE-2 ORPHAN RE-PROMPT below and are untouched.)
 # ---------------------------------------------------------------------------
 
 
-def test_orphan_wave1_raises_the_retry_signal() -> None:
-    """SIGNAL: a wave-1 subgraph that is valid except for orphans raises the
-    retry signal (never a plain JobPayloadError) carrying the wave and the
-    orphan E refs — that type is what the runner's one bounded re-emit
-    catches."""
-    with pytest.raises(_OrphanRetryError) as excinfo:
-        _validate_subgraph(1, _wave1_output_orphans())
-    assert excinfo.value.wave == 1
-    assert excinfo.value.orphans == [("Myconid Colony", 2), ("Grymforge", 3)]
-    assert "'Myconid Colony' (E2)" in str(excinfo.value)
-    assert "no edge in the subgraph" in str(excinfo.value)
+def test_wave1_edgeless_entities_validate() -> None:
+    """EDGELESS_WAVE1 (validator): a wave-1 subgraph that is valid except
+    for edgeless tail entities validates as-is — no retry signal, no
+    rejection — mapping every entity and edge through."""
+    entities, edges = _validate_subgraph(1, _wave1_output_edgeless())
+    assert [entity.name for entity in entities] == [
+        "The Gilded Bar",
+        "Mira Vane",
+        "Myconid Colony",
+        "Grymforge",
+    ]
+    assert len(edges) == 2
 
 
-def test_wave1_orphan_retry_heals_and_commits(world: str) -> None:
-    """WAVE1_ORPHAN_RETRY: a wave-1 output whose tail entities carry no edge
-    triggers exactly one re-emit naming them with E refs; the healed re-emit
-    wires them into the subgraph and the whole core commits — the entire
-    build used to die here with zero commits."""
-    responses = [json.dumps(_wave1_output_orphans()), json.dumps(_wave1_output_orphans_healed())]
+def test_wave1_edgeless_commits_with_one_wave_call(
+    world: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """EDGELESS_WAVE1 (job): a wave-1 output whose tail entities carry no
+    edge commits as-is with exactly one wave call and no re-emit — the
+    entire build used to die here with zero commits."""
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
         calls.append(prompt)
-        return responses.pop(0)
+        return json.dumps(_wave1_output_edgeless())
 
     job_id = _enqueue(world, places=["Greymarch"])
-    processed = run_next_job(provider=provider, settings=SETTINGS)
+    with caplog.at_level("INFO", logger="app.pipeline.build_in"):
+        processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == job_id
-    assert len(calls) == 2  # wave 1 + the one orphan re-emit — never more
-    assert "PREVIOUS RESPONSE ORPHANS" in calls[1]
-    assert "'Myconid Colony' (E2), 'Grymforge' (E3)" in calls[1]
+    assert len(calls) == 1  # the single wave call — never a re-emit
+    assert all("PREVIOUS RESPONSE ORPHANS" not in call for call in calls)
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
+    assert "committed edgeless" in caplog.text
+    assert "Myconid Colony" in caplog.text and "Grymforge" in caplog.text
     assert job.result is not None and job.result["entity_count"] == 4
     with session_scope() as session:
         assert len(revision_chain(session, world)) == 1
@@ -693,68 +809,16 @@ def test_wave1_orphan_retry_heals_and_commits(world: str) -> None:
         }
 
 
-def test_orphan_wave1_second_miss_fails_naming_entity(world: str) -> None:
-    """SECOND_MISS: a re-emit that is STILL orphan fails the job naming the
-    orphans with E refs; zero commits — wave 1 is the first wave, so the
-    whole build writes nothing."""
-    output = _wave1_output_orphans()
-    calls: list[str] = []
-
-    def provider(prompt: str, settings: LLMSettings) -> str:
-        calls.append(prompt)
-        return json.dumps(output)
-
-    job_id = _enqueue(world, places=["Greymarch"])
-    processed = run_next_job(provider=provider, settings=SETTINGS)
-    assert processed == job_id
-    assert len(calls) == 2  # exactly one re-emit — never a third attempt
-    job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert "'Myconid Colony' (E2)" in (job.error or "")
-    with session_scope() as session:
-        assert revision_chain(session, world) == []
-
-
-def test_wave1_orphan_retry_reemit_dropping_orphan_fails(world: str) -> None:
-    """REMIT_DROP: a wave-1 re-emit that omits the orphans instead of wiring
-    them fails loudly naming the drop — no third attempt, nothing
-    committed."""
-    responses = [json.dumps(_wave1_output_orphans()), json.dumps(_wave1_output())]
-    calls: list[str] = []
-
-    def provider(prompt: str, settings: LLMSettings) -> str:
-        calls.append(prompt)
-        return responses.pop(0)
-
-    job_id = _enqueue(world, places=["Greymarch"])
-    processed = run_next_job(provider=provider, settings=SETTINGS)
-    assert processed == job_id
-    assert len(calls) == 2
-    job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert "Myconid Colony" in (job.error or "") and "dropped" in (job.error or "")
-    with session_scope() as session:
-        assert revision_chain(session, world) == []
-
-
-def test_wave1_orphan_retry_budget_exhausted(world: str) -> None:
-    """RETRY_BUDGET: max_llm_calls=1 — the wave-1 attempt exhausts the
-    budget, so the re-emit is refused before any HTTP request and the job
-    fails naming the budget with zero commits."""
-    job_id = _enqueue(world, places=["Greymarch"], max_llm_calls=1)
-    calls: list[str] = []
-
-    def provider(prompt: str, settings: LLMSettings) -> str:
-        calls.append(prompt)
-        return json.dumps(_wave1_output_orphans())
-
-    run_next_job(provider=provider, settings=SETTINGS)
-    job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert "budget" in (job.error or "").lower()
-    assert len(calls) == 1  # the re-emit never reached the provider
-    with session_scope() as session:
-        assert revision_chain(session, world) == []
+def test_validate_subgraph_rejects_unknown_wave() -> None:
+    """WAVE_GUARD: a wave other than 1 or 2 raises ValueError (programmer
+    error, never a JobPayloadError) instead of silently validating as
+    wave 2."""
+    parsed = {
+        "entities": [{"ref": "E0", "kind": "place", "name": "Nowhere"}],
+        "edges": [],
+    }
+    with pytest.raises(ValueError, match="unknown wave"):
+        _validate_subgraph(7, parsed)
 
 
 # ---------------------------------------------------------------------------

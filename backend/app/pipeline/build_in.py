@@ -1,20 +1,21 @@
 """The build-in runner (spec-2.3 + spec-2.4): one job, two internal waves.
 
 Wave 1 digests the named sections (places, factions, key figures) into a
-fully networked core subgraph of ``character``/``faction``/``place``
-entities + typed edges and commits it atomically (one revision); every
-wave-1 character must first carry the full AR24 record and a valid minimal
-stat block, each repaired in at most one bounded pass (AR25). Wave 2
-digests ``notes`` into a second subgraph — every new entity wired by at
-least one typed edge into the committed core — committed against wave 1's
-revision (a DM edit landing between the waves raises
-``StaleRevisionError`` and the job fails; never a silent overwrite,
-AD-2).
+core subgraph of ``character``/``faction``/``place`` entities + typed edges
+and commits it atomically (one revision); every wave-1 character must first
+carry the full AR24 record and a valid minimal stat block, each repaired in
+at most one bounded pass (AR25). Wave 2 digests ``notes`` into a second
+subgraph — every new entity wired by at least one typed edge into the
+committed core — committed against wave 1's revision (a DM edit landing
+between the waves raises ``StaleRevisionError`` and the job fails; never a
+silent overwrite, AD-2).
 
-Structure has the same one-bounded-pass rule: a wave whose ONLY defect is
-orphan entities (spec: wave-2 orphan re-prompt; wave 1 added 2026-09-11
-after a live 10-entity wave-1 died over three unwired factions) is
-re-emitted once with the orphans named; a second miss fails the job.
+Structure keeps its one bounded pass on wave 2 only (spec: wave-2 orphan
+re-prompt): a wave-2 subgraph whose ONLY defect is core-unanchored entities
+is re-emitted once with the orphans named; a second miss fails the job.
+Wave 1 commits edgeless (owner verdict 2026-09-11, reversing the 2026-09-11
+wave-1 re-emit — wiring the model will not invent is not worth a lost
+build; the DM prunes).
 
 Wave ref schemes: wave 1's entities are ``E<index>`` (positional), wave
 2's new entities are ``N<index>`` (positional) so the model never reuses
@@ -47,12 +48,15 @@ from app.pipeline.fencing import strip_fence as _strip_fence
 from app.pipeline.knowledge import ROLES
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import (
+    StatIssue,
     apply_stat_repairs,
     build_stat_repair_prompt,
+    build_stat_repair_schema,
     canonicalize_stat_blocks,
     collect_stat_issues,
     conform_stat_power,
     parse_stat_repair_output,
+    scope_for_violations,
     spells_reference_text,
     stat_block_rules_text,
     stat_failure_message,
@@ -232,6 +236,9 @@ def _enforce_stat_blocks(
     provider: Callable[..., str],
     settings: LLMSettings,
     entities: list[models.EntityInput],
+    *,
+    repair_response_format: dict[str, Any] | None = None,
+    wave: int | None = None,
 ) -> tuple[list[models.EntityInput], bool]:
     """The stat-block gate shared by both waves and the regenerate path:
     collect issues, run up to TWO bounded repair passes, re-check, then the
@@ -257,21 +264,34 @@ def _enforce_stat_blocks(
     # (spec: structured attack damage and the missing stat aspects).
     entities = canonicalize_stat_blocks(entities)
     issues = collect_stat_issues(entities)
+    # Repair calls carry the strict repair-response schema via a settings
+    # copy (spec: edgeless repair scope) — the wave calls keep the wave
+    # envelope, the record/name gates keep plain settings (Never list).
+    # Both the initial repair call and _run_repair's one JSON retry ride
+    # these settings, so the shape is enforced on every repair attempt.
+    if repair_response_format is None:
+        repair_settings = settings
+    else:
+        repair_settings = dataclasses.replace(settings, response_format=repair_response_format)
     for attempt in (1, 2):
         if not issues:
             break
         if not _job_still_running(job):
             return entities, True
+        before = {issue.position: issue.entity.data.get("stat_block") for issue in issues}
         repaired = _run_repair(
             budget=budget,
             provider=provider,
-            settings=settings,
+            settings=repair_settings,
             prompt=build_stat_repair_prompt(issues, attempt=attempt),
             parse=parse_stat_repair_output,
             positions=[issue.position for issue in issues],
             label="stat",
             retry_note='Return ONLY a "stat_blocks" list — each entry '
             '{"ref": "E<position>", "stat_block": {...}} with the full corrected block.',
+        )
+        _log_stat_repair_scope_breaches(
+            issues, before, repaired, job_id=job.id, attempt=attempt, wave=wave
         )
         entities = apply_stat_repairs(entities, repaired)
         # The repair response is model output like any other: re-canonicalize
@@ -292,6 +312,78 @@ def _enforce_stat_blocks(
     if issues:
         raise JobPayloadError(stat_failure_message(issues))
     return entities, False
+
+
+def _changed_paths(old: Any, new: Any, path: str = "") -> list[str]:
+    """Dotted/bracketed paths where two JSON values differ (spec: edgeless
+    repair scope) — the breach log names nested drift (``actions[0].damage``)
+    not just top-level sections, so an E8-class bonus rewrite under an
+    unchanged ``actions`` key still logs."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        paths: list[str] = []
+        for key in set(old) | set(new):
+            child = f"{path}.{key}" if path else str(key)
+            if key in old and key in new and old[key] != new[key]:
+                if isinstance(old[key], (dict, list)) and isinstance(new[key], type(old[key])):
+                    paths.extend(_changed_paths(old[key], new[key], child))
+                else:
+                    paths.append(child)
+            elif key not in old or key not in new:
+                paths.append(child)
+        return paths
+    if isinstance(old, list) and isinstance(new, list):
+        paths = []
+        for index, (item_old, item_new) in enumerate(zip(old, new, strict=False)):
+            child = f"{path}[{index}]"
+            if item_old != item_new:
+                if isinstance(item_old, (dict, list)) and isinstance(item_new, type(item_old)):
+                    paths.extend(_changed_paths(item_old, item_new, child))
+                else:
+                    paths.append(child)
+        for index in range(min(len(old), len(new)), max(len(old), len(new))):
+            paths.append(f"{path}[{index}]")
+        return paths
+    return [path] if old != new else []
+
+
+def _log_stat_repair_scope_breaches(
+    issues: Sequence[StatIssue],
+    before: Mapping[int, Any],
+    repaired: Mapping[int, dict[str, Any]],
+    *,
+    job_id: str,
+    attempt: int,
+    wave: int | None,
+) -> None:
+    """Log-only scope check on what the model actually emitted (spec:
+    edgeless repair scope): for each repaired position, the changed paths
+    versus the pre-repair block must sit inside ``scope_for_violations``
+    for that issue's violations. Breaches log with paths plus job, wave,
+    and attempt for the next decision; the re-audit stays authoritative —
+    never a new failure class, never silent drift, never merge rejection.
+    Compared against the raw repair output (not the re-canonicalized
+    block) so the gate's own folding is never misread as model drift; a
+    missing pre-repair block is whole-block scope, nothing to flag."""
+    for issue in issues:
+        old = before.get(issue.position)
+        new = repaired.get(issue.position)
+        if not isinstance(old, dict) or not isinstance(new, dict):
+            continue
+        allowed = scope_for_violations(issue.violations)
+        paths = _changed_paths(old, new)
+        extra = sorted(path for path in paths if path.split(".")[0].split("[")[0] not in allowed)
+        if extra:
+            logger.warning(
+                "stat repair scope breach: E%s changed %s outside EDIT SCOPE %s "
+                "(violations: %s; job %s, wave %s, attempt %s)",
+                issue.position,
+                extra,
+                sorted(allowed),
+                list(issue.violations),
+                job_id,
+                wave if wave is not None else "?",
+                attempt,
+            )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -672,11 +764,11 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     writes progress or a terminal state on the cancelled job. Any failure
     (provider, budget, malformed output, invalid subgraph, stale base)
     propagates so the worker fails the job; earlier committed waves stay.
-    Each wave has one repair pass for structure (spec: wave-2 orphan
-    re-prompt, extended to wave 1 on 2026-09-11): a subgraph that is valid
-    except for orphan entities gets one full re-emit naming the orphans; a
-    still-orphan (or entity-dropping) re-emit fails the job — for wave 2
-    with wave 1 committed, for wave 1 with nothing committed.
+    Structure keeps its one bounded pass on wave 2 only (spec: wave-2 orphan
+    re-prompt): a wave-2 subgraph whose ONLY defect is core-unanchored
+    entities gets one full re-emit naming the orphans; a still-orphan (or
+    entity-dropping) re-emit fails the job with wave 1 committed. Wave 1
+    commits edgeless (owner verdict 2026-09-11) — the DM prunes.
     """
     with session_scope() as session:
         seed = campaign_seed(session, job.campaign_id)
@@ -696,46 +788,15 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
 
     budget = CallBudget(job)
     # Wave calls carry the flat envelope schema via a settings copy — the
-    # provider doubles keep their ``(prompt, settings)`` shape and repair
-    # gates keep plain ``settings`` (schema on wave paths only, Never list).
+    # provider doubles keep their ``(prompt, settings)`` shape.
     wave_settings = dataclasses.replace(settings, response_format=build_wave_schema())
-
-    # Wave 1: the named sections -> a committed, fully networked core.
+    # Wave 1: the named sections -> a committed core (edgeless allowed).
     if not _job_still_running(job):
         return
     prompt_1 = build_wave1_prompt(seed, payload)
     text_1 = budget.call(lambda: provider(prompt_1, settings=wave_settings))
     parsed_1 = parse_build_output(text_1, wave=1)
-    try:
-        entities_1, edges_1 = _validate_subgraph(1, parsed_1)
-    # NOTE: this handler must precede any `except JobPayloadError` —
-    # _OrphanRetryError subclasses it, so a broader handler first would
-    # swallow the retry signal and orphans would fail immediately.
-    except _OrphanRetryError as exc:
-        # ORPHAN_RETRY (2026-09-11, the wave-1 half of the wave-2 orphan
-        # re-prompt spec): the only _validate_subgraph rejection with a
-        # repair pass. Wave 1 had none, so a model that appended three
-        # unwired factions after a fully-wired core cost the DM the ENTIRE
-        # build — wave 1 commits nothing, so there was no core to keep
-        # (live job 01M27S237NNWFMZ2SHA7RG9383: 10 entities, E7-E9 orphan).
-        # One full re-emit naming them, through the same budget and the
-        # same name/record/stat gates below; a still-orphan (or
-        # entity-dropping) re-emit raises again and fails the job with
-        # nothing committed.
-        first_names_1 = _wave_entity_names(parsed_1)
-        retried_1 = _orphan_reemit(
-            job=job,
-            budget=budget,
-            provider=provider,
-            settings=settings,
-            wave=1,
-            base_prompt=prompt_1,
-            orphans=exc.orphans,
-        )
-        if retried_1 is None:
-            return
-        _raise_on_reemit_entity_change(1, first_names_1, _wave_entity_names(retried_1))
-        entities_1, edges_1 = _validate_subgraph(1, retried_1)
+    entities_1, edges_1 = _validate_subgraph(1, parsed_1)
     # Only characters carry stat blocks (AR24, spec-2.4 review decision): a
     # stray block from a faction/place is stripped before validation or commit.
     entities_1 = strip_noncharacter_stat_blocks(entities_1)
@@ -761,10 +822,28 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # a valid minimal stat block before the wave commits — or exactly one
     # bounded repair pass; a block still invalid after the repair fails the
     # job with an error event, zero commits.
-    entities_1, cancelled = _enforce_stat_blocks(job, budget, provider, settings, entities_1)
+    entities_1, cancelled = _enforce_stat_blocks(
+        job,
+        budget,
+        provider,
+        settings,
+        entities_1,
+        repair_response_format=build_stat_repair_schema(),
+        wave=1,
+    )
     if cancelled:
         return
-    revision_1 = commit_subgraph(job.campaign_id, entities_1, edges_1, base_revision=wave1_base)
+    # Edgeless wave-1 commits through the store's FR2 backstop explicitly
+    # (owner verdict 2026-09-11): the pipeline no longer requires internal
+    # wiring, so the commit must not either — the DM prunes. Every other
+    # caller keeps the default (reject), including wave 2 below.
+    revision_1 = commit_subgraph(
+        job.campaign_id, entities_1, edges_1, base_revision=wave1_base, allow_orphans=True
+    )
+    touched = {edge.src for edge in edges_1} | {edge.dst for edge in edges_1}
+    edgeless = sorted(entity.name for entity in entities_1 if entity.id not in touched)
+    if edgeless:
+        logger.info("wave 1 committed edgeless: %s (job %s)", edgeless, job.id)
     waves: list[dict[str, Any]] = [_wave_result(1, revision_1.id, entities_1, edges_1)]
     # Cancel-race poll: a cancel that landed during wave 1's call/commit
     # leaves the committed core in place but stops before progress writes.
@@ -808,14 +887,13 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
                 budget=budget,
                 provider=provider,
                 settings=settings,
-                wave=2,
                 base_prompt=prompt_2,
                 orphans=exc.orphans,
                 core_count=core_count,
             )
             if retried_2 is None:
                 return
-            _raise_on_reemit_entity_change(2, first_names_2, _wave_entity_names(retried_2))
+            _raise_on_reemit_entity_change(first_names_2, _wave_entity_names(retried_2))
             entities_2, edges_2 = _validate_subgraph(
                 2, retried_2, context=context_entities, core_count=core_count
             )
@@ -833,7 +911,15 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         )
         if cancelled:
             return
-        entities_2, cancelled = _enforce_stat_blocks(job, budget, provider, settings, entities_2)
+        entities_2, cancelled = _enforce_stat_blocks(
+            job,
+            budget,
+            provider,
+            settings,
+            entities_2,
+            repair_response_format=build_stat_repair_schema(),
+            wave=2,
+        )
         if cancelled:
             return
         # Cancel-race poll: a cancel during the wave-2 call/validation must
@@ -1045,8 +1131,11 @@ def build_wave_schema() -> dict[str, Any]:
     measured ``json_schema`` convention; the inner schema is flat and ``$ref``-free
     (GBNF subset). ``data`` stays an open object (record keys vary);
     ``additionalProperties: false`` on the entity item makes beside-``data``
-    slips unrepresentable. Parsing, validators, and all gates stay the backstop —
-    the schema is the optimization, so fenced/prose output still parses identically.
+    slips unrepresentable, and the edge ``type`` is an enum single-sourced
+    from ``store.EDGE_TYPES`` (spec: edgeless repair scope), so an invented
+    type is unemittable on grammar-enforcing backends. Parsing, validators,
+    and all gates stay the backstop — the schema is the optimization, so
+    fenced/prose output still parses identically.
     """
     return {
         "type": "json_schema",
@@ -1080,7 +1169,7 @@ def build_wave_schema() -> dict[str, Any]:
                             "properties": {
                                 "src": {"type": "string"},
                                 "dst": {"type": "string"},
-                                "type": {"type": "string"},
+                                "type": {"enum": sorted(EDGE_TYPES)},
                                 "counter": {"type": "integer"},
                             },
                             "additionalProperties": False,
@@ -1123,51 +1212,42 @@ def _orphan_reemit(
     budget: CallBudget,
     provider: Callable[..., str],
     settings: LLMSettings,
-    wave: int,
     base_prompt: str,
     orphans: Sequence[tuple[str, int]],
     core_count: int = 0,
 ) -> dict[str, Any] | None:
-    """The one bounded orphan re-emit (spec: wave-2 orphan re-prompt; wave 1
-    added 2026-09-11): the wave's own prompt plus a PREVIOUS RESPONSE ORPHANS
-    line naming each orphan by name and ref, re-run through the provider and
-    parsed with that wave's contract. Returns the parsed re-emit, or None
-    when the job was cancelled before the call — the caller stops without
-    committing, the same cancel-race rule as the first attempt."""
+    """The one bounded orphan re-emit (spec: wave-2 orphan re-prompt) — the
+    wave-2 anchor's only repair pass: the wave's own prompt plus a PREVIOUS
+    RESPONSE ORPHANS line naming each orphan by name and N ref, re-run
+    through the provider and parsed with the wave-2 contract. Returns the
+    parsed re-emit, or None when the job was cancelled before the call —
+    the caller stops without committing, the same cancel-race rule as the
+    first attempt."""
     if not _job_still_running(job):
         return None
-    retry_prompt = _build_orphan_retry_prompt(
-        base_prompt, orphans, wave=wave, core_count=core_count
-    )
+    retry_prompt = _build_orphan_retry_prompt(base_prompt, orphans, core_count=core_count)
     text = budget.call(
         lambda: provider(
             retry_prompt,
             settings=dataclasses.replace(settings, response_format=build_wave_schema()),
         )
     )
-    return parse_build_output(text, wave=wave)
+    return parse_build_output(text, wave=2)
 
 
 def _build_orphan_retry_prompt(
     base_prompt: str,
     orphans: Sequence[tuple[str, int]],
     *,
-    wave: int,
     core_count: int = 0,
 ) -> str:
-    """The base wave prompt plus a PREVIOUS RESPONSE ORPHANS line naming each
-    orphan by name and its own wave ref (E2 wave 1, N2 wave 2); the re-emit is
-    a full {"entities","edges"} object with the refs exactly as given. Wave
-    1's rule is internal — any edge within the subgraph satisfies it — so the
-    line demands an edge to another entity of this wave; wave 2's entities
-    must anchor into the committed core, named as C0..C<core_count-1>."""
-    prefix = "E" if wave == 1 else "N"
-    named = ", ".join(f"{name!r} ({prefix}{position})" for name, position in orphans)
-    if wave == 1:
-        demand = "every entity MUST have >= 1 edge to another entity in this subgraph"
-    else:
-        core_label = f"C0..C{core_count - 1}" if core_count > 0 else "no visible core"
-        demand = f"every new entity MUST have >= 1 edge to a CORE entity ({core_label})"
+    """The wave-2 prompt plus a PREVIOUS RESPONSE ORPHANS line naming each
+    orphan by name and N ref; the re-emit is a full {"entities","edges"}
+    object with the refs exactly as given. Every new entity must anchor
+    into the committed core, named as C0..C<core_count-1>."""
+    named = ", ".join(f"{name!r} (N{position})" for name, position in orphans)
+    core_label = f"C0..C{core_count - 1}" if core_count > 0 else "no visible core"
+    demand = f"every new entity MUST have >= 1 edge to a CORE entity ({core_label})"
     lines = [
         base_prompt,
         "",
@@ -1188,13 +1268,11 @@ def _wave_entity_names(parsed: dict[str, Any]) -> list[str]:
     return names
 
 
-def _raise_on_reemit_entity_change(
-    wave: int, first_names: Sequence[str], second_names: Sequence[str]
-) -> None:
+def _raise_on_reemit_entity_change(first_names: Sequence[str], second_names: Sequence[str]) -> None:
     """The re-emit drop guard (step-04 review): the re-emit must carry the
     same entity name multiset as the first attempt — a model that drops the
-    orphan instead of wiring it fails loudly here (no third attempt),
-    naming what changed."""
+    orphan instead of wiring it to the core fails loudly here (no third
+    attempt), naming what changed."""
     if Counter(second_names) == Counter(first_names):
         return
     dropped = sorted((Counter(first_names) - Counter(second_names)).elements())
@@ -1204,21 +1282,22 @@ def _raise_on_reemit_entity_change(
         parts.append("dropped " + ", ".join(repr(name) for name in dropped))
     if added:
         parts.append("added " + ", ".join(repr(name) for name in added))
-    wired = "to the core" if wave == 2 else "into the subgraph"
     raise JobPayloadError(
-        f"wave {wave}: re-emit changed the wave entities ({'; '.join(parts)}) — "
-        f"re-emit the full wave with every entity wired {wired}"
+        "wave 2: re-emit changed the wave entities (" + "; ".join(parts) + ") — "
+        "re-emit the full wave with every entity wired to the core"
     )
 
 
 class _OrphanRetryError(JobPayloadError):
-    """The orphan-only retry signal (spec: wave-2 orphan re-prompt; wave 1
-    added 2026-09-11): raised instead of a plain ``JobPayloadError`` when a
-    wave's subgraph is valid except for entities with no edge — wave 1: no
-    edge within the subgraph at all; wave 2: no edge to the core. The runner
-    catches exactly this type for that wave's one bounded re-emit; every
-    other ``_validate_subgraph`` rejection stays immediate. Carries the wave
-    and the orphan ``(name, position)`` pairs so the re-prompt can name them.
+    """The orphan-only retry signal (spec: wave-2 orphan re-prompt): raised
+    instead of a plain ``JobPayloadError`` when the wave-2 subgraph is valid
+    except for entities with no edge to the core. (Wave 1 raised it too
+    from 2026-09-11 until the edgeless verdict the same day dropped the
+    wave-1 internal orphan rule — wave 1 returns edgeless before this
+    point.) The runner catches exactly this type for wave 2's one bounded
+    re-emit; every other ``_validate_subgraph`` rejection stays immediate.
+    Carries the wave and the orphan ``(name, position)`` pairs so the
+    re-prompt can name them.
     """
 
     def __init__(self, message: str, *, wave: int, orphans: list[tuple[str, int]]) -> None:
@@ -1306,17 +1385,19 @@ def _validate_subgraph(
 
     Wave-1 rules: refs are positional and canonical (``E<position>``),
     kinds in {character, faction, place}, types in ``EDGE_TYPES``,
-    counters integers, names non-blank, no self-loops, and every entity
-    appears in >= 1 edge within the subgraph (no orphans, FR2/FR4).
+    counters integers, names non-blank, no self-loops. Wave-1 entities
+    commit edgeless (owner verdict 2026-09-11 — no internal orphan rule;
+    the DM prunes; the wave-1 commit passes ``allow_orphans`` through the
+    store's FR2 backstop explicitly).
 
     Wave 2's new-entity refs are ``N<position>``; edges may also reference
     the committed context as ``C<position>``, and every entity must have
     >= 1 edge whose other endpoint is a core entity
-    (``context[0:core_count]`` — the wave-1 entities). A wave subgraph that
-    is valid except for such orphans raises ``_OrphanRetryError`` (never a
-    plain ``JobPayloadError``) carrying the wave and the orphan ``(name,
-    position)`` pairs — the runner's one bounded re-emit catches exactly
-    that type; every other rejection stays immediate.
+    (``context[0:core_count]`` — the wave-1 entities). A wave-2 subgraph
+    that is valid except for such orphans raises ``_OrphanRetryError``
+    (never a plain ``JobPayloadError``) carrying the wave and the orphan
+    ``(name, position)`` pairs — the runner's one bounded re-emit catches
+    exactly that type; every other rejection stays immediate.
     """
     raw_entities = parsed.get("entities")
     raw_edges = parsed.get("edges")
@@ -1330,6 +1411,8 @@ def _validate_subgraph(
     prefix = "E" if wave == 1 else "N"
     entity_inputs: list[models.EntityInput] = []
     assigned_ids: list[str] = []
+    if wave not in (1, 2):
+        raise ValueError(f"unknown wave {wave}")
     for position, raw in enumerate(raw_entities):
         if not isinstance(raw, dict):
             raise JobPayloadError(f"wave {wave}: entity {position} is not an object")
@@ -1398,7 +1481,6 @@ def _validate_subgraph(
 
     core_ids = {context[i].id for i in range(min(core_count, len(context)))}
     edge_inputs: list[models.EdgeInput] = []
-    wave_positions_in_edges: set[int] = set()
     anchored_positions: set[int] = set()
     for edge_index, raw in enumerate(raw_edges):
         if not isinstance(raw, dict):
@@ -1427,32 +1509,26 @@ def _validate_subgraph(
         edge_inputs.append(
             models.EdgeInput(src=src_id, dst=dst_id, type=edge_type, counter=counter)
         )
-        if src_position is not None:
-            wave_positions_in_edges.add(src_position)
-            if dst_id in core_ids:
-                anchored_positions.add(src_position)
-        if dst_position is not None:
-            wave_positions_in_edges.add(dst_position)
-            if src_id in core_ids:
-                anchored_positions.add(dst_position)
+        if src_position is not None and dst_id in core_ids:
+            anchored_positions.add(src_position)
+        if dst_position is not None and src_id in core_ids:
+            anchored_positions.add(dst_position)
 
     if wave == 1:
-        orphans = [p for p in range(len(entity_inputs)) if p not in wave_positions_in_edges]
-        reason = "orphan entity(ies) with no edge in the subgraph"
-    else:
-        orphans = [p for p in range(len(entity_inputs)) if p not in anchored_positions]
-        reason = "orphan entity(ies) with no edge to the core world"
+        # Wave-1 commits edgeless (owner verdict 2026-09-11): no internal
+        # orphan rule — the DM prunes. Wave 2's core-anchor below is untouched.
+        return entity_inputs, edge_inputs
+    orphans = [p for p in range(len(entity_inputs)) if p not in anchored_positions]
+    reason = "orphan entity(ies) with no edge to the core world"
     if orphans:
         names = ", ".join(f"{entity_inputs[p].name!r} ({prefix}{p})" for p in orphans)
-        if wave == 2:
-            if core_count > 0:
-                names += f" — core anchors are C0..C{core_count - 1} (the visible core)"
-            else:
-                names += " — no visible core"
+        if core_count > 0:
+            names += f" — core anchors are C0..C{core_count - 1} (the visible core)"
+        else:
+            names += " — no visible core"
         # Orphan-only rejection is the one _validate_subgraph failure the
-        # runner repairs: one bounded re-emit per wave. A wave — for wave 1
-        # the whole job, since wave 1 commits nothing — must not die over
-        # entities the model left unwired.
+        # runner repairs: one bounded wave-2 re-emit. Only wave 2 reaches
+        # here — wave 1 commits edgeless and returns above.
         raise _OrphanRetryError(
             f"wave {wave}: {reason}: {names}",
             wave=wave,
