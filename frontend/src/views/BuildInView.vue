@@ -7,7 +7,9 @@ import type { components } from '../api/schema'
 import { useAuthStore } from '../stores/auth'
 import { useCampaignsStore } from '../stores/campaigns'
 import { useJobsStore } from '../stores/jobs'
+import type { BuildInPayload } from '../stores/jobs'
 import { connectJobSocket } from '../ws'
+import type { WsMessage } from '../ws'
 
 type Job = components['schemas']['JobResponse']
 
@@ -47,7 +49,7 @@ onMounted(async () => {
   disconnectSocket = connectJobSocket(
     campaignId,
     (message) => {
-      jobs.handleWsMessage(campaignId, message)
+      void onJobMessage(message)
     },
     {
       onReconnect: () => {
@@ -67,6 +69,7 @@ onUnmounted(() => {
 })
 
 const recentJobs = computed(() => jobs.buildInJobs(campaignId).slice(0, 10))
+const inFlight = computed(() => jobs.buildInInFlight(campaignId))
 const hasContent = computed(() => {
   const anySection = sections.some(
     (section) => splitEntries(sectionText.value[section.key]).length > 0,
@@ -81,19 +84,66 @@ function splitEntries(text: string): string[] {
     .filter(Boolean)
 }
 
-async function submit() {
-  error.value = null
-  const payload = {
+/** The form as the enqueue payload — what `submit` sends and what a build-in job row carries. */
+function formSeed(): BuildInPayload {
+  return {
     places: splitEntries(sectionText.value.places),
     factions: splitEntries(sectionText.value.factions),
     key_figures: splitEntries(sectionText.value.key_figures),
     notes: notes.value.trim(),
   }
-  submitting.value = true
-  try {
-    await jobs.submitBuildIn(campaignId, payload)
+}
+
+/** A job row's payload read back as a seed; null when it is not that shape. */
+function jobSeed(payload: unknown): BuildInPayload | null {
+  if (typeof payload !== 'object' || payload === null) return null
+  const record = payload as Record<string, unknown>
+  const entries = (key: string): string[] | null => {
+    const value = record[key]
+    return Array.isArray(value) && value.every((entry) => typeof entry === 'string') ? value : null
+  }
+  const places = entries('places')
+  const factions = entries('factions')
+  const keyFigures = entries('key_figures')
+  const notes = record['notes']
+  if (!places || !factions || !keyFigures || typeof notes !== 'string') return null
+  return { places, factions, key_figures: keyFigures, notes }
+}
+
+function sameSeed(a: BuildInPayload, b: BuildInPayload): boolean {
+  return (
+    a.notes === b.notes &&
+    (['places', 'factions', 'key_figures'] as const).every(
+      (key) => a[key].length === b[key].length && a[key].every((entry, i) => entry === b[key][i]),
+    )
+  )
+}
+
+/**
+ * WS dispatch: the jobs store absorbs every frame. The seed text is only
+ * spent once the world actually took it — a build-in that FAILS or is
+ * cancelled leaves the form intact so the DM retries without retyping
+ * (the candidates ask box's rule, spec-3.1). A succeeding job clears the
+ * form only while it still holds exactly the seed that job built: text
+ * typed for the next batch is never thrown away.
+ */
+async function onJobMessage(message: WsMessage) {
+  await jobs.handleWsMessage(campaignId, message)
+  if (message.type !== 'job_done') return
+  const job = jobs.byId[message.job_id]
+  if (!job || job.kind !== 'build_in') return
+  const built = jobSeed(job.payload)
+  if (built && sameSeed(built, formSeed())) {
     sectionText.value = { places: '', factions: '', key_figures: '' }
     notes.value = ''
+  }
+}
+
+async function submit() {
+  error.value = null
+  submitting.value = true
+  try {
+    await jobs.submitBuildIn(campaignId, formSeed())
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : 'Could not enqueue the build-in.'
   } finally {
@@ -150,9 +200,12 @@ function stateLabel(job: Job): string {
         <span class="muted small counter">{{ notes.length }}/2000</span>
       </label>
       <p v-if="error" class="error">{{ error }}</p>
-      <button type="submit" :disabled="submitting || !hasContent">
-        {{ submitting ? 'Enqueuing…' : 'Build my world' }}
+      <button type="submit" :disabled="submitting || inFlight || !hasContent">
+        {{ submitting ? 'Enqueuing…' : inFlight ? 'Building…' : 'Build my world' }}
       </button>
+      <p v-if="inFlight" class="muted small">
+        Still building — your seed text stays here, and a failed build keeps it for the retry.
+      </p>
     </form>
 
     <div v-if="recentJobs.length > 0" class="card job">

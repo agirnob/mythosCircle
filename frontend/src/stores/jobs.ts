@@ -56,6 +56,20 @@ export const useJobsStore = defineStore('jobs', {
           const payload = job.payload as { target?: { kind?: string; id?: string } } | null
           return payload?.target?.kind === kind && payload?.target?.id === id
         }),
+    /** A build-in for this campaign still queued/running (spec-2.1) — the
+     * in-flight discipline mirroring ``regenerateInFlight``: the seed form
+     * keeps its text after submit, so a second click must not burn a second
+     * build; a FAILED job releases the button with the text still there for
+     * the retry. */
+    buildInInFlight:
+      (state) =>
+      (campaignId: string): boolean =>
+        Object.values(state.byId).some(
+          (job) =>
+            job.campaign_id === campaignId &&
+            job.kind === 'build_in' &&
+            !TERMINAL_STATES.has(job.state),
+        ),
     /** A portrait job for this entity still queued/running (spec-4.1) —
      * the in-flight discipline mirroring ``regenerateInFlight``: a second
      * enqueue for the same entity must not burn a second generation
