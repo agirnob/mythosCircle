@@ -57,7 +57,6 @@ router = APIRouter()
 _logger = logging.getLogger(__name__)
 
 
-
 class MediaResponse(BaseModel):
     """One media manifest row (AD-10) — the entity card's portrait index."""
 

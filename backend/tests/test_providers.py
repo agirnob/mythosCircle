@@ -224,9 +224,14 @@ def test_chat_completion_truncation_is_a_named_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"choices": [
-                {"message": {"content": '{"entities": [{"ref": "E0"'}, "finish_reason": "length"},
-            ]},
+            json={
+                "choices": [
+                    {
+                        "message": {"content": '{"entities": [{"ref": "E0"'},
+                        "finish_reason": "length",
+                    },
+                ]
+            },
         )
 
     with pytest.raises(ProviderError) as excinfo:
@@ -242,9 +247,11 @@ def test_chat_completion_stop_finish_reason_is_not_truncation() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"choices": [
-                {"message": {"content": "done"}, "finish_reason": "stop"},
-            ]},
+            json={
+                "choices": [
+                    {"message": {"content": "done"}, "finish_reason": "stop"},
+                ]
+            },
         )
 
     text = chat_completion("hi", settings=DEFAULT, transport=httpx.MockTransport(handler))

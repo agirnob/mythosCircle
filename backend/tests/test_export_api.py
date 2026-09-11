@@ -984,9 +984,12 @@ def test_entity_html_stat_block_order_is_canonical(client: Any) -> None:
     )
 
     def sheet(entity_id: str) -> str:
-        return client.get(
-            f"/api/campaigns/{campaign_id}/entities/{entity_id}/export", params={"format": "html"}
-        ).text
+        return str(
+            client.get(
+                f"/api/campaigns/{campaign_id}/entities/{entity_id}/export",
+                params={"format": "html"},
+            ).text
+        )
 
     def panel(h: str) -> str:
         start = h.index('class="stat-block"')
@@ -1000,6 +1003,7 @@ def test_entity_html_stat_block_order_is_canonical(client: Any) -> None:
     assert panel(a).index('ab-k">STR') < panel(a).index('ab-k">DEX') < panel(a).index('ab-k">CHA')
     # The appendix keeps the committed insertion order verbatim.
     assert a.index('"cha"') < a.index('"wis"') < a.index('"str"')
+
 
 # ---------------------------------------------------------------------------
 # spec-5-2: Owlbear/Forge export + signed portrait URLs
@@ -1266,7 +1270,9 @@ def test_owlbear_render_failure_is_logged_as_event(
 def _mint_url(client: Any, campaign_id: str, entity_id: str) -> dict[str, Any]:
     response = client.get(f"/api/campaigns/{campaign_id}/entities/{entity_id}/portrait-url")
     assert response.status_code == 200
-    return response.json()
+    payload = response.json()
+    assert isinstance(payload, dict)
+    return payload
 
 
 def test_portrait_url_mint_and_signed_fetch(
@@ -1344,6 +1350,7 @@ def test_portrait_url_newest_available_skips_broken(
 def _signed_params(secret: str, campaign_id: str, entity_id: str, filename: str, exp: int) -> str:
     import hashlib as _hashlib
     import hmac as _hmac
+
     msg = f"{campaign_id}.{entity_id}.{filename}.{exp}".encode()
     sig = _hmac.new(secret.encode(), msg, _hashlib.sha256).hexdigest()
     return f"exp={exp}&sig={sig}"
@@ -1436,9 +1443,7 @@ def test_portrait_url_no_secret_500s_with_one_log_line(
                 )
             assert response.status_code == 500
             assert response.json()["code"] == "internal_error"
-            events = [
-                r for r in caplog.records if "portrait_url_secret_missing" in r.getMessage()
-            ]
+            events = [r for r in caplog.records if "portrait_url_secret_missing" in r.getMessage()]
             assert len(events) == 1
     finally:
         init_db(previous)
@@ -1599,9 +1604,7 @@ def test_portrait_url_placeholder_origin_warns(
     with caplog.at_level(logging.WARNING):
         body = _mint_url(client, campaign_id, sera_id)
     assert body["url"].startswith(DEFAULT_BASE_URL)
-    warnings = [
-        r for r in caplog.records if "portrait_url_placeholder_origin" in r.getMessage()
-    ]
+    warnings = [r for r in caplog.records if "portrait_url_placeholder_origin" in r.getMessage()]
     assert len(warnings) == 1
 
 

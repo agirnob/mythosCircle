@@ -639,6 +639,7 @@ def render_world_html(export: WorldExport) -> str:
         )
     return _document(export.campaign.title, "".join(subtitle_parts), "".join(body_parts))
 
+
 # ---------------------------------------------------------------------------
 # Owlbear / Forge export (spec-5-2)
 # ---------------------------------------------------------------------------
@@ -659,10 +660,12 @@ _FORGE_NS = "com.battle-system.forge"
 #: validly (speeds, senses, languages, resistances, proficiency,
 #: Z036/Z037 bonus/reactions have no stored source).
 
+
 def _forge_key(bid: str) -> str:
     """The extension-namespaced metadata key Forge imports (unit-card
     field menus show the bare ``[Z017]`` BID for the same slot)."""
     return f"{_FORGE_NS}/{bid}"
+
 
 def _forge_number(value: Any) -> int | float | None:
     """Coerce a stored numeric to a JSON number (Forge ``numb``).

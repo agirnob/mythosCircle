@@ -129,7 +129,7 @@ def _regenerate_retry_prompt(base_prompt: str, bad_text: str, decode_error: str)
             "YOUR PREVIOUS RESPONSE COULD NOT BE PARSED AS JSON. Correct it:",
             "return the SAME record again as ONE valid JSON object — nothing else.",
             'Shape: {"candidates": [<the full sectioned record>]} — exactly one entry.',
-            "Close every brace and bracket, and escape any literal double quote as \\\".",
+            'Close every brace and bracket, and escape any literal double quote as \\".',
             f"JSON error: {decode_error}",
             "Previous response:",
             bad_text.strip()[:4000],
