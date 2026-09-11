@@ -83,3 +83,80 @@ Campaign: "The Drowned Harbor" / Grimdark / salt-drowned custom lore.
   anchor, drop guard, telemetry all exercised live); edgeless-commit
   live observation still open and left to chance rolls, not chased.
   Tee'd calls in `/tmp/mythos-ladder/calls-a4/`.
+
+## Rung 10 — attempt 5, new code — FAILED, 3 calls
+
+- Pass 1 repair touched traits/features outside power+skills scopes
+  (logged); pass 2 added spellcasting/spells/features while dropping the
+  identity.class link — terminal: E5/E6/E8 `spells require identity.class`
+  plus remaining under-power (E5 DPR 14 vs 21-26, E8 DPR 42 vs 75-80).
+- New pattern: repairs complete the block (add sections) instead of
+  fixing listed numbers — EDIT SCOPE lines do not constrain the model,
+  but every instance was logged with paths. Tee'd calls wiped by the
+  next fresh-dir reset (housekeeping miss — a5 dir was reused).
+
+## Rung 10 — attempt 6, new code — FAILED, 5 calls (wave 1 committed)
+
+- Wave 1 committed again (pass-2 breaches down to skills-only drift);
+  wave 2 hit the anchor orphan, and the re-emit again renamed instead of
+  wiring — two entities this time ('Hedd the Scavenger'→'Hedd', 'The Iron
+  Husk'→'The Driftwood Hulk'). Drop guard caught both, wave 1 committed.
+- Systematic, not flake: the re-emit renames the orphan rather than
+  wiring it, 2/2 wave-2 repairs. Tee'd calls in
+  `/tmp/mythos-ladder/calls-a6/`.
+
+## Rung 10 — attempt 7, new code — FAILED, 5 calls (wave 1 committed)
+
+- Wave 1 committed (small pass-2 repair converged twice now); wave 2
+  orphaned N2 Quarantine Hulk, re-emit left it unwired again (no rename
+  this time — plain still-orphan second miss). Wave-2 repairs on gemma:
+  0/3 converge (rename, rename×2, still-orphan).
+- Cap reached (attempts 5-7): wave-1 commits 3/4 on new code, jobs 0/4.
+  The wall is the wave-2 anchor re-emit, never wave 1 anymore.
+
+Standing owner rules for the ladder (2026-09-11): after every attempt,
+report per wave in basic form (what failed) plus a verdict plus a
+suggestion. Attempt-7 review proposed an edges-only anchor repair
+(entities frozen, src/dst+type schema enums of known IDs) to replace
+the full re-emit; owner chose to keep rolling identical payloads
+instead — variance as the lever, attempts 8+ continue on gemma.
+
+- Report format (owner rule): per attempt, per wave, per entity — which
+  entity failed which gate with numbers — plus verdict plus suggestion.
+- ## Rung 10 — attempt 8, new code — FAILED, 6 calls (wave 1 committed)
+- Wave 1: E5 Ssketh record repair (call-02, full record merged); stat
+  pass 1 flagged E4 Ilsa Vane L4 (skills×4 strings, DPR 6.5 vs 27-32, HP
+  31 frail), E6 Wren L7 (skills×2, DPR 9 vs 45-50, HP 45), E8 Abbess L10
+  (skills×2, DPR 13 vs 63-68, HP 78); pass 2 converged E6 (DPR 28) + E8
+  (DPR 39) with traits-only drift. Committed 10/10 + 15 edges; E0-E3
+  places/factions all carried text, E7/E9 clean first try.
+- Wave 2: call-05 emitted N0 'Driftwood Hulk' place, N1 'Hedd the
+  Salvager', N2 'The Knocker' — orphan was Hedd (N1, N-only edges; N0
+  had C7-inbound, N2 had C3-outbound). Re-emit wired everyone
+  (N1→C7, N3→C3) but renamed the hulk ('Leaking Hulk') and renumbered
+  refs (Knocker N2→N3) — drop guard killed a structurally good answer.
+  Wave-2 anchor repairs on gemma: 0/4. Lesson: entities-frozen repair
+  would have greened this exact job. Tee'd calls in
+  `/tmp/mythos-ladder/calls-a8/` (responses only — runner stores no
+  prompts; counts + seconds + schema flag alongside).
+
+## Rung 10 — attempt 9, step-1 code — SUCCEEDED, 8 calls (FIRST GREEN JOB)
+
+- Wave 1: call-01 clean parse; record gate clean (no call-02 repair
+  needed); stat pass 1 flagged E4/E5/E6/E7/E8/E9 (string-skills + DPR
+  5.5-30 across the board, worst wave-1 yet); pass 2 converged to E5
+  (illegal Guiding Bolt) + E9 (pass-1 overshoot to DPR 60) and both
+  cleared. Committed 10/10 + 14 edges. Every merge stripped riders
+  (traits/spells additions logged at all 8 breach lines) — committed
+  blocks carry no `traits` key anywhere (DB-verified), spells only on
+  legal casters.
+- Wave 2: first attempt needed the re-emit (behaved this time — names
+  kept), then a record repair + 2 stat passes (E1 Dagger-dup + DPR,
+  E2 illegal class + DPR) converged. Committed N0 'The Iron Hulk'
+  place, N1 'Hedd the Scavenger', N2 'The Hull-Knocker' + 5 edges.
+  Total 13 entities, 19 edges. Tee'd calls + prompts in
+  `/tmp/mythos-ladder/calls-b1/`.
+- Verdict: step-1 gate GREEN (commits held at 5/6 wave-1 streak, strips
+  observed in telemetry AND in committed rows). Green partly variance
+  (anchor wired first-try-equivalent via a behaving re-emit), but the
+  strip's fingerprint is in the DB. Step 2 unlocked.

@@ -293,7 +293,33 @@ def _enforce_stat_blocks(
         _log_stat_repair_scope_breaches(
             issues, before, repaired, job_id=job.id, attempt=attempt, wave=wave
         )
-        entities = apply_stat_repairs(entities, repaired)
+        # Surgical merge (spec: strip drift): repair output is model output —
+        # converging numbers may ride with out-of-scope rider sections
+        # (attempt-8 shape). Merge ONLY each issue's scope_for_violations
+        # sections (the same map the prompt and breach log share); an
+        # out-of-scope key reverts to the pre-repair block (added riders are
+        # dropped, deleted riders restored). The breach log above already
+        # fired, so telemetry is kept while drift is not. A missing
+        # pre-repair block is whole-block scope — nothing to strip.
+        stripped: dict[int, dict[str, Any]] = {}
+        for issue in issues:
+            new = repaired.get(issue.position)
+            if new is None:
+                continue
+            old = before.get(issue.position)
+            if not isinstance(old, dict):
+                stripped[issue.position] = new
+                continue
+            allowed = scope_for_violations(issue.violations)
+            merged: dict[str, Any] = {}
+            for key in set(old) | set(new):
+                if key in allowed:
+                    if key in new:
+                        merged[key] = new[key]
+                elif key in old:
+                    merged[key] = old[key]
+            stripped[issue.position] = merged
+        entities = apply_stat_repairs(entities, stripped)
         # The repair response is model output like any other: re-canonicalize
         # so the block the auditor re-checks (and the block that commits) is
         # the canonical one. Measured live 2026-09-11: a repair shipped

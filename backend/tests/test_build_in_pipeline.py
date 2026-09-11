@@ -547,10 +547,12 @@ def test_wave2_stat_repair_carries_repair_schema(world: str) -> None:
 
 
 def test_gate_repair_breach_logs_through_run(caplog: pytest.LogCaptureFixture, world: str) -> None:
-    """BREACH_GATE_WIRING: a repair that drifts outside its EDIT SCOPE on a
-    live job emits the scope-breach warning through run_next_job — deleting
-    the gate call site would silence telemetry while the helper test stays
-    green."""
+    """BREACH_GATE_WIRING + STRIP (spec: strip drift): a repair that drifts
+    outside its EDIT SCOPE on a live job emits the scope-breach warning
+    through run_next_job — and the drift never lands. The attempt-8 shape:
+    converging numbers (str 40 fixed to 14) riding with a rider section
+    (traits added on an attributes-only issue) commits the numbers, drops
+    the riders, still logs the breach paths."""
     output = _wave1_output()
     bad_block = dict(_MIRA_STAT_BLOCK)
     bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
@@ -577,6 +579,10 @@ def test_gate_repair_breach_logs_through_run(caplog: pytest.LogCaptureFixture, w
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert "scope breach" in caplog.text and "traits" in caplog.text
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"] == _MIRA_STAT_BLOCK  # numbers merged, riders dropped
+    assert "traits" not in mira.data["stat_block"]
 
 
 def test_stat_repair_scope_breach_logs_log_only(caplog: pytest.LogCaptureFixture) -> None:
@@ -2090,8 +2096,9 @@ def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> Non
     miss — classless spells plus a frail tiny block — repairs in one pass.
     Mira keeps evocative spells with no coupling class; Boo the hamster
     (CR 1/4, hp 15, one weak bite) trips the frail line. The mock adds the
-    coupling class and drops Boo to a CR-0 diceless block; the gate succeeds
-    with two provider calls total."""
+    coupling class and lifts Boo's hp into its CR band (the EDIT SCOPE fix —
+    a cr rewrite riding with the repair is drift the gate now strips); the
+    gate succeeds with two provider calls total."""
     bad_spells = dict(_MIRA_STAT_BLOCK)
     bad_spells["identity"] = {k: v for k, v in _MIRA_STAT_BLOCK["identity"].items() if k != "class"}
     bad_spells["spells"] = ["Fireball", "Magic Missile"]
@@ -2109,9 +2116,12 @@ def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> Non
         ],
     }
     fixed_tiny = {
-        "identity": {"role": "Monster", "cr": 0, "race": "Hamster", "alignment": "unaligned"},
+        "identity": {"role": "Monster", "cr": "1/4", "race": "Hamster", "alignment": "unaligned"},
         "attributes": dict(tiny_attributes),
-        "combat": {"ac": 13, "hp": 15},
+        "combat": {"ac": 13, "hp": 40},
+        "actions": [
+            {"name": "Bite", "description": "Melee Weapon Attack: +3 to hit, 1d4+1 piercing"}
+        ],
     }
     output = _wave1_output()
     output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_spells}
@@ -2169,7 +2179,9 @@ def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> Non
         by_name = {e.name: e for e in world_entities(session, world)}
     assert by_name["Mira Vane"].data["stat_block"]["identity"]["class"] == "Wizard"
     assert by_name["Mira Vane"].data["stat_block"]["spells"] == ["Fireball", "Magic Missile"]
-    assert by_name["Boo"].data["stat_block"]["identity"]["cr"] == 0
+    assert by_name["Boo"].data["stat_block"]["identity"]["cr"] == "1/4"  # scope-held, not renamed
+    assert by_name["Boo"].data["stat_block"]["combat"]["hp"] == 40  # the in-scope fix landed
+    assert by_name["Boo"].data["stat_block"]["actions"][0]["name"] == "Bite"  # siblings untouched
 
 
 def test_cancel_before_stat_repair_is_noop(world: str) -> None:
