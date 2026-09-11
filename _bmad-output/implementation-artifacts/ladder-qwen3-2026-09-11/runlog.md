@@ -292,3 +292,25 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   v26.8.1). Design point: flagged-only stamping keeps on-target blocks
   byte-identical (no prompt bloat, no fixture churn); stale flags trim
   on re-canonicalize. Next: attempt 18 re-rolls rung 10 on flag code.
+
+## Rung 10 — attempt 18, flag code — FAILED, 14 calls (wave-1 COMMITTED)
+
+- Wave 1 committed 10/10 through all three passes (class-link breaks on
+  E6/E8 healed at pass 3). Tidecaller Wren committed WITH a
+  `"power": over-powered` stamp — the first live over-powered commit;
+  the death class is gone by construction (no over-powered violation
+  exists to fail on). Wave-1 commits 9/10.
+- Wave 2: rename-guard death ('Hedd'→'Hedd the Scavenger',
+  'The Drift-Hulk' renamed). Anchor repairs 0/8.
+- Verdict: the verdict works live. The job lottery is now ONLY the
+  re-emit rename (step-3 territory). Tee'd calls + prompts in
+  `/tmp/mythos-ladder/calls-c1/`.
+
+## Step-3 code ships, ladder re-measures (2026-09-12, owner: green)
+
+- Edges-only anchor repair replaces the full re-emit: frozen rosters,
+  `{edges:[...]}`-only schema (src/dst enums + EDGE_TYPES enum),
+  verbatim-first-entities merge, drop guard retired. Attempt-8 shape
+  commits by construction. Gates: 1183 backend passed, ruff + mypy
+  clean, 201 frontend passed, vue-tsc + eslint clean. Next: attempt 19
+  re-rolls rung 10 on step-3 code.

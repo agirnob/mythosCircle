@@ -10,11 +10,11 @@ committed core — committed against wave 1's revision (a DM edit landing
 between the waves raises ``StaleRevisionError`` and the job fails; never a
 silent overwrite, AD-2).
 
-Structure keeps its one bounded pass on wave 2 only (spec: wave-2 orphan
-re-prompt): a wave-2 subgraph whose ONLY defect is core-unanchored entities
-is re-emitted once with the orphans named; a second miss fails the job.
-Wave 1 commits edgeless (owner verdict 2026-09-11, reversing the 2026-09-11
-wave-1 re-emit — wiring the model will not invent is not worth a lost
+Structure keeps its one bounded pass on wave 2 only (spec: repair sequence
+step 3, anchor repair): a wave-2 subgraph whose ONLY defect is
+core-unanchored entities gets one edges-only repair over frozen entities;
+a still-orphan repair fails the job. Wave 1 commits edgeless (owner verdict 2026-09-11,
+reversing the 2026-09-11 wave-1 re-emit — wiring the model will not invent is not worth a lost
 build; the DM prunes).
 
 Wave ref schemes: wave 1's entities are ``E<index>`` (positional), wave
@@ -36,7 +36,6 @@ undo.
 import dataclasses
 import json
 import logging
-from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
@@ -813,11 +812,11 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     writes progress or a terminal state on the cancelled job. Any failure
     (provider, budget, malformed output, invalid subgraph, stale base)
     propagates so the worker fails the job; earlier committed waves stay.
-    Structure keeps its one bounded pass on wave 2 only (spec: wave-2 orphan
-    re-prompt): a wave-2 subgraph whose ONLY defect is core-unanchored
-    entities gets one full re-emit naming the orphans; a still-orphan (or
-    entity-dropping) re-emit fails the job with wave 1 committed. Wave 1
-    commits edgeless (owner verdict 2026-09-11) — the DM prunes.
+    Structure keeps its one bounded pass on wave 2 only (spec: repair
+    sequence step 3, anchor repair): a wave-2 subgraph whose ONLY defect is
+    core-unanchored entities gets one edges-only repair over frozen
+    entities; a still-orphan repair fails the job with wave 1 committed.
+    Wave 1 commits edgeless (owner verdict 2026-09-11) — the DM prunes.
     """
     with session_scope() as session:
         seed = campaign_seed(session, job.campaign_id)
@@ -916,7 +915,6 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         )
         text_2 = budget.call(lambda: provider(prompt_2, settings=wave_settings))
         parsed_2 = parse_build_output(text_2, wave=2)
-        first_names_2 = _wave_entity_names(parsed_2)
         try:
             entities_2, edges_2 = _validate_subgraph(
                 2, parsed_2, context=context_entities, core_count=core_count
@@ -925,26 +923,30 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         # _OrphanRetryError subclasses it, so a broader handler first would
         # swallow the retry signal and orphans would fail immediately.
         except _OrphanRetryError as exc:
-            # ORPHAN_RETRY (spec: wave-2 orphan re-prompt) — the only
-            # _validate_subgraph rejection with a repair pass: one full
-            # re-emit naming the orphans, through the same budget and the
-            # same name/record/stat gates below. A still-orphan re-emit
-            # raises again and fails the job with wave 1 committed; any
-            # other rejection was never caught and stays immediate.
-            retried_2 = _orphan_reemit(
+            # ANCHOR_REPAIR (spec: repair sequence step 3) — the only
+            # _validate_subgraph rejection with a repair pass: one
+            # edges-only repair naming the orphans, over entities frozen
+            # from the first attempt, through the same budget and the same
+            # name/record/stat gates below. Renames and drops are
+            # unrepresentable (no entity list is emitted), so the re-emit
+            # drop guard retired with the re-emit. The merged wave re-runs
+            # the same anchor check below: still-orphan raises again and
+            # fails the job with wave 1 committed; any other rejection was
+            # never caught and stays immediate.
+            repaired_2 = _anchor_repair(
                 job=job,
                 budget=budget,
                 provider=provider,
                 settings=settings,
-                base_prompt=prompt_2,
+                first=parsed_2,
                 orphans=exc.orphans,
+                context=context_entities,
                 core_count=core_count,
             )
-            if retried_2 is None:
+            if repaired_2 is None:
                 return
-            _raise_on_reemit_entity_change(first_names_2, _wave_entity_names(retried_2))
             entities_2, edges_2 = _validate_subgraph(
-                2, retried_2, context=context_entities, core_count=core_count
+                2, repaired_2, context=context_entities, core_count=core_count
             )
         # The same gates as wave 1 (dogfood fix 2026-09-09): wave-2 names
         # (name gate), then characters carry full AR24 records (record
@@ -1255,98 +1257,199 @@ def parse_build_output(text: str, wave: int = 1) -> dict[str, Any]:
     return parsed
 
 
-def _orphan_reemit(
+def build_anchor_repair_schema(new_refs: Sequence[str], core_refs: Sequence[str]) -> dict[str, Any]:
+    """The edges-only schema carried on the wave-2 anchor-repair call
+    (spec: repair sequence step 3) — the ``response_format`` wrapper follows
+    the wave calls' measured ``json_schema`` convention; the inner schema is
+    flat and ``$ref``-free (GBNF subset). The response is ``{"edges": [...]}``
+    ONLY: no entity list is emitted, so renames and drops are
+    unrepresentable. ``src``/``dst`` are enums of exactly the known refs
+    (the frozen new-entity N refs plus the visible core C labels), and the
+    edge ``type`` is an enum single-sourced from ``store.EDGE_TYPES`` — an
+    invented type or an off-roster endpoint is unemittable on
+    grammar-enforcing backends. Parsing, validators, and the anchor check
+    stay the backstop — the schema is the optimization.
+    """
+    endpoints = sorted([*new_refs, *core_refs])
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "build_anchor_repair",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "required": ["edges"],
+                "properties": {
+                    "edges": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["src", "dst", "type"],
+                            "properties": {
+                                "src": {"enum": endpoints},
+                                "dst": {"enum": endpoints},
+                                "type": {"enum": sorted(EDGE_TYPES)},
+                                "counter": {"type": "integer"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _build_anchor_repair_prompt(
+    *,
+    orphans: Sequence[tuple[str, int]],
+    new_roster: Sequence[tuple[str, str, str]],
+    core_roster: Sequence[tuple[str, str]],
+    existing_edges: Sequence[str],
+) -> str:
+    """The anchor-repair prompt (spec: repair sequence step 3): frozen
+    rosters plus the orphan demand. New entities are listed as ref+name+kind
+    and the core as C-label+name — already recorded, never re-emitted — so
+    the model returns additional edges only. Existing edges are listed so
+    the model does not echo them (an echo is harmless: the merge dedups
+    exact copies, and the merged wave re-runs the same validation)."""
+    named = ", ".join(f"{name!r} (N{position})" for name, position in orphans)
+    core_label = f"C0..C{len(core_roster) - 1}" if core_roster else "no visible core"
+    lines = [
+        "Your previous wave-2 response left orphan entities with no edge to the core: "
+        f"{named} — every new entity MUST have >= 1 edge to a CORE entity ({core_label}).",
+        "",
+        "ANCHOR REPAIR — respond with exactly one JSON object, nothing else.",
+        "",
+        "FROZEN NEW ENTITIES (already recorded — never re-emit them):",
+        *(f"- {ref} {name!r} ({kind})" for ref, name, kind in new_roster),
+        "",
+        "CORE ENTITIES (anchor targets):",
+        (
+            "\n".join(f"- {label} {name!r}" for label, name in core_roster)
+            if core_roster
+            else "- (none visible)"
+        ),
+        "",
+        "EXISTING EDGES (already recorded — do not repeat them):",
+        ("\n".join(f"- {edge}" for edge in existing_edges) if existing_edges else "- (none)"),
+        "",
+        "TASK",
+        'Respond with one JSON object: {"edges": [...]} containing ONLY the additional',
+        "edges needed so every orphan above has >= 1 edge to a CORE entity.",
+        'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
+        '  "counter": <integer, default 1>}.',
+        "src/dst must be a frozen new-entity ref or a core ref from the rosters above.",
+        "Edges must connect two different entities — no self-loops.",
+        "",
+        "EDGE VOCABULARY (closed set — never invent a type)",
+        *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
+    ]
+    return "\n".join(lines)
+
+
+def _parse_anchor_repair_output(text: str) -> list[Any]:
+    """Parse the anchor-repair response into raw edge entries.
+
+    The repair carries edges only — an ``entities`` key, if present, is
+    ignored: the wave's entities are frozen from the first attempt, so a
+    renamed or dropped entity list is unrepresentable by construction (the
+    attempt-8 shape now commits). A missing/non-list ``edges`` fails the
+    job exactly like a malformed wave output."""
+    stripped = _strip_fence(text)
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise JobPayloadError(f"wave 2: anchor repair is not valid JSON ({exc})") from exc
+    if not isinstance(parsed, dict):
+        raise JobPayloadError("wave 2: anchor repair must be a JSON object with an 'edges' list")
+    edges = parsed.get("edges")
+    if not isinstance(edges, list):
+        raise JobPayloadError("wave 2: anchor repair must be a JSON object with an 'edges' list")
+    return edges
+
+
+def _anchor_repair(
     *,
     job: models.Job,
     budget: CallBudget,
     provider: Callable[..., str],
     settings: LLMSettings,
-    base_prompt: str,
+    first: dict[str, Any],
     orphans: Sequence[tuple[str, int]],
+    context: Sequence[models.Entity] = (),
     core_count: int = 0,
 ) -> dict[str, Any] | None:
-    """The one bounded orphan re-emit (spec: wave-2 orphan re-prompt) — the
-    wave-2 anchor's only repair pass: the wave's own prompt plus a PREVIOUS
-    RESPONSE ORPHANS line naming each orphan by name and N ref, re-run
-    through the provider and parsed with the wave-2 contract. Returns the
-    parsed re-emit, or None when the job was cancelled before the call —
-    the caller stops without committing, the same cancel-race rule as the
-    first attempt."""
+    """The one bounded anchor repair (spec: repair sequence step 3) — the
+    wave-2 anchor's only repair pass: frozen rosters (new entities as
+    ref+name+kind, core as C-label+name) plus the orphan demand, re-run
+    through the provider under the edges-only schema. Returns the merged
+    wave object — the first attempt's entities verbatim plus its edges with
+    the repair edges appended (exact-duplicate echoes deduped) — for the
+    caller to re-run through the same anchor check; or None when the job
+    was cancelled before the call, the same cancel-race rule as the first
+    attempt."""
     if not _job_still_running(job):
         return None
-    retry_prompt = _build_orphan_retry_prompt(base_prompt, orphans, core_count=core_count)
+    raw_entities = first["entities"]
+    raw_edges = first["edges"]
+    assert isinstance(raw_entities, list) and isinstance(raw_edges, list)
+    new_roster: list[tuple[str, str, str]] = []
+    new_refs: list[str] = []
+    for position, raw in enumerate(raw_entities):
+        ref = raw.get("ref", f"N{position}") if isinstance(raw, dict) else f"N{position}"
+        name = raw.get("name", "") if isinstance(raw, dict) else ""
+        kind = raw.get("kind", "") if isinstance(raw, dict) else ""
+        new_roster.append(
+            (
+                ref if isinstance(ref, str) else f"N{position}",
+                name if isinstance(name, str) else "",
+                kind if isinstance(kind, str) else "",
+            )
+        )
+        if isinstance(ref, str):
+            new_refs.append(ref)
+    core_roster = [(f"C{i}", entity.name) for i, entity in enumerate(context[:core_count])]
+    core_refs = [label for label, _name in core_roster]
+    existing = [
+        f"{raw.get('src')} -> {raw.get('dst')} [{raw.get('type')}]"
+        for raw in raw_edges
+        if isinstance(raw, dict)
+    ]
+    retry_prompt = _build_anchor_repair_prompt(
+        orphans=orphans,
+        new_roster=new_roster,
+        core_roster=core_roster,
+        existing_edges=existing,
+    )
     text = budget.call(
         lambda: provider(
             retry_prompt,
-            settings=dataclasses.replace(settings, response_format=build_wave_schema()),
+            settings=dataclasses.replace(
+                settings, response_format=build_anchor_repair_schema(new_refs, core_refs)
+            ),
         )
     )
-    return parse_build_output(text, wave=2)
-
-
-def _build_orphan_retry_prompt(
-    base_prompt: str,
-    orphans: Sequence[tuple[str, int]],
-    *,
-    core_count: int = 0,
-) -> str:
-    """The wave-2 prompt plus a PREVIOUS RESPONSE ORPHANS line naming each
-    orphan by name and N ref; the re-emit is a full {"entities","edges"}
-    object with the refs exactly as given. Every new entity must anchor
-    into the committed core, named as C0..C<core_count-1>."""
-    named = ", ".join(f"{name!r} (N{position})" for name, position in orphans)
-    core_label = f"C0..C{core_count - 1}" if core_count > 0 else "no visible core"
-    demand = f"every new entity MUST have >= 1 edge to a CORE entity ({core_label})"
-    lines = [
-        base_prompt,
-        "",
-        f"PREVIOUS RESPONSE ORPHANS: {named} — {demand} — keep entities in the "
-        "same order with the same refs; re-emit the full "
-        '{"entities","edges"} object with the refs exactly as given.',
-    ]
-    return "\n".join(lines)
-
-
-def _wave_entity_names(parsed: dict[str, Any]) -> list[str]:
-    """Entity names of a parsed wave in order (missing/non-string names read
-    as ``""``) — the re-emit drop guard compares these multisets."""
-    names = []
-    for raw in parsed.get("entities", []):
-        name = raw.get("name") if isinstance(raw, dict) else None
-        names.append(name if isinstance(name, str) else "")
-    return names
-
-
-def _raise_on_reemit_entity_change(first_names: Sequence[str], second_names: Sequence[str]) -> None:
-    """The re-emit drop guard (step-04 review): the re-emit must carry the
-    same entity name multiset as the first attempt — a model that drops the
-    orphan instead of wiring it to the core fails loudly here (no third
-    attempt), naming what changed."""
-    if Counter(second_names) == Counter(first_names):
-        return
-    dropped = sorted((Counter(first_names) - Counter(second_names)).elements())
-    added = sorted((Counter(second_names) - Counter(first_names)).elements())
-    parts = []
-    if dropped:
-        parts.append("dropped " + ", ".join(repr(name) for name in dropped))
-    if added:
-        parts.append("added " + ", ".join(repr(name) for name in added))
-    raise JobPayloadError(
-        "wave 2: re-emit changed the wave entities (" + "; ".join(parts) + ") — "
-        "re-emit the full wave with every entity wired to the core"
-    )
+    repair_edges = _parse_anchor_repair_output(text)
+    merged = list(raw_edges)
+    for edge in repair_edges:
+        if isinstance(edge, dict) and edge in merged:
+            continue  # the model echoed an already-recorded edge
+        merged.append(edge)
+    return {"entities": raw_entities, "edges": merged}
 
 
 class _OrphanRetryError(JobPayloadError):
-    """The orphan-only retry signal (spec: wave-2 orphan re-prompt): raised
-    instead of a plain ``JobPayloadError`` when the wave-2 subgraph is valid
-    except for entities with no edge to the core. (Wave 1 raised it too
-    from 2026-09-11 until the edgeless verdict the same day dropped the
-    wave-1 internal orphan rule — wave 1 returns edgeless before this
-    point.) The runner catches exactly this type for wave 2's one bounded
-    re-emit; every other ``_validate_subgraph`` rejection stays immediate.
-    Carries the wave and the orphan ``(name, position)`` pairs so the
-    re-prompt can name them.
+    """The orphan-only retry signal (spec: repair sequence step 3, anchor
+    repair): raised instead of a plain ``JobPayloadError`` when the wave-2
+    subgraph is valid except for entities with no edge to the core. (Wave 1
+    raised it too from 2026-09-11 until the edgeless verdict the same day
+    dropped the wave-1 internal orphan rule — wave 1 returns edgeless before
+    this point.) The runner catches exactly this type for wave 2's one
+    bounded edges-only repair; every other ``_validate_subgraph`` rejection
+    stays immediate. Carries the wave and the orphan ``(name, position)``
+    pairs so the repair prompt can name them.
     """
 
     def __init__(self, message: str, *, wave: int, orphans: list[tuple[str, int]]) -> None:
@@ -1445,8 +1548,8 @@ def _validate_subgraph(
     (``context[0:core_count]`` — the wave-1 entities). A wave-2 subgraph
     that is valid except for such orphans raises ``_OrphanRetryError``
     (never a plain ``JobPayloadError``) carrying the wave and the orphan
-    ``(name, position)`` pairs — the runner's one bounded re-emit catches
-    exactly that type; every other rejection stays immediate.
+    ``(name, position)`` pairs — the runner's one bounded anchor repair
+    catches exactly that type; every other rejection stays immediate.
     """
     raw_entities = parsed.get("entities")
     raw_edges = parsed.get("edges")
@@ -1576,8 +1679,8 @@ def _validate_subgraph(
         else:
             names += " — no visible core"
         # Orphan-only rejection is the one _validate_subgraph failure the
-        # runner repairs: one bounded wave-2 re-emit. Only wave 2 reaches
-        # here — wave 1 commits edgeless and returns above.
+        # runner repairs: one bounded edges-only anchor repair. Only wave 2
+        # reaches here — wave 1 commits edgeless and returns above.
         raise _OrphanRetryError(
             f"wave {wave}: {reason}: {names}",
             wave=wave,

@@ -27,6 +27,7 @@ from app.pipeline.build_in import (
     _OrphanRetryError,
     _repair_retry_prompt,
     _validate_subgraph,
+    build_anchor_repair_schema,
     build_wave1_prompt,
     build_wave2_prompt,
     build_wave_schema,
@@ -417,12 +418,13 @@ def test_wave_calls_carry_envelope_schema(world: str) -> None:
     assert seen == [expected]
 
 
-def test_wave2_and_reemit_carry_envelope_schema(world: str) -> None:
-    """WAVE2_AND_REEMIT_CARRY: wave 2 and the orphan re-emit carry the
-    envelope schema too — reverting either call site to plain settings
-    fails this (the wave-1-only test never executes those lines). The
-    re-emit half runs on wave 2: wave 1 commits edgeless and never
-    re-emits (spec: edgeless repair scope)."""
+def test_wave2_and_anchor_repair_carry_schemas(world: str) -> None:
+    """WAVE2_AND_ANCHOR_CARRY: wave 2 carries the envelope schema while the
+    anchor repair carries the edges-only schema — reverting either call
+    site to plain settings (or to the wave schema) fails this (the
+    wave-1-only test never executes those lines). The repair half runs on
+    wave 2: wave 1 commits edgeless and never repairs (spec: edgeless
+    repair scope)."""
     expected = build_wave_schema()
     seen: list[Any] = []
     responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
@@ -438,23 +440,27 @@ def test_wave2_and_reemit_carry_envelope_schema(world: str) -> None:
     assert job.state == "succeeded"
     assert seen == [expected, expected]
 
-    seen_reemit: list[Any] = []
-    responses_reemit = [
+    seen_repair: list[Any] = []
+    responses_repair = [
         json.dumps(_wave1_output()),
         json.dumps(_wave2_output_orphan()),
-        json.dumps(_wave2_output_orphan_healed()),
+        json.dumps({"edges": [{"src": "N2", "dst": "C0", "type": "relationship"}]}),
     ]
 
-    def fake_reemit(prompt: str, settings: LLMSettings) -> str:
-        seen_reemit.append(settings.response_format)
-        return responses_reemit.pop(0)
+    def fake_repair(prompt: str, settings: LLMSettings) -> str:
+        seen_repair.append(settings.response_format)
+        return responses_repair.pop(0)
 
     job_id2 = _enqueue(world, notes="more world")
-    processed2 = run_next_job(provider=fake_reemit, settings=SETTINGS)
+    processed2 = run_next_job(provider=fake_repair, settings=SETTINGS)
     assert processed2 == job_id2
     job2, _position = job_status(job_id2)
     assert job2.state == "succeeded"
-    assert seen_reemit == [expected, expected, expected]
+    # The orphan output has N0..N2 and the wave-1 core is two entities, so
+    # the repair schema is pinned to exactly those refs — a repair reusing
+    # the wave envelope (or plain settings) fails this line.
+    expected_repair = build_anchor_repair_schema(["N0", "N1", "N2"], ["C0", "C1"])
+    assert seen_repair == [expected, expected, expected_repair]
 
 
 def test_wave_envelope_schema_pins_wire_literals() -> None:
@@ -479,6 +485,28 @@ def test_wave_envelope_schema_pins_wire_literals() -> None:
     # store vocabulary — an invented type is unemittable on
     # grammar-enforcing backends. Pinned by value so a widened type
     # (or a stale copy of the vocabulary) fails here, not live.
+    assert edges["properties"]["type"] == {"enum": sorted(EDGE_TYPES)}
+
+
+def test_anchor_repair_schema_pins_wire_literals() -> None:
+    """The anchor-repair schema's load-bearing literals are pinned by value:
+    an edges-only envelope (no entity list — renames/drops
+    unrepresentable), src/dst enums of exactly the known N-refs plus
+    C-labels, the edge type single-sourced from the store vocabulary, and
+    additionalProperties false at both levels."""
+    schema = build_anchor_repair_schema(["N0", "N2", "N1"], ["C1", "C0"])
+    assert schema["type"] == "json_schema"
+    named = schema["json_schema"]
+    assert named["name"] == "build_anchor_repair" and named["strict"] is True
+    envelope = named["schema"]
+    assert envelope["required"] == ["edges"]
+    assert envelope["additionalProperties"] is False
+    assert "entities" not in envelope["properties"]
+    edges = envelope["properties"]["edges"]["items"]
+    assert edges["required"] == ["src", "dst", "type"]
+    assert edges["additionalProperties"] is False
+    assert edges["properties"]["src"] == {"enum": ["C0", "C1", "N0", "N1", "N2"]}
+    assert edges["properties"]["dst"] == {"enum": ["C0", "C1", "N0", "N1", "N2"]}
     assert edges["properties"]["type"] == {"enum": sorted(EDGE_TYPES)}
 
 
@@ -763,8 +791,8 @@ def test_bad_vocab_fails_naming_type_zero_commits(world: str) -> None:
 # ---------------------------------------------------------------------------
 # EDGELESS WAVE 1 (spec: edgeless repair scope, owner verdict 2026-09-11 —
 # the 2026-09-11 wave-1 re-emit is reversed: wiring the model will not
-# invent is not worth a lost build; the DM prunes. Wave-2 anchor tests
-# live under WAVE-2 ORPHAN RE-PROMPT below and are untouched.)
+# invent is not worth a lost build; the DM prunes. Wave-2 anchor tests live
+# under WAVE-2 ANCHOR REPAIR below.)
 # ---------------------------------------------------------------------------
 
 
@@ -799,7 +827,7 @@ def test_wave1_edgeless_commits_with_one_wave_call(
         processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == job_id
     assert len(calls) == 1  # the single wave call — never a re-emit
-    assert all("PREVIOUS RESPONSE ORPHANS" not in call for call in calls)
+    assert all("ANCHOR REPAIR" not in call for call in calls)
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert "committed edgeless" in caplog.text
@@ -3092,18 +3120,25 @@ def test_record_repair_budget_exhausted_mid_chunks(world: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# WAVE-2 ORPHAN RE-PROMPT (spec: wave-2 orphan re-prompt)
+# WAVE-2 ANCHOR REPAIR (spec: repair sequence step 3, edges-only)
 # ---------------------------------------------------------------------------
 
 
-def test_wave2_orphan_retry_heals_and_commits(world: str) -> None:
-    """ORPHAN_RETRY: a wave-2 output with one orphan triggers exactly one
-    re-emit naming it; the healed re-emit wires the orphan to the core
-    (same entities — the drop guard forbids omitting it) and commits."""
+def _anchor_repair_healed_edges() -> dict[str, Any]:
+    """The edges-only repair healing the orphan output: one N2->C0 edge so
+    every entity anchors. No entity list is emitted — the wave's entities
+    stay frozen from the first attempt."""
+    return {"edges": [{"src": "N2", "dst": "C0", "type": "relationship"}]}
+
+
+def test_wave2_anchor_repair_heals_and_commits(world: str) -> None:
+    """ANCHOR_HEAL: a wave-2 output with one orphan triggers exactly one
+    edges-only repair naming it; the repair wires the orphan to the core
+    and the frozen-entity wave commits."""
     responses = [
         json.dumps(_wave1_output()),
         json.dumps(_wave2_output_orphan()),
-        json.dumps(_wave2_output_orphan_healed()),
+        json.dumps(_anchor_repair_healed_edges()),
     ]
     calls: list[str] = []
     job_id = _enqueue(world, notes="more world")
@@ -3114,31 +3149,44 @@ def test_wave2_orphan_retry_heals_and_commits(world: str) -> None:
 
     processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == job_id
-    assert len(calls) == 3  # wave 1 + wave 2 + the one orphan re-emit
-    assert "PREVIOUS RESPONSE ORPHANS" in calls[2]
+    assert len(calls) == 3  # wave 1 + wave 2 + the one anchor repair
+    assert "ANCHOR REPAIR" in calls[2]
     assert "'Nowhere Man' (N2)" in calls[2]
+    # Frozen rosters: new entities as ref+name+kind, the core as C-label+name.
+    assert "- N2 'Nowhere Man' (character)" in calls[2]
+    assert "- C0 'The Gilded Bar'" in calls[2]
+    assert '{"edges": [...]}' in calls[2]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert job.result is not None and job.result["entity_count"] == 5
     with session_scope() as session:
         assert len(revision_chain(session, world)) == 2
-        names = {e.name for e in world_entities(session, world)}
-    assert names == {
+        entities = {e.name: e for e in world_entities(session, world)}
+    assert set(entities) == {
         "The Gilded Bar",
         "Mira Vane",
         "The Drowned Rat",
         "Captain Harlow",
         "Nowhere Man",
     }
+    # The orphan committed anchored: an edge joins it to the core.
+    core_ids = {entities["The Gilded Bar"].id, entities["Mira Vane"].id}
+    orphan_id = entities["Nowhere Man"].id
+    with session_scope() as session:
+        edges = world_edges(session, world)
+    assert any(
+        (e.src == orphan_id and e.dst in core_ids) or (e.dst == orphan_id and e.src in core_ids)
+        for e in edges
+    )
 
 
-def test_wave2_orphan_second_miss_fails_core_stays(world: str) -> None:
-    """SECOND_MISS: a re-emit that is still orphan fails the job naming the
+def test_wave2_anchor_second_miss_fails_core_stays(world: str) -> None:
+    """SECOND_MISS: a repair adding no anchor edge fails the job naming the
     orphans; wave 1 stays committed, wave 2 writes nothing."""
     responses = [
         json.dumps(_wave1_output()),
         json.dumps(_wave2_output_orphan()),
-        json.dumps(_wave2_output_orphan()),
+        json.dumps({"edges": []}),
     ]
     calls: list[str] = []
     job_id = _enqueue(world, notes="more world")
@@ -3149,7 +3197,7 @@ def test_wave2_orphan_second_miss_fails_core_stays(world: str) -> None:
 
     processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == job_id
-    assert len(calls) == 3  # exactly one re-emit — never a third attempt
+    assert len(calls) == 3  # exactly one repair — never a third attempt
     job, _position = job_status(job_id)
     assert job.state == "failed"
     assert "Nowhere Man" in (job.error or "")
@@ -3161,7 +3209,7 @@ def test_wave2_orphan_second_miss_fails_core_stays(world: str) -> None:
 
 def test_wave2_clean_wave_makes_no_extra_call(world: str) -> None:
     """CLEAN_WAVE: no orphans — zero extra calls, identical behavior to
-    before the re-prompt existed."""
+    before the repair existed."""
     responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
     calls: list[str] = []
     job_id = _enqueue(world, notes="more world")
@@ -3173,7 +3221,7 @@ def test_wave2_clean_wave_makes_no_extra_call(world: str) -> None:
     processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == job_id
     assert len(calls) == 2
-    assert all("PREVIOUS RESPONSE ORPHANS" not in prompt for prompt in calls)
+    assert all("ANCHOR REPAIR" not in prompt for prompt in calls)
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     with session_scope() as session:
@@ -3186,7 +3234,7 @@ def test_wave2_orphan_message_uses_n_prefix(world: str) -> None:
     responses = [
         json.dumps(_wave1_output()),
         json.dumps(_wave2_output_orphan()),
-        json.dumps(_wave2_output_orphan()),
+        json.dumps({"edges": []}),
     ]
     job_id = _enqueue(world, notes="more world")
 
@@ -3200,22 +3248,23 @@ def test_wave2_orphan_message_uses_n_prefix(world: str) -> None:
     assert "(E2)" not in (job.error or "")
 
 
-def _wave2_output_orphan_healed() -> dict[str, Any]:
-    """The orphan output with the orphan wired to the core: same entities
-    in the same order (the re-emit drop guard requires it), plus an N2->C0
-    edge so every entity anchors."""
-    output = _wave2_output_orphan()
-    output["edges"].append({"src": "N2", "dst": "C0", "type": "relationship"})
-    return output
-
-
-def test_wave2_orphan_retry_reemit_dropping_orphan_fails(world: str) -> None:
-    """REMIT_DROP: a re-emit that omits the orphan instead of wiring it
-    fails loudly naming the drop — no third attempt, wave 1 stays."""
+def test_wave2_anchor_repair_ignores_renamed_entities(world: str) -> None:
+    """RENAMED_COMMITS (spec step-3 Success): the attempt-8 shape — a repair
+    that wires the orphan but smuggles a renamed entity list — commits with
+    the frozen first-attempt entities. Rename-class deaths are
+    unrepresentable: the repair's entity list is never read."""
+    repair = {
+        "entities": [
+            {"ref": "N0", "kind": "place", "name": "The Drowned Rat"},
+            {"ref": "N1", "kind": "character", "name": "Captain Harlow the Renamed"},
+            {"ref": "N2", "kind": "character", "name": "Nowhere Man"},
+        ],
+        "edges": [{"src": "N2", "dst": "C0", "type": "relationship"}],
+    }
     responses = [
         json.dumps(_wave1_output()),
         json.dumps(_wave2_output_orphan()),
-        json.dumps(_wave2_output()),  # the orphan silently gone
+        json.dumps(repair),
     ]
     calls: list[str] = []
     job_id = _enqueue(world, notes="more world")
@@ -3226,14 +3275,19 @@ def test_wave2_orphan_retry_reemit_dropping_orphan_fails(world: str) -> None:
 
     processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == job_id
-    assert len(calls) == 3  # exactly one re-emit — never a third attempt
+    assert len(calls) == 3  # exactly one repair — never a third attempt
     job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert "Nowhere Man" in (job.error or "") and "dropped" in (job.error or "")
+    assert job.state == "succeeded"
     with session_scope() as session:
-        assert len(revision_chain(session, world)) == 1  # wave 2 zero commits
+        assert len(revision_chain(session, world)) == 2
         entities = world_entities(session, world)
-    assert {e.name for e in entities} == {"The Gilded Bar", "Mira Vane"}  # core intact
+    assert {e.name for e in entities} == {
+        "The Gilded Bar",
+        "Mira Vane",
+        "The Drowned Rat",
+        "Captain Harlow",
+        "Nowhere Man",
+    }  # the smuggled rename never committed
 
 
 def test_wave2_orphan_message_without_core() -> None:
@@ -3259,9 +3313,9 @@ def test_wave2_orphan_message_without_core() -> None:
     assert "'Captain Harlow' (N1)" in str(excinfo.value)
 
 
-def test_wave2_orphan_retry_budget_exhausted(world: str) -> None:
-    """RETRY_BUDGET: max_llm_calls=2 — wave 1 plus the first wave-2 attempt
-    exhaust the budget, so the re-emit is refused before any HTTP request
+def test_wave2_anchor_repair_budget_exhausted(world: str) -> None:
+    """REPAIR_BUDGET: max_llm_calls=2 — wave 1 plus the first wave-2 attempt
+    exhaust the budget, so the repair is refused before any HTTP request
     and the job fails naming the budget with the core intact."""
     responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output_orphan())]
     calls: list[str] = []
@@ -3275,7 +3329,7 @@ def test_wave2_orphan_retry_budget_exhausted(world: str) -> None:
     job, _position = job_status(job_id)
     assert job.state == "failed"
     assert "budget" in (job.error or "").lower()
-    assert len(calls) == 2  # the re-emit never reached the provider
+    assert len(calls) == 2  # the repair never reached the provider
     with session_scope() as session:
         assert len(revision_chain(session, world)) == 1
         assert {e.name for e in world_entities(session, world)} == {
@@ -3284,9 +3338,9 @@ def test_wave2_orphan_retry_budget_exhausted(world: str) -> None:
         }
 
 
-def test_wave2_orphan_retry_cancel_skips_reemit(world: str) -> None:
-    """RETRY_CANCEL: a cancel landing during the first wave-2 call stops the
-    runner before the re-emit — no further provider calls, no commit beyond
+def test_wave2_anchor_repair_cancel_skips_repair(world: str) -> None:
+    """REPAIR_CANCEL: a cancel landing during the first wave-2 call stops the
+    runner before the repair — no further provider calls, no commit beyond
     the core, and the job stays cancelled with no terminal conflict."""
     calls: list[str] = []
     job_id = _enqueue(world, notes="more world")
@@ -3309,7 +3363,7 @@ def test_wave2_orphan_retry_cancel_skips_reemit(world: str) -> None:
 
 def test_wave2_nonorphan_failure_gets_no_retry(world: str) -> None:
     """NO_RETRY_NONORPHAN: a wave-2 bad-ref rejection fails immediately —
-    exactly 2 calls, no PREVIOUS RESPONSE ORPHANS marker."""
+    exactly 2 calls, no ANCHOR REPAIR marker."""
     bad = _wave2_output()
     bad["entities"][0]["ref"] = "X0"
     responses = [json.dumps(_wave1_output()), json.dumps(bad)]
@@ -3324,7 +3378,7 @@ def test_wave2_nonorphan_failure_gets_no_retry(world: str) -> None:
     job, _position = job_status(job_id)
     assert job.state == "failed"
     assert len(calls) == 2
-    assert all("PREVIOUS RESPONSE ORPHANS" not in prompt for prompt in calls)
+    assert all("ANCHOR REPAIR" not in prompt for prompt in calls)
     with session_scope() as session:
         assert len(revision_chain(session, world)) == 1  # wave 2 zero commits
 
@@ -3347,20 +3401,21 @@ def test_wave2_mixed_orphan_and_bad_edge_gets_no_retry(world: str) -> None:
     assert job.state == "failed"
     assert "vocabulary" in (job.error or "")  # the edge rejection, not the orphan
     assert len(calls) == 2
-    assert all("PREVIOUS RESPONSE ORPHANS" not in prompt for prompt in calls)
+    assert all("ANCHOR REPAIR" not in prompt for prompt in calls)
     with session_scope() as session:
         assert len(revision_chain(session, world)) == 1  # wave 2 zero commits
 
 
-def test_wave2_orphan_retry_reemit_repaired_by_gates(world: str) -> None:
-    """RETRY_GATES: the re-emit flows through the normal gates — a re-emit
-    with an incomplete record gets the record repair and still commits."""
-    healed = _wave2_output_orphan_healed()
-    del healed["entities"][1]["data"]["appearance"]
+def test_wave2_anchor_repair_repaired_by_gates(world: str) -> None:
+    """REPAIR_GATES: the merged wave flows through the normal gates — first
+    attempt with an incomplete record plus an anchoring repair still gets
+    the record repair and commits."""
+    orphan = _wave2_output_orphan()
+    del orphan["entities"][1]["data"]["appearance"]
     responses = [
         json.dumps(_wave1_output()),
-        json.dumps(_wave2_output_orphan()),
-        json.dumps(healed),
+        json.dumps(orphan),
+        json.dumps(_anchor_repair_healed_edges()),
         json.dumps({"records": [{"ref": "E1", "data": _character_record("Captain Harlow")}]}),
     ]
     calls: list[str] = []
@@ -3372,8 +3427,8 @@ def test_wave2_orphan_retry_reemit_repaired_by_gates(world: str) -> None:
 
     processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == job_id
-    assert len(calls) == 4  # wave 1 + wave 2 + re-emit + the record repair
-    assert "PREVIOUS RESPONSE ORPHANS" in calls[2]
+    assert len(calls) == 4  # wave 1 + wave 2 + repair + the record repair
+    assert "ANCHOR REPAIR" in calls[2]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert job.result is not None and job.result["entity_count"] == 5
