@@ -385,3 +385,11 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   answers the count question: 28, 25 — the 26B clusters at ~half the
   50-roster, not lottery. Tee'd calls + prompts in
   `/tmp/mythos-ladder/calls-c7/`.
+
+## Count-pin ships (2026-09-12, owner: pin it)
+
+- `build_wave_schema(n)` pins entities to exactly n items; wave 1
+  carries the trimmed roster count, wave 2 stays free. Carry asserts
+  updated (wave-1 slots pinned, wave-2 slots free) + COUNT_PIN literals.
+  Gates: 1185 backend passed, ruff + mypy clean. Next: rung-50
+  attempt 3 on pin code.

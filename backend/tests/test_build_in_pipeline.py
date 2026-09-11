@@ -402,7 +402,7 @@ def test_wave_calls_carry_envelope_schema(world: str) -> None:
     """WAVE_CARRIES_SCHEMA: the wave call carries the envelope schema via a
     settings copy (zero double churn — the fake keeps its
     ``(prompt, settings)`` shape); the job result is identical to today."""
-    expected = build_wave_schema()
+    expected = build_wave_schema(1)  # one place in the roster
     seen: list[Any] = []
 
     def fake(prompt: str, settings: LLMSettings) -> str:
@@ -425,7 +425,7 @@ def test_wave2_and_anchor_repair_carry_schemas(world: str) -> None:
     wave-1-only test never executes those lines). The repair half runs on
     wave 2: wave 1 commits edgeless and never repairs (spec: edgeless
     repair scope)."""
-    expected = build_wave_schema()
+    expected = build_wave_schema(0)  # notes-only job: empty wave-1 roster
     seen: list[Any] = []
     responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
 
@@ -438,7 +438,7 @@ def test_wave2_and_anchor_repair_carry_schemas(world: str) -> None:
     assert processed == job_id
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
-    assert seen == [expected, expected]
+    assert seen == [expected, build_wave_schema()]  # wave 1 pinned, wave 2 free
 
     seen_repair: list[Any] = []
     responses_repair = [
@@ -460,7 +460,7 @@ def test_wave2_and_anchor_repair_carry_schemas(world: str) -> None:
     # the repair schema is pinned to exactly those refs — a repair reusing
     # the wave envelope (or plain settings) fails this line.
     expected_repair = build_anchor_repair_schema(["N0", "N1", "N2"], ["C0", "C1"])
-    assert seen_repair == [expected, expected, expected_repair]
+    assert seen_repair == [expected, build_wave_schema(), expected_repair]
 
 
 def test_wave_envelope_schema_pins_wire_literals() -> None:
@@ -486,6 +486,12 @@ def test_wave_envelope_schema_pins_wire_literals() -> None:
     # grammar-enforcing backends. Pinned by value so a widened type
     # (or a stale copy of the vocabulary) fails here, not live.
     assert edges["properties"]["type"] == {"enum": sorted(EDGE_TYPES)}
+    # COUNT_PIN (ladder rung 50): the entities array carries no count keys
+    # by default; with a roster count it pins exactly that many items.
+    assert "minItems" not in envelope["properties"]["entities"]
+    assert "maxItems" not in envelope["properties"]["entities"]
+    pinned = build_wave_schema(50)["json_schema"]["schema"]["properties"]["entities"]
+    assert pinned["minItems"] == 50 and pinned["maxItems"] == 50
 
 
 def test_anchor_repair_schema_pins_wire_literals() -> None:
@@ -540,7 +546,7 @@ def test_stat_repair_calls_carry_repair_schema(world: str) -> None:
     assert len(seen) == 2  # wave 1 + exactly one repair pass
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
-    assert seen[0] == build_wave_schema()
+    assert seen[0] == build_wave_schema(2)  # two roster entries pinned
     assert seen[1] == build_stat_repair_schema()
 
 
@@ -571,7 +577,7 @@ def test_wave2_stat_repair_carries_repair_schema(world: str) -> None:
     assert processed == job_id
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
-    assert seen == [build_wave_schema(), build_wave_schema(), build_stat_repair_schema()]
+    assert seen == [build_wave_schema(2), build_wave_schema(), build_stat_repair_schema()]
 
 
 def test_gate_repair_breach_logs_through_run(caplog: pytest.LogCaptureFixture, world: str) -> None:

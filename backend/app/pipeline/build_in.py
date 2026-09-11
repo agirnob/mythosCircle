@@ -853,14 +853,28 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     notes = notes.strip()
 
     budget = CallBudget(job)
-    # Wave calls carry the flat envelope schema via a settings copy — the
-    # provider doubles keep their ``(prompt, settings)`` shape.
+    # Wave calls carry the flat envelope schema via settings copies — the
+    # provider doubles keep their ``(prompt, settings)`` shape. Wave 1's
+    # copy pins the entities array to the trimmed roster count (ladder rung
+    # 50: shape pinned but count free emitted 28 then 25 of 50); wave 2's
+    # notes-driven roster is model-decided and stays unpinned.
+    wave1_count = sum(
+        len(
+            [
+                entry
+                for entry in payload.get(section, [])
+                if isinstance(entry, str) and entry.strip()
+            ]
+        )
+        for section in SECTION_NAMES
+    )
+    wave1_settings = dataclasses.replace(settings, response_format=build_wave_schema(wave1_count))
     wave_settings = dataclasses.replace(settings, response_format=build_wave_schema())
     # Wave 1: the named sections -> a committed core (edgeless allowed).
     if not _job_still_running(job):
         return
     prompt_1 = build_wave1_prompt(seed, payload)
-    text_1 = budget.call(lambda: provider(prompt_1, settings=wave_settings))
+    text_1 = budget.call(lambda: provider(prompt_1, settings=wave1_settings))
     parsed_1 = parse_build_output(text_1, wave=1)
     entities_1, edges_1 = _validate_subgraph(1, parsed_1)
     # Only characters carry stat blocks (AR24, spec-2.4 review decision): a
@@ -1194,7 +1208,7 @@ def build_wave2_prompt(
     return "\n".join(lines)
 
 
-def build_wave_schema() -> dict[str, Any]:
+def build_wave_schema(entity_count: int | None = None) -> dict[str, Any]:
     """The flat envelope schema carried on build-in wave calls (spec: JSON-schema
     generation foundation) — the ``response_format`` wrapper follows the prototype's
     measured ``json_schema`` convention; the inner schema is flat and ``$ref``-free
@@ -1205,6 +1219,11 @@ def build_wave_schema() -> dict[str, Any]:
     type is unemittable on grammar-enforcing backends. Parsing, validators,
     and all gates stay the backstop — the schema is the optimization, so
     fenced/prose output still parses identically.
+    With ``entity_count`` the entities array is pinned to exactly that many
+    items (ladder rung 50: the model emitted 28 then 25 of a 50-roster with
+    shape pinned but count free — the roster is exact, so the schema is
+    too). Wave 1 carries the trimmed section count; wave 2's notes-driven
+    roster is model-decided and stays unpinned.
     """
     return {
         "type": "json_schema",
@@ -1217,6 +1236,11 @@ def build_wave_schema() -> dict[str, Any]:
                 "properties": {
                     "entities": {
                         "type": "array",
+                        **(
+                            {"minItems": entity_count, "maxItems": entity_count}
+                            if entity_count is not None
+                            else {}
+                        ),
                         "items": {
                             "type": "object",
                             "required": ["ref", "kind", "name"],
