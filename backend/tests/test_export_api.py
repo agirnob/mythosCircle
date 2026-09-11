@@ -1634,3 +1634,268 @@ def test_portrait_url_origin_from_config_file(
         )
     finally:
         reset_runtime_config()
+
+
+# ---------------------------------------------------------------------------
+# Structured attack damage + the optional mechanics aspects (spec 2026-09-11)
+#
+# Additive export surface: the Forge Z035 entry states the damage the PARTS
+# imply, the sheet renders every optional aspect, and a block committed
+# before these fields existed renders exactly as it did.
+# ---------------------------------------------------------------------------
+
+#: The new optional aspects, one group per rendered sheet region: the
+#: stat-block fragment carrying it and markup ONLY that fragment emits
+#: (so "absent" is assertable as well as "present").
+_NEW_STAT_GROUPS: dict[str, dict[str, Any]] = {
+    "hit_dice": {
+        "commit": {"combat": {"ac": 20, "hp": 140, "hit_dice": "24d10 + 192", "speed": "30 ft."}},
+        "markup": "<dt>Hp</dt><dd>140</dd><dt>Hit dice</dt><dd>24d10 + 192</dd><dt>Speed</dt>",
+    },
+    "saves": {
+        # Committed wis-first: the sheet renders the canonical score order.
+        "commit": {"saves": {"wis": 18, "con": 15}},
+        "markup": "<dt>Con</dt><dd>15</dd><dt>Wis</dt><dd>18</dd>",
+    },
+    "initiative": {"commit": {"initiative": 3}, "markup": "<h4>Initiative</h4><p>3</p>"},
+    "passive_perception": {
+        "commit": {"passive_perception": 14},
+        "markup": "<h4>Passive perception</h4><p>14</p>",
+    },
+    "proficiency_bonus": {
+        "commit": {"proficiency_bonus": 5},
+        "markup": "<h4>Proficiency bonus</h4><p>5</p>",
+    },
+    "spellcasting": {
+        "commit": {"spellcasting": {"slots": [4, 3, 3, 3, 1], "attack_bonus": 13, "dc": 21}},
+        "markup": "<dt>Dc</dt><dd>21</dd><dt>Attack bonus</dt><dd>13</dd>"
+        '<dt>Slots</dt><dd><ul class="entries"><li>4</li><li>3</li><li>3</li>'
+        "<li>3</li><li>1</li></ul></dd>",
+    },
+    "features": {
+        "commit": {"features": ["Divine Smite", "Aura of Protection"]},
+        "markup": "<h4>Features</h4>"
+        '<ul class="entries"><li>Divine Smite</li><li>Aura of Protection</li></ul>',
+    },
+    "resources": {
+        "commit": {"resources": {"lay_on_hands": 85, "channel_divinity": 2}},
+        "markup": "<dt>Lay on hands</dt><dd>85</dd><dt>Channel divinity</dt><dd>2</dd>",
+    },
+}
+
+
+def _structured_block(**overrides: Any) -> dict[str, Any]:
+    """A post-change character: the AR25 core plus whichever optional
+    aspect the caller adds."""
+    block: dict[str, Any] = {
+        "identity": {"role": "NPC", "level": 12, "race": "Human", "class": "Paladin"},
+        "attributes": {"str": 18, "dex": 10, "con": 16, "int": 9, "wis": 12, "cha": 20},
+        "combat": {"ac": 20, "hp": 140, "speed": "30 ft."},
+        "skills": [],
+        "actions": [],
+        "traits": [],
+        "spells": [],
+    }
+    block.update(overrides)
+    return block
+
+
+def _block_sheet(client: Any, data: dict[str, Any]) -> str:
+    """Commit one anchored character carrying ``data``; return its sheet."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    hero_id, anchor_id = new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(id=hero_id, kind="character", name="Aldric", data=data),
+            models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
+        ],
+        edges=[models.EdgeInput(src=hero_id, dst=anchor_id, type="located_in", counter=1)],
+    )
+    return str(
+        client.get(
+            f"/api/campaigns/{campaign_id}/entities/{hero_id}/export", params={"format": "html"}
+        ).text
+    )
+
+
+def _panel(html_body: str) -> str:
+    """The stat-block panel of a rendered sheet."""
+    start = html_body.index('class="stat-block"')
+    return html_body[start : html_body.index("</section>", start)]
+
+
+@pytest.mark.parametrize("group", sorted(_NEW_STAT_GROUPS))
+def test_entity_html_new_stat_groups_render(client: Any, group: str) -> None:
+    """NEW_STATS_PRESENT (sheet): each optional aspect renders its own
+    markup — and a block lacking the others emits NO section for them
+    (absent is never an empty heading)."""
+    case = _NEW_STAT_GROUPS[group]
+    sheet = _block_sheet(client, {"stat_block": _structured_block(**case["commit"])})
+    assert case["markup"] in _panel(sheet)
+    for other, other_case in _NEW_STAT_GROUPS.items():
+        if other != group:
+            assert other_case["markup"] not in sheet
+
+
+def test_entity_html_new_sections_follow_the_spec_order(client: Any) -> None:
+    """DISPLAY ORDER: the panel's order is the renderer's, not the commit
+    order — the new aspects slot into it (saves, initiative, passive
+    perception, proficiency bonus, spellcasting, features, resources) and
+    hit dice ride with hp."""
+    overrides: dict[str, Any] = {}
+    for case in _NEW_STAT_GROUPS.values():
+        overrides.update(case["commit"])
+    sheet = _block_sheet(client, {"stat_block": _structured_block(**overrides)})
+    panel = _panel(sheet)
+    assert re.findall(r"<h4>(.*?)</h4>", panel) == [
+        "Identity",
+        "Combat",
+        "Saves",
+        "Initiative",
+        "Passive perception",
+        "Proficiency bonus",
+        "Skills",
+        "Actions",
+        "Traits",
+        "Spells",
+        "Spellcasting",
+        "Features",
+        "Resources",
+    ]
+    assert "<dt>Hp</dt><dd>140</dd><dt>Hit dice</dt><dd>24d10 + 192</dd>" in panel
+    assert "<dt>Lay on hands</dt><dd>85</dd>" in panel  # resources close the panel
+
+
+def test_entity_html_pre_change_block_emits_no_new_sections(client: Any) -> None:
+    """NEW_STATS_ABSENT (sheet): the 5-1 fixture — a block committed before
+    these fields existed — renders the same six sections as always, with no
+    new heading and no empty one."""
+    campaign_id, vespera_id = _sheet_world(client)
+    sheet = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{vespera_id}/export", params={"format": "html"}
+    ).text
+    panel = _panel(sheet)
+    assert re.findall(r"<h4>(.*?)</h4>", panel) == [
+        "Identity",
+        "Combat",
+        "Skills",
+        "Actions",
+        "Traits",
+        "Spells",
+    ]
+    for case in _NEW_STAT_GROUPS.values():
+        assert case["markup"] not in sheet
+
+
+#: A post-change character: one action whose prose dropped the damage
+#: numbers (the parts carry them) and one whose prose already states them
+#: (the AR25 contract asks the model to keep both in step).
+_STRUCTURED_ACTION_DATA: dict[str, Any] = {
+    "name": "Aldric",
+    "role": "NPC",
+    "level_cr": "level 12",
+    "race_type": "Human",
+    "class_profession": "Paladin",
+    "alignment": "LG",
+    "stat_block": {
+        "identity": {"role": "NPC", "race": "Human", "level": 12, "class": "Paladin"},
+        "attributes": {"str": 18, "dex": 10, "con": 16, "int": 9, "wis": 12, "cha": 20},
+        "combat": {"ac": 20, "hp": 140, "hit_dice": "24d10 + 192"},
+        "skills": [],
+        "traits": [],
+        "spells": [],
+        "actions": [
+            {
+                "name": "Oathblade",
+                "to_hit": 18,
+                "description": "Melee Weapon Attack: +18 to hit, reach 5 ft., one target.",
+                "damage": [
+                    {
+                        "dice": "2d6",
+                        "count": 2,
+                        "sides": 6,
+                        "bonus": 12,
+                        "average": 19,
+                        "type": "slashing",
+                    },
+                    # No ``average``: the sentence derives it from the dice.
+                    {"dice": "3d10", "count": 3, "sides": 10, "bonus": 0, "type": "radiant"},
+                ],
+            },
+            {
+                "name": "Divine Smite",
+                "description": "Hit: 16.5 (3d10) radiant damage.",
+                "damage": [
+                    {
+                        "dice": "3d10",
+                        "count": 3,
+                        "sides": 10,
+                        "bonus": 0,
+                        "average": 16.5,
+                        "type": "radiant",
+                    }
+                ],
+            },
+        ],
+    },
+}
+
+
+def _structured_actions(client: Any) -> tuple[list[dict[str, str]], str]:
+    """The committed structured-action character's Z035 entries."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    aldric_id, anchor_id = new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=aldric_id, kind="character", name="Aldric", data=dict(_STRUCTURED_ACTION_DATA)
+            ),
+            models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
+        ],
+        edges=[models.EdgeInput(src=aldric_id, dst=anchor_id, type="located_in", counter=1)],
+    )
+    metadata = _owlbear(client, campaign_id, aldric_id).json()
+    return metadata[_fk("Z035")], aldric_id
+
+
+def test_owlbear_action_entry_carries_the_damage_parts_sentence(client: Any) -> None:
+    """STRUCTURED_DAMAGE (Forge): the Z035 entry's description states the
+    numbers the PARTS imply — this action's prose dropped them — so the
+    attack imports with the damage the auditor read."""
+    entries, aldric_id = _structured_actions(client)
+    assert entries[0] == {
+        "id": f"{aldric_id[-8:]}-0",
+        "name": "Oathblade",
+        "description": "Melee Weapon Attack: +18 to hit, reach 5 ft., one target. "
+        "Hit: 19 (2d6 + 12) slashing damage plus 16.5 (3d10) radiant damage.",
+    }
+
+
+def test_owlbear_action_entry_keeps_prose_that_states_the_numbers(client: Any) -> None:
+    """The sentence is never appended twice: a description that already
+    names the parts' dice (the AR25 contract keeps prose and parts in step)
+    ships verbatim."""
+    entries, aldric_id = _structured_actions(client)
+    assert entries[1] == {
+        "id": f"{aldric_id[-8:]}-1",
+        "name": "Divine Smite",
+        "description": "Hit: 16.5 (3d10) radiant damage.",
+    }
+
+
+def test_owlbear_pre_change_action_payload_unchanged(client: Any) -> None:
+    """NEW_STATS_ABSENT (Forge): the 5-2 fixture's actions carry no damage
+    parts, so Z035 ships the committed description verbatim — the additive
+    rule adds nothing to a block written before it existed."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    entries = _owlbear(client, campaign_id, sera_id).json()[_fk("Z035")]
+    assert [entry["description"] for entry in entries] == [
+        action["description"] for action in _SERA_DATA["stat_block"]["actions"]
+    ]
+    assert all("Hit:" not in entry["description"] for entry in entries)

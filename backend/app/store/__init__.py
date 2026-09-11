@@ -18,7 +18,8 @@ Public API:
         set_change_listener                 -- generation queue (jobs)
     stage_candidates / accept_candidate / reject_candidate /
         list_candidates                     -- proposed candidates (candidates)
-    add_media / list_media / get_media_file   -- media manifest (media)
+    add_media / list_media / get_media_file / delete_one_media
+        -- media manifest (media)
 """
 
 from app.store.auth import (
@@ -134,6 +135,8 @@ from app.store.media import (
     MediaNotFoundError,
     add_media,
     delete_entity_media,
+    delete_media_row,
+    delete_one_media,
     get_media_file,
     list_media,
 )
@@ -250,6 +253,8 @@ __all__ = [
     "create_session",
     "delete_campaign",
     "delete_entity_media",
+    "delete_media_row",
+    "delete_one_media",
     "delete_edge",
     "delete_entity",
     "discard_candidates",

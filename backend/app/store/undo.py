@@ -19,7 +19,10 @@ Media-manifest rows are untouched by undo — no media events exist to
 invert, so undo never restores reclaimed media (spec-4.3). An entity
 delete reclaims its manifest rows in the same transaction; undo of an
 entity-CREATION revision currently leaves that entity's media rows and
-files behind (deferred — no HTTP route exposes undo).
+files behind (rows and files both — media are not world graph, so the
+inverse of an entity_created event reclaims neither; a media delete is
+likewise not undoable). The HTTP surface is ``POST
+/api/campaigns/{campaign_id}/undo`` (spec-4.3 follow-up).
 """
 
 from collections.abc import Sequence

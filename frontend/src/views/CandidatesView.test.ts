@@ -1324,4 +1324,48 @@ describe('CandidatesView', () => {
     expect(portraitPosts.filter((p) => p.kind === 'image')).toHaveLength(0)
     wrapper.unmount()
   })
+
+  it('renders the stored structured attack and the optional stat aspects in the candidate stat block', async () => {
+    const candidate: Candidate = {
+      ...SABLE,
+      payload: {
+        ...SABLE.payload,
+        stat_block: {
+          identity: { role: 'NPC', level: 5, race: 'Human' },
+          attributes: { str: 14, dex: 12, con: 14, int: 10, wis: 10, cha: 8 },
+          combat: { ac: 16, hp: 44, hit_dice: '5d8 + 10' },
+          saves: { str: 4, dex: 1 },
+          initiative: 3,
+          passive_perception: 12,
+          proficiency_bonus: 3,
+          spellcasting: { dc: 15, attack_bonus: 7, slots: [4, 2] },
+          features: ['Sneak Attack'],
+          resources: { ki_points: 5 },
+          actions: [
+            {
+              name: 'Rapier',
+              to_hit: 7,
+              damage: [
+                { dice: '1d8', count: 1, sides: 8, bonus: 4, average: 8.5, type: 'piercing' },
+              ],
+            },
+          ],
+        },
+      },
+    }
+    stubApi({ list: [candidate] })
+    const wrapper = mountView()
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('AC 16 · HP 44 · Hit dice 5d8 + 10')
+    expect(text).toContain('Saves STR +4, DEX +1')
+    expect(text).toContain('Initiative +3')
+    expect(text).toContain('Passive perception 12')
+    expect(text).toContain('Proficiency bonus +3')
+    expect(text).toContain('Spellcasting DC 15 · Attack +7 · Slots 4/2')
+    expect(text).toContain('Features Sneak Attack')
+    expect(text).toContain('Resources Ki points 5')
+    expect(text).toContain('Rapier +7 — 8.5 (1d8+4) piercing')
+    wrapper.unmount()
+  })
 })

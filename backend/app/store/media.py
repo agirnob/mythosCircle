@@ -7,7 +7,9 @@ never dangles over a missing file) and ``delete_entity_media`` is the
 entity-delete seam (used by ``_delete_entity`` inside its transaction;
 spec-4.3 reclaims rows with their entity — ``delete_campaign`` bulk-deletes
 its campaign's rows in the same spirit, and undo of an entity-CREATION
-revision leaves rows behind, deferred). The row is the index of record
+revision leaves rows behind, deferred). ``delete_media_row`` /
+``delete_one_media`` are the single-row seam behind the DM's portrait
+delete (spec-4.3) — one row, the file reclaimed after the commit. The row is the index of record
 for a generated portrait; the file lives under
 ``media_dir/{campaign_id}/{entity_id}/{filename}``.
 
@@ -123,6 +125,51 @@ def delete_entity_media(session: Session, campaign_id: str, entity_id: str) -> N
             models.Media.entity_id == entity_id,
         )
     )
+
+
+def delete_media_row(
+    session: Session, campaign_id: str, entity_id: str, media_id: str
+) -> models.Media | None:
+    """Delete ONE manifest row INSIDE the caller's transaction — the
+    single-row twin of ``delete_entity_media`` (the caller is
+    ``delete_one_media``; the API layer is the only caller). Returns the
+    deleted row — the API's file-reclaim source, ``filename`` — or None
+    when no row matches (unknown id, or an id belonging to another entity
+    or another campaign: all the same miss, AD-9).
+
+    Media rows are NOT world graph: no events, no revision delta, and undo
+    does not restore them (``store/undo.py`` — regeneration is the
+    recovery, spec-4.3). File reclaim is the API layer's post-commit job
+    (AD-10 rows-first ordering); this seam only removes the row.
+    """
+    row = session.scalar(
+        select(models.Media).where(
+            models.Media.campaign_id == campaign_id,
+            models.Media.entity_id == entity_id,
+            models.Media.id == media_id,
+        )
+    )
+    if row is None:
+        return None
+    session.delete(row)
+    return row
+
+
+def delete_one_media(campaign_id: str, entity_id: str, media_id: str) -> models.Media:
+    """Delete one manifest row in its own transaction; returns it.
+
+    Unknown campaign -> ``UnknownCampaignError``; no row for this
+    (campaign, entity, id) -> ``MediaNotFoundError`` — the DELETE's 404
+    (the campaign and the row miss are distinct only in code, never on
+    the wire beyond the ownership gate).
+    """
+    with session_scope() as session:
+        if session.get(models.Campaign, campaign_id) is None:
+            raise UnknownCampaignError(campaign_id)
+        row = delete_media_row(session, campaign_id, entity_id, media_id)
+        if row is None:
+            raise MediaNotFoundError(f"{entity_id}/{media_id}")
+        return row
 
 
 def get_media_file(campaign_id: str, entity_id: str, filename: str) -> models.Media:

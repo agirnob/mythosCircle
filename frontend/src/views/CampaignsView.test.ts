@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
+import type { components } from '../api/schema'
+
 const { apiFetchMock } = vi.hoisted(() => ({ apiFetchMock: vi.fn() }))
 
 vi.mock('../api/client', () => ({
@@ -23,8 +25,23 @@ vi.mock('vue-router', () => ({
   RouterLink: { template: '<a><slot /></a>' },
 }))
 
+import { ApiError } from '../api/client'
 import { useCampaignsStore } from '../stores/campaigns'
 import CampaignsView from './CampaignsView.vue'
+
+type Campaign = components['schemas']['CampaignResponse']
+
+function campaign(id: string, title: string): Campaign {
+  return {
+    id,
+    owner_id: 'A1',
+    title,
+    description: '',
+    theme: 'Grimdark',
+    custom_lore: '',
+    created_at: '2026-09-11T10:00:00Z',
+  }
+}
 
 describe('CampaignsView theme picker', () => {
   beforeEach(() => {
@@ -88,5 +105,116 @@ describe('CampaignsView theme picker', () => {
     expect(store.campaigns[0]?.theme).toBe('Grimdark')
     const post = apiFetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
     expect(JSON.parse(String(post?.[1]?.body)).theme).toBe('Grimdark')
+  })
+})
+
+describe('CampaignsView world delete', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('deletes the world after the DM retypes its title, then refetches the list', async () => {
+    let list: Campaign[] = [campaign('W1', 'Greymarch'), campaign('W2', 'The Embermarked Vale')]
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        list = [campaign('W2', 'The Embermarked Vale')] // the server's post-delete list
+        return undefined
+      }
+      if (String(path).endsWith('/themes')) return { themes: ['Grimdark'] }
+      return { campaigns: list, next_cursor: null }
+    })
+    const wrapper = mount(CampaignsView)
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Delete')[0]!
+      .trigger('click')
+    await wrapper.get('.delete-world input[type="text"]').setValue('Greymarch')
+    await wrapper.get('form.delete-world').trigger('submit')
+    await flushPromises()
+
+    const del = apiFetchMock.mock.calls.find(([, init]) => init?.method === 'DELETE')
+    expect(String(del?.[0])).toBe('/api/campaigns/W1')
+    expect(JSON.parse(String(del?.[1]?.body))).toEqual({ confirm: true })
+    // The list refetched: the deleted world is gone, its sibling stays.
+    expect(wrapper.text()).not.toContain('Greymarch')
+    expect(wrapper.text()).toContain('The Embermarked Vale')
+    expect(wrapper.find('.delete-world').exists()).toBe(false)
+  })
+
+  it('a mistyped title deletes nothing', async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      if (String(path).endsWith('/themes')) return { themes: ['Grimdark'] }
+      return { campaigns: [campaign('W1', 'Greymarch')], next_cursor: null }
+    })
+    const wrapper = mount(CampaignsView)
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Delete')[0]!
+      .trigger('click')
+    await wrapper.get('.delete-world input[type="text"]').setValue('greymarch')
+    await wrapper.get('form.delete-world').trigger('submit')
+    await flushPromises()
+
+    expect(apiFetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0)
+    expect(wrapper.text()).toContain('The title did not match — nothing was deleted.')
+    expect(wrapper.text()).toContain('Greymarch')
+    expect(useCampaignsStore().campaigns).toHaveLength(1)
+  })
+
+  it('a failed delete keeps the world listed and shows the error', async () => {
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        throw new ApiError(404, 'not_found', 'Campaign not found.')
+      }
+      if (String(path).endsWith('/themes')) return { themes: ['Grimdark'] }
+      return { campaigns: [campaign('W1', 'Greymarch')], next_cursor: null }
+    })
+    const wrapper = mount(CampaignsView)
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Delete')[0]!
+      .trigger('click')
+    await wrapper.get('.delete-world input[type="text"]').setValue('Greymarch')
+    await wrapper.get('form.delete-world').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Campaign not found.')
+    // Never treated as deleted: the row and the store list keep the world.
+    expect(wrapper.text()).toContain('Greymarch')
+    expect(useCampaignsStore().campaigns.map((c) => c.id)).toEqual(['W1'])
+    expect(wrapper.find('.delete-world').exists()).toBe(true)
+  })
+
+  it('a delete that lands but cannot refresh the list is reported as exactly that', async () => {
+    let deleted = false
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        deleted = true
+        return undefined
+      }
+      if (String(path).endsWith('/themes')) return { themes: ['Grimdark'] }
+      if (deleted) throw new ApiError(500, 'server_error', 'Database unavailable.')
+      return { campaigns: [campaign('W1', 'Greymarch')], next_cursor: null }
+    })
+    const wrapper = mount(CampaignsView)
+    await flushPromises()
+
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Delete')[0]!
+      .trigger('click')
+    await wrapper.get('.delete-world input[type="text"]').setValue('Greymarch')
+    await wrapper.get('form.delete-world').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('The world was deleted, but the list could not be refreshed.')
+    expect(wrapper.text()).toContain('Database unavailable.')
   })
 })

@@ -1,4 +1,4 @@
-"""Media REST surface tests (spec-4.1, AD-9/AD-10).
+"""Media REST surface tests (spec-4.1, AD-9/AD-10; spec-4.3 delete).
 
 Pins the wire contract over the manifest + file routes: ownership-404
 first (FOREIGN_CAMPAIGN), the golden HAPPY_PATH (enqueue -> worker run
@@ -6,6 +6,11 @@ first (FOREIGN_CAMPAIGN), the golden HAPPY_PATH (enqueue -> worker run
 ROW_WITHOUT_FILE (a manifest row whose file is gone is the same 404).
 The worker is driven deterministically with an injected mock image
 provider (the app's own worker is disabled under MYTHOSCIRCLE_TESTING=1).
+
+Spec-4.3 adds the single-portrait DELETE: one named manifest ROW goes,
+its file is unlinked after the commit (a missing file is still a 204),
+and neither the world graph (no revision, no entity) nor the campaign's
+other rows move.
 """
 
 from collections.abc import Callable, Iterator
@@ -19,6 +24,7 @@ from app.core import ids
 from app.core.settings import ImageSettings
 from app.pipeline.worker import run_next_job
 from app.store import (
+    add_media,
     app_db_url,
     commit_subgraph,
     create_campaign,
@@ -26,6 +32,9 @@ from app.store import (
     init_db,
     models,
     register_account,
+    revision_chain,
+    session_scope,
+    world_state,
 )
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"portrait-payload"
@@ -120,6 +129,12 @@ def test_media_routes_require_auth(client: TestClient, media_api: Callable[[], s
     client.cookies.clear()
     assert client.get(f"/api/campaigns/{campaign_id}/media").status_code == 401
     assert client.get(f"/api/campaigns/{campaign_id}/media/entity/file.png").status_code == 401
+    assert (
+        client.delete(
+            f"/api/campaigns/{campaign_id}/entities/entity/media/{ids.new_id()}"
+        ).status_code
+        == 401
+    )
 
 
 def test_media_list_foreign_campaign_is_404(
@@ -475,3 +490,197 @@ def test_video_file_route_foreign_campaign_is_404(
         client.get(f"/api/campaigns/{other_id}/media/{foreign_entity_id}/{filename}").status_code
         == 404
     )
+
+
+# ---------------------------------------------------------------------------
+# Spec-4.3: the single-portrait DELETE
+# ---------------------------------------------------------------------------
+
+
+def _world_facts(campaign_id: str) -> tuple[int, int]:
+    """(revision-chain length, live entity count) — a media delete moves
+    neither: media rows are not world graph (AD-1/AD-10)."""
+    with session_scope() as session:
+        revisions = len(list(revision_chain(session, campaign_id)))
+        entities, _edges = world_state(session, campaign_id)
+    return revisions, len(entities)
+
+
+def _portrait_row(client: TestClient, campaign_id: str) -> dict[str, Any]:
+    """The single manifest row of a campaign that has exactly one."""
+    rows = client.get(f"/api/campaigns/{campaign_id}/media").json()["media"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert isinstance(row, dict)
+    return row
+
+
+def _media_refs(export: dict[str, Any], entity_id: str) -> list[dict[str, Any]]:
+    """The export's media references for one entity (spec-4.3/FR14)."""
+    entity = [e for e in export["entities"] if e["id"] == entity_id][0]
+    refs = entity["media"]
+    assert isinstance(refs, list)
+    return refs
+
+
+def test_delete_media_removes_only_the_named_row_and_unlinks_its_file(
+    client: TestClient,
+    media_api: Callable[[], str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HAPPY_PATH: named by its manifest ROW id, one portrait row goes and
+    its file is unlinked; a second row of the SAME entity and its file
+    survive, and the campaign's revision chain and entity count are
+    untouched (media are not world graph)."""
+    campaign_id = media_api()
+    entity_id = _commit_entity(campaign_id, {"face": "sharp features"})
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _enqueue_image(client, campaign_id, entity_id)
+    _run_portrait_job()
+    row = _portrait_row(client, campaign_id)
+    # A second manifest row for the same entity (a fresh portrait): the
+    # delete names ONE row and must leave the other row and file alone.
+    second_file = tmp_path / "media" / campaign_id / entity_id / f"{ids.new_id()}.png"
+    second_file.write_bytes(PNG_BYTES)
+    second = add_media(campaign_id, entity_id, second_file.name, "image")
+    first_file = tmp_path / "media" / campaign_id / entity_id / row["filename"]
+    assert first_file.is_file() and second_file.is_file()
+    facts_before = _world_facts(campaign_id)
+
+    response = client.delete(f"/api/campaigns/{campaign_id}/entities/{entity_id}/media/{row['id']}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    remaining = client.get(f"/api/campaigns/{campaign_id}/media").json()["media"]
+    assert [item["id"] for item in remaining] == [second.id]
+    assert not first_file.exists()
+    assert second_file.is_file()
+    # The file is gone from disk AND the row from the manifest — the
+    # served-file route is the same 404 either way.
+    assert (
+        client.get(f"/api/campaigns/{campaign_id}/media/{entity_id}/{row['filename']}").status_code
+        == 404
+    )
+    # Not world graph: no revision, no entity change, and the entity
+    # survives its portrait (regeneration is the recovery, undo is not).
+    assert _world_facts(campaign_id) == facts_before
+    export = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    assert entity_id in {entity["id"] for entity in export["entities"]}
+    assert [ref["id"] for ref in _media_refs(export, entity_id)] == [second.id]
+
+
+def test_delete_media_missing_file_is_still_204(
+    client: TestClient,
+    media_api: Callable[[], str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The file is already gone (or never landed): the row delete is still
+    a 204 — reclaiming a missing file is a silent no-op, never an error."""
+    campaign_id = media_api()
+    entity_id = _commit_entity(campaign_id, {"face": "sharp"})
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _enqueue_image(client, campaign_id, entity_id)
+    _run_portrait_job()
+    row = _portrait_row(client, campaign_id)
+    (tmp_path / "media" / campaign_id / entity_id / row["filename"]).unlink()
+
+    response = client.delete(f"/api/campaigns/{campaign_id}/entities/{entity_id}/media/{row['id']}")
+
+    assert response.status_code == 204
+    assert client.get(f"/api/campaigns/{campaign_id}/media").json()["media"] == []
+
+
+def test_delete_media_unknown_row_id_is_404(
+    client: TestClient,
+    media_api: Callable[[], str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown media id — and an id belonging to ANOTHER entity of the
+    same campaign — is the same 404; nothing is removed."""
+    campaign_id = media_api()
+    entity_id = _commit_entity(campaign_id, {"face": "sharp"})
+    other_entity = _commit_entity(campaign_id, {"face": "other"}, name="Other")
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _enqueue_image(client, campaign_id, entity_id)
+    _run_portrait_job()
+    row = _portrait_row(client, campaign_id)
+    file_on_disk = tmp_path / "media" / campaign_id / entity_id / row["filename"]
+    assert file_on_disk.is_file()
+
+    fabricated = client.delete(
+        f"/api/campaigns/{campaign_id}/entities/{entity_id}/media/{ids.new_id()}"
+    )
+    wrong_entity = client.delete(
+        f"/api/campaigns/{campaign_id}/entities/{other_entity}/media/{row['id']}"
+    )
+
+    assert fabricated.status_code == 404
+    assert wrong_entity.status_code == 404
+    assert fabricated.json()["code"] == "not_found"
+    # Both misses are the same envelope code; the message echoes only the
+    # ids the caller already supplied (no oracle).
+    assert wrong_entity.json()["code"] == fabricated.json()["code"]
+    assert wrong_entity.json()["message"].startswith("media not found:")
+    remaining = client.get(f"/api/campaigns/{campaign_id}/media").json()["media"]
+    assert [item["id"] for item in remaining] == [row["id"]]
+    assert file_on_disk.is_file()
+
+
+def test_delete_media_foreign_or_unknown_campaign_is_404(
+    client: TestClient,
+    media_api: Callable[[], str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FOREIGN_CAMPAIGN: another DM's campaign — with a REAL row and file
+    on disk — is the single indistinguishable 404 (AD-9); ownership
+    precedes even a resolvable row, and the foreign row survives."""
+    campaign_id = media_api()
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    other_id = create_campaign(
+        register_account(f"foreign-del-{ids.new_id()}@example.com", "password123").id,
+        title="Foreign",
+        description="",
+        theme="Grimdark",
+        custom_lore="",
+    ).id
+    foreign_entity_id = ids.new_id()
+    foreign_anchor = ids.new_id()
+    commit_subgraph(
+        other_id,
+        [
+            models.EntityInput(kind="place", name="Anchor", id=foreign_anchor),
+            models.EntityInput(
+                kind="character",
+                name="Foreign Mira",
+                data={"appearance": {"face": "sharp"}},
+                id=foreign_entity_id,
+            ),
+        ],
+        [models.EdgeInput(src=foreign_anchor, dst=foreign_entity_id, type="located_in", counter=1)],
+    )
+    foreign_row = add_media(other_id, foreign_entity_id, f"{ids.new_id()}.png", "image")
+    foreign_file = tmp_path / "media" / other_id / foreign_entity_id / foreign_row.filename
+    foreign_file.parent.mkdir(parents=True, exist_ok=True)
+    foreign_file.write_bytes(PNG_BYTES)
+
+    foreign = client.delete(
+        f"/api/campaigns/{other_id}/entities/{foreign_entity_id}/media/{foreign_row.id}"
+    )
+    unknown = client.delete(
+        f"/api/campaigns/{ids.new_id()}/entities/{foreign_entity_id}/media/{foreign_row.id}"
+    )
+
+    assert foreign.status_code == 404
+    assert unknown.status_code == 404
+    assert foreign.json() == unknown.json()  # indistinguishable (no oracle)
+    # The foreign row and file survive, and the owner's own campaign is
+    # unaffected (no cross-campaign reach).
+    assert foreign_file.is_file()
+    from app.store import list_media
+
+    assert [item.id for item in list_media(other_id)] == [foreign_row.id]
+    assert client.get(f"/api/campaigns/{campaign_id}/media").status_code == 200

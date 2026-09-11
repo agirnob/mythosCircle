@@ -8,6 +8,11 @@ then checks the manifest row through the store (the FILE_GET matrix
 rows) and the file on disk — a row whose file is gone is the same 404
 (ROW_WITHOUT_FILE), never a 500.
 
+Spec-4.3 adds the DM's single-portrait DELETE (``/entities/{entity_id}/
+media/{media_id}``): the store removes exactly that row inside its own
+transaction and the file is reclaimed after the commit (AD-10
+rows-first), with a missing file still a 204.
+
 Spec-5.2 adds two portrait-for-Forge pieces: a mint route returning an
 absolute HMAC-signed expiring URL (the DM pastes it into Forge's
 per-unit portrait override), and a signature branch on the file GET so
@@ -15,9 +20,10 @@ the URL serves with no session (Forge cannot present the cookie). Every
 signed-path failure is the campaign-missing 404 — no oracle. The secret
 is env-only (AD-22); the origin comes from ``[server].base_url``.
 
-The API never writes the manifest: media rows are written only through
-the store's ``add_media`` (AD-1 — the media service owns generation, the
-store owns the row). The image file is served from
+The API never writes the manifest itself: media rows are written only
+through the store's ``add_media`` and removed through its
+``delete_one_media`` (AD-1 — the media service owns generation, the
+store owns the rows). The image file is served from
 ``media_dir/{campaign_id}/{entity_id}/{filename}`` over the same-origin
 session cookie (the cookie's path is ``/api``, so ``<img>`` GETs
 authenticate like any other API read).
@@ -40,9 +46,11 @@ from app.api.auth import COOKIE_NAME, get_current_account
 from app.api.common import store_error_as_http
 from app.core.config import DEFAULT_BASE_URL
 from app.core.settings import configured_base_url, configured_media_dir, media_url_secret
+from app.media.service import reclaim_media_file
 from app.store import (
     MediaNotFoundError,
     StoreError,
+    delete_one_media,
     get_campaign,
     get_media_file,
     list_media,
@@ -101,6 +109,48 @@ def list_campaign_media(
     except StoreError as exc:
         store_error_as_http(exc)
     return MediaListResponse(media=[_media_response(row) for row in rows])
+
+
+@router.delete(
+    "/api/campaigns/{campaign_id}/entities/{entity_id}/media/{media_id}",
+    status_code=204,
+)
+def delete_media(
+    campaign_id: str,
+    entity_id: str,
+    media_id: str,
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> None:
+    """Delete ONE manifest row (spec-4.3) — the DM's portrait delete.
+
+    ``media_id`` is the manifest ROW id (the media-list projection's
+    ``id``), never the filename: the row lookup is store-side and scoped
+    to this campaign AND entity, so a foreign campaign, an unknown id,
+    and an id belonging to another entity are all the same 404 (AD-9, no
+    oracle). Ownership is checked FIRST — a foreign/unknown campaign is
+    the campaign 404.
+
+    Media rows are NOT world graph: no event, no revision, and undo
+    never restores them — the deletion is not undoable and regeneration
+    is the recovery (``store/media.py``). The FILE is reclaimed after the
+    rows committed (AD-10 rows-first ordering, spec-4.3): a missing file
+    is still a 204, never an error.
+    """
+    if get_campaign(current.id, campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    try:
+        row = delete_one_media(campaign_id, entity_id, media_id)
+    except StoreError as exc:
+        store_error_as_http(exc)
+    # Rows committed — reclaim the file post-commit (AD-10). The helper is
+    # best-effort (logs OSError, never raises) and the route guards anyway —
+    # a reclaim failure NEVER turns the 204 into an error.
+    try:
+        reclaim_media_file(configured_media_dir(), campaign_id, entity_id, row.filename)
+    except Exception:  # noqa: BLE001 - reclaim must never fail the 204
+        _logger.exception(
+            "post-delete media reclaim failed for %s/%s/%s", campaign_id, entity_id, media_id
+        )
 
 
 class PortraitUrlResponse(BaseModel):

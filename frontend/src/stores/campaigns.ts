@@ -39,6 +39,19 @@ export const useCampaignsStore = defineStore('campaigns', {
       this.campaigns.unshift(campaign)
       return campaign
     },
+    /**
+     * AR20 total hard delete (spec-1.6 contract): DELETE with the explicit
+     * ``{"confirm": true}`` body, then a list refetch. Rethrows so the view
+     * can show the ApiError; a failed refetch is visible as ``error``.
+     */
+    async remove(campaignId: string) {
+      this.error = null
+      await apiFetch(`/api/campaigns/${encodeURIComponent(campaignId)}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ confirm: true }),
+      })
+      await this.list()
+    },
     async fetchOne(campaignId: string) {
       this.error = null
       try {

@@ -673,6 +673,28 @@ def reclaim_entity_media(
     _rmtree_best_effort(Path(media_dir) / campaign_id / entity_id)
 
 
+def reclaim_media_file(
+    media_dir: str | os.PathLike[str], campaign_id: str, entity_id: str, filename: str
+) -> None:
+    """Remove ONE portrait/video file after the store committed its
+    manifest-row deletion (spec-4.3) — the single-row twin of
+    ``reclaim_entity_media`` (the DM's portrait delete keeps the entity,
+    so only the named file may go).
+
+    Rows-first ordering (spec-4.3 Design Notes): a crash before this runs
+    leaves an orphan file but no dangling manifest row, and a failed
+    unlink never re-enters the DB. A missing file is a silent no-op —
+    the row is gone either way and regenerating is the recovery.
+    """
+    target = Path(media_dir) / campaign_id / entity_id / filename
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("media reclaim failed for %s: %s", target, exc)
+
+
 def reclaim_campaign_media(media_dir: str | os.PathLike[str], campaign_id: str) -> None:
     """Remove ``{media_dir}/{campaign_id}/`` after the store committed the
     campaign's total hard delete (AR20/AD-25; spec-4.3).

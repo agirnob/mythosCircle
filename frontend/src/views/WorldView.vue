@@ -656,6 +656,115 @@ async function generateRevealVideo(entity: EntityExport) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Destructive actions: entity delete, single-portrait delete, and the
+// compensating-commit undo. Each confirms first (globalThis.confirm), and each
+// mutation goes through the world store's REST actions — the refetch, never
+// local mutation, is what updates the screen, and a failure renders inline
+// instead of looking like a success.
+// ---------------------------------------------------------------------------
+
+/** Entity-id -> a delete is in flight for that card (one at a time). */
+const deletingId = ref<string | null>(null)
+/** Entity-id -> entity-deletion errors (the card-level error surface). */
+const deleteErrors = ref<Record<string, string>>({})
+const undoing = ref(false)
+const undoError = ref<string | null>(null)
+
+/**
+ * Delete the committed entity. ``base_revision`` is the revision the card
+ * rendered: a head that moved since is a 409 and nothing leaves.
+ *
+ * AD-5: the destructive cascade is opt-in and the DM must see the affected
+ * neighbors first — the card's own relation lines are that listing, so the
+ * confirmation names them and the cascade rides only when there are any.
+ */
+async function removeEntity(entity: EntityExport) {
+  if (deletingId.value) return
+  const relations = relationsFor(entity.id)
+  const cascade = relations.length > 0
+  const neighbors = [
+    ...new Set(
+      relations.map((relation) => (relation.outbound ? relation.dstName : relation.srcName)),
+    ),
+  ]
+  const affected = relations.length
+    ? ` This also removes ${relations.length} relation${relations.length === 1 ? '' : 's'}: ${neighbors.join(', ')}.`
+    : ''
+  const confirmed = globalThis.confirm(`Delete ${entity.name}?${affected}`)
+  if (!confirmed) return
+  deletingId.value = entity.id
+  deleteErrors.value[entity.id] = ''
+  try {
+    await world.deleteEntity(campaignId, entity.id, revision.value?.id, cascade)
+  } catch (err) {
+    deleteErrors.value[entity.id] =
+      err instanceof ApiError ? err.message : 'Could not delete the entity.'
+    // A 409 means this card is behind the world (moved head, or relations
+    // the snapshot does not show) — resync so the next click is not a dead
+    // end, and so its confirmation names the real neighbors.
+    if (err instanceof ApiError && err.status === 409) {
+      void world.requestRefetch(campaignId)
+    }
+  } finally {
+    deletingId.value = null
+  }
+}
+
+/**
+ * Delete the single-portrait row the card renders (the entity's newest
+ * image-kind row). There is NO undo for this: the file is gone and media
+ * rows are not world graph — regeneration is the recovery, so the card
+ * falls back to 'No portrait.'.
+ */
+async function removePortrait(entity: EntityExport) {
+  if (deletingId.value) return
+  const row = portraitFor(entity)
+  if (!row) return
+  const confirmed = globalThis.confirm(
+    `Delete the portrait for ${entity.name}? The image file is permanently deleted — generate a new portrait to replace it.`,
+  )
+  if (!confirmed) return
+  deletingId.value = entity.id
+  portraitErrors.value[entity.id] = ''
+  try {
+    await world.deleteMedia(campaignId, entity.id, row.id)
+  } catch (err) {
+    portraitErrors.value[entity.id] =
+      err instanceof ApiError ? err.message : 'Could not delete the portrait.'
+  } finally {
+    deletingId.value = null
+  }
+}
+
+/**
+ * Undo the revision the view is showing — one compensating commit, so the
+ * world returns to its previous state and a NEW revision becomes the head.
+ * A 409 means the world committed past the drawn revision; the mapper
+ * carries no head id on the wire, so the snapshot refetches to catch the
+ * view up and the DM can act on what is actually there.
+ */
+async function undoCommit() {
+  const target = revision.value
+  if (undoing.value || !target) return
+  const confirmed = globalThis.confirm(
+    `Undo the last commit (revision ${target.id})? The world returns to its previous state as a new compensating revision.`,
+  )
+  if (!confirmed) return
+  undoing.value = true
+  undoError.value = null
+  try {
+    await world.undoLastCommit(campaignId, target.id)
+  } catch (err) {
+    undoError.value = err instanceof ApiError ? err.message : 'Could not undo the last commit.'
+    if (err instanceof ApiError && err.status === 409) {
+      void world.requestRefetch(campaignId)
+    }
+  } finally {
+    undoing.value = false
+  }
+}
+
 function relationTargets(entityId: string): EntityExport[] {
   // Any existing entity except the card's own — a self-loop is not an
   // edge into existing world state (the store rejects it outright).
@@ -1072,7 +1181,21 @@ function additionalDataBlock(entity: EntityExport): string {
         <p class="export-actions">
           <a class="link" :href="worldExportUrl('markdown')" download>Export Markdown</a>
           <a class="link" :href="worldExportUrl('html')" download>Export HTML</a>
+          <!-- Undo is a world-level mutation, not a per-entity one: one
+               compensating commit reverts the last revision. Rendered only
+               when a revision exists — with an empty log there is nothing
+               to undo (the route's "No revision to undo."). -->
+          <button
+            v-if="revision"
+            type="button"
+            class="link"
+            :disabled="undoing"
+            @click="undoCommit"
+          >
+            {{ undoing ? 'Undoing…' : 'Undo last commit' }}
+          </button>
         </p>
+        <p v-if="undoError" class="error">{{ undoError }}</p>
       </div>
 
       <div v-if="entities.length === 0" class="card">
@@ -1126,6 +1249,17 @@ function additionalDataBlock(entity: EntityExport): string {
                 Owlbear (Forge)
               </a>
               <span class="muted small">Forge: file → Import paste · link → portrait override</span>
+              <!-- Destructive, so last in the row and labelled to disambiguate
+                   it from the relation/portrait deletes below. The DELETE
+                   cascades over the entity's relations in one revision. -->
+              <button
+                type="button"
+                class="link"
+                :disabled="deletingId !== null"
+                @click="removeEntity(entity)"
+              >
+                {{ deletingId === entity.id ? 'Deleting…' : 'Delete entity' }}
+              </button>
             </h3>
             <div class="portrait">
               <img
@@ -1168,6 +1302,19 @@ function additionalDataBlock(entity: EntityExport): string {
                         ? 'Copy portrait link'
                         : 'Get portrait link'
                   }}
+                </button>
+                <!-- Single-portrait delete: only the entity's newest
+                     image-kind manifest row (a video row is never the
+                     portrait). No undo — the file is gone; regenerate
+                     to replace it. -->
+                <button
+                  v-if="portraitFor(entity)"
+                  type="button"
+                  class="link"
+                  :disabled="deletingId !== null"
+                  @click="removePortrait(entity)"
+                >
+                  {{ deletingId === entity.id ? 'Deleting…' : 'Delete portrait' }}
                 </button>
               </p>
               <!-- The failed-generation message renders REGARDLESS of an
@@ -1302,6 +1449,7 @@ function additionalDataBlock(entity: EntityExport): string {
                 Re-rolling {{ regenerateNotices[entity.id].label }}…
               </template>
             </p>
+            <p v-if="deleteErrors[entity.id]" class="error">{{ deleteErrors[entity.id] }}</p>
             <div
               v-if="
                 editingProfileId !== entity.id &&

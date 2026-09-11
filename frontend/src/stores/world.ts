@@ -172,6 +172,61 @@ export const useWorldStore = defineStore('world', {
       await this.fetchSnapshot(campaignId)
     },
     /**
+     * Undo (AD-2): one compensating commit — POST /undo, 204 with no
+     * body. ``revisionId`` is the head the view is showing; the store's
+     * undo only inverts the LATEST revision, so a head that moved since
+     * the render is a 409 and nothing changes. An absent id falls back
+     * to the route's own "undo the latest" default. The undo appends its
+     * own revision, so the snapshot refetches — the log is never
+     * rewritten and the store never mutates world state locally.
+     */
+    async undoLastCommit(campaignId: string, revisionId: string | null | undefined): Promise<void> {
+      const init: RequestInit = { method: 'POST' }
+      // Omit the body entirely when the head is unknown: the route reads
+      // an absent body as "the latest revision" and only a present body
+      // must parse as a JSON object.
+      if (revisionId) init.body = JSON.stringify({ revision_id: revisionId })
+      await apiFetch(`/api/campaigns/${encodeURIComponent(campaignId)}/undo`, init)
+      await this.fetchSnapshot(campaignId)
+    },
+    /**
+     * Entity deletion (FR4/AD-5): one revision, ``baseRevision`` pinned
+     * to the snapshot the card rendered (the same optimistic-concurrency
+     * idiom as updateEntity). ``cascade`` removes every edge touching the
+     * entity in the same revision — it is the destructive option, so it
+     * is only sent once the DM has confirmed it (the route refuses a bare
+     * cascade body without ``confirm``). The snapshot refetches; neighbors
+     * survive (AD-23).
+     */
+    async deleteEntity(
+      campaignId: string,
+      entityId: string,
+      baseRevision: string | null | undefined,
+      cascade: boolean,
+    ): Promise<void> {
+      const body: Record<string, unknown> = { confirm: true }
+      if (cascade) body.cascade = true
+      if (baseRevision) body.base_revision = baseRevision
+      await apiFetch(
+        `/api/campaigns/${encodeURIComponent(campaignId)}/entities/${encodeURIComponent(entityId)}`,
+        { method: 'DELETE', body: JSON.stringify(body) },
+      )
+      await this.fetchSnapshot(campaignId)
+    },
+    /**
+     * One media row (spec-4.3, AD-10): the DELETE drops the manifest row
+     * (and the file, post-commit), and media is NOT world graph — no
+     * event, no revision, and undo never restores it (regeneration is
+     * the recovery). The manifest refetches; the snapshot is untouched.
+     */
+    async deleteMedia(campaignId: string, entityId: string, mediaId: string): Promise<void> {
+      await apiFetch(
+        `/api/campaigns/${encodeURIComponent(campaignId)}/entities/${encodeURIComponent(entityId)}/media/${encodeURIComponent(mediaId)}`,
+        { method: 'DELETE' },
+      )
+      await this.fetchMedia(campaignId)
+    },
+    /**
      * Hand editing (spec-3-6, FR10): PATCH partial AR24 fields (or
      * ``text``) of a committed entity through the store commit path.
      * ``base_revision`` is the snapshot the editor was opened against —

@@ -1,10 +1,15 @@
-"""Media manifest store tests (spec-4.1, AD-1/AD-10).
+"""Media manifest store tests (spec-4.1, AD-1/AD-10; spec-4.3 delete).
 
 Pins the store-owned write/read invariants: ``add_media`` is the ONLY
 media write seam, re-checks campaign + entity existence inside its own
 transaction, and validates the ULID filename stem; reads are
 campaign-scoped with the indistinguishable store errors the API maps
-(FOREIGN_CAMPAIGN's store read, ROW_WITHOUT_FILE's row lookup).
+(FOREIGN_CAMPAIGN's store read, ROW_WITHOUT_FILE's row lookup). Spec-4.3
+adds the two deletion seams — ``delete_entity_media`` (all of one
+entity's rows, inside the caller's transaction) and
+``delete_media_row``/``delete_one_media`` (exactly one named row, the
+DM's portrait delete) — both row-only: media are not world graph, so no
+revision and no event moves.
 """
 
 from collections.abc import Iterator
@@ -23,6 +28,8 @@ from app.store import (
     commit_subgraph,
     create_campaign,
     delete_entity_media,
+    delete_media_row,
+    delete_one_media,
     get_media_file,
     init_db,
     list_media,
@@ -177,3 +184,65 @@ def test_delete_entity_media_deletes_rows_in_callers_session(world: str) -> None
     assert [r.id for r in remaining] == [kept.id]
     assert gone_one.id not in {r.id for r in remaining}
     assert gone_two.id not in {r.id for r in remaining}
+
+
+def test_delete_media_row_deletes_one_row_in_callers_session(world: str) -> None:
+    """The spec-4.3 single-row seam: delete_media_row removes exactly the
+    named row inside the CALLER's transaction (no session of its own) and
+    returns it — the API's file-reclaim source; the same entity's other
+    rows and every other entity's rows survive."""
+    entity_id = _commit_entity(world)
+    other_id = _commit_entity(world, "Other")
+    target = add_media(world, entity_id, f"{ids.new_id()}.png", "image")
+    kept_sibling = add_media(world, entity_id, f"{ids.new_id()}.png", "image")
+    kept_other = add_media(world, other_id, f"{ids.new_id()}.png", "image")
+    with session_scope() as session:
+        deleted = delete_media_row(session, world, entity_id, target.id)
+    assert deleted is not None
+    assert deleted.id == target.id and deleted.filename == target.filename
+    assert [r.id for r in list_media(world)] == [kept_sibling.id, kept_other.id]
+    # A miss is a None return, not an error — the caller decides (404).
+    with session_scope() as session:
+        assert delete_media_row(session, world, entity_id, target.id) is None
+
+
+def test_delete_one_media_removes_exactly_the_named_row(world: str) -> None:
+    """The wrapper's happy path: the row is gone and every other row of
+    the campaign stays (media rows are not world graph — no revision, no
+    event is written by a media delete)."""
+    entity_id = _commit_entity(world)
+    target = add_media(world, entity_id, f"{ids.new_id()}.png", "image")
+    kept = add_media(world, entity_id, f"{ids.new_id()}.mp4", "video")
+    head_before = _head(world)
+
+    deleted = delete_one_media(world, entity_id, target.id)
+
+    assert deleted.id == target.id
+    assert [r.id for r in list_media(world)] == [kept.id]
+    assert _head(world) == head_before  # no revision written
+
+
+def test_delete_one_media_misses_are_scoped(world: str) -> None:
+    """Unknown campaign -> UnknownCampaignError; a fabricated id, another
+    entity's id, and a foreign campaign's id are all the same
+    MediaNotFoundError with every row left in place (AD-9 — a miss names
+    no owner)."""
+    other_campaign = create_campaign(
+        _owner_id(), title="Other", description="", theme="Grimdark", custom_lore=""
+    ).id
+    entity_id = _commit_entity(world)
+    foreign_entity = _commit_entity(other_campaign, "Stranger")
+    mine = add_media(world, entity_id, f"{ids.new_id()}.png", "image")
+    foreign = add_media(other_campaign, foreign_entity, f"{ids.new_id()}.png", "image")
+
+    with pytest.raises(UnknownCampaignError):
+        delete_one_media("0" * 26, entity_id, mine.id)
+    with pytest.raises(MediaNotFoundError):
+        delete_one_media(world, entity_id, "0" * 26)
+    with pytest.raises(MediaNotFoundError):
+        # The row exists, but not for this (campaign, entity) pair.
+        delete_one_media(world, foreign_entity, mine.id)
+    with pytest.raises(MediaNotFoundError):
+        delete_one_media(world, entity_id, foreign.id)
+    assert [r.id for r in list_media(world)] == [mine.id]
+    assert [r.id for r in list_media(other_campaign)] == [foreign.id]

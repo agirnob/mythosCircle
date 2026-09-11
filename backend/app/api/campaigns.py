@@ -10,12 +10,14 @@ campaign's media directory reclaimed post-commit by the media service
 rejections map through the shared ``store_error_as_http`` (epic-1 retro
 item 3: campaigns errors are ``StoreError`` subclasses; the cursor-miss
 family — ``InvalidCursorError`` from a deleted/fabricated cursor — rides
-the same mapper, retro item 2).
+the same mapper, retro item 2). ``POST /{campaign_id}/undo`` is the
+AD-2 compensating-commit surface: one undo revision, latest-or-named
+target, no body on success.
 """
 
 import json as _json
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -34,6 +36,9 @@ from app.store.campaigns import (
     seed_themes,
     update_campaign,
 )
+from app.store.db import session_scope
+from app.store.read import latest_revision
+from app.store.undo import undo as store_undo
 
 logger = logging.getLogger(__name__)
 
@@ -212,3 +217,66 @@ async def delete(
         reclaim_campaign_media(configured_media_dir(), campaign_id)
     except Exception:  # noqa: BLE001 - reclaim must never fail the 204
         logger.exception("post-delete media reclaim failed for %s", campaign_id)
+
+
+async def _object_body(request: Request) -> dict[str, Any]:
+    """The request body as a JSON object (the entities.py body pattern).
+
+    An absent body is an empty object (the undo route's "undo the latest
+    revision" request); malformed JSON or a non-dict body is a client
+    400 — this ordering is why the body is hand-parsed instead of
+    declared as a pydantic parameter (which would 422 before the
+    ownership check and before the 400-vs-422 distinction).
+    """
+    raw = await request.body()
+    if not raw:
+        return {}
+    try:
+        payload = _json.loads(raw)
+    except (ValueError, _json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    return payload
+
+
+@router.post("/api/campaigns/{campaign_id}/undo", status_code=204)
+async def undo(
+    campaign_id: str,
+    request: Request,
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> None:
+    """AD-2: undo ONE revision as a compensating commit — 204, no body.
+
+    The frozen contract: an absent body undoes the latest revision, a JSON
+    object body may name the target with ``{"revision_id": "<ulid>"}``,
+    and anything else present is a 400 (malformed JSON or a non-object
+    body, the entities.py hand-parse pattern). Ownership is checked FIRST:
+    a foreign/unknown campaign is the single indistinguishable 404, even
+    with a malformed body. A campaign with no revision at all is a 404
+    ("No revision to undo.") — there is nothing to compensate; any other
+    revision than the head is the store's ``StaleRevisionError`` -> 409
+    through the shared mapper (rebase-or-reject, never a silent
+    overwrite), exactly like the other commit routes.
+
+    Undo appends its own revision (the log is never rewritten) and does
+    not restore media rows (``store/undo.py``, spec-4.3).
+    """
+    if get_campaign(current.id, campaign_id) is None:
+        # Foreign or unknown — indistinguishable 404, before any body read
+        # (the delete_entity ordering).
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    payload = await _object_body(request)
+    revision_id = payload.get("revision_id")
+    if revision_id is not None and not isinstance(revision_id, str):
+        # Owner decision 2026-09-11: a malformed body is a client error,
+        # never a store-level 409 (the entities.py base_revision guard).
+        raise HTTPException(status_code=400, detail="revision_id must be a revision id string.")
+    with session_scope() as session:
+        latest = latest_revision(session, campaign_id)
+    if latest is None:
+        raise HTTPException(status_code=404, detail="No revision to undo.")
+    try:
+        store_undo(campaign_id, revision_id if revision_id is not None else latest.id)
+    except StoreError as exc:
+        store_error_as_http(exc)

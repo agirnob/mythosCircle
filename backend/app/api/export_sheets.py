@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.core.settings import configured_media_dir
+from app.pipeline.statblocks import damage_parts_sentence
 from app.store.commit import edge_counter_semantic
 
 if TYPE_CHECKING:
@@ -318,23 +319,37 @@ _ABILITY_ORDER: tuple[str, ...] = ("str", "dex", "con", "int", "wis", "cha")
 #: Display order for stat-block parts — PRESENTATION ONLY: committed data is
 #: never reordered (the appendix keeps the exact shape). Models and the
 #: repair pass commit keys in varying order; the sheet must not look
-#: different because of it (dogfood fix 2026-09-09).
+#: different because of it (dogfood fix 2026-09-09). The optional aspects
+#: (spec 2026-09-11) slot into that order without disturbing it: saves /
+#: initiative / passive perception / proficiency follow combat, spellcasting
+#: follows spells, and resources close the panel.
 _STAT_BLOCK_ORDER: tuple[str, ...] = (
     "identity",
     "attributes",
     "combat",
+    "saves",
+    "initiative",
+    "passive_perception",
+    "proficiency_bonus",
     "skills",
     "actions",
     "traits",
     "spells",
+    "spellcasting",
+    "features",
+    "resources",
 )
 
 #: Field order for the known section dicts; unknown keys follow in
 #: committed order.
 _KEY_ORDER: dict[str, tuple[str, ...]] = {
     "attributes": _ABILITY_ORDER,
+    # Saves are an ability-score map: canonical order, never commit order.
+    "saves": _ABILITY_ORDER,
     "identity": ("role", "level", "cr", "race", "class", "alignment"),
-    "combat": ("ac", "armor_class", "hp", "hit_points", "speed", "initiative"),
+    # ``hit_dice`` rides with hp — the 5e idiom "hp (24d10 + 192)".
+    "combat": ("ac", "armor_class", "hp", "hit_points", "hit_dice", "speed", "initiative"),
+    "spellcasting": ("dc", "attack_bonus", "slots"),
     "world_integration": (
         "reputation",
         "factions",
@@ -654,7 +669,8 @@ _FORGE_NS = "com.battle-system.forge"
 #: record race_type; Z005/Z006 combat hp (current/max); Z007 combat ac;
 #: Z014 skills join; Z016 identity.cr fraction->decimal (Monster only);
 #: Z017-Z022 the six scores; Z023-Z028 derived saves
-#: floor((score-10)/2); Z034 traits; Z035 actions; Z038
+#: floor((score-10)/2); Z034 traits; Z035 actions (the attack text gains
+#: the structured damage sentence when the block carries parts); Z038
 #: boss.legendary_actions; Z039 spells (names, "" descriptions); Z040
 #: record equipment. Everything else is omitted — sparse payloads import
 #: validly (speeds, senses, languages, resistances, proficiency,
@@ -711,10 +727,38 @@ def _forge_text(value: Any) -> str | None:
     return None
 
 
-def _forge_entries(entity_id: str, items: Any) -> list[dict[str, str]]:
+#: A dice token, whitespace- and case-insensitive ("2d6", "2 d 6").
+_DICE_TOKEN_RE = re.compile(r"(\d+)\s*[dD]\s*(\d+)")
+
+
+def _states_damage_dice(description: str, sentence: str) -> bool:
+    """Whether ``description`` already names every die ``sentence`` states.
+
+    The AR25 contract asks the model to keep the prose and the ``damage``
+    list in step (the description still states the numbers for the DM), so
+    the common block already reads correctly — appending the sentence there
+    would print the same dice twice. Only a description that dropped the
+    numbers gains it (spec: structured attack damage, 2026-09-11). The
+    comparison reads the dice out of the RENDERED sentence, so the rule
+    cannot drift from what ``damage_parts_sentence`` actually emits.
+    """
+    stated = {(int(count), int(sides)) for count, sides in _DICE_TOKEN_RE.findall(description)}
+    wanted = {(int(count), int(sides)) for count, sides in _DICE_TOKEN_RE.findall(sentence)}
+    return wanted <= stated
+
+
+def _forge_entries(
+    entity_id: str, items: Any, *, with_damage: bool = False
+) -> list[dict[str, str]]:
     """A name/description list as Forge ``list`` entries with index-stable
     ids (``{entity-id-8}-{i}`` — never fresh ULIDs, so repeats are
-    byte-identical). Nameless members are skipped, not failed."""
+    byte-identical). Nameless members are skipped, not failed.
+
+    ``with_damage`` is the ACTION list's form: an action carrying usable
+    structured ``damage`` parts gains the one-line sentence those parts
+    imply, so Z035 states the numbers the auditor read rather than whatever
+    the prose happened to say. A block with no parts — every block
+    committed before spec 2026-09-11 — renders its description verbatim."""
     if not isinstance(items, list):
         return []
     entries = []
@@ -729,6 +773,10 @@ def _forge_entries(entity_id: str, items: Any) -> list[dict[str, str]]:
             description = ""
         if not isinstance(description, str):
             description = str(description)
+        if with_damage:
+            sentence = damage_parts_sentence(item.get("damage"))
+            if sentence is not None and not _states_damage_dice(description, sentence):
+                description = f"{description} {sentence}" if description else sentence
         entries.append(
             {"id": f"{entity_id[-8:]}-{index}", "name": name, "description": description}
         )
@@ -822,7 +870,7 @@ def render_entity_owlbear(export: WorldExport, entity_id: str) -> dict[str, Any]
     traits = _forge_entries(entity_id, block.get("traits"))
     if traits:
         metadata[_forge_key("Z034")] = traits
-    actions = _forge_entries(entity_id, block.get("actions"))
+    actions = _forge_entries(entity_id, block.get("actions"), with_damage=True)
     if actions:
         metadata[_forge_key("Z035")] = actions
     legendary = _forge_text(boss.get("legendary_actions"))

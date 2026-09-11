@@ -1975,4 +1975,311 @@ describe('WorldView', () => {
     expect(options).not.toContain('Role')
     wrapper.unmount()
   })
+
+  // -------------------------------------------------------------------------
+  // Destructive actions: entity delete, portrait delete, undo last commit
+  // -------------------------------------------------------------------------
+
+  /** window.confirm is the DM's gate on every destructive action. */
+  function stubConfirm(answer: boolean) {
+    const confirmMock = vi.fn<(question: string) => boolean>(() => answer)
+    vi.stubGlobal('confirm', confirmMock)
+    return confirmMock
+  }
+
+  it('delete entity DELETEs it with the displayed base_revision and no cascade when it stands alone', async () => {
+    // worldExport's single entity has no live edges: AD-5 needs no cascade.
+    apiFetchMock.mockResolvedValue(worldExport())
+    stubConfirm(true)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const callsBefore = apiFetchMock.mock.calls.length
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Delete entity')[0]!
+      .trigger('click')
+    await flushPromises()
+
+    const del = apiFetchMock.mock.calls[callsBefore]!
+    expect(String(del[0])).toBe('/api/campaigns/C1/entities/E1')
+    expect(del[1]!.method).toBe('DELETE')
+    expect(JSON.parse(String(del[1]!.body))).toEqual({
+      confirm: true,
+      base_revision: '01JZZZZZZZZZZZZZZZZZZZZZZZ',
+    })
+    // The store never mutates world state locally — the snapshot refetches.
+    expect(String(apiFetchMock.mock.calls[callsBefore + 1]![0])).toBe('/api/campaigns/C1/export')
+    wrapper.unmount()
+  })
+
+  it('delete entity names the affected neighbors and cascades over their relations', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    const confirmMock = stubConfirm(true)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const callsBefore = apiFetchMock.mock.calls.length
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Delete entity')[0]!
+      .trigger('click')
+    await flushPromises()
+
+    // AD-5: the DM sees who is affected before confirming the cascade.
+    const question = String(confirmMock.mock.calls[0]?.[0])
+    expect(question).toContain('Mira Vane')
+    expect(question).toContain('The Gilded Bar')
+    const del = apiFetchMock.mock.calls[callsBefore]!
+    expect(String(del[0])).toBe('/api/campaigns/C1/entities/E1')
+    expect(JSON.parse(String(del[1]!.body))).toEqual({
+      confirm: true,
+      cascade: true,
+      base_revision: '01JZZZZZZZZZZZZZZZZZZZZZZZ',
+    })
+    expect(String(apiFetchMock.mock.calls[callsBefore + 1]![0])).toBe('/api/campaigns/C1/export')
+    wrapper.unmount()
+  })
+
+  it('a failed entity delete renders the card error and leaves the entity in place', async () => {
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        throw new ApiError(500, 'server_error', 'Database unavailable.')
+      }
+      return populatedWorld()
+    })
+    stubConfirm(true)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const callsBefore = apiFetchMock.mock.calls.length
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Delete entity')[0]!
+      .trigger('click')
+    await flushPromises()
+
+    const card = wrapper.findAll('article')[0]!
+    expect(card.text()).toContain('Database unavailable.')
+    // The entity is still there, and the failed delete does not refetch.
+    expect(card.text()).toContain('Mira Vane')
+    expect(apiFetchMock.mock.calls.length).toBe(callsBefore + 1)
+    wrapper.unmount()
+  })
+
+  it('a 409 entity delete resyncs the snapshot instead of dead-ending', async () => {
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        throw new ApiError(409, 'conflict', 'stale base revision')
+      }
+      return populatedWorld()
+    })
+    stubConfirm(true)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const callsBefore = apiFetchMock.mock.calls.length
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Delete entity')[0]!
+      .trigger('click')
+    await flushPromises()
+
+    // The card is behind the world (moved head or unseen relations): the
+    // error is shown AND the snapshot resyncs so the next click is informed.
+    expect(wrapper.text()).toContain('stale base revision')
+    expect(String(apiFetchMock.mock.calls[callsBefore + 1]![0])).toBe('/api/campaigns/C1/export')
+    wrapper.unmount()
+  })
+
+  it('delete portrait DELETEs the entity image row (never the newer video row) and refetches the manifest', async () => {
+    const imageRow = portraitMedia().media[0]!
+    const videoRow: components['schemas']['MediaResponse'] = {
+      id: 'M2',
+      campaign_id: 'C1',
+      entity_id: 'E1',
+      filename: 'reveal.mp4',
+      kind: 'video',
+      created_at: '2026-09-07T10:00:00Z',
+    }
+    stubPortraitApi(portraitWorld({ face: 'sharp features' }), { media: [imageRow, videoRow] })
+    stubConfirm(true)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const callsBefore = apiFetchMock.mock.calls.length
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Delete portrait')[0]!
+      .trigger('click')
+    await flushPromises()
+
+    const del = apiFetchMock.mock.calls[callsBefore]!
+    // The image row (M1), not the newer video row (M2).
+    expect(String(del[0])).toBe('/api/campaigns/C1/entities/E1/media/M1')
+    expect(del[1]!.method).toBe('DELETE')
+    expect(del[1]!.body).toBeUndefined()
+    // The manifest refetches so the card falls back to 'No portrait.'.
+    expect(String(apiFetchMock.mock.calls[callsBefore + 1]![0])).toBe('/api/campaigns/C1/media')
+    wrapper.unmount()
+  })
+
+  it('a failed portrait delete renders the error and keeps the image', async () => {
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        throw new ApiError(500, 'server_error', 'Database unavailable.')
+      }
+      if (String(path).includes('/media')) return portraitMedia()
+      return portraitWorld({ face: 'sharp features' })
+    })
+    stubConfirm(true)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const callsBefore = apiFetchMock.mock.calls.length
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Delete portrait')[0]!
+      .trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Database unavailable.')
+    expect(wrapper.find('.portrait-img').attributes('src')).toBe(
+      `/api/campaigns/C1/media/E1/${PORTRAIT_FILENAME}`,
+    )
+    // The failed delete is not followed by a manifest refetch.
+    expect(apiFetchMock.mock.calls.length).toBe(callsBefore + 1)
+    wrapper.unmount()
+  })
+
+  it('undo last commit POSTs the displayed revision and refetches the snapshot', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    stubConfirm(true)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const callsBefore = apiFetchMock.mock.calls.length
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Undo last commit')[0]!
+      .trigger('click')
+    await flushPromises()
+
+    const post = apiFetchMock.mock.calls[callsBefore]!
+    expect(String(post[0])).toBe('/api/campaigns/C1/undo')
+    expect(post[1]!.method).toBe('POST')
+    expect(JSON.parse(String(post[1]!.body))).toEqual({
+      revision_id: '01JZZZZZZZZZZZZZZZZZZZZZZZ',
+    })
+    // The undo is a compensating COMMIT — the snapshot refetches.
+    expect(String(apiFetchMock.mock.calls[callsBefore + 1]![0])).toBe('/api/campaigns/C1/export')
+    wrapper.unmount()
+  })
+
+  it('a stale undo (409) shows the error and resyncs the snapshot', async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      if (String(path).endsWith('/undo')) {
+        throw new ApiError(
+          409,
+          'conflict',
+          'stale base revision — rebase or reject against the latest revision',
+        )
+      }
+      return populatedWorld()
+    })
+    stubConfirm(true)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const callsBefore = apiFetchMock.mock.calls.length
+    await wrapper
+      .findAll('button')
+      .filter((candidate) => candidate.text() === 'Undo last commit')[0]!
+      .trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('stale base revision')
+    // The 409 carries no new head on the wire — the snapshot resyncs so the
+    // next click targets a revision that still exists.
+    expect(String(apiFetchMock.mock.calls[callsBefore + 1]![0])).toBe('/api/campaigns/C1/export')
+    expect(wrapper.text()).toContain('Revision 01JZZZZZZZZZZZZZZZZZZZZZZZ')
+    wrapper.unmount()
+  })
+
+  it('a declined confirmation deletes nothing (entity, portrait, undo)', async () => {
+    stubPortraitApi(portraitWorld({ face: 'sharp features' }), portraitMedia())
+    stubConfirm(false)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const callsBefore = apiFetchMock.mock.calls.length
+    for (const label of ['Delete entity', 'Delete portrait', 'Undo last commit']) {
+      await wrapper
+        .findAll('button')
+        .filter((candidate) => candidate.text() === label)[0]!
+        .trigger('click')
+    }
+    await flushPromises()
+
+    expect(apiFetchMock.mock.calls.length).toBe(callsBefore)
+    expect(wrapper.findAll('article').length).toBe(1)
+    expect(wrapper.find('.portrait-img').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('Deleting…')
+    wrapper.unmount()
+  })
+
+  it('renders the stored structured attack and the optional stat aspects on the entity card', async () => {
+    const world = worldExport()
+    world.entities = [
+      {
+        id: 'E1',
+        kind: 'character',
+        name: 'Seraphine Kol',
+        text: 'An oath-sworn knight.',
+        media: [],
+        data: {
+          stat_block: {
+            identity: { role: 'NPC', level: 20, race: 'Human' },
+            attributes: { str: 22, dex: 14, con: 20, int: 12, wis: 14, cha: 20 },
+            combat: { ac: 20, hp: 250, hit_dice: '20d10 + 140' },
+            saves: { str: 12, dex: 8, con: 11, int: 7, wis: 8, cha: 15 },
+            initiative: 8,
+            passive_perception: 18,
+            proficiency_bonus: 6,
+            spellcasting: { dc: 20, attack_bonus: 12, slots: [4, 3, 3] },
+            features: ['Divine Smite', 'Aura of Protection'],
+            resources: { lay_on_hands: 100 },
+            actions: [
+              {
+                name: 'Oathblade',
+                description: 'Melee weapon attack.',
+                to_hit: 18,
+                damage: [
+                  { dice: '2d6', count: 2, sides: 6, bonus: 12, average: 19, type: 'slashing' },
+                  { dice: '3d10', count: 3, sides: 10, bonus: 0, average: 16.5, type: 'radiant' },
+                ],
+              },
+              { name: 'Shield bash', description: 'Shoves the target.' },
+            ],
+          },
+        },
+      },
+    ]
+    apiFetchMock.mockResolvedValue(world)
+    const wrapper = mountView()
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('AC 20 · HP 250 · Hit dice 20d10 + 140')
+    expect(text).toContain('Saves STR +12, DEX +8, CON +11, INT +7, WIS +8, CHA +15')
+    expect(text).toContain('Initiative +8')
+    expect(text).toContain('Passive perception 18')
+    expect(text).toContain('Proficiency bonus +6')
+    expect(text).toContain('Spellcasting DC 20 · Attack +12 · Slots 4/3/3')
+    expect(text).toContain('Features Divine Smite, Aura of Protection')
+    expect(text).toContain('Resources Lay on hands 100')
+    expect(text).toContain('Oathblade +18 — 19 (2d6+12) slashing + 16.5 (3d10) radiant')
+    // An action without structured parts keeps today's description-only line.
+    expect(text).toContain('Shield bash — Shoves the target.')
+    wrapper.unmount()
+  })
 })
