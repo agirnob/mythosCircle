@@ -1066,9 +1066,11 @@ def test_missing_stat_block_repaired(world: str) -> None:
 
 
 def test_still_invalid_stat_block_fails_zero_commits(world: str) -> None:
-    """STAT_STILL_INVALID: a block still invalid after the repair pass is
-    never committed — the job fails naming the character and its
-    violations (fail event, AR25), zero revisions."""
+    """STAT_STILL_INVALID: a block still invalid after BOTH bounded repair
+    passes is never committed — the job fails naming the character and its
+    violations (fail event, AR25), zero revisions. The second repair
+    re-reads the block its own first attempt wrote (a shape violation the
+    deterministic conform cannot touch: STR 40 is a hard cap)."""
     output = _wave1_output()
     bad_block = dict(_MIRA_STAT_BLOCK)
     bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
@@ -1076,18 +1078,189 @@ def test_still_invalid_stat_block_fails_zero_commits(world: str) -> None:
     responses = [
         json.dumps(output),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
     ]
+    calls: list[str] = []
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
-    run_next_job(
-        provider=lambda prompt, settings, responses=responses: responses.pop(0),
-        settings=SETTINGS,
-    )
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    assert len(calls) == 3  # wave 1 + both bounded repair passes, never a third
+    assert "VIOLATIONS STILL UNFIXED" in calls[2]
+    assert "attributes.str" in calls[2]
     job, _position = job_status(job_id)
     assert job.state == "failed"
-    assert "still invalid after the repair pass" in (job.error or "")
+    assert "still invalid after the repair passes" in (job.error or "")
     assert "Mira Vane" in (job.error or "") and "attributes.str" in (job.error or "")
     with session_scope() as session:
         assert revision_chain(session, world) == []
+
+
+def test_second_stat_repair_pass_heals_the_block(world: str) -> None:
+    """STAT_SECOND_PASS (owner decision 2026-09-11): when the first repair
+    comes back still invalid, the gate spends ONE more call — the prompt
+    re-reads the block that first attempt wrote plus the violations that
+    survived it — and the healed second repair commits. Never a third."""
+    weak_block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 66},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "actions": [
+            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+        ],
+    }
+    output = _wave1_output()
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": weak_block}
+    responses = [
+        json.dumps(output),
+        # First repair: the model changes nothing that matters — still weak.
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
+        # Second repair: the bones of the first attempt, the numbers fixed.
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 3  # wave 1 + pass 1 + pass 2 — never a third
+    assert "VIOLATIONS TO FIX" in calls[1]
+    assert "VIOLATIONS STILL UNFIXED" in calls[2]
+    # The second pass names exactly what survived: the unflagged block is
+    # re-shown with its under-powered violation, not the original problem.
+    assert "under-powered" in calls[2]
+    assert json.dumps(weak_block, sort_keys=True, separators=(",", ":")) in calls[2]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"] == _MIRA_STAT_BLOCK
+
+
+def test_second_stat_repair_pass_exhausted_fails(world: str) -> None:
+    """STAT_SECOND_PASS_EXHAUSTED: two failed repair passes plus the
+    deterministic conform still leave a shape violation — the job fails
+    naming it, with no fourth call and zero commits."""
+    output = _wave1_output()
+    bad_block = dict(_MIRA_STAT_BLOCK)
+    bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_block}
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
+    ]
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    assert len(calls) == 3  # the budget is two passes, not a loop
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "attributes.str" in (job.error or "")
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+
+def test_structured_damage_carries_a_block_without_prose_dice(world: str) -> None:
+    """STRUCTURED_DAMAGE end-to-end (spec 2026-09-11): an attack whose
+    damage lives in structured parts and whose prose states no dice is a
+    valid, in-band block — pre-change the auditor read zero damage from it
+    and the gate failed the whole wave. The committed block keeps the
+    parts, and no repair call is spent."""
+    block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 18, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 66},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "actions": [
+            {
+                "name": "Longsword",
+                "to_hit": 7,
+                "description": "Swings wide, trailing sea-light.",
+                "damage": [{"dice": "4d10", "bonus": 5, "type": "slashing"}],
+            }
+        ],
+    }
+    output = _wave1_output()
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": block}
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(output)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 1  # the block was valid — no repair pass burned
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    committed = mira.data["stat_block"]
+    assert validate_stat_block(committed) == []
+    parts = committed["actions"][0]["damage"]
+    assert parts[0]["count"] == 4 and parts[0]["sides"] == 10
+    assert parts[0]["average"] == 27  # 4 * 5.5 + 5, derived by the canonicalizer
+    assert combat.audit_stat_block(committed).band is not None
+
+
+def test_repaired_block_parts_are_canonicalized(world: str) -> None:
+    """A repair response is model output like any other: its damage parts
+    are re-canonicalized before the re-check, so the committed block's
+    ``average`` always agrees with its own dice (live 2026-09-11: a repair
+    shipped 2d6 + 13 with average 16, and the auditor trusts the number)."""
+    weak = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 66},
+        "actions": [
+            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+        ],
+    }
+    repaired = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 16, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 66},
+        "actions": [
+            {
+                "name": "Longsword",
+                "to_hit": 6,
+                "description": "Melee Weapon Attack: +6 to hit, 35 (4d10 + 5) slashing",
+                "damage": [{"dice": "4d10", "count": 4, "sides": 10, "bonus": 5, "average": 16}],
+            }
+        ],
+    }
+    output = _wave1_output()
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": weak}
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": repaired}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        return responses.pop(0)
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    part = mira.data["stat_block"]["actions"][0]["damage"][0]
+    assert part["average"] == 27  # 4 * 5.5 + 5, not the model's 16
+    assert part["count"] == 4 and part["sides"] == 10 and part["bonus"] == 5
 
 
 def test_stat_repair_budget_exceeded_fails_before_http(world: str) -> None:
@@ -2252,6 +2425,7 @@ def test_underpowered_stat_block_repair_loop(world: str) -> None:
     responses2 = [
         json.dumps(wave_with(weak_block)),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
     ]
 
     def provider2(prompt: str, settings: LLMSettings) -> str:
@@ -2259,7 +2433,7 @@ def test_underpowered_stat_block_repair_loop(world: str) -> None:
         return responses2.pop(0)
 
     assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
-    assert len(calls2) == 2
+    assert len(calls2) == 3  # wave 1 + both bounded repair passes, no more
     job2, _position2 = job_status(job_id2)
     assert job2.state == "succeeded"
     assert job2.result is not None
@@ -2320,6 +2494,7 @@ def test_overpowered_stat_block_repair_loop(world: str) -> None:
     responses2 = [
         json.dumps(wave_with(over_block)),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": over_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": over_block}]}),
     ]
 
     def provider2(prompt: str, settings: LLMSettings) -> str:
@@ -2327,7 +2502,7 @@ def test_overpowered_stat_block_repair_loop(world: str) -> None:
         return responses2.pop(0)
 
     assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
-    assert len(calls2) == 2
+    assert len(calls2) == 3  # wave 1 + both bounded repair passes, no more
     job2, _position2 = job_status(job_id2)
     assert job2.state == "failed"
     assert "over-powered" in (job2.error or "")
@@ -2374,6 +2549,7 @@ def test_frail_stat_block_repair_loop(world: str) -> None:
     responses2 = [
         json.dumps(wave_with(frail_block)),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": frail_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": frail_block}]}),
     ]
 
     def provider2(prompt: str, settings: LLMSettings) -> str:
@@ -2381,7 +2557,7 @@ def test_frail_stat_block_repair_loop(world: str) -> None:
         return responses2.pop(0)
 
     assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
-    assert len(calls2) == 2
+    assert len(calls2) == 3  # wave 1 + both bounded repair passes, no more
     job2, _position2 = job_status(job_id2)
     # A frail HP floor no longer fails the job: the deterministic conform
     # lifts hp to the band floor (2026-09-10).

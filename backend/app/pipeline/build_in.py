@@ -49,7 +49,7 @@ from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import (
     apply_stat_repairs,
     build_stat_repair_prompt,
-    canonicalize_action_damage,
+    canonicalize_stat_blocks,
     collect_stat_issues,
     conform_stat_power,
     parse_stat_repair_output,
@@ -233,43 +233,64 @@ def _enforce_stat_blocks(
     settings: LLMSettings,
     entities: list[models.EntityInput],
 ) -> tuple[list[models.EntityInput], bool]:
-    """The stat-block gate shared by both waves: collect issues, run exactly
-    one bounded repair pass when there are any, re-check. Returns
-    ``(entities, cancelled)`` — cancelled True means the job was cancelled
-    mid-gate and the caller must stop without committing this wave."""
+    """The stat-block gate shared by both waves and the regenerate path:
+    collect issues, run up to TWO bounded repair passes, re-check, then the
+    deterministic power conform. Returns ``(entities, cancelled)`` —
+    cancelled True means the job was cancelled mid-gate and the caller must
+    stop without committing this wave.
+
+    Two passes, not one (owner decision 2026-09-11, renegotiating
+    spec-2.4's "exactly one"): the model's single shot at arithmetic it
+    cannot do was the most common live build failure (measured 2026-09-10:
+    5.5 vs 15-20, 16 vs 27-32, 50 vs 93-98 — never in band), and the second
+    pass is cheap next to losing the DM's whole build. The second pass
+    re-reads the block ITS FIRST ATTEMPT wrote and exactly which violations
+    survived it (`build_stat_repair_prompt(..., attempt=2)`); a third pass
+    does not exist, and the model still never gets to fix wording — the
+    deterministic conform is the last word before the job fails.
+    """
     # A block whose dice sit in a non-standard ``damage`` key reports ZERO
     # damage to the auditor, which the non-combatant exemption then swallows
-    # whole — so the gate must fold it in before it decides anything.
-    entities = canonicalize_action_damage(entities)
+    # whole — so the gate must fold it in before it decides anything. The
+    # same pass folds the prototype-2 near-misses (``features`` -> ``traits``,
+    # a ``stats`` object's members) and completes structured damage parts
+    # (spec: structured attack damage and the missing stat aspects).
+    entities = canonicalize_stat_blocks(entities)
     issues = collect_stat_issues(entities)
-    if not issues:
-        return entities, False
-    if not _job_still_running(job):
-        return entities, True
-    repaired = _run_repair(
-        budget=budget,
-        provider=provider,
-        settings=settings,
-        prompt=build_stat_repair_prompt(issues),
-        parse=parse_stat_repair_output,
-        positions=[issue.position for issue in issues],
-        label="stat",
-        retry_note='Return ONLY a "stat_blocks" list — each entry '
-        '{"ref": "E<position>", "stat_block": {...}} with the full corrected block.',
-    )
-    entities = apply_stat_repairs(entities, repaired)
-    remaining = collect_stat_issues(entities)
-    if remaining:
-        # The repair pass is one LLM shot at arithmetic a model cannot do:
-        # measured live, blocks came back 5.5 vs 15-20, 16 vs 27-32 and
-        # 50 vs 93-98 — never in band (2026-09-10). Before failing the job,
-        # give the block one deterministic chance to meet its own DMG row.
-        # Only power-band violations are touched; the model's words, actions
-        # and identity survive untouched (see statblocks.conform_power).
-        entities = conform_stat_power(entities, remaining)
-        remaining = collect_stat_issues(entities)
-    if remaining:
-        raise JobPayloadError(stat_failure_message(remaining))
+    for attempt in (1, 2):
+        if not issues:
+            break
+        if not _job_still_running(job):
+            return entities, True
+        repaired = _run_repair(
+            budget=budget,
+            provider=provider,
+            settings=settings,
+            prompt=build_stat_repair_prompt(issues, attempt=attempt),
+            parse=parse_stat_repair_output,
+            positions=[issue.position for issue in issues],
+            label="stat",
+            retry_note='Return ONLY a "stat_blocks" list — each entry '
+            '{"ref": "E<position>", "stat_block": {...}} with the full corrected block.',
+        )
+        entities = apply_stat_repairs(entities, repaired)
+        # The repair response is model output like any other: re-canonicalize
+        # so the block the auditor re-checks (and the block that commits) is
+        # the canonical one. Measured live 2026-09-11: a repair shipped
+        # ``2d6 + 13`` with ``average: 16``, and the auditor trusts the
+        # stated average — the parts and the dice must agree.
+        entities = canonicalize_stat_blocks(entities)
+        issues = collect_stat_issues(entities)
+    if issues:
+        # The repair passes are LLM shots at arithmetic a model cannot do:
+        # before failing the job, give each block one deterministic chance
+        # to meet its own DMG row. Only power-band violations are touched;
+        # the model's words, actions and identity survive untouched (see
+        # statblocks.conform_power).
+        entities = conform_stat_power(entities, issues)
+        issues = collect_stat_issues(entities)
+    if issues:
+        raise JobPayloadError(stat_failure_message(issues))
     return entities, False
 
 

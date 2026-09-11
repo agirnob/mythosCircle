@@ -280,8 +280,61 @@ def parse_damage_expression(text: str) -> tuple[float, tuple[str, ...]]:
     return total, tuple(sources)
 
 
-def analyze_action(name: str, description: str | None) -> ActionDamage:
+def structured_damage_totals(damage: Any) -> tuple[float, tuple[str, ...]] | None:
+    """Sum an action's structured ``damage`` parts (spec 2026-09-11).
+
+    Returns ``(nominal_avg, sources)`` in the same shape as
+    :func:`parse_damage_expression`, or ``None`` when the parts are absent
+    or unusable — the caller then falls back to the description, so a
+    malformed list can never turn a real attack into zero damage.
+
+    A part counts when it carries ``average`` (the model's own figure) or,
+    failing that, a dice expression / ``count``+``sides`` pair; a part
+    with an ``average`` still contributes its exact number, which is what
+    the DM reads on the sheet.
+    """
+    if not isinstance(damage, list) or not damage:
+        return None
+    total = 0.0
+    sources: list[str] = []
+    for part in damage:
+        if not isinstance(part, dict):
+            continue
+        average = part.get("average")
+        dice = part.get("dice")
+        count, sides = part.get("count"), part.get("sides")
+        bonus = part.get("bonus")
+        bonus = bonus if type(bonus) is int else 0
+        piece: float | None = None
+        label: str | None = None
+        if isinstance(average, (int, float)) and not isinstance(average, bool):
+            piece = float(average)
+            label = dice if isinstance(dice, str) and dice.strip() else f"{piece:g}"
+        elif isinstance(dice, str) and _DICE_RE.search(dice):
+            count_s, sides_s = _DICE_RE.findall(dice)[0]
+            piece = int(count_s) * _die_avg(int(sides_s)) + bonus
+            label = f"{int(count_s)}d{int(sides_s)}"
+        elif type(count) is int and type(sides) is int and count >= 1 and sides >= 2:
+            piece = count * _die_avg(sides) + bonus
+            label = f"{count}d{sides}"
+        if piece is None or label is None:
+            continue
+        total += piece
+        sources.append(label)
+    if not sources:
+        return None
+    return total, tuple(sources)
+
+
+def analyze_action(name: str, description: str | None, damage: Any = None) -> ActionDamage:
     """Compute an action's nominal and DMG-adjusted expected damage.
+
+    Structured ``damage`` parts win when they are present and usable
+    (spec 2026-09-11: the numbers the model stated explicitly, rather than
+    the ones re-parsed out of its prose); the description remains the
+    fallback AND the source of the modifier flags below, which are
+    expressed in words ("DC 15 Dexterity save", "recharge 5-6", "in a
+    30-foot cone").
 
     Assumptions (documented, DMG 2014): a save-for-half effect lands at
     75% of nominal; an area-of-effect action (cone/radius/line/etc.) is
@@ -290,7 +343,8 @@ def analyze_action(name: str, description: str | None) -> ActionDamage:
     exposed on the returned ``ActionDamage`` so a DM can see the model.
     """
     text = description or ""
-    nominal, sources = parse_damage_expression(text)
+    parts = structured_damage_totals(damage)
+    nominal, sources = parts if parts is not None else parse_damage_expression(text)
     save_half = _SAVE_HALF_RE.search(text) is not None
     aoe = _AOE_RE.search(text) is not None
     limited_use = _RECHARGE_RE.search(text) is not None
@@ -424,7 +478,7 @@ def audit_stat_block(stat_block: Any) -> CombatAudit:
         name = name if isinstance(name, str) and name.strip() else "(unnamed action)"
         description = action.get("description")
         text = description if isinstance(description, str) else ""
-        actions.append(analyze_action(name, text))
+        actions.append(analyze_action(name, text, action.get("damage")))
         if multiattack is None and _is_multiattack_routine(name):
             multiattack = parse_multiattack_count(text)
 

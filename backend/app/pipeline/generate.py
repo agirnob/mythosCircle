@@ -50,6 +50,7 @@ from app.pipeline.retrieval import DEFAULT_ENTITY_CAP, retrieve_neighborhood, se
 from app.pipeline.statblocks import (
     apply_stat_repairs,
     build_stat_repair_prompt,
+    canonicalize_stat_block,
     collect_stat_issues,
     parse_stat_repair_output,
     stat_block_rules_text,
@@ -553,6 +554,15 @@ def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[st
     }
 
 
+def _canonical_block(block: Any) -> Any:
+    """One candidate's stat block in canonical form (spec: structured
+    attack damage and the missing stat aspects, 2026-09-11) — the same
+    folds the build-in/regenerate gate applies, so a candidate staged here
+    and a key figure committed there store one shape. A non-dict passes
+    through untouched (the validator owns that verdict)."""
+    return canonicalize_stat_block(block) if isinstance(block, dict) else block
+
+
 def _candidate_payload(
     raw: dict[str, Any], context_entities: Sequence[models.Entity]
 ) -> dict[str, Any]:
@@ -578,7 +588,7 @@ def _candidate_payload(
     }
     if staged["role"] in BOSS_ROLES:
         staged["boss"] = {field: raw["boss"][field].strip() for field in BOSS_FIELDS}
-    staged["stat_block"] = raw.get("stat_block")
+    staged["stat_block"] = _canonical_block(raw.get("stat_block"))
     staged["edges"] = [
         resolved
         for edge in raw.get("edges", [])

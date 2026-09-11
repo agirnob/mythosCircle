@@ -141,6 +141,29 @@ def stat_block_rules_text(spells_reference: bool = True) -> str:
             f"skills (optional): entries with an SRD skill name and integer bonus: "
             f"{sorted(SKILLS)}.",
             "actions and traits (optional): entries with a name and a description string.",
+            "a damaging ACTION also carries a structured damage list — one entry per",
+            "damage type, kept in step with the description (which still states the",
+            "numbers for the DM):",
+            '  {"name": "Oathblade", "to_hit": 18,',
+            '   "description": "Melee Weapon Attack: +18 to hit, reach 5 ft., one target.',
+            '     Hit: 19 (2d6 + 12) slashing damage plus 16.5 (3d10) radiant damage.",',
+            '   "damage": [{"dice": "2d6", "count": 2, "sides": 6, "bonus": 12,',
+            '               "average": 19, "type": "slashing"},',
+            '              {"dice": "3d10", "count": 3, "sides": 10, "bonus": 0,',
+            '               "average": 16.5, "type": "radiant"}]}',
+            "  The damage list is the machine-readable copy the auditor, the character",
+            "  sheet and the export read; a Multiattack routine carries NO damage list",
+            "  (its text states the count only). Never write damage in a key of its own.",
+            "OPTIONAL EXTRA MECHANICS (include what applies, omit the rest — a wrong",
+            "number is worse than an absent one):",
+            '- combat.hit_dice: a dice expression string, e.g. "24d10 + 192".',
+            '- saves: integer save bonus per ability score, e.g. {"con": 15, "wis": 18}.',
+            '- features: a list of feature NAMES, e.g. ["Divine Smite", "Aura of',
+            '  Protection"] — names only, never objects (that is what traits are for).',
+            "- initiative and passive_perception: integers.",
+            "- proficiency_bonus: an integer (2 early, 6 by level 17).",
+            '- spellcasting: {"dc": 21, "attack_bonus": 13, "slots": [4, 3, 3, 3, 1]}.',
+            '- resources: integer pools, e.g. {"lay_on_hands": 85, "channel_divinity": 2}.',
             "spells (optional): never for role Monster (a monster's magic is actions",
             "or traits); otherwise only with an identity.class and no repeats — every",
             *(
@@ -284,12 +307,17 @@ def _record_target_line(entity: models.EntityInput) -> str | None:
     return f"record target: {challenge} -> hit DPR band {low:.0f}-{high:.0f}"
 
 
-def build_stat_repair_prompt(issues: Sequence[StatIssue]) -> str:
-    """The one bounded repair pass's prompt (AR25).
+def build_stat_repair_prompt(issues: Sequence[StatIssue], *, attempt: int = 1) -> str:
+    """One bounded repair pass's prompt (AR25; the second pass added
+    2026-09-11 by owner decision).
 
-    A pure, deterministic function of the flagged issues: each character's
-    canonical ref, name, current stat block (or MISSING), and its
-    violations, plus the shared rules. No ids, timestamps, or job state.
+    A pure, deterministic function of the flagged issues and the attempt
+    number: each character's canonical ref, name, current stat block (or
+    MISSING), and its violations, plus the shared rules. On ``attempt=2``
+    the "current stat_block" is the one the FIRST repair produced and the
+    violations are the ones that SURVIVED it — the model is correcting its
+    own edit against exactly what is still wrong, which is what the owner
+    asked for. No ids, timestamps, or job state.
     """
     flagged: list[str] = []
     for issue in issues:
@@ -308,6 +336,17 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue]) -> str:
             f"violations:\n{violations}"
         )
     classes = _flagged_classes(issues) or None
+    if attempt == 1:
+        violations_header = ["VIOLATIONS TO FIX"]
+    else:
+        violations_header = [
+            "VIOLATIONS STILL UNFIXED — SECOND REPAIR PASS",
+            "The stat_block shown under each character is the one YOUR FIRST",
+            "REPAIR produced, and it still fails every violation listed below",
+            "it. Change the NUMBERS — attack count, dice faces, flat bonus,",
+            "combat.hp, combat.ac — because a reworded description changes no",
+            "number the validator reads.",
+        ]
     return "\n".join(
         [
             "You are repairing minimal 5e stat blocks for characters in a TTRPG world.",
@@ -318,7 +357,7 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue]) -> str:
             "",
             spells_reference_text(classes),
             "",
-            "VIOLATIONS TO FIX",
+            *violations_header,
             "\n\n".join(flagged),
             "",
             "DAMAGE RECIPES (parser-checked — hit each character's record target band)",
@@ -485,8 +524,17 @@ def _rider_dice(target: float) -> tuple[int, int, float]:
     return best[1], best[2], best[3]
 
 
-def _append_damage_clause(block: dict[str, Any], action_name: str, text: str) -> bool:
-    """Append a canonical 5e damage clause to one action's description."""
+def _append_damage_clause(
+    block: dict[str, Any], action_name: str, text: str, part: dict[str, Any] | None = None
+) -> bool:
+    """Append a canonical 5e damage clause to one action's description.
+
+    When the action already carries a structured ``damage`` list, the same
+    numbers are appended there too (spec 2026-09-11): the auditor, sheet
+    and export read the parts, so a clause the parts do not know about
+    would leave the block stating two different damages. A block with no
+    parts stays prose-only — this pass never invents structure.
+    """
     actions = block.get("actions")
     if not isinstance(actions, list):
         return False
@@ -498,6 +546,9 @@ def _append_damage_clause(block: dict[str, Any], action_name: str, text: str) ->
             if description.endswith("."):
                 description = description[:-1]
             action["description"] = f"{description} {text}"
+            parts = action.get("damage")
+            if part is not None and isinstance(parts, list):
+                parts.append(part)
             return True
     return False
 
@@ -612,17 +663,38 @@ def _shift_derived_numbers(
         if flat:
             description = _FLAT_DAMAGE_RE.sub(shift_flat, description)
         action["description"] = description
+        # The structured copy moves with the prose (spec 2026-09-11): the
+        # auditor reads the parts when they exist, so a part left behind
+        # would silently undo this shift.
+        if to_hit and type(action.get("to_hit")) is int:
+            action["to_hit"] = action["to_hit"] + delta
+        parts = action.get("damage")
+        if flat and isinstance(parts, list):
+            for part in parts:
+                if isinstance(part, dict) and type(part.get("bonus")) is int and part["bonus"]:
+                    part["bonus"] = part["bonus"] + delta
 
     # The shift changed the dice' sum, so every "35 (5d10 + 6)" pair now
     # states an average its own brackets contradict. Recomputed with the
     # auditor's own parser — the number the DM reads is the number the
-    # auditor sees.
+    # auditor sees. The structured parts' averages are recomputed the same
+    # way, from their own count/sides/bonus.
     for action in actions:
         if not isinstance(action, dict):
             continue
         description = action.get("description")
         if isinstance(description, str):
             action["description"] = _DAMAGE_PAIR_RE.sub(_recompute_average, description)
+        parts = action.get("damage")
+        if isinstance(parts, list):
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                count, sides, bonus = part.get("count"), part.get("sides"), part.get("bonus")
+                if type(count) is int and type(sides) is int:
+                    part["average"] = round(
+                        count * (sides + 1) / 2 + (bonus if type(bonus) is int else 0), 2
+                    )
 
 
 def _recompute_average(match: re.Match[str]) -> str:
@@ -745,14 +817,16 @@ def conform_power(block: Any) -> dict[str, Any] | None:
             break
         probe_count, probe_sides, probe_avg = _rider_dice(10.0)
         probe = f"plus {probe_avg:g} ({probe_count}d{probe_sides}) {damage_type} damage."
-        if not _append_damage_clause(conformed, strongest.name, probe):
+        probe_part = _damage_part(probe_count, probe_sides, probe_avg, damage_type)
+        if not _append_damage_clause(conformed, strongest.name, probe, probe_part):
             return None
         after = combat.audit_stat_block(conformed).dpr
         multiplier = (after - before) / probe_avg
         if multiplier <= 0:
             return None
         need = (target - before) / multiplier
-        # Undo the probe by rewriting the clause we just appended.
+        # Undo the probe by rewriting the clause we just appended (and the
+        # part appended with it).
         actions = conformed.get("actions")
         assert isinstance(actions, list)
         replaced = False
@@ -765,6 +839,9 @@ def conform_power(block: Any) -> dict[str, Any] | None:
                 action["description"] = description[: -len(probe)] + (
                     f"plus {average:g} ({count}d{sides}) {damage_type} damage."
                 )
+                parts = action.get("damage")
+                if isinstance(parts, list) and parts and parts[-1] == probe_part:
+                    parts[-1] = _damage_part(count, sides, average, damage_type)
                 replaced = True
             break
         if not replaced:
@@ -811,49 +888,267 @@ def conform_stat_power(
     )
 
 
-def canonicalize_action_damage(
+def _damage_part(count: int, sides: int, average: float, damage_type: str) -> dict[str, Any]:
+    """One canonical structured damage part (spec 2026-09-11) — the shape
+    the auditor, the character sheet and the export read, matching the
+    ``damage[]`` entry the prompt asks the model for."""
+    return {
+        "dice": f"{count}d{sides}",
+        "count": count,
+        "sides": sides,
+        "bonus": 0,
+        "average": round(average, 2),
+        "type": damage_type,
+    }
+
+
+def damage_parts_sentence(damage: Any) -> str | None:
+    """The one-line damage sentence a structured ``damage`` list implies
+    (spec: structured attack damage, 2026-09-11), e.g. ``"Hit: 19 (2d6 +
+    12) slashing damage plus 16.5 (3d10) radiant damage."`` — or ``None``
+    when the list names no usable part. Used where a text form is wanted
+    (the Forge unit-card entry, the sheet) so the numbers the DM reads
+    come from the parts rather than from a re-parse of the prose."""
+    if not isinstance(damage, list):
+        return None
+    clauses: list[str] = []
+    for part in damage:
+        if not isinstance(part, dict):
+            continue
+        count, sides, bonus = part.get("count"), part.get("sides"), part.get("bonus")
+        if type(count) is not int or type(sides) is not int:
+            continue
+        bonus = bonus if type(bonus) is int else 0
+        average = part.get("average")
+        average = (
+            float(average)
+            if isinstance(average, (int, float)) and not isinstance(average, bool)
+            else count * (sides + 1) / 2 + bonus
+        )
+        kind = part.get("type")
+        kind = kind.strip() if isinstance(kind, str) and kind.strip() else "damage"
+        flat = f" + {bonus}" if bonus else ""
+        clauses.append(f"{average:g} ({count}d{sides}{flat}) {kind}")
+    if not clauses:
+        return None
+    head, *tail = clauses
+    sentence = f"Hit: {head} damage"
+    for clause in tail:
+        sentence += f" plus {clause} damage"
+    return f"{sentence}."
+
+
+def canonicalize_stat_blocks(
     entities: Sequence[models.EntityInput],
 ) -> list[models.EntityInput]:
-    """Fold a non-standard action ``damage`` field into its description.
+    """Fold a model's near-miss stat-block shape into the canonical one.
+
+    Spec: structured attack damage and the missing stat aspects
+    (2026-09-11). Returns each entity with its block canonicalized — a
+    block already in canonical form comes back byte-identical (no copy),
+    so an untouched wave is untouched. See
+    :func:`canonicalize_stat_block` for the folds themselves.
+    """
+    out: list[models.EntityInput] = []
+    for entity in entities:
+        block = (entity.data or {}).get("stat_block")
+        if not isinstance(block, dict):
+            out.append(entity)
+            continue
+        canonical = canonicalize_stat_block(block)
+        out.append(
+            entity
+            if canonical is block
+            else dataclasses.replace(entity, data={**entity.data, "stat_block": canonical})
+        )
+    return out
+
+
+def canonicalize_stat_block(block: dict[str, Any]) -> dict[str, Any]:
+    """The canonical form of one stat block (see the three folds below).
+
+    Shared by the build-in/regenerate gate and the generate staging path,
+    so a candidate and a committed key figure store the same shape.
+    Returns the SAME object when nothing needed folding; otherwise a new
+    block (the input is never mutated).
+    """
+    folded = _fold_stat_block_aliases(block)
+    completed = _complete_damage_parts(folded)
+    return _fold_string_damage(completed)
+
+
+#: ``stats`` members that move to a top-level key of the same meaning
+#: (``abilities`` is the one rename — prototype-2 calls the six scores
+#: ``abilities``, the AR25 contract calls them ``attributes``).
+_STATS_MEMBER_MAP: dict[str, str] = {
+    "abilities": "attributes",
+    "combat": "combat",
+    "saves": "saves",
+    "initiative": "initiative",
+    "passive_perception": "passive_perception",
+    "proficiency_bonus": "proficiency_bonus",
+    "spellcasting": "spellcasting",
+    "resources": "resources",
+}
+
+
+def _fold_stat_block_aliases(block: dict[str, Any]) -> dict[str, Any]:
+    """Fold the prototype-2 nesting into the canonical flat block.
+
+    A ``stats`` object folds its members out to their own top-level keys —
+    filling only slots that are ABSENT, so a canonical field always wins.
+    Same spirit as ``canonicalize_entity_kind``: repair the shape the model
+    certainly meant, never guess at one it did not. (``features`` is NOT
+    folded into ``traits``: prototype-2's features are bare names, the AR25
+    traits entries are ``{name, description}`` objects — folding would
+    invent descriptions, so ``features`` is its own optional field.)
+    Unknown keys are never dropped.
+    """
+    filled: dict[str, Any] = {}
+    stats = block.get("stats")
+    if isinstance(stats, dict):
+        for member, key in _STATS_MEMBER_MAP.items():
+            if member in stats and (key not in block or block.get(key) is None):
+                filled[key] = stats[member]
+        hit_dice = stats.get("combat")
+        if isinstance(hit_dice, dict):
+            dice = hit_dice.get("hit_dice")
+            combat_block = block.get("combat")
+            if (
+                dice is not None
+                and isinstance(combat_block, dict)
+                and combat_block.get("hit_dice") is None
+            ):
+                filled["combat"] = {**combat_block, "hit_dice": dice}
+    if not filled:
+        return block
+    return {**block, **filled}
+
+
+#: The slots a damage part is completed into.
+_PART_KEYS: tuple[str, ...] = ("dice", "count", "sides", "bonus", "average", "type")
+
+
+def _complete_damage_parts(block: dict[str, Any]) -> dict[str, Any]:
+    """Complete every structured damage part from its own ``dice`` text.
+
+    ``{"dice": "2d6", "bonus": 12}`` becomes ``{"dice": "2d6", "count": 2,
+    "sides": 6, "bonus": 12, "average": 19, "type": ...}`` — the explicit
+    numbers the auditor, sheet and export read. A part that is already
+    complete is left byte-identical; a part with no derivable dice is left
+    for the validator to flag (never silently dropped).
+    """
+    actions = block.get("actions")
+    if not isinstance(actions, list):
+        return block
+    changed = False
+    new_actions: list[Any] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            new_actions.append(action)
+            continue
+        parts = action.get("damage")
+        if not isinstance(parts, list) or not parts:
+            new_actions.append(action)
+            continue
+        new_parts: list[Any] = []
+        for part in parts:
+            if not isinstance(part, dict):
+                new_parts.append(part)
+                continue
+            dice = part.get("dice")
+            count, sides = part.get("count"), part.get("sides")
+            if isinstance(dice, str):
+                found = combat._DICE_RE.findall(dice)
+                if found and not (type(count) is int and type(sides) is int):
+                    count, sides = int(found[0][0]), int(found[0][1])
+            if type(count) is not int or type(sides) is not int:
+                new_parts.append(part)
+                continue
+            bonus = part.get("bonus")
+            bonus = bonus if type(bonus) is int else 0
+            completed: dict[str, Any] = {
+                "dice": f"{count}d{sides}",
+                "count": count,
+                "sides": sides,
+                "bonus": bonus,
+                "average": round(count * (sides + 1) / 2 + bonus, 2),
+                "type": part.get("type") if isinstance(part.get("type"), str) else "untyped",
+            }
+            extra = {key: value for key, value in part.items() if key not in _PART_KEYS}
+            merged = {**extra, **completed}
+            if merged != part:
+                changed = True
+            new_parts.append(merged)
+        new_actions.append({**action, "damage": new_parts})
+    if not changed:
+        return block
+    return {**block, "actions": new_actions}
+
+
+def _fold_string_damage(block: dict[str, Any]) -> dict[str, Any]:
+    """Fold a non-standard STRING action ``damage`` into its description.
 
     Measured 2026-09-11 (regenerate, level 17): the model shipped
     ``{"name": "Holy Smite", "damage": "5d10+6 radiant", "description":
     "deals massive radiant damage"}`` — the dice sit in a key the auditor
     never reads, so the block reports ZERO damage, the non-combatant
     exemption swallows it whole, and it ships with no usable offence (and no
-    damage at all on the exported Forge token). The contract is
-    ``{name, description}``; folding the value in is unambiguous.
+    damage at all on the exported Forge token). The contract's damage is
+    either a string folded into the description or a structured list; a
+    string with dice in it is unambiguous, so it moves into the prose.
     """
+    actions = block.get("actions")
+    if not isinstance(actions, list):
+        return block
+    changed = False
+    new_actions: list[Any] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            new_actions.append(action)
+            continue
+        damage = action.get("damage")
+        description = action.get("description")
+        if (
+            not isinstance(damage, str)
+            or not combat._DICE_RE.search(damage)
+            or (isinstance(description, str) and combat._DICE_RE.search(description))
+        ):
+            new_actions.append(action)
+            continue
+        head = description.strip() if isinstance(description, str) else ""
+        sentence = f"Hit: {damage.strip().rstrip('.')}."
+        new_actions.append({**action, "description": f"{head} {sentence}".strip()})
+        changed = True
+    if not changed:
+        return block
+    return {**block, "actions": new_actions}
+
+
+def canonicalize_action_damage(
+    entities: Sequence[models.EntityInput],
+) -> list[models.EntityInput]:
+    """Entity-level wrapper for the string-damage fold (see
+    :func:`_fold_string_damage`): the rule the regenerate path shipped
+    with, kept as its own name because that is what it was pinned as."""
     out: list[models.EntityInput] = []
     for entity in entities:
         block = (entity.data or {}).get("stat_block")
-        actions = block.get("actions") if isinstance(block, dict) else None
-        if not isinstance(actions, list):
+        if not isinstance(block, dict):
             out.append(entity)
             continue
-        changed = False
-        for action in actions:
-            if not isinstance(action, dict):
-                continue
-            damage = action.get("damage")
-            description = action.get("description")
-            if not isinstance(damage, str) or not combat._DICE_RE.search(damage):
-                continue
-            if isinstance(description, str) and combat._DICE_RE.search(description):
-                continue  # the description already carries its own dice
-            sentence = f"Hit: {damage.strip().rstrip('.')}."
-            head = description.strip() if isinstance(description, str) else ""
-            action["description"] = f"{head} {sentence}".strip()
-            changed = True
-        if changed:
-            out.append(dataclasses.replace(entity, data={**entity.data, "stat_block": block}))
-        else:
-            out.append(entity)
+        folded = _fold_string_damage(block)
+        out.append(
+            entity
+            if folded is block
+            else dataclasses.replace(entity, data={**entity.data, "stat_block": folded})
+        )
     return out
 
 
 def stat_failure_message(issues: Sequence[StatIssue]) -> str:
-    """The fail-event message for a wave still invalid after the repair.
+    """The fail-event message for a wave still invalid after the repair
+    passes.
 
     Names each character (canonical ref + name) and its violations, so
     the DM and the job log see exactly what to fix (AR25).
@@ -862,7 +1157,7 @@ def stat_failure_message(issues: Sequence[StatIssue]) -> str:
         f"E{issue.position} ({issue.entity.name!r}): {'; '.join(issue.violations)}"
         for issue in issues
     ]
-    return "wave 1: stat block(s) still invalid after the repair pass: " + " | ".join(parts)
+    return "wave 1: stat block(s) still invalid after the repair passes: " + " | ".join(parts)
 
 
 def _parse_ref(ref: Any) -> int:

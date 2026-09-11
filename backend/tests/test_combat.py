@@ -377,3 +377,88 @@ def test_cr30_band_open_ended() -> None:
 
     assert audit_stat_block(slam("40d10+90 force")).verdict == VERDICT_ONTARGET
     assert audit_stat_block(slam("60d10+40 force")).verdict == VERDICT_OVER
+
+
+# ---------------------------------------------------------------------------
+# Structured attack damage (spec: structured attack damage, 2026-09-11)
+# ---------------------------------------------------------------------------
+
+#: Level-5 NPC whose prose says nothing usable ("deals massive radiant
+#: damage") while its damage PARTS state the numbers — the shape the model
+#: ships when it writes attacks as data.
+_STRUCTURED_BLOCK: dict[str, Any] = {
+    "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Paladin"},
+    "attributes": {"str": 18, "dex": 12, "con": 14, "int": 10, "wis": 12, "cha": 16},
+    "combat": {"ac": 18, "hp": 70},
+    "actions": [
+        {
+            "name": "Oathblade",
+            "to_hit": 7,
+            "description": "Swings wide, trailing sea-light. Deals massive radiant damage.",
+            "damage": [
+                {
+                    "dice": "2d6",
+                    "count": 2,
+                    "sides": 6,
+                    "bonus": 12,
+                    "average": 19,
+                    "type": "slashing",
+                },
+                {
+                    "dice": "3d10",
+                    "count": 3,
+                    "sides": 10,
+                    "bonus": 0,
+                    "average": 16.5,
+                    "type": "radiant",
+                },
+            ],
+        }
+    ],
+}
+
+
+def test_structured_damage_parts_drive_the_audit() -> None:
+    """STRUCTURED_DAMAGE: the auditor reads the parts, not the prose — a
+    block whose description states no dice still audits at its real DPR."""
+    audit = audit_stat_block(_STRUCTURED_BLOCK)
+    assert audit.dpr == pytest.approx(35.5)  # 19 + 16.5
+    assert audit.actions[0].sources == ("2d6", "3d10")
+
+
+def test_structured_damage_derives_from_dice_when_average_is_absent() -> None:
+    """A part may carry only its dice: the auditor computes it with the
+    same math as the prose parser (count * die average + bonus)."""
+    block = copy.deepcopy(_STRUCTURED_BLOCK)
+    block["actions"][0]["damage"] = [{"dice": "2d6", "bonus": 12, "type": "slashing"}]
+    audit = audit_stat_block(block)
+    assert audit.dpr == pytest.approx(19.0)
+
+
+def test_unusable_parts_fall_back_to_the_prose() -> None:
+    """PROSE_FALLBACK: a malformed/empty part list must never read as zero
+    damage when the description states dice."""
+    block = {
+        **_STRUCTURED_BLOCK,
+        "actions": [
+            {
+                "name": "Oathblade",
+                "description": "Melee Weapon Attack: +7 to hit, 4d10 + 5 slashing",
+                "damage": [{"type": "slashing"}, "2d6"],
+            }
+        ],
+    }
+    audit = audit_stat_block(block)
+    assert audit.dpr == pytest.approx(27.0)  # 4d10 = 22, + 5
+    assert audit.actions[0].sources == ("4d10", "+ 5")
+
+
+def test_one_good_part_survives_a_bad_neighbour() -> None:
+    """A part that names nothing legal is skipped; the rest still count."""
+    block = copy.deepcopy(_STRUCTURED_BLOCK)
+    block["actions"][0]["damage"] = [
+        {"dice": "2d6", "count": 2, "sides": 6, "bonus": 12, "average": 19, "type": "slashing"},
+        {"nonsense": True},
+    ]
+    audit = audit_stat_block(block)
+    assert audit.dpr == pytest.approx(19.0)

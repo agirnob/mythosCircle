@@ -24,6 +24,7 @@ cannot be validated and are flagged, and the repair prompt tells the
 model to use listed spells only.
 """
 
+import re
 from types import MappingProxyType
 from typing import Any
 
@@ -434,6 +435,149 @@ def resolve_class(value: Any) -> str | None:
     return None
 
 
+#: Optional mechanics fields (spec: structured attack damage and the missing
+#: stat aspects, 2026-09-11). Absence is always legal — a block written
+#: before these existed validates exactly as it did — but a PRESENT field
+#: must be well-formed, or the consumer (auditor, sheet, export) silently
+#: reads the wrong number. Ranges are deliberately generous: only a value
+#: that can name nothing legal is a violation.
+_SAVE_RANGE = (-10, 40)
+_INITIATIVE_RANGE = (-10, 30)
+_PASSIVE_RANGE = (1, 40)
+_PROFICIENCY_RANGE = (1, 12)
+_SPELL_CAST_RANGE = (-5, 40)
+_SLOT_MAX = 20
+_HIT_DICE_RE = re.compile(r"\d+\s*[dD]\s*\d+")
+
+
+def _in_range(value: Any, bounds: tuple[int, int]) -> bool:
+    return type(value) is int and bounds[0] <= value <= bounds[1]
+
+
+def _check_hit_dice(value: Any, errors: list[str]) -> None:
+    """``combat.hit_dice`` (optional): a real dice expression like
+    ``"24d10 + 192"`` — the string the sheet prints, never parsed for
+    mechanics (the auditor reads hp)."""
+    if value is None:
+        return
+    if not isinstance(value, str) or not _HIT_DICE_RE.search(value):
+        errors.append(
+            'combat.hit_dice must be a string holding a dice expression like "18d10 + 90"'
+        )
+
+
+def _check_damage_parts(entry: Any, position: int, errors: list[str]) -> None:
+    """One action's structured ``damage`` list (optional).
+
+    A part must be usable by the auditor: either a ``dice`` expression or
+    an explicit ``count``/``sides`` pair. ``average``/``bonus``/``type``
+    are checked when present and never required — the auditor derives what
+    it needs and falls back to the description when a part is unusable.
+    """
+    if entry is None:
+        return
+    where = f"actions[{position}].damage"
+    if not isinstance(entry, list) or not entry:
+        errors.append(f"{where} must be a non-empty list of damage parts")
+        return
+    for index, part in enumerate(entry):
+        if not isinstance(part, dict):
+            errors.append(f"{where}[{index}] must be an object")
+            continue
+        dice = part.get("dice")
+        count, sides = part.get("count"), part.get("sides")
+        has_dice = isinstance(dice, str) and _HIT_DICE_RE.search(dice)
+        has_pair = _in_range(count, (1, 100)) and _in_range(sides, (2, 100))
+        if not has_dice and not has_pair:
+            errors.append(
+                f'{where}[{index}] needs a dice expression ("2d6") or count/sides integers'
+            )
+        if dice is not None and not has_dice:
+            errors.append(f'{where}[{index}].dice must be a dice expression like "2d6"')
+        bonus = part.get("bonus")
+        if bonus is not None and type(bonus) is not int:
+            errors.append(f"{where}[{index}].bonus must be an integer")
+        average = part.get("average")
+        if average is not None and (
+            isinstance(average, bool) or not isinstance(average, (int, float)) or average < 0
+        ):
+            errors.append(f"{where}[{index}].average must be a non-negative number")
+        kind = part.get("type")
+        if kind is not None and (not isinstance(kind, str) or not kind.strip()):
+            errors.append(f"{where}[{index}].type must be a non-blank damage type")
+
+
+def _check_optional_mechanics(block: Any, errors: list[str]) -> None:
+    """The optional mechanics aspects (spec 2026-09-11): saves, initiative,
+    passive perception, proficiency bonus, spellcasting, resources, and the
+    structured damage on each action. Every one of them is optional; a
+    present one must be well-formed."""
+    saves = block.get("saves")
+    if saves is not None:
+        if not isinstance(saves, dict):
+            errors.append("saves must be an object keyed by ability score")
+        else:
+            for ability, value in saves.items():
+                if ability not in ABILITY_SCORES:
+                    errors.append(f"saves key {ability!r} must be one of {list(ABILITY_SCORES)}")
+                elif not _in_range(value, _SAVE_RANGE):
+                    low, high = _SAVE_RANGE
+                    errors.append(f"saves.{ability} must be an integer in [{low}, {high}]")
+
+    for field, bounds in (
+        ("initiative", _INITIATIVE_RANGE),
+        ("passive_perception", _PASSIVE_RANGE),
+        ("proficiency_bonus", _PROFICIENCY_RANGE),
+    ):
+        value = block.get(field)
+        if value is not None and not _in_range(value, bounds):
+            errors.append(f"{field} must be an integer in [{bounds[0]}, {bounds[1]}]")
+
+    spellcasting = block.get("spellcasting")
+    if spellcasting is not None:
+        if not isinstance(spellcasting, dict):
+            errors.append("spellcasting must be an object")
+        else:
+            for field in ("dc", "attack_bonus"):
+                value = spellcasting.get(field)
+                if value is not None and not _in_range(value, _SPELL_CAST_RANGE):
+                    errors.append(
+                        f"spellcasting.{field} must be an integer in "
+                        f"[{_SPELL_CAST_RANGE[0]}, {_SPELL_CAST_RANGE[1]}]"
+                    )
+            slots = spellcasting.get("slots")
+            if slots is not None and (
+                not isinstance(slots, list)
+                or not all(_in_range(slot, (0, _SLOT_MAX)) for slot in slots)
+            ):
+                errors.append(f"spellcasting.slots must be a list of integers in [0, {_SLOT_MAX}]")
+
+    resources = block.get("resources")
+    if resources is not None:
+        if not isinstance(resources, dict):
+            errors.append("resources must be an object of name -> integer")
+        else:
+            for name, value in resources.items():
+                if type(value) is not int or value < 0:
+                    errors.append(f"resources.{name} must be a non-negative integer")
+
+    features = block.get("features")
+    if features is not None and (
+        not isinstance(features, list)
+        or not all(isinstance(entry, str) and entry.strip() for entry in features)
+    ):
+        # prototype-2's ``features`` is a list of NAMES ("Divine Smite"),
+        # not the AR25 traits shape ({name, description}) — folding one into
+        # the other would invent descriptions, so it is its own field.
+        errors.append("features must be a list of non-blank feature names")
+
+    actions = block.get("actions")
+    if isinstance(actions, list):
+        for position, action in enumerate(actions):
+            if isinstance(action, dict):
+                _check_damage_parts(action.get("damage"), position, errors)
+
+
 def _check_spells(value: Any, klass: str | None, role: str | None, errors: list[str]) -> None:
     """Role-limited spell check (AR25, spec-2.4): a Monster never carries
     spells (its magic is actions/traits); otherwise spells require a
@@ -609,7 +753,9 @@ def validate_stat_block(block: Any) -> list[str]:
         hp = combat.get("hp")
         if type(hp) is not int or hp < 1:
             errors.append("combat.hp must be a positive integer")
+        _check_hit_dice(combat.get("hit_dice"), errors)
 
+    _check_optional_mechanics(block, errors)
     _check_named_list(block.get("skills"), "skills", SKILLS, errors)
     _check_named_list(block.get("actions"), "actions", None, errors)
     _check_named_list(block.get("traits"), "traits", None, errors)
