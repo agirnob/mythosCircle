@@ -2806,6 +2806,52 @@ def test_overpowered_stat_block_commits_stamped_without_repair(world: str) -> No
     }
 
 
+def test_stat_repair_dropping_class_keeps_original(world: str) -> None:
+    """CLASS_PRESERVE (ladder attempt 19): a repair that fixes the level
+    but drops identity.class must not open a class-link hole — the merge
+    restores the valid pre-repair class, so the job converges on the next
+    pass instead of dying with `spells require identity.class` after all
+    three passes. A deliberately changed class still lands (only a
+    dropped/blanked one is restored)."""
+    leveled_block = {
+        "identity": {"role": "NPC", "level": 25, "race": "Human", "class": "Wizard"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 140},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "spells": ["Fire Bolt"],
+        "actions": [{"name": "Slam", "description": "10d10+5 force"}],
+    }
+    classless_fix = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 140},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "spells": ["Fire Bolt"],
+        "actions": [{"name": "Slam", "description": "6d10+5 fire"}],
+    }
+    output = _wave1_output()
+    output["entities"][1]["data"] = {
+        **_character_record("Mira Vane"),
+        "stat_block": leveled_block,
+    }
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": classless_fix}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        return responses.pop(0)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"  # no class-link pass 2, no third response needed
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"]["identity"]["class"] == "Wizard"
+    assert mira.data["stat_block"]["identity"]["level"] == 5
+
+
 def test_frail_stat_block_repair_loop(world: str) -> None:
     """POWER_REPAIR_LOOP (frail): a 40-HP level-5 block with healthy DPR
     is flagged frail only; a healthy repair commits, a still-frail

@@ -314,3 +314,22 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   commits by construction. Gates: 1183 backend passed, ruff + mypy
   clean, 201 frontend passed, vue-tsc + eslint clean. Next: attempt 19
   re-rolls rung 10 on step-3 code.
+
+## Rung 10 — attempt 19, step-3 code — FAILED, 12 calls (wave-1 death)
+
+- E5 Ssketh: `spells require identity.class` survived passes 2+3. Pass 1
+  repaired damage-shape; the repair dropped identity.class, and two
+  further passes (scope included identity) edited
+  features/spellcasting/traits around the hole without restoring it.
+  New death family: class-link drop unrepairable. E6 also unrepaired
+  (L10 DPR 27 vs 63-68). Wave-1 commits 9/11. Tee'd calls + prompts in
+  `/tmp/mythos-ladder/calls-c2/`.
+
+## Class-preserve ships (2026-09-12, owner: preserve it)
+
+- The per-entity merge restores a valid pre-repair identity.class a
+  repair dropped (deliberate class changes still land; invalid originals
+  keep failing). Regression test
+  `test_stat_repair_dropping_class_keeps_original` converges in 2 calls.
+  Gates: 1184 backend passed, ruff + mypy clean. Next: attempt 20
+  re-rolls rung 10.

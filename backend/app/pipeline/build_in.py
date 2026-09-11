@@ -340,6 +340,24 @@ def _enforce_stat_blocks(
                         merged[key] = new[key]
                 elif key in old:
                     merged[key] = old[key]
+            # A repair that drops identity.class is never a fix (attempt 19:
+            # the class-link hole then survives every further pass, whose
+            # scope includes identity yet the model edits around it). Restore
+            # a valid pre-repair class; a deliberately changed class still
+            # lands, an invalid original keeps failing as before.
+            old_identity = old.get("identity")
+            merged_identity = merged.get("identity")
+            if (
+                isinstance(old_identity, dict)
+                and isinstance(old_identity.get("class"), str)
+                and old_identity["class"].strip()
+                and isinstance(merged_identity, dict)
+                and not (
+                    isinstance(merged_identity.get("class"), str)
+                    and merged_identity["class"].strip()
+                )
+            ):
+                merged["identity"] = {**merged_identity, "class": old_identity["class"]}
             stripped[issue.position] = merged
         entities = apply_stat_repairs(entities, stripped)
         # The repair response is model output like any other: re-canonicalize
