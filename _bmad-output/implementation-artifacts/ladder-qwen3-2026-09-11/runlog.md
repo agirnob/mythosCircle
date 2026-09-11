@@ -347,3 +347,15 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   `/tmp/mythos-ladder/calls-c3/`.
 - Spec repair-sequence steps 1-3 all now measured green on gemma. Next:
   rung 25 on identical code.
+
+## Rung 25 — attempt 1 — FAILED, 26 calls (commit-time stutter)
+
+- Wave 1 converged through all three passes at 25-scale (15 pass-1
+  repairs, class-link drops healed at passes 2-3 — the preserve holds).
+  Terminal was NOT a stat death: the wave-1 output stuttered a
+  byte-identical edge row (E24 -> E11 relationship x2) and the store's
+  AD-23 backstop failed the whole wave at commit.
+- Fix ships: `_validate_subgraph` drops exact-duplicate edge rows at the
+  boundary (first wins, info log; different type/counter stays loud) +
+  `test_wave_duplicate_edge_rows_collapse_to_one`. Gates: 1185 backend
+  passed, ruff + mypy clean. Next: rung-25 attempt 2.

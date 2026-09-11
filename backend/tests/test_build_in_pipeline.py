@@ -2457,6 +2457,22 @@ def test_role_word_kind_seeds_the_record_role() -> None:
     assert doom.data["role"] == "Monster"
 
 
+def test_wave_duplicate_edge_rows_collapse_to_one() -> None:
+    """EDGE_DEDUP (ladder rung 25): a byte-identical edge row emitted twice
+    (model stutter — E24 -> E11 relationship x2 live) collapses to one at
+    the boundary instead of failing the wave at the store's AD-23 backstop.
+    Same pair with a different type or counter is NOT a duplicate."""
+    output = _wave1_output()
+    output["edges"].append(dict(output["edges"][0]))
+    output["edges"].append({"src": "E0", "dst": "E1", "type": "member_of", "counter": 2})
+    _entities, edges = _validate_subgraph(1, output)
+    assert [(edge.src, edge.dst, edge.type, edge.counter) for edge in edges] == [
+        (edges[0].src, edges[0].dst, "member_of", 1),
+        (edges[1].src, edges[1].dst, "debt", 3),
+        (edges[2].src, edges[2].dst, "member_of", 2),
+    ]
+
+
 def test_conform_power_fixes_dpr_and_frail_hp() -> None:
     """The deterministic conform repairs both power violations the model's
     single repair pass does not converge on: damage under the band and an HP

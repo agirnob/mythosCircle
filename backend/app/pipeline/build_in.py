@@ -1676,6 +1676,21 @@ def _validate_subgraph(
                 f"({raw.get('src')!r} -> {raw.get('dst')!r}) — edges must connect "
                 "distinct entities"
             )
+        key = (src_id, dst_id, edge_type, counter)
+        if any((known.src, known.dst, known.type, known.counter) == key for known in edge_inputs):
+            # Ladder rung 25: the model stuttered a byte-identical edge row
+            # (E24 -> E11 relationship twice) and the store's AD-23 backstop
+            # failed the whole wave at commit. An exact duplicate carries no
+            # information, so the boundary drops it (first wins); a same-pair
+            # edge with a different type or counter stays loud at commit.
+            logger.info(
+                "wave %d: dropping duplicate edge %r -> %r [%s]",
+                wave,
+                raw.get("src"),
+                raw.get("dst"),
+                edge_type,
+            )
+            continue
         edge_inputs.append(
             models.EdgeInput(src=src_id, dst=dst_id, type=edge_type, counter=counter)
         )
