@@ -180,6 +180,31 @@ _MULTIATTACK_COUNT_RE = re.compile(
     r"(?P<digits>\d+)|(?P<word>\b(?:one|two|three|four|five|six|seven|eight|nine|ten|twice)\b)",
     re.IGNORECASE,
 )
+#: Prose that marks an action as an ATTACK — the signal that zero parseable
+#: damage is a defect rather than a non-combatant. Deliberately narrower than
+#: "hit": "restores 20 hit points" is not an attack. "on a hit" and "hit:"
+#: are the 5e phrasings the model reaches for when it drops the dice.
+_ATTACK_HINT_RE = re.compile(
+    r"to hit|attack roll|attack:|melee attack|ranged attack|weapon attack"
+    r"|on a hit|on hit|hit:",
+    re.IGNORECASE,
+)
+
+
+def is_attack_shaped(name: object, description: object) -> bool:
+    """Whether an action reads like an attack.
+
+    Measured 2026-09-11: a level-17 paladin came back with
+    ``{"name": "Holy Smite", "description": "…makes one melee attack. On a
+    hit, it deals massive radiant damage."}`` — no dice anywhere, so the
+    audit read ZERO damage and the non-combatant exemption passed the block
+    whole. A creature that has a Multiattack is never a non-combatant.
+    """
+    if isinstance(name, str) and _is_multiattack_routine(name):
+        return True
+    return isinstance(description, str) and _ATTACK_HINT_RE.search(description) is not None
+
+
 #: Noise stripped before the routine-count scan: dice expressions and
 #: signed numbers, so a to-hit bonus ("+5 to hit, makes Claw attacks")
 #: or a damage parenthetical ("makes three attacks (3d6)") never reads

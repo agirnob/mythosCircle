@@ -129,8 +129,14 @@ def stat_block_rules_text(spells_reference: bool = True) -> str:
             "  0.75x, area effects at 2 targets, limited-use (recharge/per-day)",
             "  at 1/3.",
             "- ac and ability scores rise with challenge: ac ~10-13 at the bottom,",
-            "  ~19+ at the top; scores average or low at level 1/CR 0, high at",
-            "  level 20/CR 30. Ac and scores are guidance only — the validator",
+            "  ~19+ at the top; scores ~8-12 for a low challenge, and 26-30 in a",
+            "  level-15+/CR-15+ creature's best abilities (the DMG monster table — NOT",
+            "  the 20 that caps a player character).",
+            "- the action list deepens with challenge: a level-10+/CR-10+ creature has",
+            "  TWO TO FOUR entries — a named Multiattack routine plus the distinct",
+            "  attacks it uses. One lone attack is a shallow block, not a shortcut,",
+            "  and it cannot carry the damage band above on its own.",
+            "  Ac and scores are guidance only — the validator",
             "  enforces the DPR/HP bands above.",
             f"skills (optional): entries with an SRD skill name and integer bonus: "
             f"{sorted(SKILLS)}.",
@@ -447,7 +453,7 @@ _DEFAULT_CONFORM_DAMAGE = "force"
 #: message reads "combat.hp 52 is frail for level 4 (...)", so it matches on
 #: the substring. Everything else (shape, vocabulary, role rules) belongs to
 #: the model's one repair pass.
-_CONFORMABLE_PREFIXES = ("under-powered for ",)
+_CONFORMABLE_PREFIXES = ("under-powered for ", "no readable damage for ")
 _CONFORMABLE_SUBSTRINGS = (" is frail for ",)
 
 #: Upper bound on rider-picking iterations; the solve is exact, so one pass
@@ -496,6 +502,144 @@ def _append_damage_clause(block: dict[str, Any], action_name: str, text: str) ->
     return False
 
 
+#: Ability-score floors by challenge tier, highest-ranked ability first.
+#: THREAT scale, not point-buy: a level-17 NPC sits on the DMG monster table
+#: (ancients run STR 27-28 / CON 25-26), so the model's own scores are lifted
+#: to the row for their challenge — the model picks the RANKING (a paladin's
+#: STR over its INT), the table picks the magnitude.
+_CONFORM_SCORES: dict[str, tuple[int, ...]] = {
+    "1-4": (17, 16, 14, 12, 10, 8),
+    "5-8": (20, 19, 17, 15, 12, 9),
+    "9-14": (24, 22, 20, 17, 14, 10),
+    "15+": (28, 26, 24, 20, 16, 12),
+}
+
+#: Armour-class floor by tier (the DMG monster AC column, not armor math).
+_CONFORM_AC: dict[str, int] = {"1-4": 15, "5-8": 17, "9-14": 19, "15+": 21}
+
+_ABILITY_ORDER: tuple[str, ...] = ("str", "dex", "con", "int", "wis", "cha")
+
+#: "…+8 to hit…" and the flat half of "…35 (5d10 + 6) …".
+_TO_HIT_RE = re.compile(r"([+-])\s*(\d+)\s+to hit")
+_FLAT_DAMAGE_RE = re.compile(r"(\d+d\d+)\s*\+\s*(\d+)")
+#: The 5e damage pair "19 (2d8 + 10)" — leading average, dice in brackets.
+_DAMAGE_PAIR_RE = re.compile(r"\d+(?:\.\d+)?\s*\(([^()]*\d+d\d+[^()]*)\)")
+
+
+def _tier_of(identity: Mapping[str, Any]) -> str | None:
+    """The score/AC tier for a declared challenge, or ``None`` when it has
+    no reference row (the caller then leaves the block alone)."""
+    role = identity.get("role")
+    key: Any = identity.get("cr") if role == "Monster" else identity.get("level")
+    if isinstance(key, str):
+        return "1-4" if key in CR_FRACTIONS else None
+    if type(key) is not int or not 0 <= key <= CR_MAX:
+        return None
+    if key <= 4:
+        return "1-4"
+    if key <= 8:
+        return "5-8"
+    if key <= 14:
+        return "9-14"
+    return "15+"
+
+
+def _attack_modifier(attributes: Mapping[str, Any]) -> int:
+    """The modifier an attack would use: the better of STR and DEX."""
+    scores = [v for v in (attributes.get("str"), attributes.get("dex")) if isinstance(v, int)]
+    return (max(scores) - 10) // 2 if scores else 0
+
+
+def _conform_ability_scores(block: dict[str, Any], tier: str) -> int:
+    """Lift the six scores to the tier floor, preserving the model's ranking.
+
+    Returns the attack-modifier delta so the numbers the same prose already
+    states (to-hit, flat damage) can be shifted to match — lifting a score
+    without it would leave the block stating a bonus its scores no longer
+    support.
+    """
+    attributes = block.get("attributes")
+    if not isinstance(attributes, dict):
+        return 0
+    before = _attack_modifier(attributes)
+    floors = _CONFORM_SCORES[tier]
+    ranked = sorted(
+        _ABILITY_ORDER,
+        key=lambda ability: (
+            -(attributes[ability] if isinstance(attributes.get(ability), int) else 0),
+            _ABILITY_ORDER.index(ability),
+        ),
+    )
+    for position, ability in enumerate(ranked):
+        current = attributes.get(ability)
+        if isinstance(current, int):
+            attributes[ability] = max(current, floors[position])
+    return _attack_modifier(attributes) - before
+
+
+def _shift_derived_numbers(
+    block: dict[str, Any], delta: int, *, to_hit: bool = True, flat: bool
+) -> None:
+    """Shift every action's to-hit, and/or its flat damage, by ``delta``.
+
+    Shifting rather than recomputing keeps whatever weapon enhancement the
+    model wrote alongside the ability bonus. The two halves are separable
+    because only the flat half moves DPR: the score lift always takes the
+    to-hit, and takes the flat only where the band tolerates it. ``to_hit``
+    defaults off on the second call so a block cannot be shifted twice.
+    """
+    if delta == 0:
+        return
+    actions = block.get("actions")
+    if not isinstance(actions, list):
+        return
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        description = action.get("description")
+        if not isinstance(description, str) or not description:
+            continue
+
+        def shift_to_hit(match: re.Match[str]) -> str:
+            signed = int(f"{match.group(1)}{match.group(2)}") + delta
+            return f"{signed:+d} to hit"
+
+        def shift_flat(match: re.Match[str]) -> str:
+            return f"{match.group(1)} + {int(match.group(2)) + delta}"
+
+        if to_hit:
+            description = _TO_HIT_RE.sub(shift_to_hit, description)
+        if flat:
+            description = _FLAT_DAMAGE_RE.sub(shift_flat, description)
+        action["description"] = description
+
+    # The shift changed the dice' sum, so every "35 (5d10 + 6)" pair now
+    # states an average its own brackets contradict. Recomputed with the
+    # auditor's own parser — the number the DM reads is the number the
+    # auditor sees.
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        description = action.get("description")
+        if isinstance(description, str):
+            action["description"] = _DAMAGE_PAIR_RE.sub(_recompute_average, description)
+
+
+def _recompute_average(match: re.Match[str]) -> str:
+    """Rewrite one damage pair's leading average from its own dice."""
+    average, sources = combat.parse_damage_expression(match.group(1))
+    if not sources:
+        return match.group(0)
+    return f"{average:g} ({match.group(1)})"
+
+
+@dataclass(frozen=True)
+class _NamedAction:
+    """The audited action the rider clause is appended to (its name only)."""
+
+    name: str
+
+
 def conform_power(block: Any) -> dict[str, Any] | None:
     """Rewrite a block's NUMBERS so the DMG row for its challenge is met.
 
@@ -526,24 +670,70 @@ def conform_power(block: Any) -> dict[str, Any] | None:
     low, high = band
 
     conformed: dict[str, Any] = json.loads(json.dumps(block))  # JSON-safe deep copy
+    tier = _tier_of(identity)
+
+    # AC cannot move the auditor's DPR, so the tier floor is safe here.
+    combat_block = conformed.get("combat")
+    if tier is not None and isinstance(combat_block, dict):
+        ac = combat_block.get("ac")
+        if isinstance(ac, int) and ac < _CONFORM_AC[tier]:
+            combat_block["ac"] = _CONFORM_AC[tier]
 
     hp_band = combat.hp_band(identity)
-    combat_block = conformed.get("combat")
     if isinstance(combat_block, dict) and hp_band is not None:
         hp = combat_block.get("hp")
         if isinstance(hp, int) and combat.is_hp_frail(hp, hp_band):
             combat_block["hp"] = hp_band[0]
 
+    # Scores lift on EVERY path — a level-17 character reading STR 16 is the
+    # complaint, not a detail. The to-hit moves with them; the flat damage
+    # does not, because that is the half that moves DPR and an in-band block
+    # must not be pushed out of it by a cosmetic lift.
+    delta = _conform_ability_scores(conformed, tier) if tier is not None else 0
+    if delta:
+        _shift_derived_numbers(conformed, delta, flat=False)
+
     audit = combat.audit_stat_block(conformed)
-    if audit.band is None or audit.dpr > high:
+    # The tolerance here is the VALIDATOR's, not the raw band: a block at
+    # 134 against an 111-116 row is on-target (over fires past 1.2x high),
+    # and bailing on it left such blocks with the model's own scores — the
+    # exact complaint this lift exists to answer.
+    if audit.band is None or audit.dpr > high * combat._OVER_RATIO:
         return None
-    if audit.dpr >= low:
+    if audit.dpr >= low * combat._UNDER_RATIO:
         return conformed if not validate_stat_block(conformed) else None
 
+    # Under-powered: the flat damage may follow the scores, but only while
+    # the band still has room for it.
+    if delta:
+        before_flat = json.loads(json.dumps(conformed))
+        _shift_derived_numbers(conformed, delta, to_hit=False, flat=True)
+        lifted = combat.audit_stat_block(conformed)
+        if lifted.band is None or lifted.dpr > high:
+            conformed = before_flat
+        audit = combat.audit_stat_block(conformed)
+
     damaging = [a for a in audit.actions if a.expected_avg > 0]
-    if not damaging:
-        return None
-    strongest = max(damaging, key=lambda a: a.expected_avg)
+    if damaging:
+        strongest_name = max(damaging, key=lambda a: a.expected_avg).name
+    else:
+        # Nothing to scale — the block states no dice at all. Arm the first
+        # attack-shaped action that is NOT the routine: a Multiattack
+        # contributes its count times another action, so arming it alone
+        # would change nothing (round_dpr excludes the routine itself).
+        strongest_name = ""
+        for action in conformed.get("actions") or []:
+            if not isinstance(action, dict):
+                continue
+            name = action.get("name")
+            if isinstance(name, str) and combat._is_multiattack_routine(name):
+                continue
+            if combat.is_attack_shaped(name, action.get("description")):
+                strongest_name = name if isinstance(name, str) else ""
+                break
+        if not strongest_name:
+            return None
+    strongest = _NamedAction(strongest_name)
 
     klass = identity.get("class")
     damage_type = _CONFORM_DAMAGE_TYPES.get(klass or "", _DEFAULT_CONFORM_DAMAGE)
@@ -586,18 +776,12 @@ def conform_power(block: Any) -> dict[str, Any] | None:
     return conformed if not validate_stat_block(conformed) else None
 
 
-def conform_stat_power(
-    entities: Sequence[models.EntityInput], issues: Sequence[StatIssue]
+def _conform_positions(
+    entities: Sequence[models.EntityInput], targets: Sequence[StatIssue]
 ) -> list[models.EntityInput]:
-    """Apply :func:`conform_power` to every conformable flagged character.
-
-    Entities whose violations are shape problems are left exactly as the
-    repair pass left them — this pass never touches anything but numbers.
-    """
+    """Conform the blocks at ``targets``, leaving every other entity alone."""
     fixed: dict[int, dict[str, Any]] = {}
-    for issue in issues:
-        if not is_conformable(issue.violations):
-            continue
+    for issue in targets:
         block = (issue.entity.data or {}).get("stat_block")
         conformed = conform_power(block)
         if conformed is not None:
@@ -611,6 +795,60 @@ def conform_stat_power(
             out.append(entity)
             continue
         out.append(dataclasses.replace(entity, data={**entity.data, "stat_block": block}))
+    return out
+
+
+def conform_stat_power(
+    entities: Sequence[models.EntityInput], issues: Sequence[StatIssue]
+) -> list[models.EntityInput]:
+    """Apply :func:`conform_power` to every conformable flagged character.
+
+    Entities whose violations are shape problems are left exactly as the
+    repair pass left them — this pass never touches anything but numbers.
+    """
+    return _conform_positions(
+        entities, [issue for issue in issues if is_conformable(issue.violations)]
+    )
+
+
+def canonicalize_action_damage(
+    entities: Sequence[models.EntityInput],
+) -> list[models.EntityInput]:
+    """Fold a non-standard action ``damage`` field into its description.
+
+    Measured 2026-09-11 (regenerate, level 17): the model shipped
+    ``{"name": "Holy Smite", "damage": "5d10+6 radiant", "description":
+    "deals massive radiant damage"}`` — the dice sit in a key the auditor
+    never reads, so the block reports ZERO damage, the non-combatant
+    exemption swallows it whole, and it ships with no usable offence (and no
+    damage at all on the exported Forge token). The contract is
+    ``{name, description}``; folding the value in is unambiguous.
+    """
+    out: list[models.EntityInput] = []
+    for entity in entities:
+        block = (entity.data or {}).get("stat_block")
+        actions = block.get("actions") if isinstance(block, dict) else None
+        if not isinstance(actions, list):
+            out.append(entity)
+            continue
+        changed = False
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            damage = action.get("damage")
+            description = action.get("description")
+            if not isinstance(damage, str) or not combat._DICE_RE.search(damage):
+                continue
+            if isinstance(description, str) and combat._DICE_RE.search(description):
+                continue  # the description already carries its own dice
+            sentence = f"Hit: {damage.strip().rstrip('.')}."
+            head = description.strip() if isinstance(description, str) else ""
+            action["description"] = f"{head} {sentence}".strip()
+            changed = True
+        if changed:
+            out.append(dataclasses.replace(entity, data={**entity.data, "stat_block": block}))
+        else:
+            out.append(entity)
     return out
 
 

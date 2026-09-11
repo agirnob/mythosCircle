@@ -43,6 +43,7 @@ from typing import Any
 
 from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
+from app.pipeline.build_in import _enforce_stat_blocks
 from app.pipeline.fencing import strip_fence
 from app.pipeline.generate import _job_still_running
 from app.pipeline.retrieval import (
@@ -206,6 +207,30 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
     # hard-fail on the shape; a string matrix passes through.
     raw = canonicalize_reaction_matrix(raw)
     _validate_output(raw, record, requested)
+
+    # The AR25 stat gate runs on THIS path too (2026-09-11): a re-rolled
+    # stat_block is subject to exactly the same contract as a build-in one.
+    # Skipping it let a level-17 paladin's re-roll ship with prose-only
+    # attacks — the auditor read ZERO damage, the non-combatant exemption
+    # swallowed the block, and the DM got a hero who cannot fight.
+    # Scoped to re-rolls that actually touch the block: a DM re-rolling
+    # `secret` must not have the job fail over an unrelated weak block.
+    if "stat_block" in requested and isinstance(raw.get("stat_block"), dict):
+        checked, cancelled = _enforce_stat_blocks(
+            job,
+            budget,
+            provider,
+            settings,
+            [
+                models.EntityInput(
+                    kind="character", name=str(raw.get("name") or ""), text=None, data=raw, id=None
+                )
+            ],
+        )
+        if cancelled:
+            return
+        raw = checked[0].data
+        _validate_output(raw, record, requested)
 
     # Cancel-race poll before the write: a cancel during the call/validation
     # must not stage nor replace anything.

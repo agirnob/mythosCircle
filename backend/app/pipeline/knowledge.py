@@ -515,6 +515,22 @@ def _check_power(block: Any, canonical_role: str | None, errors: list[str]) -> N
             errors.append(
                 f"combat.hp {hp} is frail for {audit.challenge} (expected HP {low}-{high})"
             )
+    elif any(
+        combat.is_attack_shaped(action.get("name"), action.get("description"))
+        for action in (block.get("actions") or [])
+        if isinstance(action, dict)
+    ):
+        # The exemption above exists for TRUE non-combatants (a scholar with
+        # no attacks at all). A creature that swings — a Multiattack, a
+        # "Melee Weapon Attack: … to hit" — but states no dice is not
+        # exempt, it is unreadable: measured 2026-09-11, a level-17 paladin
+        # shipped with "makes one melee attack… deals massive radiant
+        # damage", the audit read ZERO damage, and the block passed whole.
+        errors.append(
+            f"no readable damage for {audit.challenge}: the actions read as "
+            "attacks but state no dice — every attack must give its damage as "
+            "N (XdY + Z) TYPE (a true non-combatant writes no attack at all)"
+        )
 
 
 def validate_stat_block(block: Any) -> list[str]:

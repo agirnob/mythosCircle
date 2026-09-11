@@ -34,6 +34,7 @@ from app.pipeline.fencing import json_error
 from app.pipeline.knowledge import validate_stat_block
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import (
+    canonicalize_action_damage,
     conform_power,
     is_conformable,
     spells_reference_text,
@@ -1888,6 +1889,193 @@ def test_conform_power_fixes_dpr_and_frail_hp() -> None:
     assert not is_conformable(["skills entries must be objects with a 'name'"])
     assert not is_conformable(["combat.hp must be a positive integer"])
     assert not is_conformable([])
+
+
+def _combat_shape_block(actions: list[dict[str, str]]) -> dict[str, Any]:
+    return {
+        "identity": {"role": "NPC", "level": 17, "race": "Half-Elf", "class": "Paladin"},
+        "attributes": {"cha": 20, "con": 18, "dex": 12, "int": 14, "str": 22, "wis": 16},
+        "combat": {"ac": 21, "hp": 285},
+        "skills": [],
+        "traits": [],
+        "spells": [],
+        "actions": actions,
+    }
+
+
+def test_a_fighting_block_with_no_readable_damage_is_not_exempt() -> None:
+    """The non-combatant exemption is for creatures with NO attacks, not for
+    attacks the auditor cannot read. Measured 2026-09-11: a level-17 paladin
+    shipped with "makes one melee attack… deals massive radiant damage", the
+    audit read ZERO damage, and the whole shallow block passed untouched."""
+    prose_only = _combat_shape_block(
+        [
+            {
+                "name": "Multiattack",
+                "description": "Sanberi makes four attacks with their Holy Smite.",
+            },
+            {
+                "name": "Holy Smite",
+                "description": (
+                    "Sanberi makes one melee attack. On a hit, it deals massive "
+                    "radiant damage."
+                ),
+            },
+        ]
+    )
+    violations = validate_stat_block(prose_only)
+    assert violations and violations[0].startswith("no readable damage for level 17")
+    assert is_conformable(violations)  # the deterministic pass may arm it
+
+    armed = conform_power(prose_only)
+    assert armed is not None
+    assert validate_stat_block(armed) == []
+    audit = combat.audit_stat_block(armed)
+    assert audit.band is not None and audit.band[0] <= audit.dpr <= audit.band[1]
+    # Armed, not rewritten: the model's own sentence survives with a damage
+    # clause appended, and the routine still counts it.
+    assert "deals massive radiant damage plus" in armed["actions"][1]["description"]
+    # The scores came up to the row for a level-17 creature.
+    assert armed["attributes"]["cha"] == 26
+    assert armed["attributes"]["str"] == 28
+
+
+def test_a_true_non_combatant_stays_exempt() -> None:
+    """A creature with no attack-shaped action keeps the exemption — the
+    whole point of it (a scholar must not be force-armed)."""
+    scholar = _combat_shape_block(
+        [{"name": "Lay on Hands", "description": "Restores 20 hit points to a touched ally."}]
+    )
+    scholar["identity"] = {"role": "NPC", "level": 5, "race": "Human", "class": "Cleric"}
+    assert validate_stat_block(scholar) == []
+
+
+def test_stray_damage_field_is_folded_into_the_description() -> None:
+    """The model sometimes puts the dice in a sibling ``damage`` key the
+    auditor never reads — the block then reports ZERO damage, the
+    non-combatant exemption swallows it, and it ships with no usable offence
+    and no damage on the exported token (measured 2026-09-11, regenerate at
+    level 17)."""
+    block = {
+        "identity": {"role": "NPC", "level": 17, "race": "Half-Elf", "class": "Paladin"},
+        "attributes": {"cha": 20, "con": 18, "dex": 12, "int": 14, "str": 22, "wis": 16},
+        "combat": {"ac": 21, "hp": 285},
+        "skills": [],
+        "traits": [],
+        "spells": [],
+        "actions": [
+            {
+                "name": "Multiattack",
+                "description": "Sanberi makes four attacks with their Holy Smite.",
+            },
+            {
+                "name": "Holy Smite",
+                "damage": "5d10+6 radiant",
+                "description": (
+                    "Sanberi makes one melee attack. On a hit, it deals massive "
+                    "radiant damage."
+                ),
+            },
+        ],
+    }
+    entity = models.EntityInput(kind="character", name="Sanberi", text=None,
+                                data={"stat_block": block}, id=None)
+    out = canonicalize_action_damage([entity])
+    action = out[0].data["stat_block"]["actions"][1]
+    assert "Hit: 5d10+6 radiant." in action["description"]
+    # The auditor now SEES the damage it was blind to.
+    assert combat.audit_stat_block(out[0].data["stat_block"]).dpr > 0
+    # An action that already carries its own dice is left alone.
+    already = models.EntityInput(
+        kind="character", name="X", text=None,
+        data={"stat_block": {"actions": [
+            {
+                "name": "Claw",
+                "damage": "2d6 fire",
+                "description": "Hit: 9 (2d6 + 2) slashing damage.",
+            },
+        ]}},
+        id=None,
+    )
+    kept = canonicalize_action_damage([already])[0].data["stat_block"]["actions"][0]
+    assert kept["description"] == "Hit: 9 (2d6 + 2) slashing damage."
+
+
+def test_conform_power_lifts_scores_and_keeps_the_numbers_consistent() -> None:
+    """A level-17 block written at level-2 magnitudes is lifted to the DMG
+    row for its challenge: scores to the tier floor (RANKING preserved — the
+    model owns the shape, the table owns the size), AC to the floor, hp to
+    the band, and the to-hit / flat damage / stated average rewritten so the
+    prose never contradicts the scores it now carries (2026-09-11: a live
+    level-17 paladin sat at STR 16 / hp 142 / one 14-damage attack)."""
+    block = {
+        "identity": {"role": "NPC", "level": 17, "race": "Half-Elf", "class": "Paladin"},
+        "attributes": {"cha": 18, "con": 16, "dex": 14, "int": 12, "str": 16, "wis": 14},
+        "combat": {"ac": 18, "hp": 142},
+        "skills": [{"name": "Perception", "bonus": 5}],
+        "actions": [
+            {"name": "Multiattack", "description": "Sanberi makes two attacks with Holy Strike."},
+            {
+                "name": "Holy Strike",
+                "description": (
+                    "Melee Weapon Attack: +8 to hit, reach 5 ft., one target. "
+                    "Hit: 14 (2d8 + 5) radiant damage."
+                ),
+            },
+        ],
+        "traits": [],
+        "spells": [],
+    }
+    assert is_conformable(validate_stat_block(block))
+    conformed = conform_power(block)
+    assert conformed is not None
+    attributes = conformed["attributes"]
+    # CHA was the model's best score and stays its best — only the size moved.
+    assert attributes["cha"] == 28
+    assert attributes["str"] == 26
+    assert attributes["int"] == 12  # the dump stays the dump
+    assert conformed["combat"]["ac"] == 21
+    audit = combat.audit_stat_block(conformed)
+    assert audit.band is not None and audit.band[0] <= audit.dpr <= audit.band[1]
+    assert validate_stat_block(conformed) == []
+    strike = conformed["actions"][1]["description"]
+    # The lift reached the numbers the same prose states.
+    assert "+13 to hit" in strike  # +8 shifted by the STR/DEX modifier delta
+    assert "19 (2d8 + 10)" in strike  # average recomputed from its own dice
+    # The model's own routine survives untouched.
+    assert conformed["actions"][0]["description"].startswith("Sanberi makes two attacks")
+
+
+def test_conform_power_lifts_scores_without_moving_an_in_band_blocks_damage() -> None:
+    """An in-band block keeps its DAMAGE — the flat half is the one that moves
+    DPR, and a cosmetic score lift must not push a valid block out of band.
+    The scores and the to-hit still move: a level-17 character reading STR 16
+    is the complaint this pass exists to answer."""
+    block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 140},
+        "actions": [
+            {
+                "name": "Axe",
+                "description": (
+                    "Melee Weapon Attack: +5 to hit. Hit: 35 (10d6) slashing damage."
+                ),
+            }
+        ],
+        "skills": [],
+        "traits": [],
+        "spells": [],
+    }
+    conformed = conform_power(block)
+    assert conformed is not None
+    # Scores lift to the tier even here (STR 14 -> the 5-8 floor).
+    assert conformed["attributes"]["str"] == 20
+    assert conformed["attributes"]["cha"] == 9  # the dump stays the dump
+    # The damage the block already carried is untouched — the rider is never
+    # added to a block that meets its band.
+    assert "35 (10d6) slashing damage" in conformed["actions"][0]["description"]
+    assert conformed["combat"]["ac"] == 17
 
 
 def test_underpowered_stat_block_repair_loop(world: str) -> None:

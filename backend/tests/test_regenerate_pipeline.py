@@ -217,6 +217,46 @@ def test_regenerate_fails_after_one_retry_still_malformed(
     assert len(calls) == 2  # the call plus exactly one retry
 
 
+def test_stat_block_reroll_runs_the_ar25_gate(world: tuple[str, str, str]) -> None:
+    """A re-rolled stat_block goes through the same gate as a build-in one.
+
+    Skipping it let a level-17 paladin's re-roll ship with prose-only
+    attacks: the auditor read ZERO damage, the non-combatant exemption
+    swallowed the block whole, and the DM got a hero who cannot fight
+    (2026-09-11). The job fails when the one bounded repair cannot save it.
+    """
+    campaign_id, mira_id, _guild_id = world
+    job_id = _enqueue(campaign_id, {"kind": "entity", "id": mira_id}, ["stat_block"])
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        # First call: the re-roll itself, with a prose-only attack. Later
+        # calls (the stat repair) return the same unusable block.
+        return _regen_output(
+            _record(),
+            stat_block={
+                "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Paladin"},
+                "attributes": {"str": 16, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 13},
+                "combat": {"ac": 17, "hp": 140},
+                "skills": [],
+                "traits": [],
+                "spells": [],
+                "actions": [
+                    {
+                        "name": "Holy Smite",
+                        "description": "Mira swings. On a hit, it deals radiant damage.",
+                    }
+                ],
+            },
+        )
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    _job, _position = job_status(job_id)
+    # The gate ran: the flagged block was sent for repair at least once.
+    assert len(calls) >= 2
+
+
 def test_whole_entity_regen_stages_new_row_world_untouched(
     world: tuple[str, str, str],
 ) -> None:

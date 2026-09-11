@@ -44,6 +44,7 @@ from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import (
     apply_stat_repairs,
     build_stat_repair_prompt,
+    canonicalize_action_damage,
     collect_stat_issues,
     conform_stat_power,
     parse_stat_repair_output,
@@ -231,6 +232,10 @@ def _enforce_stat_blocks(
     one bounded repair pass when there are any, re-check. Returns
     ``(entities, cancelled)`` — cancelled True means the job was cancelled
     mid-gate and the caller must stop without committing this wave."""
+    # A block whose dice sit in a non-standard ``damage`` key reports ZERO
+    # damage to the auditor, which the non-combatant exemption then swallows
+    # whole — so the gate must fold it in before it decides anything.
+    entities = canonicalize_action_damage(entities)
     issues = collect_stat_issues(entities)
     if not issues:
         return entities, False

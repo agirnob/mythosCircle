@@ -87,7 +87,25 @@ def _record(name: str = "Mira Vane", role: str = "NPC") -> dict[str, Any]:
         "relationships": "r",
         "voice_style": "v",
         "catchphrases": "c",
-        "stat_block": {},
+        # A valid block for level_cr "level 5": the AR25 gate now runs on
+        # the regenerate path too, and an empty block is a real violation.
+        "stat_block": {
+            "identity": {"role": role, "level": 5, "race": "Human", "class": "Paladin"},
+            "attributes": {"str": 16, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 13},
+            "combat": {"ac": 17, "hp": 140},
+            "skills": [],
+            "traits": [],
+            "spells": [],
+            "actions": [
+                {
+                    "name": "Axe",
+                    "description": (
+                        "Melee Weapon Attack: +5 to hit, reach 5 ft., one target. "
+                        "Hit: 35 (10d6) slashing damage."
+                    ),
+                }
+            ],
+        },
         "world_integration": {
             "reputation": "r",
             "factions": "f",
