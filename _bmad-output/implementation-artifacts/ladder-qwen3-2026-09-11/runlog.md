@@ -377,3 +377,11 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   pins shape, never count — a scale gap in the contract, not a code
   bug. Tee'd calls + prompts in `/tmp/mythos-ladder/calls-c6/`.
 - Open: does rung-50 green mean job-success or 50-emitted?
+
+## Rung 50 — attempt 2 — FAILED, 1 call (dangling ref + short count)
+
+- Emitted 25 entities (E0-E24) with an edge pointing at E25 — dead on
+  call 1, no repair path for structure (correct: fail-fast). Variance
+  answers the count question: 28, 25 — the 26B clusters at ~half the
+  50-roster, not lottery. Tee'd calls + prompts in
+  `/tmp/mythos-ladder/calls-c7/`.
