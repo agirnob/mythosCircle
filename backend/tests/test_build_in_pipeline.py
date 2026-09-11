@@ -23,9 +23,9 @@ from app.pipeline import combat
 from app.pipeline.build_in import (
     _build_record_repair_prompt,
     _collect_record_issues,
+    _OrphanRetryError,
     _repair_retry_prompt,
     _validate_subgraph,
-    _Wave2OrphanError,
     build_wave1_prompt,
     build_wave2_prompt,
     canonicalize_entity_kind,
@@ -171,6 +171,34 @@ def _wave1_output() -> dict[str, Any]:
             {"src": "E1", "dst": "E0", "type": "debt", "counter": 3},
         ],
     }
+
+
+def _wave1_output_orphans() -> dict[str, Any]:
+    """A wave-1 output whose last two entities carry no edge at all — the
+    live 2026-09-11 shape (a wired core with unwired factions/places
+    appended after it); the no-orphan rule rejects the first attempt."""
+    output = _wave1_output()
+    output["entities"].extend(
+        [
+            {"ref": "E2", "kind": "faction", "name": "Myconid Colony"},
+            {"ref": "E3", "kind": "place", "name": "Grymforge"},
+        ]
+    )
+    return output
+
+
+def _wave1_output_orphans_healed() -> dict[str, Any]:
+    """The orphan output with both tail entities wired into the subgraph —
+    same entities in the same order (the re-emit drop guard requires it),
+    each carrying an internal edge."""
+    output = _wave1_output_orphans()
+    output["edges"].extend(
+        [
+            {"src": "E2", "dst": "E0", "type": "ally_of", "counter": 2},
+            {"src": "E1", "dst": "E3", "type": "located_in"},
+        ]
+    )
+    return output
 
 
 def _wave2_output() -> dict[str, Any]:
@@ -508,27 +536,114 @@ def test_bad_vocab_fails_naming_type_zero_commits(world: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ORPHAN
+# ORPHAN (spec: wave-2 orphan re-prompt; wave 1 added 2026-09-11)
 # ---------------------------------------------------------------------------
 
 
-def test_orphan_wave1_fails_naming_entity(world: str) -> None:
-    """An entity with no edge within the wave-1 subgraph fails the job
-    naming the orphan; that wave zero commits."""
-    output = _wave1_output()
-    output["entities"].append(
-        {
-            "ref": "E2",
-            "kind": "character",
-            "name": "Rootless Stranger",
-            "data": {**_character_record("Rootless Stranger"), "stat_block": _MIRA_STAT_BLOCK},
-        }
-    )
+def test_orphan_wave1_raises_the_retry_signal() -> None:
+    """SIGNAL: a wave-1 subgraph that is valid except for orphans raises the
+    retry signal (never a plain JobPayloadError) carrying the wave and the
+    orphan E refs — that type is what the runner's one bounded re-emit
+    catches."""
+    with pytest.raises(_OrphanRetryError) as excinfo:
+        _validate_subgraph(1, _wave1_output_orphans())
+    assert excinfo.value.wave == 1
+    assert excinfo.value.orphans == [("Myconid Colony", 2), ("Grymforge", 3)]
+    assert "'Myconid Colony' (E2)" in str(excinfo.value)
+    assert "no edge in the subgraph" in str(excinfo.value)
+
+
+def test_wave1_orphan_retry_heals_and_commits(world: str) -> None:
+    """WAVE1_ORPHAN_RETRY: a wave-1 output whose tail entities carry no edge
+    triggers exactly one re-emit naming them with E refs; the healed re-emit
+    wires them into the subgraph and the whole core commits — the entire
+    build used to die here with zero commits."""
+    responses = [json.dumps(_wave1_output_orphans()), json.dumps(_wave1_output_orphans_healed())]
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
     job_id = _enqueue(world, places=["Greymarch"])
-    run_next_job(provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS)
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 2  # wave 1 + the one orphan re-emit — never more
+    assert "PREVIOUS RESPONSE ORPHANS" in calls[1]
+    assert "'Myconid Colony' (E2), 'Grymforge' (E3)" in calls[1]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["entity_count"] == 4
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 1
+        assert {e.name for e in world_entities(session, world)} == {
+            "The Gilded Bar",
+            "Mira Vane",
+            "Myconid Colony",
+            "Grymforge",
+        }
+
+
+def test_orphan_wave1_second_miss_fails_naming_entity(world: str) -> None:
+    """SECOND_MISS: a re-emit that is STILL orphan fails the job naming the
+    orphans with E refs; zero commits — wave 1 is the first wave, so the
+    whole build writes nothing."""
+    output = _wave1_output_orphans()
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(output)
+
+    job_id = _enqueue(world, places=["Greymarch"])
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 2  # exactly one re-emit — never a third attempt
     job, _position = job_status(job_id)
     assert job.state == "failed"
-    assert "Rootless Stranger" in (job.error or "")
+    assert "'Myconid Colony' (E2)" in (job.error or "")
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+
+def test_wave1_orphan_retry_reemit_dropping_orphan_fails(world: str) -> None:
+    """REMIT_DROP: a wave-1 re-emit that omits the orphans instead of wiring
+    them fails loudly naming the drop — no third attempt, nothing
+    committed."""
+    responses = [json.dumps(_wave1_output_orphans()), json.dumps(_wave1_output())]
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    job_id = _enqueue(world, places=["Greymarch"])
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(calls) == 2
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "Myconid Colony" in (job.error or "") and "dropped" in (job.error or "")
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+
+
+def test_wave1_orphan_retry_budget_exhausted(world: str) -> None:
+    """RETRY_BUDGET: max_llm_calls=1 — the wave-1 attempt exhausts the
+    budget, so the re-emit is refused before any HTTP request and the job
+    fails naming the budget with zero commits."""
+    job_id = _enqueue(world, places=["Greymarch"], max_llm_calls=1)
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(_wave1_output_orphans())
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "budget" in (job.error or "").lower()
+    assert len(calls) == 1  # the re-emit never reached the provider
     with session_scope() as session:
         assert revision_chain(session, world) == []
 
@@ -1806,8 +1921,13 @@ def test_nested_record_wins_over_a_flat_duplicate() -> None:
     """When a model writes both, the nested form is the contract."""
     parsed = {
         "entities": [
-            {"ref": "E0", "kind": "character", "name": "Mira", "role": "BBEG",
-             "data": {"role": "NPC", "level_cr": "level 3"}},
+            {
+                "ref": "E0",
+                "kind": "character",
+                "name": "Mira",
+                "role": "BBEG",
+                "data": {"role": "NPC", "level_cr": "level 3"},
+            },
             {"ref": "E1", "kind": "place", "name": "Greymarch"},
         ],
         "edges": [{"src": "E0", "dst": "E1", "type": "located_in", "counter": 1}],
@@ -1858,7 +1978,7 @@ def test_conform_power_fixes_dpr_and_frail_hp() -> None:
     floor below half the band low (live 2026-09-10: 5.5 vs 15-20, 50 vs
     93-98). The model's own action, identity and prose survive — only the
     numbers move."""
-    block = {
+    block: dict[str, Any] = {
         "identity": {"role": "NPC", "level": 2, "race": "Human", "class": "Fighter"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
         "combat": {"ac": 14, "hp": 20},
@@ -1917,8 +2037,7 @@ def test_a_fighting_block_with_no_readable_damage_is_not_exempt() -> None:
             {
                 "name": "Holy Smite",
                 "description": (
-                    "Sanberi makes one melee attack. On a hit, it deals massive "
-                    "radiant damage."
+                    "Sanberi makes one melee attack. On a hit, it deals massive radiant damage."
                 ),
             },
         ]
@@ -1972,14 +2091,14 @@ def test_stray_damage_field_is_folded_into_the_description() -> None:
                 "name": "Holy Smite",
                 "damage": "5d10+6 radiant",
                 "description": (
-                    "Sanberi makes one melee attack. On a hit, it deals massive "
-                    "radiant damage."
+                    "Sanberi makes one melee attack. On a hit, it deals massive radiant damage."
                 ),
             },
         ],
     }
-    entity = models.EntityInput(kind="character", name="Sanberi", text=None,
-                                data={"stat_block": block}, id=None)
+    entity = models.EntityInput(
+        kind="character", name="Sanberi", text=None, data={"stat_block": block}, id=None
+    )
     out = canonicalize_action_damage([entity])
     action = out[0].data["stat_block"]["actions"][1]
     assert "Hit: 5d10+6 radiant." in action["description"]
@@ -1987,14 +2106,20 @@ def test_stray_damage_field_is_folded_into_the_description() -> None:
     assert combat.audit_stat_block(out[0].data["stat_block"]).dpr > 0
     # An action that already carries its own dice is left alone.
     already = models.EntityInput(
-        kind="character", name="X", text=None,
-        data={"stat_block": {"actions": [
-            {
-                "name": "Claw",
-                "damage": "2d6 fire",
-                "description": "Hit: 9 (2d6 + 2) slashing damage.",
-            },
-        ]}},
+        kind="character",
+        name="X",
+        text=None,
+        data={
+            "stat_block": {
+                "actions": [
+                    {
+                        "name": "Claw",
+                        "damage": "2d6 fire",
+                        "description": "Hit: 9 (2d6 + 2) slashing damage.",
+                    },
+                ]
+            }
+        },
         id=None,
     )
     kept = canonicalize_action_damage([already])[0].data["stat_block"]["actions"][0]
@@ -2058,9 +2183,7 @@ def test_conform_power_lifts_scores_without_moving_an_in_band_blocks_damage() ->
         "actions": [
             {
                 "name": "Axe",
-                "description": (
-                    "Melee Weapon Attack: +5 to hit. Hit: 35 (10d6) slashing damage."
-                ),
+                "description": ("Melee Weapon Attack: +5 to hit. Hit: 35 (10d6) slashing damage."),
             }
         ],
         "skills": [],
@@ -2139,6 +2262,7 @@ def test_underpowered_stat_block_repair_loop(world: str) -> None:
     assert len(calls2) == 2
     job2, _position2 = job_status(job_id2)
     assert job2.state == "succeeded"
+    assert job2.result is not None
     with session_scope() as session:
         # This world already holds the first job's Mira Vane — read the entity
         # THIS job committed by its id, never by name.
@@ -2262,6 +2386,7 @@ def test_frail_stat_block_repair_loop(world: str) -> None:
     # A frail HP floor no longer fails the job: the deterministic conform
     # lifts hp to the band floor (2026-09-10).
     assert job2.state == "succeeded"
+    assert job2.result is not None
     with session_scope() as session:
         committed = [
             e
@@ -2679,8 +2804,9 @@ def test_wave2_orphan_message_without_core() -> None:
         ],
         "edges": [{"src": "N0", "dst": "N1", "type": "relationship"}],
     }
-    with pytest.raises(_Wave2OrphanError) as excinfo:
+    with pytest.raises(_OrphanRetryError) as excinfo:
         _validate_subgraph(2, parsed, context=(), core_count=0)
+    assert excinfo.value.wave == 2
     assert "C0..C-1" not in str(excinfo.value)
     assert "no visible core" in str(excinfo.value)
     assert "'Captain Harlow' (N1)" in str(excinfo.value)

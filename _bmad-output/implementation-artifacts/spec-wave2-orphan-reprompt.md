@@ -54,6 +54,22 @@ context: []
 
 ## Spec Change Log
 
+- 2026-09-11 — WAVE1_UNTOUCHED renegotiated (owner report, live job
+  `01M27S237NNWFMZ2SHA7RG9383`, deployed beta): a 10-entity wave 1 died with
+  `wave 1: orphan entity(ies) with no edge in the subgraph: 'Myconid Colony'
+  (E7), 'Grymforge' (E8), 'Flaming Fist' (E9)` — wave 1 commits nothing, so
+  the whole build was lost, not just a wave. The `Never: touch wave-1 orphan
+  handling (fail-fast stays)` line was a carve-out for a case that had not
+  been observed; the fix is the SAME owner-approved mechanism (one bounded
+  re-emit naming the orphans, second miss fails loudly), applied to wave 1:
+  `_Wave2OrphanError` → `_OrphanRetryError` (carries `wave`), the retry prompt
+  and ref prefix are per wave (E for wave 1, N + core label for wave 2), and
+  the shared `_orphan_reemit` helper owns the call/parse/cancel mechanics. The
+  matrix row WAVE1_UNTOUCHED is thereby superseded by ORPHAN_RETRY on wave 1;
+  every other boundary (one re-prompt only, no partial commits, no auto-drop,
+  other rejection kinds immediate) is unchanged. Owner veto restores fail-fast
+  by deleting the wave-1 `except _OrphanRetryError` block.
+
 ## Design Notes
 
 Retry prompt: wave-2 base prompt + `PREVIOUS RESPONSE ORPHANS: <'name' (Npos), ...> — every new entity MUST have >= 1 edge to a CORE entity (C0..Ck); re-emit the full {"entities","edges"} object with the refs exactly as given.` Only orphan failures retry — any other `_validate_subgraph` rejection (bad ref, kind, edge type, self-loop) still fails immediately. Signal design left to the implementer (subclass preferred over message-sniffing): keep it inside build_in.py, no new exported API.
