@@ -333,3 +333,17 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   `test_stat_repair_dropping_class_keeps_original` converges in 2 calls.
   Gates: 1184 backend passed, ruff + mypy clean. Next: attempt 20
   re-rolls rung 10.
+
+## Rung 10 — attempt 20 — SUCCEEDED, 16 calls (FIRST GREEN JOB)
+
+- Wave 1 committed 10/10 WITH 9 first-attempt edges (model wired first
+  try — edgeless rule unneeded); wave-2 stat gate converged through all
+  three passes; anchor repair wired the orphans with names verbatim
+  ('Hedd the Scavenger', 'The Knocker' as first-emitted — the rename
+  class is gone). 13 entities, 14 edges, closed vocabulary only.
+- THREE live over-powered stamps (Ilsa, Harlow, Knocker) — the verdict
+  paying off threefold in one job; all three would have been terminal
+  deaths a day ago. Green-job hunt 2/12. Tee'd calls + prompts in
+  `/tmp/mythos-ladder/calls-c3/`.
+- Spec repair-sequence steps 1-3 all now measured green on gemma. Next:
+  rung 25 on identical code.
