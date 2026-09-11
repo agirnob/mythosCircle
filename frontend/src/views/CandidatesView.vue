@@ -273,6 +273,10 @@ const FIELD_LABELS: Record<string, string> = {
   current_location: 'Current location',
   reaction_matrix: 'Reaction matrix',
   on_defeat: 'On defeat',
+  // WorldView's copy carries these two; the badge renders section names, so
+  // a missing key would leak the raw snake_case name into the UI.
+  stat_block: 'Stat block',
+  world_integration: 'World integration',
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
