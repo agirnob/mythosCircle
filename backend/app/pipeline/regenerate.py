@@ -43,7 +43,8 @@ from typing import Any
 
 from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
-from app.pipeline.generate import _job_still_running, _parse_candidates
+from app.pipeline.fencing import strip_fence
+from app.pipeline.generate import _job_still_running
 from app.pipeline.retrieval import (
     DEFAULT_ENTITY_CAP,
     retrieve_neighborhood,
@@ -87,6 +88,52 @@ logger = logging.getLogger(__name__)
 #: order is hash-randomized, so the prompt and the splice order use this
 #: sorted tuple for byte determinism.
 SECTION_ORDER: tuple[str, ...] = tuple(sorted(REGEN_SECTIONS))
+
+
+def _parse_regenerate_candidates(text: str) -> list[Any]:
+    """The single-candidate envelope, tolerating a bare record.
+
+    regenerate expects exactly ONE record, so a top-level object that is not
+    the ``{"candidates": [...]}`` envelope is unambiguous — it IS the record.
+    Measured 2026-09-11: on a whole-character re-roll the model reliably drops
+    the envelope and returns the bare record, which hard-failed every whole
+    re-roll with "output must have a 'candidates' list" (two live jobs).
+    """
+    stripped = strip_fence(text)
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise JobPayloadError(f"regenerate: output is not valid JSON ({exc})") from exc
+    if not isinstance(parsed, dict):
+        raise JobPayloadError("regenerate: output must be a JSON object")
+    raw = parsed.get("candidates")
+    if isinstance(raw, list):
+        return raw
+    return [parsed]
+
+
+def _regenerate_retry_prompt(base_prompt: str, bad_text: str, decode_error: str) -> str:
+    """The one bounded retry when a re-roll is not parseable JSON.
+
+    Measured 2026-09-11: the model drops the envelope on a whole re-roll and
+    drops a closing brace on a per-section one. Both are single-token slips,
+    and the decoder's own error line is what tells the model WHERE to look —
+    re-sending the identical prompt would just sample the same slip again.
+    Mirrors the build-in repair retry (spec-3.5's one bounded pass).
+    """
+    return "\n".join(
+        [
+            base_prompt,
+            "",
+            "YOUR PREVIOUS RESPONSE COULD NOT BE PARSED AS JSON. Correct it:",
+            "return the SAME record again as ONE valid JSON object — nothing else.",
+            'Shape: {"candidates": [<the full sectioned record>]} — exactly one entry.',
+            "Close every brace and bracket, and escape any literal double quote as \\\".",
+            f"JSON error: {decode_error}",
+            "Previous response:",
+            bad_text.strip()[:4000],
+        ]
+    )
 
 
 def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMSettings) -> None:
@@ -134,9 +181,19 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
     prompt = build_regenerate_prompt(seed, record, requested, (context_entities, context_edges))
     text = budget.call(lambda: provider(prompt, settings=settings))
 
-    parsed = _parse_candidates(text)
+    try:
+        parsed = _parse_regenerate_candidates(text)
+    except JobPayloadError as exc:
+        # One bounded re-emit: a single-token JSON slip must not cost the DM
+        # a whole re-roll (the build-in repair gates' precedent).
+        if not _job_still_running(job):
+            return
+        retry_prompt = _regenerate_retry_prompt(prompt, text, str(exc))
+        text = budget.call(lambda: provider(retry_prompt, settings=settings))
+        parsed = _parse_regenerate_candidates(text)
     # The regenerate contract is a single-candidate envelope: exactly one
-    # record in the standard {"candidates": [...]} shape.
+    # record in the standard {"candidates": [...]} shape (or the bare record
+    # the model substitutes for it — see _parse_regenerate_candidates).
     if len(parsed) != 1:
         raise JobPayloadError(f"regenerate: expected exactly 1 candidate, got {len(parsed)}")
     raw = parsed[0]

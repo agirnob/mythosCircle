@@ -152,6 +152,71 @@ def _revision_count(campaign_id: str) -> int:
         return len(list(revision_chain(session, campaign_id)))
 
 
+def test_bare_record_accepted_and_one_bounded_retry(
+    world: tuple[str, str, str],
+) -> None:
+    """The model's two JSON slips on this path, both measured live 2026-09-11.
+
+    A whole re-roll came back as a BARE record (no ``candidates`` envelope) —
+    unambiguous for a single-candidate contract, so it is accepted rather than
+    failing the job. A malformed response gets exactly ONE re-emit carrying the
+    decoder's own error line, because re-sending the same prompt just samples
+    the same slip again.
+    """
+    campaign_id, mira_id, _guild_id = world
+
+    # 1. Bare record — the whole-re-roll slip that failed two live jobs.
+    bare_id = _enqueue(campaign_id, {"kind": "entity", "id": mira_id}, None)
+
+    def bare_provider(prompt: str, settings: LLMSettings) -> str:
+        return json.dumps(_record())  # no {"candidates": [...]} envelope
+
+    assert run_next_job(provider=bare_provider, settings=SETTINGS) == bare_id
+    job, _ = job_status(bare_id)
+    assert job.state == "succeeded"
+    assert len(_staged(campaign_id)) == 1
+
+    # 2. Malformed first response, valid second — one retry, then success.
+    retry_id = _enqueue(campaign_id, {"kind": "entity", "id": mira_id}, ["secret"])
+    prompts: list[str] = []
+
+    def retry_provider(prompt: str, settings: LLMSettings) -> str:
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return '```json\n{"candidates": [{"name": "Mira"'  # truncated braces
+        return _regen_output(_record(), secret="a retried secret")
+
+    assert run_next_job(provider=retry_provider, settings=SETTINGS) == retry_id
+    job, _ = job_status(retry_id)
+    assert job.state == "succeeded"
+    assert len(prompts) == 2
+    # The retry prompt carries the decoder's error so the model can fix it.
+    assert "COULD NOT BE PARSED AS JSON" in prompts[1]
+    assert "JSON error:" in prompts[1]
+    staged = _staged(campaign_id)
+    assert any(row.payload.get("secret") == "a retried secret" for row in staged)
+
+
+def test_regenerate_fails_after_one_retry_still_malformed(
+    world: tuple[str, str, str],
+) -> None:
+    """Twice-malformed output fails the job naming the JSON error — the retry
+    is bounded at ONE, never a loop."""
+    campaign_id, mira_id, _guild_id = world
+    job_id = _enqueue(campaign_id, {"kind": "entity", "id": mira_id}, ["secret"])
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return "not json at all"
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _ = job_status(job_id)
+    assert job.state == "failed"
+    assert "regenerate: output is not valid JSON" in (job.error or "")
+    assert len(calls) == 2  # the call plus exactly one retry
+
+
 def test_whole_entity_regen_stages_new_row_world_untouched(
     world: tuple[str, str, str],
 ) -> None:

@@ -44,6 +44,11 @@ async function start() {
   // Spec-4.1: the media manifest is fetched separately from the snapshot
   // (export stays media-free). Decorative — failures never break the view.
   void world.fetchMedia(campaignId)
+  // The job list is loaded here, not only after an enqueue (2026-09-11): a
+  // re-roll stages a PROPOSAL whose only trace on this screen is its job, so
+  // a page load after the job finished has to find it. Decorative — a failed
+  // sync never breaks the world view and the socket still delivers new jobs.
+  void jobs.syncList(campaignId).catch(() => {})
   if (connectedCampaign === campaignId) return
   connectedCampaign = campaignId
   disconnectSocket = connectJobSocket(
@@ -224,6 +229,47 @@ function isRegenerable(entity: EntityExport): boolean {
 /** Spec-3.5: entity-id -> in-flight regeneration (whole or per-section). */
 const regeneratingId = ref<string | null>(null)
 const regenerateErrors = ref<Record<string, string>>({})
+
+/**
+ * Entity-id -> the re-roll notice to render on its card (spec-3.5).
+ *
+ * The click only ENQUEUES, and a re-roll stages a PROPOSAL: this world stays
+ * byte-identical until the DM accepts it on the accept screen. So the job —
+ * never the button — is the source of truth, and the notice is what tells
+ * the DM a proposal exists at all (dogfood 2026-09-11: picking a section and
+ * clicking Regenerate left the screen indistinguishable before and after,
+ * because the only feedback was a button label that flipped back in a tick).
+ *
+ * A succeeded notice clears once the world has committed past the re-roll
+ * that produced it — i.e. once the DM has accepted something.
+ */
+const regenerateNotices = computed(() => {
+  const out: Record<string, { kind: 'running' | 'ready' | 'failed'; label: string; error: string }> = {}
+  const committedAt = revision.value?.created_at ?? ''
+  const regenJobs = jobs
+    .forCampaign(campaignId)
+    .filter((job) => job.kind === 'regenerate')
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
+  for (const job of regenJobs) {
+    const payload = job.payload as { target?: { id?: string }; sections?: string[] } | null
+    const targetId = payload?.target?.id
+    if (!targetId) continue
+    const sections = payload?.sections ?? []
+    const label = sections.length
+      ? sections.map((section) => FIELD_LABELS[section] ?? section).join(', ')
+      : 'whole character'
+    if (job.state === 'queued' || job.state === 'running') {
+      out[targetId] = { kind: 'running', label, error: '' }
+    } else if (job.state === 'succeeded') {
+      const finishedAt = job.finished_at ?? job.created_at
+      if (finishedAt > committedAt) out[targetId] = { kind: 'ready', label, error: '' }
+      else delete out[targetId]
+    } else {
+      out[targetId] = { kind: 'failed', label, error: job.error ?? 'unknown error' }
+    }
+  }
+  return out
+})
 
 /** The regenerable AR24 content sections (spec-3.5 REGEN_SECTIONS): the
  * identity anchor (name, role, level_cr, race_type, class_profession,
@@ -1239,6 +1285,22 @@ function additionalDataBlock(entity: EntityExport): string {
             <p v-else class="muted">No description.</p>
             <p v-if="regenerateErrors[entity.id]" class="error">
               {{ regenerateErrors[entity.id] }}
+            </p>
+            <p v-else-if="regenerateNotices[entity.id]" class="muted small status">
+              <template v-if="regenerateNotices[entity.id].kind === 'ready'">
+                Re-roll of {{ regenerateNotices[entity.id].label }} is ready —
+                <RouterLink :to="{ name: 'candidates', params: { id: campaignId } }">
+                  review and accept it
+                </RouterLink>
+                (this world changes only when you accept).
+              </template>
+              <template v-else-if="regenerateNotices[entity.id].kind === 'failed'">
+                Re-roll of {{ regenerateNotices[entity.id].label }} failed:
+                {{ regenerateNotices[entity.id].error }}
+              </template>
+              <template v-else>
+                Re-rolling {{ regenerateNotices[entity.id].label }}…
+              </template>
             </p>
             <div
               v-if="

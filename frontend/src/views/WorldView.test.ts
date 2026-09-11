@@ -161,13 +161,15 @@ describe('WorldView', () => {
     apiFetchMock.mockResolvedValue(worldExport())
     const wrapper = mountView()
     await flushPromises()
-    // Mount: the export snapshot PLUS the media manifest fetch (spec-4.1).
-    expect(apiFetchMock).toHaveBeenCalledTimes(2)
+    // Mount: the export snapshot, the media manifest (spec-4.1), and the
+    // job list (2026-09-11 — a re-roll's only trace on this screen is its job).
+    expect(apiFetchMock).toHaveBeenCalledTimes(3)
 
     socketCalls[0]!.options?.onReconnect?.()
     await flushPromises()
-    expect(apiFetchMock).toHaveBeenCalledTimes(3)
-    expect(apiFetchMock.mock.calls[2]![0]).toBe('/api/campaigns/C1/export')
+    // Reconnect adds exactly ONE call, and it is the export refetch.
+    expect(apiFetchMock).toHaveBeenCalledTimes(4)
+    expect(apiFetchMock.mock.calls[3]![0]).toBe('/api/campaigns/C1/export')
     wrapper.unmount()
   })
 
@@ -470,7 +472,9 @@ describe('WorldView', () => {
     await flushPromises()
 
     const jobCall = apiFetchMock.mock.calls.find(
-      (call) => String(call[0]) === '/api/jobs' || String(call[0]).includes('/api/jobs'),
+      (call) =>
+        String(call[0]).includes('/api/jobs') &&
+        (call[1] as RequestInit | undefined)?.method === 'POST',
     )
     expect(jobCall).toBeDefined()
     const body = JSON.parse((jobCall![1] as RequestInit).body as string)
@@ -510,6 +514,114 @@ describe('WorldView', () => {
     await flushPromises()
     const regen = wrapper.findAll('button').filter((b) => b.text() === 'Regenerate')
     expect(regen).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('tells the DM a finished re-roll is waiting on the accept screen', async () => {
+    // Dogfood 2026-09-11: picking a section and clicking Regenerate left the
+    // world view indistinguishable before and after — the proposal is staged
+    // on the accept screen, and nothing here said so.
+    const world = ar24World()
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/api/jobs')) {
+        return {
+          jobs: [
+            {
+              id: 'RJ1',
+              campaign_id: 'C1',
+              kind: 'regenerate',
+              state: 'succeeded',
+              created_at: '2026-09-03T20:06:00Z',
+              finished_at: '2026-09-03T20:07:00Z',
+              error: null,
+              payload: { target: { kind: 'entity', id: 'E1' }, sections: ['secret'] },
+            },
+          ],
+          next_cursor: null,
+        }
+      }
+      return world
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    const card = wrapper.findAll('.entity').find((c) => c.text().includes('Mira Vane'))
+    expect(card).toBeDefined()
+    expect(card!.text()).toContain('Re-roll of Secret is ready')
+    // RouterLink is stubbed without an href in this suite — assert its text.
+    const link = card!.findAll('a').find((a) => a.text().includes('review and accept it'))
+    expect(link).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('shows a running re-roll and a failed one', async () => {
+    const world = ar24World()
+    const jobsFor = (state: string, error: string | null) => ({
+      jobs: [
+        {
+          id: 'RJ2',
+          campaign_id: 'C1',
+          kind: 'regenerate',
+          state,
+          created_at: '2026-09-03T20:06:00Z',
+          finished_at: null,
+          error,
+          payload: { target: { kind: 'entity', id: 'E1' }, sections: ['personality'] },
+        },
+      ],
+      next_cursor: null,
+    })
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/api/jobs')) return jobsFor('running', null)
+      return world
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Re-rolling Personality…')
+    wrapper.unmount()
+
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/api/jobs')) return jobsFor('failed', 'regenerate: output is not valid JSON')
+      return world
+    })
+    const failed = mountView()
+    await flushPromises()
+    expect(failed.text()).toContain('Re-roll of Personality failed')
+    expect(failed.text()).toContain('regenerate: output is not valid JSON')
+    failed.unmount()
+  })
+
+  it('drops the notice once the world has committed past the re-roll', async () => {
+    // Accepting the proposal commits a revision; the notice then refers to
+    // work already in the world and must go away.
+    const world = ar24World()
+    apiFetchMock.mockImplementation(async (path: string) => {
+      const url = String(path)
+      if (url.includes('/api/jobs')) {
+        return {
+          jobs: [
+            {
+              id: 'RJ3',
+              campaign_id: 'C1',
+              kind: 'regenerate',
+              state: 'succeeded',
+              created_at: '2026-09-03T20:06:00Z',
+              finished_at: '2026-09-03T20:07:00Z',
+              error: null,
+              payload: { target: { kind: 'entity', id: 'E1' }, sections: ['secret'] },
+            },
+          ],
+          next_cursor: null,
+        }
+      }
+      return { ...world, revision: { id: 'HEAD', created_at: '2026-09-03T20:09:00Z' } }
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('is ready')
     wrapper.unmount()
   })
 
