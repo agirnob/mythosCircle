@@ -70,7 +70,10 @@ def chat_completion(
 
     POSTs ``{model, max_tokens, messages:[{system}, {user}]}`` to
     ``{endpoint}/chat/completions``, plus ``chat_template_kwargs`` when a
-    reasoning mode is configured. Bare ``httpx`` transport failures
+    reasoning mode is configured and ``response_format`` when
+    ``settings.response_format`` carries a per-call schema (absent by
+    default, so default-settings bodies stay byte-identical). Bare ``httpx``
+    transport failures
     (DNS, refused, timeout) -> ``ProviderError("connection")``; non-2xx
     -> ``ProviderError("http", status_code=...)``; an answer cut off at
     the generation ceiling -> ``ProviderError("truncated")``, which is a
@@ -104,6 +107,11 @@ def chat_completion(
         # 26,580 chars, zero content). Sent only when configured — ``None``
         # keeps the body free of a field some backends reject outright.
         body["chat_template_kwargs"] = {"enable_thinking": settings.enable_thinking}
+    if settings.response_format is not None:
+        # Opt-in per-call schema (spec: JSON-schema generation) — carried
+        # verbatim. Absent by default so default-settings bodies stay
+        # byte-identical ({model, max_tokens, messages} + thinking only).
+        body["response_format"] = settings.response_format
     with client:
         try:
             response = client.post(_CHAT_COMPLETIONS_PATH, json=body, headers=headers)

@@ -695,12 +695,16 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     notes = notes.strip()
 
     budget = CallBudget(job)
+    # Wave calls carry the flat envelope schema via a settings copy — the
+    # provider doubles keep their ``(prompt, settings)`` shape and repair
+    # gates keep plain ``settings`` (schema on wave paths only, Never list).
+    wave_settings = dataclasses.replace(settings, response_format=build_wave_schema())
 
     # Wave 1: the named sections -> a committed, fully networked core.
     if not _job_still_running(job):
         return
     prompt_1 = build_wave1_prompt(seed, payload)
-    text_1 = budget.call(lambda: provider(prompt_1, settings=settings))
+    text_1 = budget.call(lambda: provider(prompt_1, settings=wave_settings))
     parsed_1 = parse_build_output(text_1, wave=1)
     try:
         entities_1, edges_1 = _validate_subgraph(1, parsed_1)
@@ -782,7 +786,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         prompt_2 = build_wave2_prompt(
             seed, notes, (context_entities, context_edges), core_count=core_count
         )
-        text_2 = budget.call(lambda: provider(prompt_2, settings=settings))
+        text_2 = budget.call(lambda: provider(prompt_2, settings=wave_settings))
         parsed_2 = parse_build_output(text_2, wave=2)
         first_names_2 = _wave_entity_names(parsed_2)
         try:
@@ -1035,6 +1039,60 @@ def build_wave2_prompt(
     return "\n".join(lines)
 
 
+def build_wave_schema() -> dict[str, Any]:
+    """The flat envelope schema carried on build-in wave calls (spec: JSON-schema
+    generation foundation) — the ``response_format`` wrapper follows the prototype's
+    measured ``json_schema`` convention; the inner schema is flat and ``$ref``-free
+    (GBNF subset). ``data`` stays an open object (record keys vary);
+    ``additionalProperties: false`` on the entity item makes beside-``data``
+    slips unrepresentable. Parsing, validators, and all gates stay the backstop —
+    the schema is the optimization, so fenced/prose output still parses identically.
+    """
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "build_wave",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "required": ["entities", "edges"],
+                "properties": {
+                    "entities": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["ref", "kind", "name"],
+                            "properties": {
+                                "ref": {"type": "string"},
+                                "kind": {"type": "string"},
+                                "name": {"type": "string"},
+                                "text": {"type": "string"},
+                                "data": {"type": "object"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                    "edges": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["src", "dst", "type"],
+                            "properties": {
+                                "src": {"type": "string"},
+                                "dst": {"type": "string"},
+                                "type": {"type": "string"},
+                                "counter": {"type": "integer"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 def parse_build_output(text: str, wave: int = 1) -> dict[str, Any]:
     """Parse one wave's LLM output: fence-strip, then require a JSON object.
 
@@ -1081,7 +1139,12 @@ def _orphan_reemit(
     retry_prompt = _build_orphan_retry_prompt(
         base_prompt, orphans, wave=wave, core_count=core_count
     )
-    text = budget.call(lambda: provider(retry_prompt, settings=settings))
+    text = budget.call(
+        lambda: provider(
+            retry_prompt,
+            settings=dataclasses.replace(settings, response_format=build_wave_schema()),
+        )
+    )
     return parse_build_output(text, wave=wave)
 
 

@@ -7,7 +7,7 @@ these helpers read it first and apply env overrides on top.
 
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from app.core import config as config_mod
 from app.core.config import env_bool_optional, env_float, env_int, runtime_config
@@ -80,6 +80,11 @@ class LLMSettings:
     #: at all (a backend rejecting unknown fields keeps working), ``False``
     #: turns the model's thinking channel off, ``True`` asks for it.
     enable_thinking: bool | None = DEFAULT_LLM_THINKING
+    #: Optional per-call JSON-schema constraint, carried as settings data so
+    #: provider doubles keep their ``(prompt, settings)`` shape (spec:
+    #: JSON-schema generation). Code-built per path only — ``llm_settings()``
+    #: never fills it, and there is no config-file/env plumbing for it.
+    response_format: dict[str, Any] | None = None
 
 
 def llm_settings() -> LLMSettings:

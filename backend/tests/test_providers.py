@@ -256,3 +256,45 @@ def test_chat_completion_stop_finish_reason_is_not_truncation() -> None:
 
     text = chat_completion("hi", settings=DEFAULT, transport=httpx.MockTransport(handler))
     assert text == "done"
+
+
+def test_chat_completion_default_sends_no_response_format() -> None:
+    """Default settings carry no schema — the body stays byte-identical
+    ({model, max_tokens, messages} + thinking only when configured)."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.read().decode()))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    chat_completion(
+        "hi",
+        settings=LLMSettings(enable_thinking=None),
+        transport=httpx.MockTransport(handler),
+    )
+    assert "response_format" not in seen
+
+
+def test_chat_completion_forwards_response_format_verbatim() -> None:
+    """A settings-carried schema rides the body verbatim (the single wire
+    change proving the AD-14 generic-client posture)."""
+    schema: dict[str, object] = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "probe",
+            "strict": True,
+            "schema": {"type": "object", "properties": {"a": {"type": "string"}}},
+        },
+    }
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.read().decode()))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    chat_completion(
+        "hi",
+        settings=LLMSettings(enable_thinking=None, response_format=schema),
+        transport=httpx.MockTransport(handler),
+    )
+    assert seen["response_format"] == schema

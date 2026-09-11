@@ -302,3 +302,12 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-4-key-figures-carry-a-minimal-5e-stat-block.md`
   summary: An OVER-powered block still cannot be repaired by anything: the deterministic conform deliberately refuses to trim (it only lifts), so the two repair passes are the only lever and the model does not converge downward — the same live smoke failed 3 of 4 runs at `over-powered for level 20: estimated DPR 234/278/176 vs 123-140 expected`, on a key figure the DM declared level 17 (the model raised the declaration itself). Also visible: `spells require identity.class` / `spells must be a list of spell names` shape failures on the same character. Owner decision needed: let the conform TRIM to the band edge, allow the repair prompt to lower the declared level, or leave it (the DM retries).
   evidence: live runs 1, 2 and 4 above (each 3-5 LLM calls, zero commits); the conform's refusal is documented in `statblocks.conform_power` ("damage ABOVE the band ... deliberately out of scope"). [backend/app/pipeline/statblocks.py conform_power, backend/app/pipeline/build_in.py _enforce_stat_blocks]
+
+## Deferred from: review of spec-json-schema-generation (2026-09-11)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-json-schema-generation.md`
+  summary: No fallback when a backend rejects `response_format` — a 400 on the schema'd wave body fails the job loudly via ProviderError("http") with no strip-and-retry or capability negotiation (the `enable_thinking=None` omission pattern has no schema equivalent).
+  evidence: Blind-hunter + edge-case layers (step-04): all shippable backends (Unsloth, llama.cpp, OpenRouter) accept the field and failure is loud-never-silent, so this is a hardening story, not a blocker. [backend/app/providers/llm.py chat_completion]
+- source_spec: `_bmad-output/implementation-artifacts/spec-json-schema-generation.md`
+  summary: `pipeline/mechanics.py` has no input guards (negative challenge, unknown class key, empty tags, non-six ranked, non-int seed, inverted bands) and only Paladin tables — hardening plus multi-class tables land with the first caller (words-only path), which also decides fallback-vs-raise signaling.
+  evidence: Blind-hunter + edge-case layers (step-04): the module is a callerless verbatim prototype port today, so guards would deviate from the parity mandate with no reachable trigger; pins stay exact. [backend/app/pipeline/mechanics.py]

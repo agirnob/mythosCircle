@@ -28,6 +28,7 @@ from app.pipeline.build_in import (
     _validate_subgraph,
     build_wave1_prompt,
     build_wave2_prompt,
+    build_wave_schema,
     canonicalize_entity_kind,
 )
 from app.pipeline.fencing import json_error
@@ -403,6 +404,114 @@ def test_fence_wrapped_valid_json_is_stripped_and_succeeds(world: str) -> None:
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert job.result is not None and job.result["entity_count"] == 2
+
+
+def test_wave_calls_carry_envelope_schema(world: str) -> None:
+    """WAVE_CARRIES_SCHEMA: the wave call carries the envelope schema via a
+    settings copy (zero double churn — the fake keeps its
+    ``(prompt, settings)`` shape); the job result is identical to today."""
+    expected = build_wave_schema()
+    seen: list[Any] = []
+
+    def fake(prompt: str, settings: LLMSettings) -> str:
+        seen.append(settings.response_format)
+        return json.dumps(_wave1_output())
+
+    job_id = _enqueue(world, places=["Greymarch"])
+    processed = run_next_job(provider=fake, settings=SETTINGS)
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["entity_count"] == 2
+    assert seen == [expected]
+
+
+def test_wave2_and_reemit_carry_envelope_schema(world: str) -> None:
+    """WAVE2_AND_REEMIT_CARRY: wave 2 and the orphan re-emit carry the
+    envelope schema too — reverting either call site to plain settings
+    fails this (the wave-1-only test never executes those lines)."""
+    expected = build_wave_schema()
+    seen: list[Any] = []
+    responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
+
+    def fake(prompt: str, settings: LLMSettings) -> str:
+        seen.append(settings.response_format)
+        return responses.pop(0)
+
+    job_id = _enqueue(world, notes="the docks teem with the Drowned Rat and Captain Harlow")
+    processed = run_next_job(provider=fake, settings=SETTINGS)
+    assert processed == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert seen == [expected, expected]
+
+    seen_reemit: list[Any] = []
+    responses_reemit = [
+        json.dumps(_wave1_output_orphans()),
+        json.dumps(_wave1_output_orphans_healed()),
+    ]
+
+    def fake_reemit(prompt: str, settings: LLMSettings) -> str:
+        seen_reemit.append(settings.response_format)
+        return responses_reemit.pop(0)
+
+    job_id2 = _enqueue(world, places=["Greymarch"])
+    processed2 = run_next_job(provider=fake_reemit, settings=SETTINGS)
+    assert processed2 == job_id2
+    job2, _position = job_status(job_id2)
+    assert job2.state == "succeeded"
+    assert seen_reemit == [expected, expected]
+
+
+def test_wave_envelope_schema_pins_wire_literals() -> None:
+    """The envelope's load-bearing literals are pinned by value — the
+    carry test compares the builder to itself, so a flipped literal
+    (additionalProperties True, a dropped required key) would stay green
+    without this pin."""
+    schema = build_wave_schema()
+    assert schema["type"] == "json_schema"
+    named = schema["json_schema"]
+    assert named["name"] == "build_wave" and named["strict"] is True
+    envelope = named["schema"]
+    assert envelope["required"] == ["entities", "edges"]
+    assert envelope["additionalProperties"] is False
+    entities = envelope["properties"]["entities"]["items"]
+    assert entities["required"] == ["ref", "kind", "name"]
+    assert entities["additionalProperties"] is False
+    edges = envelope["properties"]["edges"]["items"]
+    assert edges["required"] == ["src", "dst", "type"]
+    assert edges["additionalProperties"] is False
+
+
+def test_repair_calls_keep_plain_settings(world: str) -> None:
+    """REPAIR_PLAIN_SETTINGS: the stat-repair call carries no schema —
+    passing the wave settings into a gate would constrain a
+    {"stat_blocks": [...]} response to the wave envelope undetected."""
+    output = _wave1_output()
+    bad_block = dict(_MIRA_STAT_BLOCK)
+    bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
+    output["entities"][1]["data"] = {
+        **_character_record("Mira Vane"),
+        "stat_block": bad_block,
+    }
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+    seen: list[Any] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        seen.append(settings.response_format)
+        return responses.pop(0)
+
+    processed = run_next_job(provider=provider, settings=SETTINGS)
+    assert processed == job_id
+    assert len(seen) == 2  # wave 1 + exactly one repair pass
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert seen[0] == build_wave_schema()
+    assert seen[1] is None
 
 
 @pytest.mark.parametrize(

@@ -951,7 +951,8 @@ def test_build_in_job_succeeds_and_commits_world(world: str) -> None:
     build_id = enqueue_job(world, "build_in", {"places": ["Greymarch"], "notes": ""}).id
 
     def provider(prompt: str, settings: LLMSettings) -> str:
-        assert settings is SETTINGS
+        assert settings.endpoint == SETTINGS.endpoint and settings.model == SETTINGS.model
+        assert settings.response_format is not None  # waves carry the envelope schema
         return _build_in_wave1_json()
 
     processed = run_next_job(provider=provider, settings=SETTINGS)
