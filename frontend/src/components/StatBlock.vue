@@ -167,6 +167,22 @@ const combatLine = computed(() => {
   return parts.length > 0 ? parts.join(' · ') : null
 })
 
+/** `power` -> "Over-powered — DPR 189 vs band 63–68", stamped
+ * deterministically by the pipeline (owner verdict 2026-09-12: an
+ * over-powered block commits declared). Only the over-powered verdict
+ * renders — committed blocks are otherwise on-target, so a line for
+ * those would be noise on every card. */
+const powerFlag = computed<string | null>(() => {
+  const raw = isObject(props.block) ? props.block['power'] : null
+  if (!isObject(raw) || raw['verdict'] !== 'over-powered') return null
+  const dpr = isFiniteNumber(raw['dpr']) ? String(raw['dpr']) : '?'
+  const band = Array.isArray(raw['band'])
+    ? raw['band'].filter(isFiniteNumber)
+    : []
+  const bandText = band.length === 2 ? ` vs band ${band[0]}–${band[1]}` : ''
+  return `Over-powered — DPR ${dpr}${bandText}`
+})
+
 /** The panel's signed-number convention ("+5" / "-2", 5e notation). */
 const withSign = (value: number): string => (value >= 0 ? `+${value}` : String(value))
 
@@ -312,6 +328,7 @@ const skillLine = (skill: NamedEntry) =>
       identity ||
       attributes ||
       combatLine ||
+      powerFlag ||
       aspectLines.length > 0 ||
       skills.length > 0 ||
       actions.length > 0 ||
@@ -330,6 +347,7 @@ const skillLine = (skill: NamedEntry) =>
       </span>
     </div>
     <p v-if="combatLine" class="mono">{{ combatLine }}</p>
+    <p v-if="powerFlag" class="mono">{{ powerFlag }}</p>
     <!-- The optional aspects (spec 2026-09-11), one labelled line each.
          Nothing renders for a block that carries none of them. -->
     <p v-for="line in aspectLines" :key="line" class="mono">{{ line }}</p>

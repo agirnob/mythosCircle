@@ -10,10 +10,12 @@ Rating" damage/round band for the declared CR (5e 2014 DMG).
 
 Pure and deterministic (AD-16), like ``knowledge``: a function of the
 stat block dict alone — no ids, timestamps, or job state. The audit feeds
-``validate_stat_block`` (``knowledge``): damage/round outside the band
-(under/over-powered) and HP below half the band low (frail) are violations
-there — a repair nudge, then a fail. The CLI below stays a read-only
-assist surface for the DM.
+``validate_stat_block`` (``knowledge``): damage/round below the band
+(under-powered) and HP below half the band low (frail) are violations
+there — a repair nudge, then a fail. Damage/round above the band commits
+with a ``power`` annotation instead (owner verdict 2026-09-12: the DM is
+told, not protected). The CLI below stays a read-only assist surface for
+the DM.
 """
 
 import re

@@ -1384,12 +1384,14 @@ def test_oversized_context_ref_drops_edge(world: str) -> None:
 def test_non_finite_stat_value_drops_candidate(world: str) -> None:
     """json.loads turns 1e999/Infinity into inf — AR25's stat validation
     tolerates the unknown key, so the strict-JSON guard must drop the
-    candidate (the candidates read would 500 an Infinity payload)."""
+    candidate (the candidates read would 500 an Infinity payload). The
+    poison rides a bespoke unknown key: ``power`` is server-owned since
+    the 2026-09-12 verdict (canonicalize restamps it finite)."""
     _commit_world(world)
     output = _generate_output()
     # A fresh dict — json.loads turns 1e999 into inf HERE (the shared
     # _VALID_STAT_BLOCK must never be mutated in place).
-    output["candidates"][0]["stat_block"] = {**_VALID_STAT_BLOCK, "power": 1e999}
+    output["candidates"][0]["stat_block"] = {**_VALID_STAT_BLOCK, "umbral_echo": 1e999}
     job_id = _run(world, lambda prompt, settings: json.dumps(output))
     rows = _staged(world)
     assert len(rows) == 2  # E0 dropped, E1/E2 survive
@@ -1398,7 +1400,7 @@ def test_non_finite_stat_value_drops_candidate(world: str) -> None:
     result = job.result
     assert result is not None
     assert any(drop["ref"] == "E0" and "non-finite" in drop["reason"] for drop in result["dropped"])
-    assert all("power" not in row.payload["stat_block"] for row in rows)
+    assert all("umbral_echo" not in row.payload["stat_block"] for row in rows)
 
 
 def test_failed_requeue_rerun_discards_staged_rows(world: str) -> None:

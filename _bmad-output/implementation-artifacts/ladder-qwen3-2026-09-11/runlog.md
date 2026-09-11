@@ -205,3 +205,90 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   environmental, zero frontend files dirty. Backend gates authoritative
   meanwhile: `pytest -q`, ruff check, ruff format, mypy. Owner action:
   finish the system update / reinstall nodejs, then re-run frontend gates.
+
+## Rung 10 — attempt 12, ceiling code — FAILED, 12 calls (wave-1 COMMITTED)
+
+- Wave 1: pass 1 flagged E4-E9 (string-skills + DPR 5.5-28); pass 2 only
+  E6 (DPR 49.5, class-link) + E7 (pass-1 broke its level); E7's level
+  HEALED on attempt 2 — first level-breakage ever repaired (dial rule
+  bit). No overshoot anywhere (E6 stopped at 49.5 vs 63-68, under not
+  over). Committed 10/10. Wave-1 stat-death set: two entities → zero.
+- Wave 2: drop-guard death again ('The Knocker'→'The Knocking Thing').
+  Anchor repairs on gemma 0/5. Wave-1 commits 6/7 across code versions.
+- Verdict: step-2 gate GREEN on its own criterion (stat-death set
+  shrunk to zero; ceiling + dial both show first positive evidence),
+  job death belongs to step 3's wall. Step 3 unlock decision is the
+  owner's. Tee'd calls + prompts in `/tmp/mythos-ladder/calls-b4/`.
+
+## Rung 10 — attempt 13, ceiling code — FAILED, 17 calls (wave-1 death)
+
+- Wave 1 only, all 3 passes used. Terminal: E5 Ssketh — a repair fixed
+  'spells require identity.class' by stuffing ~60 non-Druid spells into
+  the list (in-scope `spells` section: strip-blind) plus DPR 39
+  over-powered; E9 Cobb identity.level garbage (3rd consecutive
+  level-breakage death). Pass-3 E6 breach shows repairs now fiddle
+  damage dice/counts freely inside in-scope actions — the strip's
+  section granularity is the floor of its vision.
+- New pathology: spell-list stuffing as a class-link fix. Same family
+  as level-escalation: the model reaches for the biggest in-scope dial.
+- Verdict: green-job hunt continues (att9 green; att10/11/13 wave-1,
+  att12 wave-2). Tee'd calls + prompts in `/tmp/mythos-ladder/calls-b5/`.
+
+## Rung 10 — attempt 14, ceiling code — FAILED, 16 calls (wave-1 COMMITTED)
+
+- Wave 1: E4 clean first try; pass 1 flagged E5-E9; pass 2 E5/E6/E7/E9
+  (repairs escalated levels mid-flight: E5 3→8, E6 7→12, E7 8→11,
+  E9 4→10 — dial rule defied, then pass 3 walked E5 back to 3 and
+  converged everything). Committed 10/10 through all three passes.
+  Wave-1 commits 7/8 — the grind works, slowly.
+- Wave 2: drop guard ('The Driftwood Hulk'→'The Rusting Hulk').
+  Anchor repairs 0/6 (sole success att9's behaving re-emit).
+- Verdict: wave-1 machinery now survives its own detours; the job
+  lottery is purely the re-emit rename. Tee'd calls + prompts in
+  `/tmp/mythos-ladder/calls-b6/`.
+
+## Rung 10 — attempt 15, ceiling code — FAILED, 16 calls (wave-1 death)
+
+- Wave 1, all 3 passes. Terminal: E5 Ssketh identity.cr garbage
+  (pass-1 broke it; pass-2/3 with scope ['identity'] edited actions,
+  skills, spells — everything except cr; the att11 Wren pattern on a
+  new field); E6 Wren class-link dropped while fixing DPR.
+- Verdict: the identity-field repair blindness is now the wave-1
+  signature (level ×3, cr ×1): scope-identity repairs polish siblings
+  and never touch the named field. Green-job hunt: 1/7 on current
+  code. Tee'd calls + prompts in `/tmp/mythos-ladder/calls-b7/`.
+
+## Rung 10 — attempt 16, ceiling code — FAILED, 10 calls (wave-1 COMMITTED)
+
+- Wave 1: fastest convergence yet — pass 1 flagged six, pass 2 only E7
+  (DPR 37.5 vs 63-68), converged with no pass 3. Committed 10/10.
+  Wave-1 commits 8/9.
+- Wave 2: re-emit's first ADD — kept everyone but invented 'The
+  Salt-Choked Channel' and renamed 'Iron Hulk'→'Quarantine Hulk'.
+  Guard caught both. Anchor repairs 0/7.
+- Verdict: green-job hunt 1/8. Wave-1 wall held two straight; the job
+  lottery stays purely re-emit behavior. Tee'd calls + prompts in
+  `/tmp/mythos-ladder/calls-b8/`.
+
+## Rung 10 — attempt 17, ceiling code — FAILED, 15 calls (wave-1 death)
+
+- Wave 1, all 3 passes. Everything healed (E5 cr, E8/E9 levels, E7/E9
+  DPR) except one detonation: E6 Wren over-powered DPR 189 vs 63-68
+  (pass-3 repair, chasing escalated L10 numbers). Worst overshoot yet;
+  the ceiling steers but does not bind.
+- Verdict: trim-to-band (ledger-pending owner decision) would have
+  greened this outright — sole terminal. Third overshoot death (att9
+  E9-60 rode along a wave-1 commit; att10 E5-31.5 paired with level
+  garbage). Green-job hunt 1/9. Tee'd calls + prompts in
+  `/tmp/mythos-ladder/calls-b9/`.
+
+## Power-flag code ships (2026-09-12, owner verdict: over-powered is fine)
+
+- `knowledge.audit_power` + `_stamp_power` in canonicalize (over verdict
+  only), validator OVER branch deleted, scope row deleted, POWER
+  DISCIPLINE + rules text rewritten, `StatBlock.vue` flag line, ledger
+  entry resolved. Gates: 1182 backend passed, ruff + mypy clean, 201
+  frontend passed, vue-tsc + eslint clean (node healed overnight to
+  v26.8.1). Design point: flagged-only stamping keeps on-target blocks
+  byte-identical (no prompt bloat, no fixture churn); stale flags trim
+  on re-canonicalize. Next: attempt 18 re-rolls rung 10 on flag code.

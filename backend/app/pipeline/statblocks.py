@@ -38,6 +38,7 @@ from app.pipeline.knowledge import (
     ROLES,
     SKILLS,
     SPELLS,
+    audit_power,
     resolve_class,
     validate_stat_block,
 )
@@ -96,6 +97,8 @@ def stat_block_rules_text(spells_reference: bool = True) -> str:
             "A character's data.stat_block is a JSON object with the field set:",
             '{"identity": {...}, "attributes": {...}, "combat": {...}, "skills": [...],',
             ' "actions": [...], "traits": [...], "spells": [...]}',
+            '"power" is stamped by the server after every pass (audited DPR vs band)',
+            "— never write it; anything you put there is discarded.",
             "identity (required): role, race, and per role:",
             f"- role in {sorted(ROLES)}.",
             f"- NPC and BBEG carry level: an integer in [1, {LEVEL_MAX}]; never cr.",
@@ -345,12 +348,11 @@ _POWER_REPAIR_SCOPE: frozenset[str] = frozenset({"actions", "combat", "identity"
 #: first match wins, so the general ``stat_block`` prefix sits LAST — a
 #: future field-specific ``stat_block.<section>...`` message must scope
 #: narrowly instead of falling into whole-block. (Today no message has
-#: that shape; the 60-row coverage test pins every current mapping, so
-#: any reorder breakage fails loudly there.) A new validator message about
-#: mechanics field would scope to spells+identity.
+#: that shape; the row-per-template coverage test pins every current
+#: mapping, so any reorder breakage fails loudly there.) A new validator
+#: message about mechanics field would scope to spells+identity.
 _SCOPE_PREFIXES: tuple[tuple[str, frozenset[str]], ...] = (
     ("under-powered for ", _POWER_REPAIR_SCOPE),
-    ("over-powered for ", _POWER_REPAIR_SCOPE),
     ("no readable damage for ", frozenset({"actions"})),
     ("identity", frozenset({"identity"})),
     ("attributes", frozenset({"attributes"})),
@@ -482,12 +484,13 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue], *, attempt: int = 1) -
             *violations_header,
             "\n\n".join(flagged),
             "",
-            "POWER DISCIPLINE (validator-checked — an over-powered block fails",
-            "the job with no further repair: aim for the MIDDLE of each record",
-            "target band, NEVER above its top. Move DPR with damage dice, damage",
-            "bonus, to_hit, and attack count — NEVER by raising identity.level",
-            "or identity.cr. Fix an identity.level violation by writing a bare",
-            "integer 1-20 in identity.level and changing nothing else.",
+            "POWER DISCIPLINE (audited, then declared: a block above its band",
+            "top still commits, stamped over-powered for the DM — but aim for",
+            "the MIDDLE of each record target band anyway. Move DPR with",
+            "damage dice, damage bonus, to_hit, and attack count — NEVER by",
+            "raising identity.level or identity.cr. Fix an identity.level",
+            "violation by writing a bare integer 1-20 in identity.level and",
+            "changing nothing else.",
             "",
             "DAMAGE RECIPES (parser-checked — hit each character's record target band)",
             _DPR_RECIPES,
@@ -1014,10 +1017,10 @@ def conform_power(block: Any) -> dict[str, Any] | None:
     accounted for without this function knowing about any of them.
 
     Returns the conformed block, or ``None`` when it cannot be conformed —
-    no reference band for the declared challenge, no damaging action to
-    carry the budget, or damage ABOVE the band (trimming an over-powered
-    block is deliberately out of scope: the model's own repair pass may
-    lower the declared challenge instead).
+    no reference band for the declared challenge, or no damaging action to
+    carry the budget. Damage ABOVE the band is left alone (owner verdict
+    2026-09-12): it commits stamped over-powered, trimming deliberately
+    out of scope.
     """
     if not isinstance(block, dict):
         return None
@@ -1253,16 +1256,42 @@ def canonicalize_stat_blocks(
 
 
 def canonicalize_stat_block(block: dict[str, Any]) -> dict[str, Any]:
-    """The canonical form of one stat block (see the three folds below).
+    """The canonical form of one stat block (see the folds below plus the
+    power stamp).
 
     Shared by the build-in/regenerate gate and the generate staging path,
     so a candidate and a committed key figure store the same shape.
-    Returns the SAME object when nothing needed folding; otherwise a new
-    block (the input is never mutated).
+    Returns the SAME object when nothing needed folding or stamping;
+    otherwise a new block (the input is never mutated).
     """
     folded = _fold_stat_block_aliases(block)
     completed = _complete_damage_parts(folded)
-    return _fold_string_damage(completed)
+    stamped = _fold_string_damage(completed)
+    return _stamp_power(stamped)
+
+
+def _stamp_power(block: dict[str, Any]) -> dict[str, Any]:
+    """Stamp the deterministic ``power`` annotation (owner verdict
+    2026-09-12): ``{"dpr", "band", "verdict"}`` from the same audit the
+    validator reads, so an over-powered block commits declared — the DM
+    sees it instead of the job dying on it. Stamps ONLY the over-powered
+    verdict: on-target blocks stay byte-identical (no prompt bloat, no
+    fixture churn), under-powered ones never commit unrepaired. A
+    model-written ``power`` never survives: the repair schema cannot emit
+    it, the strip drops it (no scope set names it), and this overwrites
+    it. Abstains exactly where the audit abstains (no band, or no
+    parseable damage).
+    """
+    annotation = audit_power(block)
+    if annotation is None or annotation["verdict"] != combat.VERDICT_OVER:
+        if "power" not in block:
+            return block
+        trimmed = dict(block)
+        del trimmed["power"]
+        return trimmed
+    if block.get("power") == annotation:
+        return block
+    return {**block, "power": annotation}
 
 
 #: ``stats`` members that move to a top-level key of the same meaning

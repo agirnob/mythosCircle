@@ -616,6 +616,40 @@ def _check_spells(value: Any, klass: str | None, role: str | None, errors: list[
             errors.append(f"spell {spell!r} is not on the {klass} spell list")
 
 
+def audit_power(block: Any) -> dict[str, Any] | None:
+    """The DM-facing power annotation for a stat block (owner verdict
+    2026-09-12: over-powered is fine and commits — the DM is told, not
+    protected).
+
+    Deterministic function of the block: ``{"dpr", "band", "verdict"}``
+    from the same audit and band the validator reads, or ``None`` on the
+    same abstentions (no band for the declared challenge, or zero
+    parseable damage anywhere — a non-combatant has no power level to
+    state). ``canonicalize_stat_block`` stamps the result as ``power``;
+    the repair schema and the strip keep the model's hands off it.
+    """
+    if not isinstance(block, dict):
+        return None
+    identity = block.get("identity")
+    if not isinstance(identity, dict):
+        return None
+    role = identity.get("role")
+    canonical_role = _ROLE_INDEX.get(role.strip().lower()) if isinstance(role, str) else None
+    if canonical_role is None:
+        return None
+    key = identity.get("cr") if canonical_role == "Monster" else identity.get("level")
+    if isinstance(key, bool) or not isinstance(key, (int, str)):
+        return None
+    dpr_band = combat.CR_DPR.get(key)
+    if dpr_band is None:
+        return None
+    audit = combat.audit_stat_block({**block, "identity": {**identity, "role": canonical_role}})
+    if not any(action.nominal_avg != 0.0 for action in audit.actions):
+        return None
+    low, high = dpr_band
+    return {"dpr": round(audit.dpr, 1), "band": [low, high], "verdict": audit.verdict}
+
+
 def _check_power(block: Any, canonical_role: str | None, errors: list[str]) -> None:
     """Combat-power enforcement (wires the ``combat`` audit into the verdict).
 
@@ -625,7 +659,9 @@ def _check_power(block: Any, canonical_role: str | None, errors: list[str]) -> N
     already flag those) abstains silently, as does a block with zero
     parseable damage anywhere (non-combatants are exempt). Level N keys
     the CR N band. HP fails low-only (below half the band low is frail);
-    HP at or above the band never fails.
+    HP at or above the band never fails. Over-powered is NOT a violation
+    (owner verdict 2026-09-12): it commits with a ``power`` annotation —
+    see :func:`audit_power` — so only the under-powered branch reports.
     """
     if not isinstance(block, dict) or canonical_role is None:
         return
@@ -644,11 +680,6 @@ def _check_power(block: Any, canonical_role: str | None, errors: list[str]) -> N
         if audit.verdict == combat.VERDICT_UNDER:
             errors.append(
                 f"under-powered for {audit.challenge}: estimated DPR "
-                f"{audit.dpr:.1f} vs {low:.0f}-{high:.0f} expected"
-            )
-        elif audit.verdict == combat.VERDICT_OVER:
-            errors.append(
-                f"over-powered for {audit.challenge}: estimated DPR "
                 f"{audit.dpr:.1f} vs {low:.0f}-{high:.0f} expected"
             )
         hp_band = combat.CR_HP.get(key)

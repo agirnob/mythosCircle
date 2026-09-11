@@ -238,4 +238,26 @@ describe('StatBlock', () => {
     expect(text).not.toContain('Features')
     expect(text).not.toContain('Resources')
   })
+
+  it('renders the over-powered flag with audited DPR vs band', () => {
+    const wrapper = mount(StatBlock, {
+      props: {
+        block: {
+          ...block,
+          power: { dpr: 189, band: [63, 68], verdict: 'over-powered' },
+        },
+      },
+    })
+    expect(wrapper.text()).toContain('Over-powered — DPR 189 vs band 63–68')
+  })
+
+  it('renders no power line without an over-powered stamp', () => {
+    const wrapper = mount(StatBlock, { props: { block } })
+    expect(wrapper.text()).not.toContain('Over-powered')
+    const onTarget = mount(StatBlock, {
+      props: { block: { ...block, power: { dpr: 35, band: [33, 38], verdict: 'on-target' } } },
+    })
+    expect(onTarget.text()).not.toContain('Over-powered')
+    expect(onTarget.text()).not.toContain('DPR 35')
+  })
 })

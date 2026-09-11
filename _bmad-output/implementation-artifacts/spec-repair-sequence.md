@@ -131,6 +131,20 @@ everyone and died on names alone.
   "declare an identity.level your damage supports") — the model was
   obeying, not drifting, so the strip correctly never saw it.
 
+## Deviation (owner verdict 2026-09-12, ladder attempt 17)
+
+- Over-powered is fine and commits — no trim, no fail. The validator's
+  over-powered branch is deleted (repairs never chase it); `power:
+  {dpr, band, verdict}` is stamped deterministically at canonicalize
+  (over-powered verdict only, so on-target blocks stay byte-identical
+  and repair prompts stay lean); the repair prompt's POWER DISCIPLINE
+  states the new truth (above-band commits declared, still aim
+  mid-band); `StatBlock.vue` renders the flag for the DM. Retires the
+  overshoot death class (ladder DPR 60, 31.5, 189) and resolves the
+  ledger's over-powered entry. Forge export omits the key by
+  construction (mapper picks known fields); sheets render it
+  generically.
+
 ## Design Notes
 
 - Attempt ledger: runlog attempts 5-8 (same directory as `rung-10.json`).

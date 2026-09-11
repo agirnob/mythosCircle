@@ -2740,10 +2740,10 @@ def test_underpowered_stat_block_repair_loop(world: str) -> None:
     assert conformed["identity"] == weak_block["identity"]
 
 
-def test_overpowered_stat_block_repair_loop(world: str) -> None:
-    """POWER_REPAIR_LOOP (over): a 60-DPR level-5 block is flagged; a
-    healthy repair commits, a still-mismatched repair fails naming
-    over-powered."""
+def test_overpowered_stat_block_commits_stamped_without_repair(world: str) -> None:
+    """POWER_FLAG (owner verdict 2026-09-12): a 60-DPR level-5 block is not
+    a violation — no repair pass is spent on it, the job succeeds, and the
+    committed block carries the over-powered power stamp for the DM."""
     over_block = {
         "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
@@ -2759,39 +2759,23 @@ def test_overpowered_stat_block_repair_loop(world: str) -> None:
 
     calls: list[str] = []
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
-    responses = [
-        json.dumps(wave_with(over_block)),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
-    ]
+    responses = [json.dumps(wave_with(over_block))]
 
     def provider(prompt: str, settings: LLMSettings) -> str:
         calls.append(prompt)
         return responses.pop(0)
 
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
-    assert len(calls) == 2  # wave 1 + exactly one repair pass
-    assert "over-powered" in calls[1]
+    assert len(calls) == 1  # wave 1 only — over-powered spends no repair pass
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
-
-    calls2: list[str] = []
-    job_id2 = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
-    responses2 = [
-        json.dumps(wave_with(over_block)),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": over_block}]}),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": over_block}]}),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": over_block}]}),
-    ]
-
-    def provider2(prompt: str, settings: LLMSettings) -> str:
-        calls2.append(prompt)
-        return responses2.pop(0)
-
-    assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
-    assert len(calls2) == 4  # wave 1 + all three bounded repair passes, no more
-    job2, _position2 = job_status(job_id2)
-    assert job2.state == "failed"
-    assert "over-powered" in (job2.error or "")
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"]["power"] == {
+        "dpr": 60.0,
+        "band": [33.0, 38.0],
+        "verdict": "over-powered",
+    }
 
 
 def test_frail_stat_block_repair_loop(world: str) -> None:

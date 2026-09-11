@@ -24,6 +24,7 @@ from app.pipeline.statblocks import (
     apply_stat_repairs,
     build_stat_repair_prompt,
     build_stat_repair_schema,
+    canonicalize_stat_block,
     collect_stat_issues,
     parse_stat_repair_output,
     scope_for_violations,
@@ -415,22 +416,25 @@ def test_third_pass_prompt_rereads_second_attempt() -> None:
 
 
 def test_repair_prompt_pins_power_discipline() -> None:
-    """POWER_DISCIPLINE (ladder attempts 9-11): repairs overshoot the band
-    top (E9 11.5->60, E5 4.5->10.5->31.5) and fix power by editing level
-    (E9 4->10, E6/E9 level garbage) — over-powered is unrepairable by
-    design, so the prompt aims at mid-band with an explicit ceiling and
-    names the dial (damage, never level)."""
+    """POWER_DISCIPLINE (ladder attempts 9-11, owner verdict 2026-09-12):
+    repairs overshoot the band top and fix power by editing level — the
+    prompt still aims at mid-band with an explicit ceiling and names the
+    dial (damage, never level), while stating that above-band commits
+    stamped over-powered instead of failing."""
     issue = StatIssue(
         1,
         _entity("character", data={"stat_block": dict(VALID)}),
         ("under-powered for level 5",),
     )
     prompt = build_stat_repair_prompt([issue])
-    assert "aim for the MIDDLE of each record" in prompt
-    assert "NEVER above its top" in prompt
-    assert "NEVER by raising identity.level" in prompt
-    assert "writing a bare" in prompt
-    assert "integer 1-20 in identity.level and changing nothing else" in prompt
+    assert "a block above its band" in prompt
+    assert "top still commits, stamped over-powered for the DM" in prompt
+    assert "the MIDDLE of each record target band anyway" in prompt
+    assert "Move DPR with" in prompt
+    assert "damage dice, damage bonus, to_hit, and attack count — NEVER by" in prompt
+    assert "raising identity.level or identity.cr. Fix an identity.level" in prompt
+    assert "violation by writing a bare integer 1-20 in identity.level and" in prompt
+    assert "changing nothing else." in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -447,10 +451,6 @@ def test_repair_prompt_pins_power_discipline() -> None:
         # POWER_SCOPE: damage numbers/hp/ac/challenge only.
         (
             "under-powered for level 5: estimated DPR 16.0 vs 33-38 expected",
-            {"actions", "combat", "identity"},
-        ),
-        (
-            "over-powered for level 1: estimated DPR 21.0 vs 9-14 expected",
             {"actions", "combat", "identity"},
         ),
         ("combat.hp 52 is frail for level 4 (expected HP 71-85)", {"combat"}),
@@ -569,7 +569,7 @@ def test_repair_prompt_names_edit_scope_per_issue() -> None:
     power = StatIssue(
         0,
         _entity("character", data={"stat_block": VALID}),
-        ("over-powered for level 5: estimated DPR 60.0 vs 33-38 expected",),
+        ("under-powered for level 5: estimated DPR 16.0 vs 33-38 expected",),
     )
     traits = StatIssue(
         1,
@@ -777,17 +777,61 @@ def test_underpowered_block_flagged_with_numbers() -> None:
     ]
 
 
-def test_overpowered_block_flagged() -> None:
-    """OVER_FLAG: a level 5 dealing ~60 DPR fires over-powered vs 33-38."""
+def test_overpowered_block_passes_with_power_stamp() -> None:
+    """OVER_FLAG (owner verdict 2026-09-12): a level 5 dealing ~60 DPR is
+    valid — over-powered commits declared, stamped for the DM."""
     block = {
         "identity": {"role": "NPC", "level": 5, "race": "Human"},
         "attributes": _power_attributes(),
         "actions": [{"name": "Slam", "description": "10d10+5 force"}],
         "combat": {"ac": 16, "hp": 140},
     }
-    assert validate_stat_block(block) == [
-        "over-powered for level 5: estimated DPR 60.0 vs 33-38 expected"
-    ]
+    assert validate_stat_block(block) == []
+    stamped = canonicalize_stat_block(block)
+    assert stamped["power"] == {"dpr": 60.0, "band": [33.0, 38.0], "verdict": "over-powered"}
+
+
+def test_power_stamp_abstains_without_damage() -> None:
+    """A non-combatant (zero parseable damage) gets no power annotation —
+    there is no power level to state."""
+    block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "attributes": _power_attributes(),
+        "actions": [{"name": "Scholarly Pose", "description": "Adjusts spectacles."}],
+        "combat": {"ac": 10, "hp": 20},
+    }
+    assert validate_stat_block(block) == []
+    assert "power" not in canonicalize_stat_block(block)
+
+
+def test_power_stamp_overwrites_model_written_power() -> None:
+    """A model-invented power section never survives: canonicalize
+    restamps from the audit (the repair schema cannot emit it and the
+    strip drops it first)."""
+    block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "attributes": _power_attributes(),
+        "actions": [{"name": "Slam", "description": "10d10+5 force"}],
+        "combat": {"ac": 16, "hp": 140},
+        "power": {"dpr": 1.0, "band": [1, 2], "verdict": "on-target"},
+    }
+    stamped = canonicalize_stat_block(block)
+    assert stamped["power"] == {"dpr": 60.0, "band": [33.0, 38.0], "verdict": "over-powered"}
+
+
+def test_power_stamp_idempotent() -> None:
+    """Restamping a stamped block returns the same values (and the same
+    object when nothing else folds)."""
+    block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "attributes": _power_attributes(),
+        "actions": [{"name": "Slam", "description": "10d10+5 force"}],
+        "combat": {"ac": 16, "hp": 140},
+    }
+    once = canonicalize_stat_block(block)
+    twice = canonicalize_stat_block(once)
+    assert twice is once
+    assert twice["power"]["verdict"] == "over-powered"
 
 
 def test_on_target_block_passes() -> None:
@@ -864,25 +908,28 @@ def test_bbeg_underpowered_flagged_on_level_band() -> None:
     block = {
         "identity": {"role": "BBEG", "level": 12, "race": "Human"},
         "attributes": _power_attributes(),
-        "actions": [{"name": "Dagger", "description": "1d8+2 piercing"}],
-        "combat": {"ac": 17, "hp": 230},
+        "actions": [{"name": "Slam", "description": "1d8+2 force"}],
+        "combat": {"ac": 18, "hp": 200},
     }
     assert validate_stat_block(block) == [
         "under-powered for level 12: estimated DPR 6.5 vs 75-80 expected"
     ]
 
 
-def test_bbeg_overpowered_flagged_on_level_band() -> None:
-    """A BBEG 5 dealing ~60 DPR fires over-powered vs 33-38."""
+def test_bbeg_overpowered_passes_with_power_stamp() -> None:
+    """A BBEG 5 dealing ~60 DPR is valid, stamped over-powered like an NPC."""
     block = {
         "identity": {"role": "BBEG", "level": 5, "race": "Human"},
         "attributes": _power_attributes(),
         "actions": [{"name": "Slam", "description": "10d10+5 force"}],
         "combat": {"ac": 16, "hp": 140},
     }
-    assert validate_stat_block(block) == [
-        "over-powered for level 5: estimated DPR 60.0 vs 33-38 expected"
-    ]
+    assert validate_stat_block(block) == []
+    assert canonicalize_stat_block(block)["power"] == {
+        "dpr": 60.0,
+        "band": [33.0, 38.0],
+        "verdict": "over-powered",
+    }
 
 
 def test_non_string_action_description_returns_shape_error() -> None:
@@ -899,8 +946,9 @@ def test_non_string_action_description_returns_shape_error() -> None:
 
 
 def test_legendary_budget_flips_dpr_verdict() -> None:
-    """Same 27-DPR block: on-target without legendary actions,
-    over-powered with them (27 x 2 = 54 vs 33-38)."""
+    """Same 27-DPR block: unstamped on-target without legendary actions,
+    stamped over-powered with them (27 x 2 = 54 vs 33-38) — and valid
+    either way."""
     base: dict[str, Any] = {
         "identity": {"role": "NPC", "level": 5, "race": "Human"},
         "attributes": _power_attributes(),
@@ -908,10 +956,14 @@ def test_legendary_budget_flips_dpr_verdict() -> None:
         "combat": {"ac": 16, "hp": 140},
     }
     assert validate_stat_block(base) == []
+    assert "power" not in canonicalize_stat_block(base)
     bossed = {**base, "boss": {"legendary_actions": "A tail sweep each round."}}
-    assert validate_stat_block(bossed) == [
-        "over-powered for level 5: estimated DPR 54.0 vs 33-38 expected"
-    ]
+    assert validate_stat_block(bossed) == []
+    assert canonicalize_stat_block(bossed)["power"] == {
+        "dpr": 54.0,
+        "band": [33.0, 38.0],
+        "verdict": "over-powered",
+    }
 
 
 def test_save_half_and_aoe_adjustments_enforced() -> None:
