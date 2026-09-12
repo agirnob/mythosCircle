@@ -1695,11 +1695,19 @@ def _validate_subgraph(
             raw.get("dst"), wave, edge_index, "dst", assigned_ids, context
         )
         if src_id == dst_id:
-            raise JobPayloadError(
-                f"wave {wave}: edge {edge_index} is a self-loop "
-                f"({raw.get('src')!r} -> {raw.get('dst')!r}) — edges must connect "
-                "distinct entities"
+            # Ladder rung 50: the forced count makes wiring sloppy (self-loop
+            # deaths 2/2 pinned runs) and a loop carries zero graph
+            # information under the closed vocabulary — no member_of-self or
+            # rival_of-self means anything. Drop it at the boundary (first
+            # wins' sibling: the edge dedup above); quality is still judged
+            # by the record/stat/anchor gates, and a wave-2 entity left
+            # anchorless by a dropped loop flows to the anchor repair.
+            logger.info(
+                "wave %d: dropping self-loop edge %r",
+                wave,
+                raw.get("src"),
             )
+            continue
         key = (src_id, dst_id, edge_type, counter)
         if any((known.src, known.dst, known.type, known.counter) == key for known in edge_inputs):
             # Ladder rung 25: the model stuttered a byte-identical edge row

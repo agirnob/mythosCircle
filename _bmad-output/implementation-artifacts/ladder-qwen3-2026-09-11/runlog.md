@@ -401,3 +401,12 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   no repair path. Count question answered; the loop is a fresh one-off.
   Tee'd calls + prompts in `/tmp/mythos-ladder/calls-c8/`. Next:
   attempt 4 re-rolls identical code.
+
+## Rung 50 — attempt 4 — FAILED, 1 call (self-loop again, E4)
+
+- Pin holds 2/2 (50 emitted both runs); self-loop deaths 2/2. Owner
+  verdict: drop loops at the boundary (info log), the dedup's sibling —
+  zero graph information under the closed vocabulary. Store backstop
+  untouched (test_store/test_edges_api pins hold); pipeline reject-test
+  rewritten to the drop contract. Gates: 1185 backend passed, ruff +
+  mypy clean. Next: attempt 5 re-rolls.

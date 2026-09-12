@@ -734,11 +734,14 @@ def test_non_canonical_refs_rejected(world: str) -> None:
             assert revision_chain(session, world) == []
 
 
-def test_self_loop_edges_rejected(world: str) -> None:
-    """A self-loop is rejected outright: edges must connect distinct
-    entities, so an all-self-loop subgraph fails naming the edge and
-    commits nothing (wave-1's edgeless commit changes nothing here —
-    edgeless is unwired, never self-wired)."""
+def test_self_loop_edges_dropped_at_boundary(world: str) -> None:
+    """SELF_LOOP_DROP (ladder rung 50, owner verdict 2026-09-12): a
+    self-loop carries zero graph information under the closed vocabulary,
+    so the boundary drops it with an info log instead of failing the wave
+    — the dedup's sibling. An all-self-loop wave validates to zero edges
+    and commits edgeless; a mixed wave keeps its good edges. (The store
+    still rejects self-loops outright — FR2 backstop pins live in
+    test_store/test_edges_api.)"""
     output = {
         "entities": [
             {"ref": "E0", "kind": "place", "name": "Solo"},
@@ -746,19 +749,21 @@ def test_self_loop_edges_rejected(world: str) -> None:
         ],
         "edges": [
             {"src": "E0", "dst": "E0", "type": "ally_of"},
+            {"src": "E0", "dst": "E1", "type": "ally_of"},
             {"src": "E1", "dst": "E1", "type": "ally_of"},
         ],
     }
+    _entities, edges = _validate_subgraph(1, output)
+    assert [(edge.type) for edge in edges] == ["ally_of"]  # only E0 -> E1 survives
+    assert edges[0].src != edges[0].dst
     job_id = _enqueue(world, key_figures=["Solo", "Alone"])
     processed = run_next_job(
         provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS
     )
     assert processed == job_id
     job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert "self-loop" in (job.error or "")
-    with session_scope() as session:
-        assert revision_chain(session, world) == []
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["edge_count"] == 1
 
 
 @pytest.mark.parametrize("bad_counter", ["3", 1.5])
