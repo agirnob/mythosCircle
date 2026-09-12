@@ -39,6 +39,7 @@ from app.pipeline.build_in import (
     build_wave2_prompt,
     build_wave_schema,
     canonicalize_entity_kind,
+    edge_kind_ok,
     normalize_entity_name,
 )
 from app.pipeline.fencing import json_error
@@ -218,7 +219,7 @@ def _wave2_output() -> dict[str, Any]:
             },
         ],
         "edges": [
-            {"src": "N0", "dst": "C0", "type": "located_in"},
+            {"src": "N0", "dst": "C0", "type": "relationship"},
             {"src": "N1", "dst": "C1", "type": "ally_of", "counter": 2},
             {"src": "N0", "dst": "N1", "type": "relationship"},
         ],
@@ -245,7 +246,7 @@ def _wave2_output_orphan() -> dict[str, Any]:
             },
         ],
         "edges": [
-            {"src": "N0", "dst": "C0", "type": "located_in"},
+            {"src": "N0", "dst": "C0", "type": "relationship"},
             {"src": "N1", "dst": "C1", "type": "ally_of", "counter": 2},
             {"src": "N2", "dst": "N1", "type": "relationship"},
         ],
@@ -4055,3 +4056,209 @@ def test_repair_sampling_respects_operator_pins(world: str) -> None:
     _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
     run_next_job(provider=provider, settings=pinned)
     assert seen[1].seed == 7 and seen[1].temperature == 0.9
+
+
+def test_edge_kind_ok_rules_pin() -> None:
+    """EDGE_KIND_RULES (owner decision 2026-09-12): the single table both
+    layers read. member_of/loyalty never touch a place; located_in must
+    point at a place; the catch-alls stay unrestricted."""
+    assert edge_kind_ok("member_of", "character", "faction")
+    assert edge_kind_ok("member_of", "faction", "faction")
+    assert not edge_kind_ok("member_of", "place", "faction")
+    assert not edge_kind_ok("member_of", "character", "place")
+    assert edge_kind_ok("located_in", "character", "place")
+    assert edge_kind_ok("located_in", "place", "place")
+    assert not edge_kind_ok("located_in", "character", "character")
+    assert not edge_kind_ok("located_in", "place", "faction")
+    assert edge_kind_ok("debt", "place", "place")
+    assert edge_kind_ok("relationship", "place", "faction")
+    assert not edge_kind_ok("loyalty", "place", "character")
+
+
+def test_prompts_carry_edge_kind_guidance(world: str) -> None:
+    """Layer 1: every build prompt prints the kind-compatible vocabulary
+    derived from the SAME table the validator enforces — prompt text and
+    rules cannot drift (byte-deterministic, AD-16)."""
+    with session_scope() as session:
+        seed = campaign_seed(session, world)
+    assert seed is not None
+    prompt = build_wave1_prompt(seed, {"places": ["Greymarch"], "key_figures": ["Mira"]})
+    assert "- member_of: character|faction -> character|faction" in prompt
+    assert "a place is never a member and never a host" in prompt
+    assert "- located_in: any -> place" in prompt
+    assert "EDGE VOCABULARY" in prompt and "debt: amount" in prompt
+    prompt2 = build_wave2_prompt(seed, "notes", ([], []), core_count=0)
+    assert "- member_of: character|faction -> character|faction" in prompt2
+    assert "never both A member_of B and B member_of A" in prompt2
+
+
+def test_wave1_kind_invalid_edges_repaired(world: str) -> None:
+    """Layer 2, wave-1 happy path: a kind-invalid edge (faction -> character
+    located_in) gets ONE bounded edges-only repair; the corrected edge
+    commits, nothing is dropped, the job result carries no audit."""
+    output = _wave1_output()
+    output["edges"].append({"src": "E0", "dst": "E1", "type": "located_in", "counter": 1})
+    responses = [
+        json.dumps(output),
+        json.dumps({"edges": [{"src": "E0", "dst": "E1", "type": "relationship", "counter": 1}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert "edge_kind_dropped" not in (job.result or {}).get("merge", {}).get("wave1", {})
+    with session_scope() as session:
+        edges = world_edges(session, world)
+    committed = {(e.type, e.src, e.dst) for e in edges}
+    assert {"member_of", "debt", "relationship"} <= {t for t, _s, _d in committed}
+    assert not any(t == "located_in" for t, _s, _d in committed)
+
+
+def test_wave1_kind_residual_dropped_with_audit(world: str) -> None:
+    """A repair that still violates the rules drops the edge AND names it in
+    the job result audit — the wave still succeeds (wave-1 edges are
+    best-effort)."""
+    output = _wave1_output()
+    output["edges"].append({"src": "E0", "dst": "E1", "type": "located_in", "counter": 1})
+    responses = [
+        json.dumps(output),
+        json.dumps({"edges": [{"src": "E0", "dst": "E1", "type": "located_in", "counter": 1}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    dropped = (job.result or {})["merge"]["wave1"]["edge_kind_dropped"]
+    assert len(dropped) == 1
+    assert "located_in must point at a place" in dropped[0]["reason"]
+    with session_scope() as session:
+        edges = world_edges(session, world)
+    assert {e.type for e in edges} == {"member_of", "debt"}  # originals only
+
+
+def test_wave1_kind_repair_failure_degrades_to_drop(world: str) -> None:
+    """The repair call itself dies (provider error) — the rejected edges
+    drop with the audit, the build never fails over edges."""
+    output = _wave1_output()
+    output["edges"].append({"src": "E0", "dst": "E1", "type": "located_in", "counter": 1})
+    calls = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return json.dumps(output)
+        raise ProviderError("llm down mid-repair")
+
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert len((job.result or {})["merge"]["wave1"]["edge_kind_dropped"]) == 1
+    with session_scope() as session:
+        assert {e.type for e in world_edges(session, world)} == {"member_of", "debt"}
+
+
+def test_wave1_mutual_member_of_repaired_to_single_direction(world: str) -> None:
+    """The graph rule: both member_of directions are rejected and the
+    repair keeps exactly one — membership is hierarchical."""
+    output = _wave1_output()
+    output["edges"].append({"src": "E1", "dst": "E0", "type": "member_of", "counter": 2})
+    responses = [
+        json.dumps(output),
+        json.dumps({"edges": [{"src": "E0", "dst": "E1", "type": "member_of", "counter": 1}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        edges = list(world_edges(session, world))
+    member = [(e.src, e.dst) for e in edges if e.type == "member_of"]
+    assert len(member) == 1  # one direction survived
+
+
+def test_wave2_kind_invalid_edges_repaired(world: str) -> None:
+    """Wave-2 happy path: a character -> character located_in gets the one
+    repair and commits corrected."""
+    wave2 = _wave2_output()
+    wave2["edges"][1] = {"src": "N1", "dst": "C1", "type": "located_in"}
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(wave2),
+        json.dumps({"edges": [{"src": "N1", "dst": "C1", "type": "ally_of", "counter": 2}]}),
+    ]
+    job_id = _enqueue(world, notes="Captain Harlow docks at the Rat")
+    run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        rows = {e.name: e.id for e in world_entities(session, world)}
+        edges = world_edges(session, world)
+    harlow, mira = rows["Captain Harlow"], rows["Mira Vane"]
+    assert any(e.src == harlow and e.dst == mira and e.type == "ally_of" for e in edges)
+    assert not any(e.type == "located_in" for e in edges)
+
+
+def test_wave2_kind_invalid_edges_fail_after_repair(world: str) -> None:
+    """Wave-2's edges are load-bearing: still-invalid after the ONE repair
+    FAILS the job naming the edge — the wave-1 core stays committed."""
+    wave2 = _wave2_output()
+    wave2["edges"][1] = {"src": "N1", "dst": "C1", "type": "located_in"}
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(wave2),
+        json.dumps({"edges": [{"src": "N1", "dst": "C1", "type": "located_in"}]}),
+    ]
+    job_id = _enqueue(world, notes="Captain Harlow docks at the Rat")
+    run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "edge-kind rule violations" in (job.error or "")
+    assert "located_in" in (job.error or "")
+    with session_scope() as session:
+        assert len(list(revision_chain(session, world))) == 1  # wave-1 only
+
+
+def test_wave2_mutual_member_of_against_world_fixed(world: str) -> None:
+    """The world side of the hierarchy rule: a wave-2 C-to-C member_of
+    contradicting a committed membership is rejected; the repair dropping
+    it commits without it."""
+    responses1 = [json.dumps(_wave1_output())]
+    _enqueue(world, places=["Greymarch"], key_figures=["Mira"], notes="")
+    run_next_job(provider=lambda prompt, settings: responses1.pop(0), settings=SETTINGS)
+    responses2 = [
+        json.dumps(_wave1_output()),
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "ref": "N0",
+                        "kind": "place",
+                        "name": "The Drowned Quay",
+                        "text": "silt and moorings",
+                    }
+                ],
+                "edges": [
+                    {"src": "C1", "dst": "C0", "type": "member_of"},
+                    {"src": "N0", "dst": "C0", "type": "relationship"},
+                ],
+            }
+        ),
+        json.dumps({"edges": []}),
+    ]
+    job_id2 = _enqueue(world, places=["Greymarch"], key_figures=["Mira"], notes="still circles")
+    run_next_job(provider=lambda prompt, settings: responses2.pop(0), settings=SETTINGS)
+    job2, _position = job_status(job_id2)
+    assert job2.state == "succeeded"
+    assert (job2.result or {})["entity_count"] == 3  # 2 wave-1 + The Drowned Quay
+    with session_scope() as session:
+        rows = {e.name: e.id for e in world_entities(session, world)}
+        edges = list(world_edges(session, world))
+    bar, mira = rows["The Gilded Bar"], rows["Mira Vane"]
+    member = [(e.src, e.dst) for e in edges if e.type == "member_of"]
+    assert (bar, mira) in member  # the original direction stands
+    assert (mira, bar) not in member  # the contradiction never committed
+    assert any(
+        e.src == rows["The Drowned Quay"] and e.dst == bar and e.type == "relationship"
+        for e in edges
+    )

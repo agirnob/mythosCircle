@@ -46,6 +46,7 @@ import dataclasses
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from types import MappingProxyType
 from typing import Any, NamedTuple, cast
 
 from sqlalchemy import select
@@ -313,6 +314,402 @@ class ContextRef(NamedTuple):
 def _context_refs(entities: Sequence[models.Entity]) -> list[ContextRef]:
     """The detail tier's ContextRefs (committed rows, world order)."""
     return [ContextRef(entity.id, entity.name, entity.kind) for entity in entities]
+
+
+# ---------------------------------------------------------------------------
+# Edge kind contract (owner decision 2026-09-12)
+# ---------------------------------------------------------------------------
+
+#: Kind compatibility for the closed edge vocabulary. ONE table feeds BOTH
+#: the prompt guidance (layer 1 — ``edge_guidance_lines``) and the
+#: validator + bounded repair (layer 2 — ``_edge_kind_rows``,
+#: ``_clean_edge_kinds``), so the text and the enforcement cannot drift.
+#: ``None`` = any kind; an absent type is unrestricted. Audit d5
+#: (rung-100 world, 2026-09-12): 39/153 edges violated these rules —
+#: 14 member_of edges with a place, 3 reversed located_in, 22 mutual
+#: member_of (11 pairs) — plus 87 catch-all ``relationship`` edges the
+#: guidance counters. The anti-pattern no per-edge rule captures —
+#: membership is hierarchical, never both directions — is enforced as a
+#: graph rule by the same layer 2.
+EDGE_KIND_RULES: Mapping[str, tuple[frozenset[str] | None, frozenset[str] | None]] = (
+    MappingProxyType(
+        {
+            "located_in": (None, frozenset({"place"})),
+            "member_of": (
+                frozenset({"character", "faction"}),
+                frozenset({"character", "faction"}),
+            ),
+            "loyalty": (
+                frozenset({"character", "faction"}),
+                frozenset({"character", "faction"}),
+            ),
+        }
+    )
+)
+
+#: The prompt-side surplus for specific types (layer 1). Kept out of the
+#: machine-readable table so guidance prose stays prose.
+_EDGE_GUIDANCE: Mapping[str, str] = MappingProxyType(
+    {
+        "located_in": "X is physically inside Y — a place's floor, walls, or waters",
+        "member_of": (
+            "membership is hierarchical: Y CONTAINS X; a place is never a "
+            "member and never a host; ONE direction only — never both "
+            "A member_of B and B member_of A"
+        ),
+        "loyalty": "a place holds and receives no loyalty",
+        "relationship": "LAST RESORT — prefer the specific type that fits",
+    }
+)
+
+
+def edge_kind_ok(edge_type: str, src_kind: str, dst_kind: str) -> bool:
+    """The kind-compatibility rule for one edge (layer 2 enforces, layer 1
+    prints). Unrestricted types accept any kind pair."""
+    src, dst = EDGE_KIND_RULES.get(edge_type, (None, None))
+    return (src is None or src_kind in src) and (dst is None or dst_kind in dst)
+
+
+def _kind_pattern(kinds: frozenset[str] | None) -> str:
+    return "any" if kinds is None else "|".join(sorted(kinds))
+
+
+def edge_guidance_lines() -> list[str]:
+    """The layer-1 EDGE VOCABULARY block shared by every build prompt —
+    single-sourced from ``EDGE_KIND_RULES`` so the prompt text and the
+    validator rules cannot drift. Pure and byte-deterministic (AD-16):
+    a function of nothing."""
+    lines = ["EDGE VOCABULARY (closed set — never invent a type)"]
+    for edge_type in sorted(EDGE_TYPES):
+        src, dst = EDGE_KIND_RULES.get(edge_type, (None, None))
+        line = f"- {edge_type}: {_kind_pattern(src)} -> {_kind_pattern(dst)}"
+        guidance = _EDGE_GUIDANCE.get(edge_type)
+        if guidance:
+            line = f"{line} — {guidance}"
+        lines.append(line)
+    lines.append("- an edge connects two DIFFERENT entities — never a self-edge")
+    return lines
+
+
+def _kind_violation_reason(edge_type: str, src_kind: str, dst_kind: str) -> str:
+    if edge_type == "located_in":
+        return f"located_in must point at a place, not a {dst_kind}"
+    if edge_type == "member_of":
+        if src_kind == "place":
+            return "a place cannot be a member of anything"
+        return "nothing is a member of a place — use located_in"
+    if edge_type == "loyalty":
+        return "a place holds and receives no loyalty"
+    return f"{edge_type} is not allowed between {src_kind} and {dst_kind}"
+
+
+def _kind_violation_message(wave: int, violations: Sequence[dict[str, Any]]) -> str:
+    parts = [
+        f"edge {violation['index']} {violation['src']} --{violation['type']}--> "
+        f"{violation['dst']} ({violation['src_kind']} -> {violation['dst_kind']}): "
+        f"{violation['reason']}"
+        for violation in violations
+    ]
+    return f"wave {wave}: edge-kind rule violations — " + "; ".join(parts)
+
+
+class _EdgeKindViolationError(JobPayloadError):
+    """Layer 2's kind-violation signal: one or more edges pair kinds
+    ``EDGE_KIND_RULES`` forbids, or form a mutual ``member_of`` pair.
+    Carries the raw offending rows; the runner's one bounded edges-only
+    repair re-fixes them — wave 1 degrades to drop-with-audit (precedent:
+    the wiring pass and the edgeless commit), wave 2 fails loud (its
+    anchors matter). Subclasses ``JobPayloadError`` so every existing
+    fail path keeps working."""
+
+    def __init__(self, message: str, violations: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.violations = violations
+
+
+def _endpoint_position(ref: Any, prefix: str) -> int | None:
+    """Parse ``prefix<index>`` permissively (canonical decimal). None when
+    the ref lacks the shape — malformed refs stay ``_resolve_edges``'s
+    rejection, not this classifier's."""
+    if not isinstance(ref, str) or not ref.startswith(prefix):
+        return None
+    digits = ref[len(prefix) :]
+    if not digits.isdigit():
+        return None
+    return int(digits)
+
+
+def _ref_kind(
+    ref: Any,
+    *,
+    entity_kinds: Sequence[str | None],
+    context: Sequence[ContextRef],
+    ref_offset: int,
+) -> str | None:
+    """The kind an edge endpoint ref names, or None when unresolvable
+    here. E-refs are global and offset into the entity slice; N-refs index
+    the slice directly; C-refs index the anchor context."""
+    if ref.startswith("E"):
+        position = _endpoint_position(ref, "E")
+        if position is None:
+            return None
+        position -= ref_offset
+        return entity_kinds[position] if 0 <= position < len(entity_kinds) else None
+    if ref.startswith("N"):
+        position = _endpoint_position(ref, "N")
+        if position is None:
+            return None
+        return entity_kinds[position] if 0 <= position < len(entity_kinds) else None
+    if ref.startswith("C"):
+        position = _endpoint_position(ref, "C")
+        if position is None:
+            return None
+        return context[position].kind if 0 <= position < len(context) else None
+    return None
+
+
+def _raw_entity_kinds(raw_entities: Sequence[Any]) -> list[str | None]:
+    """The kind per raw entity position, folded with the SAME
+    canonicalization ``_validate_entities`` applies (a role written in
+    ``kind`` still classifies as character). None = the row will be
+    rejected structurally; its edges skip the kind check, not the
+    rejection."""
+    kinds: list[str | None] = []
+    for raw in raw_entities:
+        if not isinstance(raw, dict):
+            kinds.append(None)
+            continue
+        folded = canonicalize_entity_kind(raw.get("kind"))
+        kinds.append(folded[0] if folded is not None else None)
+    return kinds
+
+
+def _edge_kind_rows(
+    wave: int,
+    raw_edges: Sequence[Any],
+    entity_kinds: Sequence[str | None],
+    *,
+    context: Sequence[ContextRef] = (),
+    ref_offset: int = 0,
+    world_member_edges: frozenset[tuple[str, str]] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Classify raw edge rows against layer 2. Two rule classes: the
+    per-type kind pairs of ``EDGE_KIND_RULES``, and the graph rule that
+    membership is hierarchical — a ``member_of`` row whose reverse exists
+    in the wave (ref pair) or in the committed world (resolved C-id pair)
+    is a violation. Returns the offending rows augmented with
+    ``src_kind``/``dst_kind``/``reason``."""
+    violations: list[dict[str, Any]] = []
+    member_rows: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_edges):
+        if not isinstance(raw, dict):
+            continue  # structural garbage is _resolve_edges's rejection
+        edge_type = raw.get("type")
+        if edge_type not in EDGE_TYPES:
+            continue
+        src_ref, dst_ref = raw.get("src"), raw.get("dst")
+        src_kind = _ref_kind(
+            src_ref, entity_kinds=entity_kinds, context=context, ref_offset=ref_offset
+        )
+        dst_kind = _ref_kind(
+            dst_ref, entity_kinds=entity_kinds, context=context, ref_offset=ref_offset
+        )
+        if src_kind is None or dst_kind is None:
+            continue
+        row = {
+            "index": index,
+            "src": src_ref,
+            "dst": dst_ref,
+            "type": edge_type,
+            "src_kind": src_kind,
+            "dst_kind": dst_kind,
+        }
+        if not edge_kind_ok(edge_type, src_kind, dst_kind):
+            violations.append(
+                {**row, "reason": _kind_violation_reason(edge_type, src_kind, dst_kind)}
+            )
+        elif edge_type == "member_of":
+            member_rows.append(row)
+    reverse_pairs = {(row["dst"], row["src"]) for row in member_rows}
+    for row in member_rows:
+        if row["src"] != row["dst"] and (row["src"], row["dst"]) in reverse_pairs:
+            violations.append(
+                {
+                    **row,
+                    "reason": "mutual member_of — membership is hierarchical, ONE direction only",
+                }
+            )
+    if world_member_edges:
+        for row in member_rows:
+            src_position = _endpoint_position(row["src"], "C")
+            dst_position = _endpoint_position(row["dst"], "C")
+            if src_position is None or dst_position is None:
+                continue
+            if not 0 <= src_position < len(context) or not 0 <= dst_position < len(context):
+                continue
+            if (context[dst_position].id, context[src_position].id) in world_member_edges:
+                violations.append(
+                    {
+                        **row,
+                        "reason": (
+                            "mutual member_of with the committed world — membership is hierarchical"
+                        ),
+                    }
+                )
+    return violations
+
+
+def _world_member_pairs(campaign_id: str) -> frozenset[tuple[str, str]]:
+    """The committed world's member_of pairs — the other side of wave-2's
+    mutual-membership check (a new C-to-C membership contradicting one the
+    world already has)."""
+    with session_scope() as session:
+        return frozenset(
+            (row.src, row.dst)
+            for row in session.scalars(
+                select(models.Edge).where(
+                    models.Edge.campaign_id == campaign_id, models.Edge.type == "member_of"
+                )
+            )
+        )
+
+
+def _build_edge_kind_repair_prompt(
+    *,
+    wave: int,
+    roster: Sequence[tuple[str, str, str | None]],
+    context: Sequence[ContextRef],
+    existing: Sequence[Any],
+    rejected: Sequence[dict[str, Any]],
+) -> str:
+    """The one bounded edge-kind repair prompt (layer 2): frozen roster,
+    rejected edges with their kinds and reasons, and the same guidance the
+    generation prompts carry. The response is edges-only — renames and
+    drops are representable by omitting rows."""
+    lines = [
+        "You are repairing edges rejected by the world's kind rules.",
+        "",
+        *edge_guidance_lines(),
+        "",
+        "ENTITIES (frozen — the edge roster):",
+        *(f"- {ref} {name!r} ({kind})" for ref, name, kind in roster),
+        *(f"- C{index} {ref.name!r} ({ref.kind})" for index, ref in enumerate(context)),
+        "",
+        "ALREADY-ACCEPTED EDGES (keep as-is — do NOT re-emit them):",
+        *(
+            f"- {row.get('src')} --{row.get('type')}--> {row.get('dst')}"
+            for row in existing
+            if isinstance(row, dict)
+        ),
+        "",
+        "REJECTED EDGES — return a corrected version of EACH, or omit it:",
+        *(
+            f"- {row['src']} --{row['type']}--> {row['dst']} "
+            f"({row.get('src_kind')} -> {row.get('dst_kind')}): {row.get('reason')}"
+            for row in rejected
+        ),
+        "",
+        'Return ONE JSON object: {"edges": [{"src": "<ref>", "dst": "<ref>",',
+        '"type": "<vocabulary member>", "counter": <integer, default 1>}]} —',
+        "ONLY corrections for the rejected edges. No self-edges.",
+    ]
+    return "\n".join(lines)
+
+
+def _clean_edge_kinds(
+    *,
+    wave: int,
+    raw_edges: list[Any],
+    entity_roster: Sequence[tuple[str, str, str | None]],
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    ceiling: int,
+    context: Sequence[ContextRef] = (),
+    world_member_edges: frozenset[tuple[str, str]] = frozenset(),
+    allow_drop: bool,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Layer 2's bounded edge-kind repair: classify the raw rows; on
+    violations, ONE edges-only repair call (frozen roster, cold+seeded,
+    ref-pinned — the anchor-repair pattern) asks for corrected versions; a
+    still-violating remainder is DROPPED with the audit under
+    ``allow_drop`` (wave 1 — its edges are best-effort, precedent: the
+    wiring pass) or fails the job (wave 2 — its anchors matter). Returns
+    ``(cleaned_rows, audit)``; the audit is empty when nothing dropped."""
+    kinds = [kind for _ref, _name, kind in entity_roster]
+    violations = _edge_kind_rows(
+        wave, raw_edges, kinds, context=context, world_member_edges=world_member_edges
+    )
+    if not violations:
+        return raw_edges, []
+    invalid_indices = {violation["index"] for violation in violations}
+    new_refs = [ref for ref, _name, _kind in entity_roster]
+    core_refs = [f"C{index}" for index in range(len(context))]
+    repair_settings = _repair_sampling(
+        dataclasses.replace(
+            settings,
+            response_format=build_anchor_repair_schema(new_refs, core_refs),
+            max_tokens=min(ceiling, EDGES_CALL_MAX_TOKENS),
+        )
+    )
+    prompt = _build_edge_kind_repair_prompt(
+        wave=wave,
+        roster=entity_roster,
+        context=context,
+        existing=raw_edges,
+        rejected=violations,
+    )
+    try:
+        repaired = _call_wave(
+            budget,
+            provider,
+            repair_settings,
+            prompt,
+            label=f"wave{wave}_edge_kind_repair",
+            parse=lambda text: _parse_edges_only_output(
+                text, what=f"wave {wave}: edge-kind repair"
+            ),
+            retry_note='Return ONLY the one JSON object: {"edges": [...]} — the corrected edges.',
+            ceiling=ceiling,
+        )
+    except (JobPayloadError, ProviderError, BudgetExceededError) as exc:
+        if not allow_drop:
+            raise
+        logger.warning(
+            "wave %d edge-kind repair failed (%s: %s) — dropping the %d rejected "
+            "edge(s) (wave-1 edges are best-effort)",
+            wave,
+            exc.__class__.__name__,
+            exc,
+            len(violations),
+        )
+        # The rejected edges never came back — record them as dropped so
+        # the job result shows exactly what the failure cost.
+        return (
+            [row for index, row in enumerate(raw_edges) if index not in invalid_indices],
+            violations,
+        )
+    merged = [row for index, row in enumerate(raw_edges) if index not in invalid_indices]
+    merged.extend(_filter_wiring_edges(repaired, frozenset([*new_refs, *core_refs])))
+    residual = _edge_kind_rows(
+        wave, merged, kinds, context=context, world_member_edges=world_member_edges
+    )
+    if residual:
+        if not allow_drop:
+            raise JobPayloadError(_kind_violation_message(wave, residual))
+        drop = {violation["index"] for violation in residual}
+        kept = [row for index, row in enumerate(merged) if index not in drop]
+        logger.info(
+            "wave %d: %d edge(s) still kind-invalid after repair — dropped: %s",
+            wave,
+            len(residual),
+            "; ".join(
+                f"{violation['src']} --{violation['type']}--> {violation['dst']}"
+                for violation in residual
+            ),
+        )
+        return kept, residual
+    return merged, []
 
 
 def _rolled_seed(settings: LLMSettings, attempt: int) -> LLMSettings:
@@ -1327,7 +1724,7 @@ def _run_wave1_chunks(
     *,
     ceiling: int,
     progress: Callable[[float], None],
-) -> tuple[list[models.EntityInput], list[models.EdgeInput], bool]:
+) -> tuple[list[models.EntityInput], list[models.EdgeInput], bool, list[dict[str, Any]]]:
     """Chunked wave-1 generation plus the edges-only wiring pass (M1).
 
     Each chunk call is pinned to its slice (count AND ref enums over its
@@ -1340,7 +1737,11 @@ def _run_wave1_chunks(
     pass then adds cross-chunk edges over the compact roster; it is
     BEST-EFFORT — any failure degrades to committing the chunk-internal
     edges only (the edgeless commit is legal, owner verdict 2026-09-11:
-    the DM prunes). Returns ``(entities, edges, cancelled)``."""
+    the DM prunes). The assembled edge set then passes layer 2's kind
+    cleanup (one bounded repair; residual violations drop with the audit —
+    wave-1 edges are best-effort, same verdict). Returns
+    ``(entities, edges, cancelled, kind_dropped)`` where ``kind_dropped``
+    is the audit of edges dropped by the cleanup (empty when none)."""
     entities: list[models.EntityInput] = []
     assigned_ids: list[str] = []
     raw_edges: list[Any] = []
@@ -1348,7 +1749,7 @@ def _run_wave1_chunks(
     retry_note = 'Return ONLY the one JSON object: {"entities": [...], "edges": [...]}.'
     for index, chunk in enumerate(chunks):
         if not _job_still_running(job):
-            return entities, [], True
+            return entities, [], True, []
         refs = [f"E{position}" for position, _section, _entry in chunk]
         chunk_settings = dataclasses.replace(
             settings,
@@ -1378,7 +1779,7 @@ def _run_wave1_chunks(
     # anchor-repair shape (frozen entities, endpoint/type enums), so a rename
     # or an invented endpoint is unrepresentable on grammar backends.
     if not _job_still_running(job):
-        return entities, [], True
+        return entities, [], True, []
     valid_refs = frozenset(f"E{position}" for position in range(len(entities)))
     wiring_roster = [
         (f"E{position}", entity.name, entity.kind, _wiring_excerpt(entity))
@@ -1408,9 +1809,21 @@ def _run_wave1_chunks(
             exc,
             job.id,
         )
-    edges, _anchored = _resolve_edges(1, raw_edges, assigned_ids)
+    cleaned_edges, kind_dropped = _clean_edge_kinds(
+        wave=1,
+        raw_edges=raw_edges,
+        entity_roster=[
+            (f"E{position}", entity.name, entity.kind) for position, entity in enumerate(entities)
+        ],
+        budget=budget,
+        provider=provider,
+        settings=settings,
+        ceiling=ceiling,
+        allow_drop=True,
+    )
+    edges, _anchored = _resolve_edges(1, cleaned_edges, assigned_ids)
     progress(0.42)
-    return entities, edges, False
+    return entities, edges, False, kind_dropped
 
 
 def _drop_roster_twins(
@@ -1575,6 +1988,25 @@ def _run_wave2(
             ),
             _wave_result(2, head.id, (), ()),
         )
+    raw_entities_2 = parsed_2.get("entities") or []
+    kinds_2 = _raw_entity_kinds(raw_entities_2)
+    entity_roster_2: list[tuple[str, str, str | None]] = []
+    for index, (row, kind) in enumerate(zip(raw_entities_2, kinds_2, strict=True)):
+        name = row.get("name", "") if isinstance(row, dict) else ""
+        entity_roster_2.append((f"N{index}", name if isinstance(name, str) else "", kind))
+    cleaned_2, _kind_drop_2 = _clean_edge_kinds(
+        wave=2,
+        raw_edges=list(parsed_2.get("edges") or []),
+        entity_roster=entity_roster_2,
+        budget=budget,
+        provider=provider,
+        settings=settings,
+        ceiling=ceiling,
+        context=anchor_context,
+        world_member_edges=_world_member_pairs(job.campaign_id),
+        allow_drop=False,
+    )
+    parsed_2 = {**parsed_2, "edges": cleaned_2}
     progress(0.7)
     try:
         entities_2, edges_2 = _validate_subgraph(
@@ -1739,10 +2171,27 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             retry_note='Return ONLY the one JSON object: {"entities": [...], "edges": [...]}.',
             ceiling=ceiling,
         )
+        raw_entities_1 = parsed_1.get("entities") or []
+        kinds_1 = _raw_entity_kinds(raw_entities_1)
+        entity_roster_1: list[tuple[str, str, str | None]] = []
+        for index, (row, kind) in enumerate(zip(raw_entities_1, kinds_1, strict=True)):
+            name = row.get("name", "") if isinstance(row, dict) else ""
+            entity_roster_1.append((f"E{index}", name if isinstance(name, str) else "", kind))
+        cleaned_1, kind_dropped_1 = _clean_edge_kinds(
+            wave=1,
+            raw_edges=list(parsed_1.get("edges") or []),
+            entity_roster=entity_roster_1,
+            budget=budget,
+            provider=provider,
+            settings=settings,
+            ceiling=ceiling,
+            allow_drop=True,
+        )
+        parsed_1 = {**parsed_1, "edges": cleaned_1}
         entities_1, edges_1 = _validate_subgraph(1, parsed_1)
         progress(0.2)
     else:
-        entities_1, edges_1, cancelled = _run_wave1_chunks(
+        entities_1, edges_1, cancelled, kind_dropped_1 = _run_wave1_chunks(
             job,
             budget,
             provider,
@@ -1810,6 +2259,8 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         _wave_result(1, revision_1.id, outcome_1.roster, outcome_1.edges)
     ]
     merge_reports: dict[str, Any] = {"wave1": outcome_1.report}
+    if kind_dropped_1:
+        merge_reports["wave1"]["edge_kind_dropped"] = kind_dropped_1
     # Cancel-race poll: a cancel that landed during wave 1's call/commit
     # leaves the committed core in place but stops before progress writes.
     if not _job_still_running(job):
@@ -1969,8 +2420,7 @@ def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) 
         "Once this wave commits, later waves reference these entities as C<index> in",
         "the context list they receive.",
         "",
-        "EDGE VOCABULARY (closed set — never invent a type)",
-        *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
+        *edge_guidance_lines(),
         "",
         "COUNTER SEMANTICS (one integer per edge)",
         *(f"- {edge_type}: {edge_counter_semantic(edge_type)}" for edge_type in sorted(EDGE_TYPES)),
@@ -2066,8 +2516,7 @@ def build_wave1_chunk_prompt(
         f"Edge src/dst must be refs from YOUR ENTITIES list (E{start}..E{end}).",
         "Names must be non-blank.",
         "",
-        "EDGE VOCABULARY (closed set — never invent a type)",
-        *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
+        *edge_guidance_lines(),
         "",
         "COUNTER SEMANTICS (one integer per edge)",
         *(f"- {edge_type}: {edge_counter_semantic(edge_type)}" for edge_type in sorted(EDGE_TYPES)),
@@ -2130,8 +2579,7 @@ def _build_wiring_prompt(
         "src/dst must be refs from the list above; edges must connect two different",
         "entities — no self-loops; never repeat an identical edge.",
         "",
-        "EDGE VOCABULARY (closed set — never invent a type)",
-        *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
+        *edge_guidance_lines(),
         "",
         "COUNTER SEMANTICS (one integer per edge)",
         *(f"- {edge_type}: {edge_counter_semantic(edge_type)}" for edge_type in sorted(EDGE_TYPES)),
@@ -2260,8 +2708,7 @@ def build_wave2_prompt(
         f"matching the detail context and the compact roster above (the core is {core_label}).",
         "Names must be non-blank.",
         "",
-        "EDGE VOCABULARY (closed set — never invent a type)",
-        *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
+        *edge_guidance_lines(),
         "",
         "COUNTER SEMANTICS (one integer per edge)",
         *(f"- {edge_type}: {edge_counter_semantic(edge_type)}" for edge_type in sorted(EDGE_TYPES)),
@@ -2481,8 +2928,7 @@ def _build_anchor_repair_prompt(
         "src/dst must be a frozen new-entity ref or a core ref from the rosters above.",
         "Edges must connect two different entities — no self-loops.",
         "",
-        "EDGE VOCABULARY (closed set — never invent a type)",
-        *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
+        *edge_guidance_lines(),
     ]
     return "\n".join(lines)
 
@@ -2888,6 +3334,21 @@ def _validate_subgraph(
             f"wave {wave}: output must be a JSON object with 'entities' and 'edges' lists"
         )
     entity_inputs, assigned_ids = _validate_entities(wave, raw_entities, ref_offset=ref_offset)
+    kind_violations = _edge_kind_rows(
+        wave,
+        raw_edges,
+        [entity.kind for entity in entity_inputs],
+        context=context,
+        ref_offset=ref_offset,
+    )
+    if kind_violations:
+        # Layer 2's enforcement backstop: the runner cleans raw edges
+        # BEFORE validation (the bounded repair / drop-with-audit path), so
+        # this fires only on a cleaning miss — the wave-2 re-validation
+        # after the anchor repair, whose new edges the repair never saw.
+        raise _EdgeKindViolationError(
+            _kind_violation_message(wave, kind_violations), kind_violations
+        )
     resolved_core = (
         core_ids
         if core_ids is not None

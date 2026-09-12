@@ -716,3 +716,27 @@ frontend 202 passed / vue-tsc+eslint clean):
   operator pins win, the JSON retry rolls seed+1 so a cold profile never
   re-samples its own failure); wave-class calls stay warm. Per-model
   batch/pool sizes remain deferred with Cut 3 (remote-API trigger).
+
+## Rung 25 — attempt d6, edge-kind layers 1+2 — SUCCEEDED, 26 calls / 226s (GREEN)
+
+- Code = the 2026-09-12 edge-kind cut (owner decision after the d5 world
+  audit: 39/153 = 25.5% structurally invalid edges): every prompt now
+  carries per-type kind guidance from EDGE_KIND_RULES (layer 1), and the
+  validator + ONE bounded edges-only repair enforce the same table plus
+  the mutual-member_of graph rule (layer 2); wave-1 residual violations
+  drop with the job-result audit, wave-2 fails loud. Same seed
+  (rung-25), same model (gemma-4-26B-A4B).
+- LIVE PROOF the enforcement was needed: the guidance alone did NOT stop
+  the model — `wave1_edge_kind_repair` fired ONCE on real output; the
+  repair fixed every rejected edge; ZERO drops (audit empty). The
+  committed graph is kind-clean AND mutual-clean (0 violations / 0
+  mutual pairs on 42 edges) vs d5's 25.5% / 11 pairs.
+- The type mix MOVED with the guidance: located_in 4 -> 18 (the model
+  finally used the spatial type it had been faking with member_of),
+  member_of 56 -> 6, generic relationship 87 -> 11. The bare-enum
+  vocabulary block WAS the cause — confirmed by the fix, not assumed.
+- Suite: 1233 backend (incl. 9 new edge-kind tests: rule pins, prompt
+  guidance pins, wave-1 repair / residual-drop audit / dead-repair drop,
+  mutual repair, wave-2 repaired-vs-fail, world-mutual), ruff/format/mypy
+  clean.
+- Tee'd calls + prompts + committed.db in `/tmp/mythos-ladder/calls-d6/`.
