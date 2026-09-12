@@ -502,3 +502,120 @@ roster-scaled budget. Model swap is the ONLY variable.
   on 100% of characters; the deterministic `conform_stat_power` then
   rewrites the damage upward, so the committed block is the conform's
   arithmetic, not the model's. Gemma "passes" the band only by inflating.
+
+---
+
+# The 100-entity cut ships — d-series (2026-09-12, owner: "start the implementation")
+
+Code (one session, three tracks; backend 1215 passed / ruff+format+mypy clean,
+frontend 202 passed / vue-tsc+eslint clean):
+
+- Foundation: sampling passthrough (temperature/top_p/seed tri-state,
+  env > config > default, body carries each key only when set); build_in
+  enqueue budget `max(64, 3*figures + ceil(total/8) + 32)` (explicit
+  payload value still wins); CallBudget reserve-then-call under a lock
+  (parallel-safe, refuse-before-HTTP kept) + per-label telemetry — the job
+  result now carries `llm_calls: {total, by_label{calls, seconds}}`.
+- NPC oracle (the ledger's option (b) + DM-visible stamp): `_check_power`
+  band enforcement is MONSTER-ONLY; NPC/BBEG under-powered/frail never
+  violate; `conform_power` refuses non-Monsters (no more machine
+  inflation); `_stamp_power` now also stamps NPC/BBEG under-powered
+  (`StatBlock.vue` renders "Under-powered — DPR x vs band y"); rules text,
+  POWER DISCIPLINE, and the DPR recipes rewritten honestly — the prompt no
+  longer quotes the monster table as the NPC grade.
+- Conform-first: Monster power-only misses go straight to the
+  deterministic conform, ZERO LLM calls (measured rationale: Qwen nudges
+  8.5->13->17 and never reaches band; gemma overshoots; the conform lands
+  the exact row in one pass). The LLM passes are left to SHAPE violations.
+- Runner: chunked wave-1 generation (weighted slices — figures 1.0, flats
+  0.35, budget 12.0, hard cap 16; global E-refs; per-chunk count AND ref
+  enum pins; FULL DM notes ride every chunk) + an edges-only wiring pass
+  over the compact assembled roster (best-effort: any failure degrades to
+  the legal edgeless commit, never a job death). Rosters within one chunk
+  keep the original single-call path byte-identically (rung-10 regression
+  property). Retry taxonomy: malformed JSON -> ONE re-elicitation quoting
+  the decoder error with a rolled seed (never an identical re-call);
+  truncation -> ONE doubled-window retry inside the operator cap; semantic
+  rejections stay terminal; the anchor repair gains its first JSON retry.
+  Per-call `max_tokens` sized from the pinned count (900/entity + 4096,
+  min 2048, inside settings.max_tokens); edges-only calls get a fixed
+  16,384 window; wave 2 caps at 24 entities / 256 edges.
+- Wave-2 two-tier context: the 24-row AR6 detail tier stays, plus a
+  COMPACT roster line for every wave-1 entity beyond the cap; C-refs, the
+  anchor rule, and the anchor-repair enums all validate against the FULL
+  wave-1 roster (the ledger's phantom-orphan-at-scale entry, resolved for
+  build-in; the generate-path sibling stays open).
+- Stale-rebase (both waves): a stale base re-commits once against the new
+  head — no regeneration lost; wave 2 additionally re-runs its WHOLE pass
+  exactly once when the rebase finds deleted endpoints.
+- Progress: monotone per-chunk/per-gate milestones (cancel-safe), 0.5 at
+  the wave-1 commit and 1.0 at the wave-2 commit kept.
+- E2 (present-key `data` constraints in the wave schema) was tried and
+  REVERTED the same day on live evidence — attempt d1 below. `data` stays
+  an open object; identity garbage remains owned by the validator + the
+  identity merge guards.
+
+## Rung 10 — attempt d1, E2 schema — FAILED, 4 calls (wave-1 record death)
+
+- Call 1 (wave 1, schema=True): 20,209-char prompt -> 4,466-char response
+  in 43.8s. All six characters carried `data.stat_block` — the ONLY
+  described key inside `data` — and NO AR24 record fields at all
+  (role/personality/... absent). Described-key bias under grammar
+  sampling: the schema described stat_block's innards, and the model wrote
+  exactly the described shape and nothing else.
+- Record gate burned its one pass across 2 chunks (calls 2-3); terminal:
+  `E5 Ssketh fails the character record: boss must be an object` (Ssketh
+  rolled Monster; the repaired record's boss stayed malformed).
+- Verdict: E2's identity-garbage hardening is not worth a new death class —
+  every prior Qwen/gemma roll on the OPEN data schema shipped full
+  records in-wave. Reverted; d2 re-rolls on the reverted schema. Tee'd
+  calls in `/tmp/mythos-ladder/calls-d1/`.
+
+## Rung 10 — attempt d2, cut code — SUCCEEDED, 3 calls (GREEN, 147.6s)
+
+- Wave 1: 20,209-char prompt -> 26,580 chars in 99.3s, parsed first try,
+  10/10 entities + 10 edges, full records in-wave (E1 kind/ref enums +
+  count pin carried; window sized 13,096). ONE record repair (2.4s).
+- ZERO stat calls: all six NPCs arrived authentic — committed DPR 6.5-12.5
+  ("Hit: 10 (1d8 + ...)", the model's own arithmetic), none flagged, and
+  6/6 carry the new under-powered stamp (DB-verified: Wren
+  `{dpr: 6.5, band: [75, 80], verdict: under-powered}`). Two Monsters
+  (Ssketh CR 2, The Knocker CR 3) committed unstamped. The ledger's
+  "committed block is the conform's arithmetic, not the model's" is dead.
+- Wave 2: 3 entities + 6 edges, first try, no anchor repair. Total 13
+  entities / 16 edges, closed vocabulary. Old-code Qwen baseline on this
+  rung: 11-16 calls (and 1 death in 3 attempts). New: 3 calls.
+- Telemetry live in the result: `llm_calls.by_label` = wave1 / record /
+  wave2 with per-label seconds. Tee'd calls in `/tmp/mythos-ladder/calls-d2/`.
+
+## Rung 25 — attempt d3, chunked path — SUCCEEDED, 9 calls (GREEN, 348s)
+
+- Wave 1 CHUNKED live: chunk0 = 18 entities (10 flats + 8 figures, weight
+  budget binds at 12.0) — 21,296-char prompt -> 27,565 in 109.7s; chunk1 =
+  7 figures — 20,381 -> 38,371 in 148.3s. Count + global-ref pins held on
+  both (E0..E17 / E18..E24), both parsed first try. Wiring pass over the
+  25-line compact roster: 4,224 -> 2,361 chars in 13.0s under the
+  edges-only schema. Wave 1 committed 25/25 + 40 edges.
+- Repairs: ONE record call (2.0s); THREE stat calls — E12 Wren + E14 Salt
+  Abbess `spells require identity.class`, E18 Scribe Pell `spell 'Silence'
+  is not on the Wizard spell list` — all SHAPE family, zero power-driven
+  calls. The oracle + conform-first prediction holds live: the LLM only
+  repairs what Python cannot.
+- Wave 2: two-tier context prompt 70,180 chars (24 detail rows + compact
+  core lines; ~17K tokens, comfortable inside the server's 44.8K ctx) ->
+  2 entities; one orphan -> the anchor repair converged FIRST TRY
+  (edges-only, 75 chars, 6.4s) — the re-emit rename wall (0/8 on gemma)
+  has no purchase on this shape. Committed 2 + 6.
+- Totals: 27 entities / 46 edges, closed vocabulary, 15/16 characters
+  power-stamped (NPC under-powered), progress 1.0, per-label telemetry
+  complete (chunk0 109.7s / chunk1 148.3s / wiring 13.0s / record 2.0s /
+  stat 29.3s / wave2 39.0s / anchor 6.4s). Old-code Qwen baseline: 22
+  calls / 417s monolithic (single 199.8s wave call). New: 9 calls / 348s —
+  every call bounded (<150s), cancellable between chunks, truncation
+  structurally out of reach against sized windows.
+- Verdict: the d-series gate is GREEN on both rungs on Qwen3.8-27B
+  (single-call AND chunked paths). Suggestion: next rolls are rung 50
+  re-run on identical code, then a rung-100 seed (≈60/24/16 with notes
+  naming >24-position entities to exercise the compact tier as the
+  acceptance probe), plus a gemma-4-26B-A4B comparison pass. Tee'd calls
+  + prompts in `/tmp/mythos-ladder/calls-d3/`, DB snapshot beside them.
