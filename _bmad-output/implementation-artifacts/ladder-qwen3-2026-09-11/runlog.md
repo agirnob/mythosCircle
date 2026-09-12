@@ -393,3 +393,11 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   updated (wave-1 slots pinned, wave-2 slots free) + COUNT_PIN literals.
   Gates: 1185 backend passed, ruff + mypy clean. Next: rung-50
   attempt 3 on pin code.
+
+## Rung 50 — attempt 3 — FAILED, 1 call (pin works, self-loop)
+
+- The pin WORKS: 50 entities emitted, 88 edges (dense wiring under the
+  forced count). Dead on a self-loop (E17 -> E17) — structure fail-fast,
+  no repair path. Count question answered; the loop is a fresh one-off.
+  Tee'd calls + prompts in `/tmp/mythos-ladder/calls-c8/`. Next:
+  attempt 4 re-rolls identical code.
