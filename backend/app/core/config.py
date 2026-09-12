@@ -164,7 +164,11 @@ def env_int_optional(name: str, default: int | None, minimum: int = 0) -> int | 
 #: Code defaults (fallback when neither config nor env provides).
 DEFAULT_MAX_PENDING = 10
 DEFAULT_LLM_ENDPOINT = "http://127.0.0.1:8080/v1"
-DEFAULT_LLM_MODEL = "mythos-14b-q5"
+#: Owner verdict 2026-09-12 (ladder d4/d5 at rung 100): gemma-4-26B-A4B
+#: (MoE, 4B active) is the local default — 67 calls / 9.8 min vs Qwen3.8-27B's
+#: 35 calls / 24.7 min on the same payload; both green first try. Qwen stays
+#: the metered-route choice (half the billed calls); switch via env/config.
+DEFAULT_LLM_MODEL = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
 DEFAULT_LLM_TIMEOUT = 120.0
 #: Hard ceiling on one completion's generated tokens. This is a BACKSTOP,
 #: not the guard against a reasoning model rambling — that is

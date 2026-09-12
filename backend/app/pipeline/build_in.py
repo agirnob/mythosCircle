@@ -266,6 +266,7 @@ def _run_repair[R: Mapping[int, Any]](
     CONTRACT violations (wrong refs, duplicates, missing entries) inside
     well-formed JSON still fail immediately — they are deterministic, not
     JSON noise."""
+    settings = _repair_sampling(settings)
     repair_text = budget.call(lambda: provider(prompt, settings=settings), label=label)
     repaired = parse(repair_text, positions)
     if repaired is not None:
@@ -273,7 +274,8 @@ def _run_repair[R: Mapping[int, Any]](
     decode_error = json_error(repair_text)
     retry_text = budget.call(
         lambda: provider(
-            _repair_retry_prompt(prompt, repair_text, retry_note, decode_error), settings=settings
+            _repair_retry_prompt(prompt, repair_text, retry_note, decode_error),
+            settings=_rolled_seed(settings, 1),
         ),
         label=f"{label}_json_retry",
     )
@@ -321,6 +323,31 @@ def _rolled_seed(settings: LLMSettings, attempt: int) -> LLMSettings:
     if settings.seed is None:
         return settings
     return dataclasses.replace(settings, seed=settings.seed + attempt)
+
+
+#: Repair sampling preset (K, owner verdict 2026-09-12): a repair is a rule
+#: fix, not creative work — cold and seeded so every patch is reproducible
+#: from the tee'd calls and the ledger. Wave-class calls stay warm (the
+#: operator's sampling default). Per-MODEL profiles collapsed to the model
+#: choice itself: the d4/d5 measurements show no behavioral difference
+#: between Qwen and gemma beyond latency and repair traffic, so a
+#: per-model field registry would be invented machinery.
+REPAIR_TEMPERATURE = 0.0
+REPAIR_SEED = 20260912
+
+
+def _repair_sampling(settings: LLMSettings) -> LLMSettings:
+    """The cold+seeded preset for repair-class calls. Operator-pinned
+    values win — an explicit ``MYTHOSCIRCLE_LLM_SEED``/temperature is a
+    deliberate choice this preset must not stomp. ``_rolled_seed`` still
+    varies a JSON retry by seed+attempt, so a cold profile never
+    re-samples the identical failing patch."""
+    updates: dict[str, Any] = {}
+    if settings.temperature is None:
+        updates["temperature"] = REPAIR_TEMPERATURE
+    if settings.seed is None:
+        updates["seed"] = REPAIR_SEED
+    return dataclasses.replace(settings, **updates) if updates else settings
 
 
 def _wave_max_tokens(entity_count: int, ceiling: int) -> int:
@@ -2549,10 +2576,12 @@ def _anchor_repair(
         core_roster=core_roster,
         existing_edges=existing,
     )
-    repair_settings = dataclasses.replace(
-        settings,
-        response_format=build_anchor_repair_schema(new_refs, core_refs),
-        max_tokens=min(settings.max_tokens, EDGES_CALL_MAX_TOKENS),
+    repair_settings = _repair_sampling(
+        dataclasses.replace(
+            settings,
+            response_format=build_anchor_repair_schema(new_refs, core_refs),
+            max_tokens=min(settings.max_tokens, EDGES_CALL_MAX_TOKENS),
+        )
     )
     repair_edges = _call_wave(
         budget,

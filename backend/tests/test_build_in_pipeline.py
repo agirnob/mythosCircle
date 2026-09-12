@@ -22,6 +22,8 @@ from app.core import ids
 from app.core.settings import LLMSettings
 from app.pipeline import combat
 from app.pipeline.build_in import (
+    REPAIR_SEED,
+    REPAIR_TEMPERATURE,
     WAVE2_MAX_EDGES,
     WAVE2_MAX_ENTITIES,
     _build_record_repair_prompt,
@@ -4003,3 +4005,53 @@ def test_upsert_drops_duplicate_relationships(world: str) -> None:
     with session_scope() as session:
         edges = world_edges(session, world)
     assert sorted(e.counter for e in edges) == [1, 3]  # originals intact
+
+
+def test_repair_calls_are_cold_and_seeded(world: str) -> None:
+    """K sampling preset (owner verdict 2026-09-12): repair-class calls
+    carry temperature 0 + the pinned seed (reproducible patches) while
+    wave calls stay warm at the operator default; a malformed repair
+    response retries at seed+1 — a cold profile never re-samples the
+    identical failing patch."""
+    seen: list[LLMSettings] = []
+    output = _wave1_output()
+    output["entities"][1]["data"] = _character_record("Mira Vane")  # no stat_block
+    responses = [
+        json.dumps(output),
+        "not json at all",  # malformed repair -> one rolled-seed retry
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        seen.append(settings)
+        return responses.pop(0)
+
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    wave_call, repair_call, retry_call = seen
+    assert (wave_call.temperature, wave_call.seed) == (None, None)  # warm
+    assert (repair_call.temperature, repair_call.seed) == (REPAIR_TEMPERATURE, REPAIR_SEED)
+    assert retry_call.seed == REPAIR_SEED + 1
+
+
+def test_repair_sampling_respects_operator_pins(world: str) -> None:
+    """An operator-pinned seed/temperature is a deliberate choice — the
+    cold preset must not stomp it."""
+    pinned = dataclasses.replace(SETTINGS, seed=7, temperature=0.9)
+    seen: list[LLMSettings] = []
+    output = _wave1_output()
+    output["entities"][1]["data"] = _character_record("Mira Vane")
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
+    ]
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        seen.append(settings)
+        return responses.pop(0)
+
+    _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(provider=provider, settings=pinned)
+    assert seen[1].seed == 7 and seen[1].temperature == 0.9

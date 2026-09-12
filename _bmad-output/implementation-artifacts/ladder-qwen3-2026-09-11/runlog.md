@@ -697,3 +697,22 @@ frontend 202 passed / vue-tsc+eslint clean):
   allowance, Qwen the reverse. Default-model choice stays the owner's —
   deploy/config.toml still carries the ask-first placeholder.
 - Tee'd calls + prompts + committed.db in `/tmp/mythos-ladder/calls-d5/`.
+
+## Owner verdict — model default + K profiles (2026-09-12)
+
+- Owner's call after reading d4/d5: **gemma-4-26B-A4B is the default**
+  ("even with the recalls twice as much it finished 2.5 times faster").
+  `DEFAULT_LLM_MODEL` (app/core/config.py) and deploy/config.toml now
+  carry `unsloth/gemma-4-26B-A4B-it-qat-GGUF`; Qwen3.8-27B-GGUF is
+  documented beside it as the metered-route choice (half the billed
+  calls — the metric that inverts on paid APIs).
+- K resolved THINNER than the plan drafted: the d4/d5 pair shows no
+  per-model behavioral difference beyond latency and repair traffic —
+  the same chunk budget serves both, both converge inside the same retry
+  caps, and sampling temperature was measured on neither. A per-model
+  field registry would be invented machinery, so it does not exist.
+  What shipped is the call-CLASS profile from step 8: repair-class calls
+  are cold + seeded (`REPAIR_TEMPERATURE = 0.0`, `REPAIR_SEED`,
+  operator pins win, the JSON retry rolls seed+1 so a cold profile never
+  re-samples its own failure); wave-class calls stay warm. Per-model
+  batch/pool sizes remain deferred with Cut 3 (remote-API trigger).

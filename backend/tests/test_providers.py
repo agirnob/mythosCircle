@@ -21,7 +21,7 @@ def test_chat_completion_returns_assistant_text() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/chat/completions"
         body = request.read().decode()
-        assert '"model":"mythos-14b-q5"' in body
+        assert '"model":"unsloth/gemma-4-26B-A4B-it-qat-GGUF"' in body
         assert '"content":"describe the bar"' in body  # the user prompt rides the request
         return httpx.Response(
             200,

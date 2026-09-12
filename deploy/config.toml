@@ -24,7 +24,10 @@ log_file = "/var/log/mythoscircle/app.jsonl"
 # Switching to any OpenAI-compatible server (e.g. OpenRouter) is a
 # config change; the key, if any, is an environment variable.
 endpoint = "http://127.0.0.1:8080/v1"
-model = "mythos-14b-q5"
+# Owner verdict 2026-09-12 (ladder d4/d5, rung 100): gemma-4-26B-A4B wins
+# wall-clock 2.5x on the local server (9.8 min vs Qwen3.8-27B's 24.7 min);
+# Qwen3.8-27B-GGUF stays the metered-route model (half the billed calls).
+model = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
 # HTTP timeout for one chat-completion call (seconds). Local llama-server
 # generating full AR24 profiles decodes 5-6k tokens; at ~55 tok/s that is
 # ~2min of decode alone — the 120s default aborted mid-generation
