@@ -4009,11 +4009,12 @@ def test_upsert_drops_duplicate_relationships(world: str) -> None:
 
 
 def test_repair_calls_are_cold_and_seeded(world: str) -> None:
-    """K sampling preset (owner verdict 2026-09-12): repair-class calls
-    carry temperature 0 + the pinned seed (reproducible patches) while
+    """K sampling preset (owner verdict 2026-09-12): the FIRST repair-class
+    call carries temperature 0 + the pinned seed (reproducible patch) while
     wave calls stay warm at the operator default; a malformed repair
-    response retries at seed+1 — a cold profile never re-samples the
-    identical failing patch."""
+    response retries WARM (at temperature 0 every sample is argmax — seeds
+    and rolls are vacuous, d7 rung-100), so the retry is a genuinely new
+    sample."""
     seen: list[LLMSettings] = []
     output = _wave1_output()
     output["entities"][1]["data"] = _character_record("Mira Vane")  # no stat_block
@@ -4034,7 +4035,7 @@ def test_repair_calls_are_cold_and_seeded(world: str) -> None:
     wave_call, repair_call, retry_call = seen
     assert (wave_call.temperature, wave_call.seed) == (None, None)  # warm
     assert (repair_call.temperature, repair_call.seed) == (REPAIR_TEMPERATURE, REPAIR_SEED)
-    assert retry_call.seed == REPAIR_SEED + 1
+    assert (retry_call.temperature, retry_call.seed) == (None, None)  # warm retry
 
 
 def test_repair_sampling_respects_operator_pins(world: str) -> None:
@@ -4262,3 +4263,34 @@ def test_wave2_mutual_member_of_against_world_fixed(world: str) -> None:
         e.src == rows["The Drowned Quay"] and e.dst == bar and e.type == "relationship"
         for e in edges
     )
+
+
+def test_stat_repair_later_passes_go_warm(world: str) -> None:
+    """K preset + the 2026-09-12 rung-100 flake: a repair STUCK on a
+    content-level refusal (valid JSON, still-bad class) must NOT re-sample
+    identically — pass 1 is cold (reproducible), passes 2+ go WARM
+    (temperature 0 is argmax; seeds are vacuous variance)."""
+    seen: list[LLMSettings] = []
+    output = _wave1_output()
+    bad_block = {**_MIRA_STAT_BLOCK, "identity": {**_MIRA_STAT_BLOCK["identity"], "class": "Adept"}}
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_block}
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),  # stubborn pass 1
+        json.dumps(
+            {"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}
+        ),  # pass 2 fixes
+    ]
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        seen.append(settings)
+        return responses.pop(0)
+
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert seen[1].seed == REPAIR_SEED  # pass 1 reproducible
+    assert seen[1].temperature == REPAIR_TEMPERATURE
+    assert seen[2].temperature is None  # pass 2 warm — a new sample
+    assert seen[2].seed is None

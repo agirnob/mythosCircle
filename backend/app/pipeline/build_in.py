@@ -256,6 +256,7 @@ def _run_repair[R: Mapping[int, Any]](
     positions: Sequence[int],
     label: str,
     retry_note: str,
+    attempt: int = 1,
 ) -> R:
     """One bounded repair pass with exactly one JSON retry (AR25 stays
     one CONTENT repair — a malformed response is not a content verdict).
@@ -267,8 +268,8 @@ def _run_repair[R: Mapping[int, Any]](
     CONTRACT violations (wrong refs, duplicates, missing entries) inside
     well-formed JSON still fail immediately — they are deterministic, not
     JSON noise."""
-    settings = _repair_sampling(settings)
-    repair_text = budget.call(lambda: provider(prompt, settings=settings), label=label)
+    call_settings = _repair_sampling(settings, attempt=attempt)
+    repair_text = budget.call(lambda: provider(prompt, settings=call_settings), label=label)
     repaired = parse(repair_text, positions)
     if repaired is not None:
         return repaired
@@ -276,7 +277,7 @@ def _run_repair[R: Mapping[int, Any]](
     retry_text = budget.call(
         lambda: provider(
             _repair_retry_prompt(prompt, repair_text, retry_note, decode_error),
-            settings=_rolled_seed(settings, 1),
+            settings=_repair_sampling(settings, attempt=attempt + 1),
         ),
         label=f"{label}_json_retry",
     )
@@ -733,12 +734,18 @@ REPAIR_TEMPERATURE = 0.0
 REPAIR_SEED = 20260912
 
 
-def _repair_sampling(settings: LLMSettings) -> LLMSettings:
-    """The cold+seeded preset for repair-class calls. Operator-pinned
-    values win — an explicit ``MYTHOSCIRCLE_LLM_SEED``/temperature is a
-    deliberate choice this preset must not stomp. ``_rolled_seed`` still
-    varies a JSON retry by seed+attempt, so a cold profile never
-    re-samples the identical failing patch."""
+def _repair_sampling(settings: LLMSettings, *, attempt: int = 1) -> LLMSettings:
+    """The repair sampling switch: pass 1 is cold+seeded (a reproducible
+    first patch); every later sample — the JSON retry, the stat gate's
+    passes 2 and 3 — goes WARM. At temperature 0 every token is argmax,
+    so seeds and rolls are vacuous variance: measured 2026-09-12 at rung
+    100, a cold repair loop got deterministically stuck (the model kept
+    DELETING identity.class instead of choosing a valid value, all three
+    passes, and each rerun). Warmth is the escape hatch the taxonomy
+    needs while pass 1 keeps its reproducibility. Operator-pinned values
+    win on every attempt."""
+    if attempt > 1:
+        return settings
     updates: dict[str, Any] = {}
     if settings.temperature is None:
         updates["temperature"] = REPAIR_TEMPERATURE
@@ -964,6 +971,7 @@ def _enforce_stat_blocks(
                 parse=parse_stat_repair_output,
                 positions=[issue.position],
                 label="stat",
+                attempt=attempt,
                 retry_note='Return ONLY a "stat_blocks" list — one entry '
                 '{"ref": "E<position>", "stat_block": {...}} with the full corrected block.',
             )

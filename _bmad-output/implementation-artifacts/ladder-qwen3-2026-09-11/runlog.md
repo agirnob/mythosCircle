@@ -740,3 +740,34 @@ frontend 202 passed / vue-tsc+eslint clean):
   mutual repair, wave-2 repaired-vs-fail, world-mutual), ruff/format/mypy
   clean.
 - Tee'd calls + prompts + committed.db in `/tmp/mythos-ladder/calls-d6/`.
+
+## Rung 100 — attempt d7, edge-kind layers on the FULL roster — SUCCEEDED, 76 calls / 620s (GREEN, 4th attempt)
+
+- Same seed (rung-100.json), gemma-4-26B-A4B, code = edge-kind layers 1+2
+  + the K repair-sampling correction below. The world committed CLEAN:
+  100 wave-1 + 5 wave-2 entities, 114 edges, ZERO kind violations, ZERO
+  mutual member_of, ZERO drops (one `wave1_edge_kind_repair` call fixed
+  everything). Brother Quill in this world: `Quiet Rafe --relationship-->
+  Brother Quill`, `Brother Quill --enemy_of--> Vess` — no member_of-into-a-
+  place anywhere.
+- Attempts 1-3 of d7 failed and each failure taught something:
+  1. ref stutter (chunk 6 emitted E91 for pinned E92) — a known rare flake,
+     zero commits (atomicity held); rerun absorbed it.
+  2-3. `identity.class` stalemate: the K repair preset (temperature 0 +
+     pinned seed) made a content-level stubbornness DETERMINISTIC — the
+     model deleted identity.class instead of choosing a valid SRD class,
+     and at temperature 0 every pass re-sampled the same wrong answer
+     (seeds are vacuous under argmax). FIX: `_repair_sampling` now keeps
+     pass 1 cold+seeded (reproducible first patch) but passes 2+ AND the
+     JSON retry go WARM — temperature is the only real variance lever at
+     temp 0. Plus the stat-repair prompt now says explicitly: never REMOVE
+     an identity key; fix class with an SRD class. Attempt 4 green.
+- Tuning note for the next roll: member_of went 56 (d5) -> 6 (d6) -> 0
+  (d7) — the guidance + hierarchy rule may be OVER-suppressing real
+  membership (a faction with zero members is sparse). Not a correctness
+  issue (no violations), but the next run's type mix should be watched;
+  if member_of stays at zero, soften the guidance wording.
+- Playground: this world was copied into data/mythos.db as
+  "The Drowned Harbor (edge rules)" under dm@example.com — the d5 world
+  ("The Drowned Harbor") is untouched.
+- Tee'd calls + prompts + committed.db in `/tmp/mythos-ladder/calls-d7/`.
