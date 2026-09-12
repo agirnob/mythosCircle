@@ -384,6 +384,36 @@ def _valid_cr(value: Any) -> bool:
     return value in CR_FRACTIONS
 
 
+def identity_field_ok(field: str, value: Any) -> bool:
+    """The AR25 shape of one identity field, for callers that must not
+    degrade it — the repair merge guard reads this so the shapes live here
+    with the validator that enforces them (2026-09-12: live repairs drop or
+    re-type ``identity.level``/``identity.cr``/``identity.class`` and every
+    later pass then edits around the hole instead of the named field)."""
+    if field == "class":
+        return isinstance(value, str) and bool(value.strip())
+    if field == "level":
+        return type(value) is int and 1 <= value <= LEVEL_MAX
+    if field == "cr":
+        return _valid_cr(value)
+    raise ValueError(f"unknown identity field {field!r}")
+
+
+def identity_field_allowed(role: Any, field: str) -> bool:
+    """Whether a role owns an identity field (AR25: Monster carries ``cr``
+    and never ``level``; NPC/BBEG the reverse; ``class`` is role-free). The
+    repair merge guard reads this so it never restores a key the role does
+    not own — a Monster repair that turns ``level`` into ``cr`` must land,
+    not be reverted. An unknown role owns nothing but ``class``
+    (fail-closed: nothing else is restorable)."""
+    canonical = _ROLE_INDEX.get(role.strip().lower()) if isinstance(role, str) else None
+    if canonical is None:
+        return field == "class"
+    if canonical == "Monster":
+        return field == "cr"
+    return field in ("class", "level")
+
+
 def _check_named_list(
     value: Any, section: str, vocab: frozenset[str] | None, errors: list[str]
 ) -> None:

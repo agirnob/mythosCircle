@@ -44,7 +44,7 @@ from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
 from app.pipeline.fencing import json_error, parse_json_object
 from app.pipeline.fencing import strip_fence as _strip_fence
-from app.pipeline.knowledge import ROLES
+from app.pipeline.knowledge import ROLES, identity_field_allowed, identity_field_ok
 from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import (
     StatIssue,
@@ -137,6 +137,12 @@ def _character_record_lines() -> list[str]:
 
 #: Build-in payload sections, in prompt order (spec-2.1).
 SECTION_NAMES: tuple[str, ...] = ("places", "factions", "key_figures")
+
+#: Identity fields a stat repair must never degrade (dropped, blanked, or
+#: re-typed). The merge restores the pre-repair value when the repair's own
+#: value lost the shape the validator wants (knowledge.identity_field_ok);
+#: a same-shape edit still lands, so a deliberate level/class change works.
+_IDENTITY_GUARDED_FIELDS: tuple[str, ...] = ("class", "level", "cr")
 
 #: Wave-2 context bounds (AR6 seed values): the neighborhood of the
 #: wave-1 entities, one hop deep, at most 24 entities.
@@ -340,24 +346,34 @@ def _enforce_stat_blocks(
                         merged[key] = new[key]
                 elif key in old:
                     merged[key] = old[key]
-            # A repair that drops identity.class is never a fix (attempt 19:
-            # the class-link hole then survives every further pass, whose
-            # scope includes identity yet the model edits around it). Restore
-            # a valid pre-repair class; a deliberately changed class still
-            # lands, an invalid original keeps failing as before.
+            # A repair that degrades an identity field is never a fix (ladder
+            # 2026-09-11/12: attempt 19 dropped identity.class and later
+            # passes — scope includes identity — edited around the hole;
+            # Qwen3.8 rung-10 attempt 1 dropped identity.level twice in a
+            # row, so the repair chased a level the validator could no longer
+            # read). Restore a pre-repair value whose shape the validator
+            # wants when the post-repair value lost that shape (dropped,
+            # blanked, or re-typed): a same-shape edit — a deliberate level
+            # or class change — still lands, and an invalid original keeps
+            # failing as before. A role change skips the restore (an
+            # NPC -> Monster repair legitimately retires level for cr).
             old_identity = old.get("identity")
             merged_identity = merged.get("identity")
             if (
                 isinstance(old_identity, dict)
-                and isinstance(old_identity.get("class"), str)
-                and old_identity["class"].strip()
                 and isinstance(merged_identity, dict)
-                and not (
-                    isinstance(merged_identity.get("class"), str)
-                    and merged_identity["class"].strip()
-                )
+                and merged_identity.get("role") == old_identity.get("role")
             ):
-                merged["identity"] = {**merged_identity, "class": old_identity["class"]}
+                restored = {
+                    field: old_identity[field]
+                    for field in _IDENTITY_GUARDED_FIELDS
+                    if field in old_identity
+                    and identity_field_ok(field, old_identity[field])
+                    and identity_field_allowed(merged_identity.get("role"), field)
+                    and not identity_field_ok(field, merged_identity.get(field))
+                }
+                if restored:
+                    merged["identity"] = {**merged_identity, **restored}
             stripped[issue.position] = merged
         entities = apply_stat_repairs(entities, stripped)
         # The repair response is model output like any other: re-canonicalize

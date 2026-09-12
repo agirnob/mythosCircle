@@ -2879,6 +2879,53 @@ def test_stat_repair_dropping_class_keeps_original(world: str) -> None:
     assert mira.data["stat_block"]["identity"]["level"] == 5
 
 
+def test_stat_repair_dropping_level_keeps_original(world: str) -> None:
+    """LEVEL_PRESERVE (Qwen3.8 rung-10 attempt 1): a repair that raises DPR
+    into band but drops identity.level must not leave a level the validator
+    cannot read — the merge restores the pre-repair value, so the wave
+    converges instead of dying `identity.level must be an integer in [1, 20]`
+    across three passes. The live shape: the model nudged damage twice and
+    dropped the level both times, and the follow-up repairs (scope
+    ['identity']) edited spells instead of the missing field. A same-shape
+    level edit still lands (see the class test's level-25 -> 5 fix)."""
+    weak_block = {
+        **_MIRA_STAT_BLOCK,
+        "actions": [
+            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+4 slashing"}
+        ],
+    }
+    leveled_out_fix = {
+        "identity": {"role": "NPC", "race": "Human", "class": "Fighter"},  # level dropped
+        "attributes": dict(_MIRA_STAT_BLOCK["attributes"]),
+        "combat": {"ac": 16, "hp": 66},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "actions": [
+            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 4d10+5 slashing"}
+        ],
+    }
+    output = _wave1_output()
+    output["entities"][1]["data"] = {
+        **_character_record("Mira Vane"),
+        "stat_block": weak_block,
+    }
+    responses = [
+        json.dumps(output),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": leveled_out_fix}]}),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        return responses.pop(0)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"  # no second/third pass needed
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    assert mira.data["stat_block"]["identity"]["level"] == 5
+    assert mira.data["stat_block"]["identity"]["class"] == "Fighter"
+
+
 def test_frail_stat_block_repair_loop(world: str) -> None:
     """POWER_REPAIR_LOOP (frail): a 40-HP level-5 block with healthy DPR
     is flagged frail only; a healthy repair commits, a still-frail
