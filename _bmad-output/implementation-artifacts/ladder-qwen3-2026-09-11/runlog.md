@@ -421,3 +421,13 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   roster in prod or big DM jobs die while converging — ledger entry.
   Tee'd calls + prompts in `/tmp/mythos-ladder/calls-c10/`. Next:
   attempt 6 re-rolls.
+
+## Rung 50 — attempt 6 — SUCCEEDED, 67 calls (GREEN, FULL ROSTER)
+
+- Wave 1 committed 50/50 + 47 edges; wave 2 committed 3 + 6. 53
+  entities (33 characters / 8 factions / 12 places), 53 edges, closed
+  vocabulary, 1 over-powered stamp. 67 calls, inside the scaled 122
+  ceiling (would have died at 64). Tee'd calls + prompts in
+  `/tmp/mythos-ladder/calls-c11/`.
+- LADDER COMPLETE: rung 10 (16 calls) → rung 25 (40) → rung 50 (67),
+  all green on identical code.
