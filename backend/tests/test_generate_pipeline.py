@@ -1715,22 +1715,41 @@ def test_repair_prompt_carries_record_dpr_target(world: str) -> None:
     """The generate-path mirror carries the staged record role/level_cr, so
     the one bounded repair pass names the DPR target band (round-2 patch:
     the mirror used to strip everything but the stat block, and the target
-    line never rendered on this path)."""
+    line never rendered on this path). Monster role since the NPC oracle
+    (owner verdict 2026-09-12): NPC/BBEG records never quote the monster
+    band — the target line renders exactly for the role the band binds."""
     _commit_world(world)
     output = _generate_output()
+    output["candidates"][0]["role"] = "Monster"
+    output["candidates"][0]["level_cr"] = "CR 5"
+    output["candidates"][0]["boss"] = {
+        "lair_actions": "None.",
+        "legendary_actions": "None.",
+        "immunities": "None.",
+        "vulnerabilities": "None.",
+    }
     bad_block = json.loads(json.dumps(_VALID_STAT_BLOCK))
+    bad_block["identity"] = {
+        "role": "Monster",
+        "cr": 5,
+        "race": "Human",
+        "class": "Fighter",
+        "alignment": "LG",
+    }
     bad_block["attributes"]["str"] = 40
     output["candidates"][0]["stat_block"] = bad_block
+    healed = json.loads(json.dumps(bad_block))
+    healed["attributes"]["str"] = 14
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
         calls.append(prompt)
         if len(calls) == 1:
             return json.dumps(output)
-        return json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": _VALID_STAT_BLOCK}]})
+        return json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": healed}]})
 
     job_id = _run(world, provider)
     assert len(calls) == 2  # generate + exactly one bounded repair pass
-    assert "record target: level 5 -> hit DPR band 33-38" in calls[1]
+    assert "record target: CR 5 -> hit DPR band 33-38" in calls[1]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"

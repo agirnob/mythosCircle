@@ -646,6 +646,22 @@ def _check_spells(value: Any, klass: str | None, role: str | None, errors: list[
             errors.append(f"spell {spell!r} is not on the {klass} spell list")
 
 
+def stat_block_role(block: Any) -> str | None:
+    """The canonical AR25 role of one stat block (``"NPC"``, ``"BBEG"``, or
+    ``"Monster"``), or ``None`` when the block, its identity section, or its
+    role is unreadable. ONE fold rule (``_ROLE_INDEX``) shared by the power
+    audit, the validator's power check, the deterministic conform, and the
+    power stamp — never a second role literal to keep in sync.
+    """
+    if not isinstance(block, dict):
+        return None
+    identity = block.get("identity")
+    if not isinstance(identity, dict):
+        return None
+    role = identity.get("role")
+    return _ROLE_INDEX.get(role.strip().lower()) if isinstance(role, str) else None
+
+
 def audit_power(block: Any) -> dict[str, Any] | None:
     """The DM-facing power annotation for a stat block (owner verdict
     2026-09-12: over-powered is fine and commits — the DM is told, not
@@ -658,14 +674,11 @@ def audit_power(block: Any) -> dict[str, Any] | None:
     state). ``canonicalize_stat_block`` stamps the result as ``power``;
     the repair schema and the strip keep the model's hands off it.
     """
-    if not isinstance(block, dict):
+    canonical_role = stat_block_role(block)
+    if canonical_role is None:
         return None
     identity = block.get("identity")
     if not isinstance(identity, dict):
-        return None
-    role = identity.get("role")
-    canonical_role = _ROLE_INDEX.get(role.strip().lower()) if isinstance(role, str) else None
-    if canonical_role is None:
         return None
     key = identity.get("cr") if canonical_role == "Monster" else identity.get("level")
     if isinstance(key, bool) or not isinstance(key, (int, str)):
@@ -687,11 +700,22 @@ def _check_power(block: Any, canonical_role: str | None, errors: list[str]) -> N
     against the band numbers, so the repair pass can address them. A
     missing band (a level/CR outside the reference — the shape checks
     already flag those) abstains silently, as does a block with zero
-    parseable damage anywhere (non-combatants are exempt). Level N keys
-    the CR N band. HP fails low-only (below half the band low is frail);
-    HP at or above the band never fails. Over-powered is NOT a violation
-    (owner verdict 2026-09-12): it commits with a ``power`` annotation —
-    see :func:`audit_power` — so only the under-powered branch reports.
+    parseable damage anywhere (non-combatants are exempt). Over-powered
+    is NOT a violation (owner verdict 2026-09-12): it commits with a
+    ``power`` annotation — see :func:`audit_power`.
+
+    Band enforcement is MONSTER-ONLY (the NPC oracle, owner verdict
+    2026-09-12; measured on the Qwen3.8 rung-50 ladder: 33/33 authentic
+    NPCs flagged under-powered against the DMG monster table, 45 of the
+    job's 48 calls burned on repairs, and the committed block ended up the
+    conform's arithmetic instead of the model's). A level-N NPC/BBEG deals
+    authentic class-grade damage — a level-5 fighter hits ~8-15/round, not
+    the monster table's 33-38 — so under-powered and frail-HP are not
+    violations for those roles; an under-band NPC/BBEG block commits
+    STAMPED for DM visibility (``statblocks._stamp_power``), mirroring the
+    over-powered verdict's "the DM is told, not protected". The
+    unreadable-damage branch below keeps applying to EVERY role: an attack
+    that states no dice is a legibility defect, not a grade judgment.
     """
     if not isinstance(block, dict) or canonical_role is None:
         return
@@ -706,6 +730,10 @@ def _check_power(block: Any, canonical_role: str | None, errors: list[str]) -> N
         return
     audit = combat.audit_stat_block({**block, "identity": {**identity, "role": canonical_role}})
     if any(action.nominal_avg != 0.0 for action in audit.actions):
+        if canonical_role != "Monster":
+            # NPC/BBEG: authentic numbers stand — the audit still ran, so
+            # the stamp sees the verdict; only the violation list stays empty.
+            return
         low, high = dpr_band
         if audit.verdict == combat.VERDICT_UNDER:
             errors.append(

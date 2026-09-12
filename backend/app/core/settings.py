@@ -10,7 +10,14 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.core import config as config_mod
-from app.core.config import env_bool_optional, env_float, env_int, runtime_config
+from app.core.config import (
+    env_bool_optional,
+    env_float,
+    env_float_optional,
+    env_int,
+    env_int_optional,
+    runtime_config,
+)
 
 #: Environment variables overriding the queue limits. The pending-cap and
 #: LLM keys live canonically in ``app.core.config`` (AD-22); these are the
@@ -57,6 +64,11 @@ LLM_API_KEY = "MYTHOSCIRCLE_LLM_API_KEY"
 LLM_TIMEOUT = config_mod.LLM_TIMEOUT_ENV
 LLM_MAX_TOKENS = config_mod.LLM_MAX_TOKENS_ENV
 LLM_THINKING = config_mod.LLM_THINKING_ENV
+#: Sampling-control env keys (improvement plan G) — tri-state like
+#: LLM_THINKING: unset (or set-but-empty) omits the request field.
+LLM_TEMPERATURE = config_mod.LLM_TEMPERATURE_ENV
+LLM_TOP_P = config_mod.LLM_TOP_P_ENV
+LLM_SEED = config_mod.LLM_SEED_ENV
 
 #: Code defaults (spec-1.4; config.toml [llm] overrides in 1.7).
 DEFAULT_LLM_ENDPOINT = config_mod.DEFAULT_LLM_ENDPOINT
@@ -64,6 +76,9 @@ DEFAULT_LLM_MODEL = config_mod.DEFAULT_LLM_MODEL
 DEFAULT_LLM_TIMEOUT = config_mod.DEFAULT_LLM_TIMEOUT
 DEFAULT_LLM_MAX_TOKENS = config_mod.DEFAULT_LLM_MAX_TOKENS
 DEFAULT_LLM_THINKING = config_mod.DEFAULT_LLM_THINKING
+DEFAULT_LLM_TEMPERATURE = config_mod.DEFAULT_LLM_TEMPERATURE
+DEFAULT_LLM_TOP_P = config_mod.DEFAULT_LLM_TOP_P
+DEFAULT_LLM_SEED = config_mod.DEFAULT_LLM_SEED
 
 
 @dataclass(frozen=True)
@@ -80,6 +95,14 @@ class LLMSettings:
     #: at all (a backend rejecting unknown fields keeps working), ``False``
     #: turns the model's thinking channel off, ``True`` asks for it.
     enable_thinking: bool | None = DEFAULT_LLM_THINKING
+    #: Tri-state sampling controls (improvement plan G): ``None`` omits the
+    #: request-body field entirely (the provider's own default rules; a
+    #: backend rejecting unknown fields keeps working — the enable_thinking
+    #: rationale). A set value rides the body verbatim; 0.0/0 are meaningful
+    #: (greedy decoding, a fixed RNG seed), never falsy omissions.
+    temperature: float | None = DEFAULT_LLM_TEMPERATURE
+    top_p: float | None = DEFAULT_LLM_TOP_P
+    seed: int | None = DEFAULT_LLM_SEED
     #: Optional per-call JSON-schema constraint, carried as settings data so
     #: provider doubles keep their ``(prompt, settings)`` shape (spec:
     #: JSON-schema generation). Code-built per path only — ``llm_settings()``
@@ -105,6 +128,9 @@ def llm_settings() -> LLMSettings:
         timeout=env_float(LLM_TIMEOUT, resolved.llm_timeout),
         max_tokens=env_int(LLM_MAX_TOKENS, resolved.llm_max_tokens, minimum=1),
         enable_thinking=env_bool_optional(LLM_THINKING, resolved.llm_thinking),
+        temperature=env_float_optional(LLM_TEMPERATURE, resolved.llm_temperature),
+        top_p=env_float_optional(LLM_TOP_P, resolved.llm_top_p),
+        seed=env_int_optional(LLM_SEED, resolved.llm_seed),
     )
 
 

@@ -8,6 +8,7 @@ RESULT_PERSISTED + the listener emissions.
 
 import asyncio
 import json
+import threading
 from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
@@ -234,6 +235,88 @@ def test_call_budget_guard_refuses_at_budget() -> None:
     with pytest.raises(BudgetExceededError):
         budget.call(provider_call)
     assert calls == ["called"]  # the second call never reached the provider
+
+
+def test_call_budget_refuses_at_ceiling_under_threads() -> None:
+    """Plan 0.4: the build-in runner fans chunk calls across worker
+    threads — the reserve is atomic, so 8 threads racing 80 attempts at
+    a budget of 40 issue EXACTLY 40 calls and every over-ceiling reserve
+    sees BudgetExceededError (the total can never exceed the ceiling)."""
+    job = models.Job(id="J" * 26, max_llm_calls=40)
+    budget = CallBudget(job)
+    issued: list[str] = []
+    refused: list[str] = []
+    barrier = threading.Barrier(8)
+
+    def provider_call() -> str:
+        issued.append("call")
+        return "ok"
+
+    def worker() -> None:
+        barrier.wait()
+        for _ in range(10):
+            try:
+                budget.call(provider_call, label="chunk")
+            except BudgetExceededError:
+                refused.append("refused")
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(issued) == 40  # exactly the ceiling reached the provider
+    assert len(refused) == 40  # every extra reserve was refused
+    assert budget.used == 40
+    snapshot = budget.snapshot()
+    assert snapshot["total"] == 40
+    assert snapshot["by_label"]["chunk"]["calls"] == 40
+
+
+def test_call_budget_snapshot_counts_labels_separately() -> None:
+    """Plan 0.4 telemetry: each label tracks its own call count and wall
+    time, the total spans labels, and an unlabelled call lands under the
+    default "call" label."""
+    job = models.Job(id="J" * 26, max_llm_calls=10)
+    budget = CallBudget(job)
+    budget.call(lambda: "a", label="wave1")
+    budget.call(lambda: "b", label="wave1")
+    budget.call(lambda: "c", label="repair")
+    budget.call(lambda: "d")
+    snapshot = budget.snapshot()
+    assert snapshot["total"] == 4
+    assert set(snapshot["by_label"]) == {"wave1", "repair", "call"}
+    assert snapshot["by_label"]["wave1"]["calls"] == 2
+    assert snapshot["by_label"]["repair"]["calls"] == 1
+    assert snapshot["by_label"]["call"]["calls"] == 1
+    for stats in snapshot["by_label"].values():
+        assert isinstance(stats["seconds"], float)
+        assert stats["seconds"] >= 0.0
+
+
+def test_call_budget_raising_call_still_consumes_budget() -> None:
+    """Parallel-safety rule: the reserve happens BEFORE the call, so a
+    provider that raises still consumed budget — the count bounds
+    requests issued, never answers received — and its wall time is
+    recorded under the label. A REFUSED call, by contrast, consumes
+    nothing and never reaches the telemetry."""
+    job = models.Job(id="J" * 26, max_llm_calls=2)
+    budget = CallBudget(job)
+
+    def boom() -> str:
+        raise ProviderError("http", status_code=502)
+
+    with pytest.raises(ProviderError):
+        budget.call(boom, label="wave")
+    assert budget.used == 1  # the failed call consumed its reserve
+    snapshot = budget.snapshot()
+    assert snapshot["total"] == 1
+    assert snapshot["by_label"]["wave"]["calls"] == 1
+    budget.call(lambda: "ok", label="wave")
+    with pytest.raises(BudgetExceededError):
+        budget.call(lambda: "ok", label="wave")  # the ceiling counts the failure
+    assert budget.used == 2
+    assert budget.snapshot()["by_label"]["wave"]["calls"] == 2  # refusal issued nothing
 
 
 def test_run_http_error_fails_job(world: str) -> None:

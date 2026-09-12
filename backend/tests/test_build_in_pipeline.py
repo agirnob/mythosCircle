@@ -10,6 +10,7 @@ providers, no live LLM. Each test runs its own scratch DB and campaign
 so commits, queue positions, and revisions are deterministic.
 """
 
+import dataclasses
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -21,12 +22,16 @@ from app.core import ids
 from app.core.settings import LLMSettings
 from app.pipeline import combat
 from app.pipeline.build_in import (
+    WAVE2_MAX_EDGES,
+    WAVE2_MAX_ENTITIES,
     _build_record_repair_prompt,
     _collect_record_issues,
     _log_stat_repair_scope_breaches,
     _OrphanRetryError,
     _repair_retry_prompt,
     _validate_subgraph,
+    _wave1_chunks,
+    _wave1_roster,
     build_anchor_repair_schema,
     build_wave1_prompt,
     build_wave2_prompt,
@@ -46,6 +51,7 @@ from app.pipeline.statblocks import (
     stat_block_rules_text,
 )
 from app.pipeline.worker import run_next_job
+from app.providers.llm import ProviderError
 from app.store import (
     EDGE_TYPES,
     InvalidJobInputError,
@@ -402,7 +408,7 @@ def test_wave_calls_carry_envelope_schema(world: str) -> None:
     """WAVE_CARRIES_SCHEMA: the wave call carries the envelope schema via a
     settings copy (zero double churn — the fake keeps its
     ``(prompt, settings)`` shape); the job result is identical to today."""
-    expected = build_wave_schema(1)  # one place in the roster
+    expected = build_wave_schema(1, refs=["E0"])  # one place in the roster
     seen: list[Any] = []
 
     def fake(prompt: str, settings: LLMSettings) -> str:
@@ -425,7 +431,7 @@ def test_wave2_and_anchor_repair_carry_schemas(world: str) -> None:
     wave-1-only test never executes those lines). The repair half runs on
     wave 2: wave 1 commits edgeless and never repairs (spec: edgeless
     repair scope)."""
-    expected = build_wave_schema(0)  # notes-only job: empty wave-1 roster
+    expected = build_wave_schema(0)  # notes-only job: empty roster, no ref enum
     seen: list[Any] = []
     responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
 
@@ -438,7 +444,8 @@ def test_wave2_and_anchor_repair_carry_schemas(world: str) -> None:
     assert processed == job_id
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
-    assert seen == [expected, build_wave_schema()]  # wave 1 pinned, wave 2 free
+    wave2_schema = build_wave_schema(max_entities=WAVE2_MAX_ENTITIES, max_edges=WAVE2_MAX_EDGES)
+    assert seen == [expected, wave2_schema]  # wave 1 pinned, wave 2 count-free
 
     seen_repair: list[Any] = []
     responses_repair = [
@@ -460,7 +467,7 @@ def test_wave2_and_anchor_repair_carry_schemas(world: str) -> None:
     # the repair schema is pinned to exactly those refs — a repair reusing
     # the wave envelope (or plain settings) fails this line.
     expected_repair = build_anchor_repair_schema(["N0", "N1", "N2"], ["C0", "C1"])
-    assert seen_repair == [expected, build_wave_schema(), expected_repair]
+    assert seen_repair == [expected, wave2_schema, expected_repair]
 
 
 def test_wave_envelope_schema_pins_wire_literals() -> None:
@@ -492,6 +499,23 @@ def test_wave_envelope_schema_pins_wire_literals() -> None:
     assert "maxItems" not in envelope["properties"]["entities"]
     pinned = build_wave_schema(50)["json_schema"]["schema"]["properties"]["entities"]
     assert pinned["minItems"] == 50 and pinned["maxItems"] == 50
+    # E1 tightening (the 100-entity cut): kind enum, name minLength, a
+    # chunk's ref enum, wave-2 caps. E2 (present-key data constraints) was
+    # TRIED AND REVERTED on live evidence: ladder attempt d1 (Qwen3.8,
+    # rung 10) showed the described-key bias — with only stat_block
+    # described inside data, the model shipped characters carrying
+    # data.stat_block and NO record at all, a repair storm the open schema
+    # never produced. ``data`` stays an open object; identity garbage
+    # belongs to the validator and the merge guards.
+    assert entities["properties"]["kind"] == {"enum": ["character", "faction", "place"]}
+    assert entities["properties"]["name"] == {"type": "string", "minLength": 1}
+    assert entities["properties"]["data"] == {"type": "object"}
+    chunk = build_wave_schema(2, refs=["E24", "E25"])["json_schema"]["schema"]["properties"]
+    assert chunk["entities"]["items"]["properties"]["ref"] == {"enum": ["E24", "E25"]}
+    capped = build_wave_schema(max_entities=24, max_edges=256)["json_schema"]["schema"]
+    assert capped["properties"]["entities"]["maxItems"] == 24
+    assert "minItems" not in capped["properties"]["entities"]
+    assert capped["properties"]["edges"]["maxItems"] == 256
 
 
 def test_anchor_repair_schema_pins_wire_literals() -> None:
@@ -546,7 +570,7 @@ def test_stat_repair_calls_carry_repair_schema(world: str) -> None:
     assert len(seen) == 2  # wave 1 + exactly one repair pass
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
-    assert seen[0] == build_wave_schema(2)  # two roster entries pinned
+    assert seen[0] == build_wave_schema(2, refs=["E0", "E1"])  # roster pinned
     assert seen[1] == build_stat_repair_schema()
 
 
@@ -577,7 +601,11 @@ def test_wave2_stat_repair_carries_repair_schema(world: str) -> None:
     assert processed == job_id
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
-    assert seen == [build_wave_schema(2), build_wave_schema(), build_stat_repair_schema()]
+    assert seen == [
+        build_wave_schema(2, refs=["E0", "E1"]),
+        build_wave_schema(max_entities=WAVE2_MAX_ENTITIES, max_edges=WAVE2_MAX_EDGES),
+        build_stat_repair_schema(),
+    ]
 
 
 def test_gate_repair_breach_logs_through_run(caplog: pytest.LogCaptureFixture, world: str) -> None:
@@ -1071,10 +1099,13 @@ def test_cancel_during_wave2_prevents_wave2_commit(world: str) -> None:
         }
 
 
-def test_stale_base_between_waves_fails_core_stays(world: str) -> None:
-    """A DM edit landing between the waves makes wave-2's staged base stale:
-    StaleRevisionError -> job fails, the DM's edit and the core stay, no
-    silent overwrite (AD-2)."""
+def test_stale_base_between_waves_rebases_onto_the_edit(world: str) -> None:
+    """M4 (the 100-entity cut): a DM edit landing between the waves makes
+    wave-2's staged base stale — the runner REBASES once onto the new head
+    instead of dying (a long job's generation window is minutes; the
+    pre-rebase runner incinerated the whole wave 2 on a hand edit). The
+    DM's edit, the core, and wave 2 all stay: three revisions, no silent
+    overwrite (AD-2 — the rebase commits ON TOP of the edit)."""
     responses = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
     dm_committed = False
 
@@ -1101,10 +1132,10 @@ def test_stale_base_between_waves_fails_core_stays(world: str) -> None:
     job_id = _enqueue(world, notes="more world")
     run_next_job(provider=provider, settings=SETTINGS)
     job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert "stale" in (job.error or "").lower()
+    assert job.state == "succeeded"  # rebased, not failed
+    assert job.result is not None and job.result["entity_count"] == 4
     with session_scope() as session:
-        assert len(revision_chain(session, world)) == 2  # wave 1 + the DM edit
+        assert len(revision_chain(session, world)) == 3  # wave 1 + DM edit + wave 2
         names = {e.name for e in world_entities(session, world)}
     assert {"The Gilded Bar", "Mira Vane", "DM's New Keep"} <= names
 
@@ -1324,23 +1355,18 @@ def test_second_stat_repair_pass_heals_the_block(world: str) -> None:
     comes back still invalid, the gate spends ONE more call — the prompt
     re-reads the block that first attempt wrote plus the violations that
     survived it — and the healed second repair commits with no third call
-    (the loop breaks once nothing is flagged)."""
-    weak_block = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
-        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
-        "combat": {"ac": 16, "hp": 66},
-        "skills": [{"name": "Athletics", "bonus": 5}],
-        "actions": [
-            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
-        ],
-    }
+    (the loop breaks once nothing is flagged). The trigger is a SHAPE
+    violation: power-only misses never reach the passes anymore (the NPC
+    oracle retired NPC/BBEG bands; conform-first owns Monster power misses)."""
+    bad_block = dict(_MIRA_STAT_BLOCK)
+    bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
     output = _wave1_output()
-    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": weak_block}
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_block}
     responses = [
         json.dumps(output),
-        # First repair: the model changes nothing that matters — still weak.
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
-        # Second repair: the bones of the first attempt, the numbers fixed.
+        # First repair: the model changes nothing that matters — still bad.
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
+        # Second repair: the bones of the first attempt, the shape fixed.
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
     ]
     calls: list[str] = []
@@ -1354,10 +1380,10 @@ def test_second_stat_repair_pass_heals_the_block(world: str) -> None:
     assert len(calls) == 3  # wave 1 + pass 1 + pass 2 — never a third
     assert "VIOLATIONS TO FIX" in calls[1]
     assert "VIOLATIONS STILL UNFIXED" in calls[2]
-    # The second pass names exactly what survived: the unflagged block is
-    # re-shown with its under-powered violation, not the original problem.
-    assert "under-powered" in calls[2]
-    assert json.dumps(weak_block, sort_keys=True, separators=(",", ":")) in calls[2]
+    # The second pass names exactly what survived: the still-bad block is
+    # re-shown with its surviving shape violation, not the original problem.
+    assert "attributes.str" in calls[2]
+    assert json.dumps(bad_block, sort_keys=True, separators=(",", ":")) in calls[2]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     with session_scope() as session:
@@ -1401,22 +1427,17 @@ def test_third_stat_repair_pass_heals_the_block(world: str) -> None:
     """STAT_THIRD_PASS (repair-sequence spec step 2): two still-invalid
     repairs do not fail the job — the gate spends its third and final call,
     whose prompt re-reads the SECOND attempt's block plus the surviving
-    violations, and the healed third repair commits."""
-    weak_block = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
-        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
-        "combat": {"ac": 16, "hp": 66},
-        "skills": [{"name": "Athletics", "bonus": 5}],
-        "actions": [
-            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
-        ],
-    }
+    violations, and the healed third repair commits. Shape-violation
+    trigger (see the second-pass test for why power misses never reach
+    the passes)."""
+    bad_block = dict(_MIRA_STAT_BLOCK)
+    bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
     output = _wave1_output()
-    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": weak_block}
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_block}
     responses = [
         json.dumps(output),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
+        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]}),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
     ]
     calls: list[str] = []
@@ -1433,8 +1454,8 @@ def test_third_stat_repair_pass_heals_the_block(world: str) -> None:
     assert "THIRD REPAIR PASS" in calls[3]
     # The third pass re-reads the second attempt's block (not the wave's)
     # with the violation that survived it.
-    assert "under-powered" in calls[3]
-    assert json.dumps(weak_block, sort_keys=True, separators=(",", ":")) in calls[3]
+    assert "attributes.str" in calls[3]
+    assert json.dumps(bad_block, sort_keys=True, separators=(",", ":")) in calls[3]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     with session_scope() as session:
@@ -1444,20 +1465,14 @@ def test_third_stat_repair_pass_heals_the_block(world: str) -> None:
 
 def test_stat_repair_calls_carry_one_entity_each(world: str) -> None:
     """STAT_PER_ENTITY (repair-sequence spec step 2): with two failing
-    characters, each repair call's prompt names exactly ONE flagged ref —
-    the sibling's block is untouched by that call — and both healed blocks
-    merge by ref into the committed wave."""
-    weak_block = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
-        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
-        "combat": {"ac": 16, "hp": 66},
-        "skills": [{"name": "Athletics", "bonus": 5}],
-        "actions": [
-            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
-        ],
-    }
+    characters — one shape-violating block, one missing block — each repair
+    call's prompt names exactly ONE flagged ref (the sibling's block is
+    untouched by that call) and both healed blocks merge by ref into the
+    committed wave."""
+    bad_block = dict(_MIRA_STAT_BLOCK)
+    bad_block["attributes"] = {**bad_block["attributes"], "str": 40}
     output = _wave1_output()
-    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": weak_block}
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_block}
     output["entities"].append(
         {
             "ref": "E2",
@@ -1538,15 +1553,9 @@ def test_repaired_block_parts_are_canonicalized(world: str) -> None:
     """A repair response is model output like any other: its damage parts
     are re-canonicalized before the re-check, so the committed block's
     ``average`` always agrees with its own dice (live 2026-09-11: a repair
-    shipped 2d6 + 13 with average 16, and the auditor trusts the number)."""
-    weak = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
-        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
-        "combat": {"ac": 16, "hp": 66},
-        "actions": [
-            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
-        ],
-    }
+    shipped 2d6 + 13 with average 16, and the auditor trusts the number).
+    The flagged trigger is a MISSING block (whole-block scope), so the
+    repaired block lands whole and then canonicalizes."""
     repaired = {
         "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
         "attributes": {"str": 16, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
@@ -1561,7 +1570,7 @@ def test_repaired_block_parts_are_canonicalized(world: str) -> None:
         ],
     }
     output = _wave1_output()
-    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": weak}
+    output["entities"][1]["data"] = _character_record("Mira Vane")  # stat_block missing
     responses = [
         json.dumps(output),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": repaired}]}),
@@ -2230,16 +2239,16 @@ def test_monster_with_level_repaired_in_one_pass(world: str) -> None:
     assert mira.data["stat_block"]["identity"]["cr"] == "1/4"
 
 
-def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> None:
-    """SPELLS_TINY_VALVE_LOOP (spec-stat-repair-spells-tiny review): the live
-    miss — classless spells plus a frail tiny block — repairs in one pass.
-    Mira keeps evocative spells with no coupling class; Boo the hamster
-    (CR 1/4, hp 15, one weak bite) trips the frail line. The mock adds the
-    coupling class and lifts Boo's hp into its CR band (the EDIT SCOPE fix —
-    a cr rewrite riding with the repair is drift the gate now strips); the
-    gate succeeds with three provider calls total — wave 1 plus one repair
-    call PER FAILING ENTITY (repair-sequence spec step 2), each prompt
-    naming only its own block."""
+def test_classless_spells_repaired_and_frail_tiny_conformed(world: str) -> None:
+    """SPELLS_TINY_VALVE_LOOP (spec-stat-repair-spells-tiny review, updated
+    for the NPC-oracle cut): Mira keeps evocative spells with no coupling
+    class — a SHAPE violation, so the model's one repair call per failing
+    entity still owns it (the EDIT SCOPE fix — a cr rewrite riding with the
+    repair is drift the gate strips). Boo the hamster (CR 1/4, hp 15, one
+    weak bite) trips frail + under-powered — power-only Monster misses go
+    to the deterministic conform BEFORE any pass (conform-first), so Boo
+    costs ZERO calls and lands in its CR band exactly. Two provider calls
+    total: wave 1 plus Mira's repair, its prompt naming only her block."""
     bad_spells = dict(_MIRA_STAT_BLOCK)
     bad_spells["identity"] = {k: v for k, v in _MIRA_STAT_BLOCK["identity"].items() if k != "class"}
     bad_spells["spells"] = ["Fireball", "Magic Missile"]
@@ -2256,14 +2265,8 @@ def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> Non
             {"name": "Bite", "description": "Melee Weapon Attack: +3 to hit, 1d4+1 piercing"}
         ],
     }
-    fixed_tiny = {
-        "identity": {"role": "Monster", "cr": "1/4", "race": "Hamster", "alignment": "unaligned"},
-        "attributes": dict(tiny_attributes),
-        "combat": {"ac": 13, "hp": 40},
-        "actions": [
-            {"name": "Bite", "description": "Melee Weapon Attack: +3 to hit, 1d4+1 piercing"}
-        ],
-    }
+    # No fixed_tiny fixture: Boo's power-only miss never reaches a repair
+    # call — the deterministic conform lands it (conform-first).
     output = _wave1_output()
     output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": bad_spells}
     output["entities"].append(
@@ -2294,7 +2297,6 @@ def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> Non
     responses = [
         json.dumps(output),
         json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": fixed_spells}]}),
-        json.dumps({"stat_blocks": [{"ref": "E2", "stat_block": fixed_tiny}]}),
     ]
     calls: list[str] = []
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
@@ -2305,21 +2307,25 @@ def test_classless_spells_and_frail_tiny_repaired_in_one_pass(world: str) -> Non
 
     processed = run_next_job(provider=provider, settings=SETTINGS)
     assert processed == job_id
-    assert len(calls) == 3  # wave 1 + one repair call per failing entity
+    assert len(calls) == 2  # wave 1 + Mira's shape repair — Boo cost zero calls
     assert "spells require identity.class" in calls[1]
     assert "E2 (" not in calls[1]  # the E1 call never names its sibling
-    assert "is frail for" in calls[2]
-    assert "spells require identity.class" not in calls[2]  # nor vice versa
-    assert "E1 (" not in calls[2]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     with session_scope() as session:
         by_name = {e.name: e for e in world_entities(session, world)}
     assert by_name["Mira Vane"].data["stat_block"]["identity"]["class"] == "Wizard"
     assert by_name["Mira Vane"].data["stat_block"]["spells"] == ["Fireball", "Magic Missile"]
-    assert by_name["Boo"].data["stat_block"]["identity"]["cr"] == "1/4"  # scope-held, not renamed
-    assert by_name["Boo"].data["stat_block"]["combat"]["hp"] == 40  # the in-scope fix landed
-    assert by_name["Boo"].data["stat_block"]["actions"][0]["name"] == "Bite"  # siblings untouched
+    boo = by_name["Boo"].data["stat_block"]
+    assert boo["identity"]["cr"] == "1/4"  # identity never moves
+    assert boo["actions"][0]["name"] == "Bite"  # the model's action survives
+    assert validate_stat_block(boo) == []
+    hp_band = combat.hp_band(boo["identity"])
+    assert hp_band is not None and not combat.is_hp_frail(boo["combat"]["hp"], hp_band)
+    audit = combat.audit_stat_block(boo)
+    # 3.5 DPR against the CR 1/4 band 4-5 is on-target (0.8x tolerance) —
+    # the conform fixed the frail floor, not a band miss that never existed.
+    assert audit.verdict == combat.VERDICT_ONTARGET
 
 
 def test_cancel_before_stat_repair_is_noop(world: str) -> None:
@@ -2486,12 +2492,13 @@ def test_wave_duplicate_edge_rows_collapse_to_one() -> None:
 
 def test_conform_power_fixes_dpr_and_frail_hp() -> None:
     """The deterministic conform repairs both power violations the model's
-    single repair pass does not converge on: damage under the band and an HP
-    floor below half the band low (live 2026-09-10: 5.5 vs 15-20, 50 vs
-    93-98). The model's own action, identity and prose survive — only the
-    numbers move."""
+    repair passes do not converge on: damage under the band and an HP floor
+    below half the band low (live 2026-09-10: 5.5 vs 15-20, 50 vs 93-98).
+    Monster-only since the NPC oracle (owner verdict 2026-09-12) — an
+    NPC/BBEG block is never band-conformed. The model's own action,
+    identity and prose survive — only the numbers move."""
     block: dict[str, Any] = {
-        "identity": {"role": "NPC", "level": 2, "race": "Human", "class": "Fighter"},
+        "identity": {"role": "Monster", "cr": 2, "race": "Humanoid"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
         "combat": {"ac": 14, "hp": 20},
         "skills": [],
@@ -2539,7 +2546,10 @@ def test_a_fighting_block_with_no_readable_damage_is_not_exempt() -> None:
     """The non-combatant exemption is for creatures with NO attacks, not for
     attacks the auditor cannot read. Measured 2026-09-11: a level-17 paladin
     shipped with "makes one melee attack… deals massive radiant damage", the
-    audit read ZERO damage, and the whole shallow block passed untouched."""
+    audit read ZERO damage, and the whole shallow block passed untouched.
+    The readability violation fires for EVERY role; the deterministic arm
+    runs for Monsters only — an NPC's prose-only attack belongs to the
+    model's repair passes (the conform never lifts a non-Monster block)."""
     prose_only = _combat_shape_block(
         [
             {
@@ -2556,9 +2566,18 @@ def test_a_fighting_block_with_no_readable_damage_is_not_exempt() -> None:
     )
     violations = validate_stat_block(prose_only)
     assert violations and violations[0].startswith("no readable damage for level 17")
-    assert is_conformable(violations)  # the deterministic pass may arm it
-
-    armed = conform_power(prose_only)
+    assert is_conformable(violations)  # the prefix is conformable in principle
+    # NPC oracle: the conform refuses the NPC block — readability is the
+    # repair passes' job for a non-Monster.
+    assert conform_power(prose_only) is None
+    # The same block declared as a Monster arms deterministically.
+    monster = {
+        **prose_only,
+        "identity": {"role": "Monster", "cr": 17, "race": "Half-Elf", "class": "Paladin"},
+    }
+    monster_violations = validate_stat_block(monster)
+    assert monster_violations and monster_violations[0].startswith("no readable damage for CR 17")
+    armed = conform_power(monster)
     assert armed is not None
     assert validate_stat_block(armed) == []
     audit = combat.audit_stat_block(armed)
@@ -2566,7 +2585,7 @@ def test_a_fighting_block_with_no_readable_damage_is_not_exempt() -> None:
     # Armed, not rewritten: the model's own sentence survives with a damage
     # clause appended, and the routine still counts it.
     assert "deals massive radiant damage plus" in armed["actions"][1]["description"]
-    # The scores came up to the row for a level-17 creature.
+    # The scores came up to the row for a CR-17 creature.
     assert armed["attributes"]["cha"] == 26
     assert armed["attributes"]["str"] == 28
 
@@ -2639,14 +2658,15 @@ def test_stray_damage_field_is_folded_into_the_description() -> None:
 
 
 def test_conform_power_lifts_scores_and_keeps_the_numbers_consistent() -> None:
-    """A level-17 block written at level-2 magnitudes is lifted to the DMG
-    row for its challenge: scores to the tier floor (RANKING preserved — the
-    model owns the shape, the table owns the size), AC to the floor, hp to
-    the band, and the to-hit / flat damage / stated average rewritten so the
+    """A CR-17 block written at low magnitudes is lifted to the DMG row for
+    its challenge: scores to the tier floor (RANKING preserved — the model
+    owns the shape, the table owns the size), AC to the floor, hp to the
+    band, and the to-hit / flat damage / stated average rewritten so the
     prose never contradicts the scores it now carries (2026-09-11: a live
-    level-17 paladin sat at STR 16 / hp 142 / one 14-damage attack)."""
+    level-17 paladin sat at STR 16 / hp 142 / one 14-damage attack — the
+    conform is Monster-only since the NPC oracle)."""
     block = {
-        "identity": {"role": "NPC", "level": 17, "race": "Half-Elf", "class": "Paladin"},
+        "identity": {"role": "Monster", "cr": 17, "race": "Half-Elf", "class": "Paladin"},
         "attributes": {"cha": 18, "con": 16, "dex": 14, "int": 12, "str": 16, "wis": 14},
         "combat": {"ac": 18, "hp": 142},
         "skills": [{"name": "Perception", "bonus": 5}],
@@ -2686,10 +2706,11 @@ def test_conform_power_lifts_scores_and_keeps_the_numbers_consistent() -> None:
 def test_conform_power_lifts_scores_without_moving_an_in_band_blocks_damage() -> None:
     """An in-band block keeps its DAMAGE — the flat half is the one that moves
     DPR, and a cosmetic score lift must not push a valid block out of band.
-    The scores and the to-hit still move: a level-17 character reading STR 16
-    is the complaint this pass exists to answer."""
+    The scores and the to-hit still move: a CR-5 creature reading STR 14 is
+    the complaint this pass exists to answer (Monster-only since the NPC
+    oracle)."""
     block = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "identity": {"role": "Monster", "cr": 5, "race": "Human", "class": "Fighter"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
         "combat": {"ac": 16, "hp": 140},
         "actions": [
@@ -2713,13 +2734,52 @@ def test_conform_power_lifts_scores_without_moving_an_in_band_blocks_damage() ->
     assert conformed["combat"]["ac"] == 17
 
 
-def test_underpowered_stat_block_repair_loop(world: str) -> None:
-    """POWER_REPAIR_LOOP: an under-powered wave-1 block is flagged; a
-    healthy repair commits (wave + one repair pass, succeeded); when the
-    repair does not converge, the deterministic power-conform lands the
-    block in band and the job still succeeds (2026-09-10)."""
-    weak_block = {
+def test_authentic_npc_block_commits_stamped_without_repair(world: str) -> None:
+    """NPC ORACLE (owner verdict 2026-09-12): an authentic level-5 NPC
+    block — 6.5 DPR against the monster table's 33-38, hp below the frail
+    line — is NOT a violation. Zero repair calls, the model's own numbers
+    commit, stamped under-powered for DM visibility. Pre-verdict this exact
+    shape burned 45 of 48 calls on the Qwen rung-50 ladder and committed
+    the conform's arithmetic instead of the model's."""
+    authentic = {
         "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
+        "combat": {"ac": 16, "hp": 40},
+        "skills": [{"name": "Athletics", "bonus": 5}],
+        "actions": [
+            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+        ],
+    }
+    output = _wave1_output()
+    output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": authentic}
+    calls: list[str] = []
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    responses = [json.dumps(output)]
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 1  # wave 1 only — an authentic NPC spends no repair
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    # The model's own numbers, byte for byte, plus the DM-visible stamp.
+    assert mira.data["stat_block"] == {
+        **authentic,
+        "power": {"dpr": 6.5, "band": [33.0, 38.0], "verdict": "under-powered"},
+    }
+
+
+def test_underpowered_monster_conforms_without_repair_calls(world: str) -> None:
+    """CONFORM_FIRST: a Monster power-only miss goes straight to the
+    deterministic conform — zero LLM repair calls (measured on both ladder
+    models: repairs nudge 8.5 -> 13 -> 17 and never reach the band, or
+    overshoot it; the conform lands the exact DMG row in one pass)."""
+    weak_monster = {
+        "identity": {"role": "Monster", "cr": 5, "race": "Humanoid"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
         "combat": {"ac": 16, "hp": 66},
         "skills": [{"name": "Athletics", "bonus": 5}],
@@ -2727,72 +2787,32 @@ def test_underpowered_stat_block_repair_loop(world: str) -> None:
             {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
         ],
     }
-
-    def wave_with(block: dict[str, Any]) -> dict[str, Any]:
-        output = _wave1_output()
-        output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": block}
-        return output
-
-    # Repair heals it: the healthy block commits and the job succeeds.
+    output = _wave1_output()
+    output["entities"][1]["data"] = {
+        **_character_record("Mira Vane", role="Monster", level_cr="CR 5", boss=dict(_BOSS_SECTION)),
+        "stat_block": weak_monster,
+    }
     calls: list[str] = []
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
-    responses = [
-        json.dumps(wave_with(weak_block)),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
-    ]
+    responses = [json.dumps(output)]
 
     def provider(prompt: str, settings: LLMSettings) -> str:
         calls.append(prompt)
         return responses.pop(0)
 
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
-    assert len(calls) == 2  # wave 1 + exactly one repair pass
-    assert "under-powered" in calls[1]  # the flagged violation
+    assert len(calls) == 1  # wave 1 only — the conform is deterministic, free
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     with session_scope() as session:
         mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
-    assert mira.data["stat_block"] == _MIRA_STAT_BLOCK
-
-    # Still mismatched after repair: the deterministic power-conform lands the
-    # block in its DMG band and the job SUCCEEDS. A model cannot be asked to
-    # hit an interval reliably (measured live 2026-09-10: 5.5 vs 15-20,
-    # 16 vs 27-32, 50 vs 93-98 — never once in band), so the gate no longer
-    # fails a job on arithmetic the code can do itself.
-    calls2: list[str] = []
-    job_id2 = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
-    responses2 = [
-        json.dumps(wave_with(weak_block)),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": weak_block}]}),
-    ]
-
-    def provider2(prompt: str, settings: LLMSettings) -> str:
-        calls2.append(prompt)
-        return responses2.pop(0)
-
-    assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
-    assert len(calls2) == 4  # wave 1 + all three bounded repair passes, no more
-    job2, _position2 = job_status(job_id2)
-    assert job2.state == "succeeded"
-    assert job2.result is not None
-    with session_scope() as session:
-        # This world already holds the first job's Mira Vane — read the entity
-        # THIS job committed by its id, never by name.
-        committed = [
-            e
-            for e in world_entities(session, world)
-            if e.id in job2.result["waves"][0]["entity_ids"]
-        ]
-    conformed = next(e for e in committed if e.kind == "character").data["stat_block"]
+    conformed = mira.data["stat_block"]
     assert validate_stat_block(conformed) == []
     audit = combat.audit_stat_block(conformed)
-    assert audit.band is not None
-    assert audit.band[0] <= audit.dpr <= audit.band[1]
-    # The model's own action survives; only the numbers moved.
+    assert audit.band is not None and audit.band[0] <= audit.dpr <= audit.band[1]
+    # The model's own action and identity survive; only the numbers moved.
     assert conformed["actions"][0]["name"] == "Longsword"
-    assert conformed["identity"] == weak_block["identity"]
+    assert conformed["identity"] == weak_monster["identity"]
 
 
 def test_overpowered_stat_block_commits_stamped_without_repair(world: str) -> None:
@@ -2880,25 +2900,27 @@ def test_stat_repair_dropping_class_keeps_original(world: str) -> None:
 
 
 def test_stat_repair_dropping_level_keeps_original(world: str) -> None:
-    """LEVEL_PRESERVE (Qwen3.8 rung-10 attempt 1): a repair that raises DPR
-    into band but drops identity.level must not leave a level the validator
+    """LEVEL_PRESERVE (Qwen3.8 rung-10 attempt 1): a repair that fixes the
+    violation but drops identity.level must not leave a level the validator
     cannot read — the merge restores the pre-repair value, so the wave
     converges instead of dying `identity.level must be an integer in [1, 20]`
     across three passes. The live shape: the model nudged damage twice and
     dropped the level both times, and the follow-up repairs (scope
-    ['identity']) edited spells instead of the missing field. A same-shape
-    level edit still lands (see the class test's level-25 -> 5 fix)."""
+    ['identity']) edited spells instead of the missing field. The trigger
+    here is the class-link family (scope {spells, identity}) — since the
+    NPC oracle, power misses never reach the passes, so the guard is
+    exercised on the shape violations that do. A same-shape level edit
+    still lands (see the class test's level-25 -> 5 fix)."""
     weak_block = {
         **_MIRA_STAT_BLOCK,
-        "actions": [
-            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+4 slashing"}
-        ],
+        "spells": ["Fireball"],  # not on the Fighter list — scope {spells, identity}
     }
     leveled_out_fix = {
         "identity": {"role": "NPC", "race": "Human", "class": "Fighter"},  # level dropped
         "attributes": dict(_MIRA_STAT_BLOCK["attributes"]),
         "combat": {"ac": 16, "hp": 66},
         "skills": [{"name": "Athletics", "bonus": 5}],
+        "spells": [],
         "actions": [
             {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 4d10+5 slashing"}
         ],
@@ -2924,14 +2946,17 @@ def test_stat_repair_dropping_level_keeps_original(world: str) -> None:
         mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
     assert mira.data["stat_block"]["identity"]["level"] == 5
     assert mira.data["stat_block"]["identity"]["class"] == "Fighter"
+    assert mira.data["stat_block"]["spells"] == []
 
 
-def test_frail_stat_block_repair_loop(world: str) -> None:
-    """POWER_REPAIR_LOOP (frail): a 40-HP level-5 block with healthy DPR
-    is flagged frail only; a healthy repair commits, a still-frail
-    repair fails naming frail."""
-    frail_block = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+def test_frail_monster_conforms_without_repair_calls(world: str) -> None:
+    """CONFORM_FIRST (frail): a Monster whose only miss is the HP floor is
+    lifted deterministically — zero repair calls (the model's passes never
+    converged on arithmetic; the conform lands the band floor in one exact
+    step). An NPC's low HP is never a violation at all — the frail check is
+    Monster-only since the NPC oracle (owner verdict 2026-09-12)."""
+    frail_monster = {
+        "identity": {"role": "Monster", "cr": 5, "race": "Humanoid"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
         "combat": {"ac": 16, "hp": 40},
         "skills": [{"name": "Athletics", "bonus": 5}],
@@ -2939,60 +2964,31 @@ def test_frail_stat_block_repair_loop(world: str) -> None:
             {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 4d10+5 slashing"}
         ],
     }
-
-    def wave_with(block: dict[str, Any]) -> dict[str, Any]:
-        output = _wave1_output()
-        output["entities"][1]["data"] = {**_character_record("Mira Vane"), "stat_block": block}
-        return output
-
+    output = _wave1_output()
+    output["entities"][1]["data"] = {
+        **_character_record("Mira Vane", role="Monster", level_cr="CR 5", boss=dict(_BOSS_SECTION)),
+        "stat_block": frail_monster,
+    }
     calls: list[str] = []
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
-    responses = [
-        json.dumps(wave_with(frail_block)),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": _MIRA_STAT_BLOCK}]}),
-    ]
+    responses = [json.dumps(output)]
 
     def provider(prompt: str, settings: LLMSettings) -> str:
         calls.append(prompt)
         return responses.pop(0)
 
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
-    assert len(calls) == 2
-    assert "frail" in calls[1]
+    assert len(calls) == 1  # wave 1 only — the conform is deterministic, free
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
-
-    calls2: list[str] = []
-    job_id2 = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
-    responses2 = [
-        json.dumps(wave_with(frail_block)),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": frail_block}]}),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": frail_block}]}),
-        json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": frail_block}]}),
-    ]
-
-    def provider2(prompt: str, settings: LLMSettings) -> str:
-        calls2.append(prompt)
-        return responses2.pop(0)
-
-    assert run_next_job(provider=provider2, settings=SETTINGS) == job_id2
-    assert len(calls2) == 4  # wave 1 + all three bounded repair passes, no more
-    job2, _position2 = job_status(job_id2)
-    # A frail HP floor no longer fails the job: the deterministic conform
-    # lifts hp to the band floor (2026-09-10).
-    assert job2.state == "succeeded"
-    assert job2.result is not None
     with session_scope() as session:
-        committed = [
-            e
-            for e in world_entities(session, world)
-            if e.id in job2.result["waves"][0]["entity_ids"]
-        ]
-    conformed = next(e for e in committed if e.kind == "character").data["stat_block"]
+        mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
+    conformed = mira.data["stat_block"]
+    assert validate_stat_block(conformed) == []
     hp_band = combat.hp_band(conformed["identity"])
     assert hp_band is not None
-    assert not combat.is_hp_frail(conformed["combat"]["hp"], hp_band)
-    assert validate_stat_block(conformed) == []
+    assert conformed["combat"]["hp"] == hp_band[0]  # lifted to the band floor
+    assert conformed["actions"][0]["name"] == "Longsword"  # the model's action survives
 
 
 # ---------------------------------------------------------------------------
@@ -3556,3 +3552,289 @@ def test_wave2_anchor_repair_repaired_by_gates(world: str) -> None:
         assert len(revision_chain(session, world)) == 2
         harlow = next(e for e in world_entities(session, world) if e.name == "Captain Harlow")
     assert harlow.data["appearance"]  # the repaired record committed
+
+
+# ---------------------------------------------------------------------------
+# The 100-entity cut: chunked wave-1 (M1), retry taxonomy (C), window sizing
+# (B), two-tier wave-2 context (M2), stale rebase (M4), telemetry (J).
+# ---------------------------------------------------------------------------
+
+
+def _places_chunk_output(
+    start: int, count: int, edges: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """One chunk's flat-place response: global refs E<start>.., no records."""
+    return {
+        "entities": [
+            {"ref": f"E{start + index}", "kind": "place", "name": f"Place {start + index}"}
+            for index in range(count)
+        ],
+        "edges": edges or [],
+    }
+
+
+def test_wave1_roster_trims_in_section_order() -> None:
+    """The roster is the trimmed payload in fixed section order — the same
+    rule the count pin and the enqueue budget share."""
+    roster = _wave1_roster(
+        {"places": [" P1 ", "", 42, "P2"], "factions": [], "key_figures": ["F1", "   "]}
+    )
+    assert roster == [("places", "P1"), ("places", "P2"), ("key_figures", "F1")]
+
+
+def test_wave1_chunks_slice_by_weight_and_cap() -> None:
+    """M1 slicing: characters weigh 1.0 (budget 12), flats 0.35, the hard
+    cap binds at 16 — global positions stay contiguous, so refs and the
+    merge order are a pure function of the roster (AD-16)."""
+    chunks = _wave1_chunks([("places", f"P{i}") for i in range(20)])
+    assert [len(chunk) for chunk in chunks] == [16, 4]  # the hard cap binds
+    assert [pos for chunk in chunks for pos, _s, _e in chunk] == list(range(20))
+    chunks = _wave1_chunks([("key_figures", f"F{i}") for i in range(13)])
+    assert [len(chunk) for chunk in chunks] == [12, 1]  # the weight binds
+    mixed = [("places", "P")] * 3 + [("key_figures", "F")] * 12
+    chunks = _wave1_chunks(mixed)
+    # 3 x 0.35 + 10 x 1.0 = 11.05; the 11th figure would cross 12 → [13, 2].
+    assert [len(chunk) for chunk in chunks] == [13, 2]
+    assert _wave1_chunks([]) == []
+
+
+def test_chunked_wave1_generates_merges_and_wires(world: str) -> None:
+    """M1 end to end: a 20-place roster exceeds one chunk (hard cap 16) —
+    two pinned chunk calls plus one edges-only wiring pass; entities merge
+    in global positional order, the cross-chunk wiring edge commits, each
+    call carries its count+ref-pinned schema and sized window (B), and the
+    result carries per-label telemetry (J)."""
+    places = [f"Place {i}" for i in range(20)]
+    calls: list[tuple[str, Any]] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append((prompt, settings))
+        if "PART 1 of 2" in prompt:
+            return json.dumps(_places_chunk_output(0, 16))
+        if "PART 2 of 2" in prompt:
+            return json.dumps(_places_chunk_output(16, 4))
+        return json.dumps({"edges": [{"src": "E0", "dst": "E19", "type": "located_in"}]})
+
+    job_id = _enqueue(world, places=places)
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 3  # chunk0 + chunk1 + wiring — no monolith
+    assert calls[0][1].response_format == build_wave_schema(16, refs=[f"E{i}" for i in range(16)])
+    assert calls[1][1].response_format == build_wave_schema(
+        4, refs=[f"E{i}" for i in range(16, 20)]
+    )
+    assert calls[2][1].response_format == build_anchor_repair_schema(
+        sorted(f"E{i}" for i in range(20)), []
+    )
+    assert calls[0][1].max_tokens == 900 * 16 + 4096  # TOKENS_PER_ENTITY x pin
+    assert calls[2][1].max_tokens == 16384  # EDGES_CALL_MAX_TOKENS
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None
+    assert job.result["entity_count"] == 20
+    assert job.result["edge_count"] == 1  # the cross-chunk wiring edge
+    labels = job.result["llm_calls"]["by_label"]
+    assert labels["wave1_chunk0"]["calls"] == 1
+    assert labels["wave1_chunk1"]["calls"] == 1
+    assert labels["wave1_wiring"]["calls"] == 1
+    assert job.result["llm_calls"]["total"] == 3
+    with session_scope() as session:
+        names = [entity.name for entity in world_entities(session, world)]
+    assert names == [f"Place {i}" for i in range(20)]  # global positional order
+
+
+def test_wiring_failure_degrades_to_chunk_edges(world: str) -> None:
+    """M1 best-effort wiring: a wiring pass still malformed after its one
+    JSON retry degrades to committing the chunk-internal edges only —
+    never a job death over wiring (the edgeless commit is legal, owner
+    verdict 2026-09-11)."""
+    places = [f"Place {i}" for i in range(20)]
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if "PART 1 of 2" in prompt:
+            return json.dumps(
+                _places_chunk_output(
+                    0, 16, edges=[{"src": "E0", "dst": "E1", "type": "relationship"}]
+                )
+            )
+        if "PART 2 of 2" in prompt:
+            return json.dumps(_places_chunk_output(16, 4))
+        return "not json at all {"  # the wiring pass, malformed twice
+
+    job_id = _enqueue(world, places=places)
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 4  # 2 chunks + wiring + its one JSON retry
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None
+    assert job.result["entity_count"] == 20
+    assert job.result["edge_count"] == 1  # the chunk-internal edge only
+
+
+def test_chunk_malformed_json_retries_once_and_recovers(world: str) -> None:
+    """C: a chunk whose first response is malformed JSON gets exactly one
+    re-elicitation quoting the decoder error, and the job recovers — the
+    blast radius is one bounded chunk call, not a 15-minute monolith."""
+    places = [f"Place {i}" for i in range(20)]
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if "PART 1 of 2" in prompt:
+            if len(calls) == 1:
+                return "{entities: [oops"
+            return json.dumps(_places_chunk_output(0, 16))
+        if "PART 2 of 2" in prompt:
+            return json.dumps(_places_chunk_output(16, 4))
+        return json.dumps({"edges": []})
+
+    job_id = _enqueue(world, places=places)
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 4  # chunk0 bad + retry + chunk1 + wiring
+    assert "COULD NOT BE PARSED" in calls[1]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["entity_count"] == 20
+    assert job.result["llm_calls"]["by_label"]["wave1_chunk0_json_retry"]["calls"] == 1
+
+
+def test_json_retry_rolls_the_pinned_seed(world: str) -> None:
+    """C+G: with an operator-pinned seed the bounded JSON retry carries
+    seed+1 — a deterministic profile never re-calls the identical failing
+    sample; the first call keeps the pinned seed."""
+    seeded = dataclasses.replace(SETTINGS, seed=7)
+    seen_seeds: list[int | None] = []
+    responses = ["{not json", json.dumps(_wave1_output())]
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        seen_seeds.append(settings.seed)
+        return responses.pop(0)
+
+    job_id = _enqueue(world, places=["Greymarch"])
+    assert run_next_job(provider=provider, settings=seeded) == job_id
+    assert seen_seeds == [7, 8]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+
+
+def test_truncated_wave_call_retries_with_doubled_window(world: str) -> None:
+    """B/C: finish_reason=length means the WINDOW was too small for this
+    roster — the one retry doubles it inside the operator cap instead of
+    deterministically truncating again (the naive re-call the pre-taxonomy
+    retry would have made)."""
+    windows: list[int] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        windows.append(settings.max_tokens)
+        if len(windows) == 1:
+            raise ProviderError("truncated")
+        return json.dumps(_wave1_output())
+
+    job_id = _enqueue(world, places=["Greymarch"])
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    first = 900 * 1 + 4096  # the roster-of-1 sized window
+    assert windows == [first, min(first * 2, SETTINGS.max_tokens)]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+
+
+def test_anchor_repair_malformed_json_retries_once(world: str) -> None:
+    """C: the anchor repair — ZERO retries before the taxonomy cut — gets
+    the same one bounded JSON re-elicitation; a repair recovering on the
+    retry commits the wave, and the retry shows in the telemetry."""
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(_wave2_output_orphan()),
+        "{edges: [oops",
+        json.dumps({"edges": [{"src": "N2", "dst": "C0", "type": "relationship"}]}),
+    ]
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return responses.pop(0)
+
+    job_id = _enqueue(world, notes="more world")
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 4
+    assert "COULD NOT BE PARSED" in calls[3]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None
+    assert job.result["llm_calls"]["by_label"]["anchor_repair_json_retry"]["calls"] == 1
+
+
+def test_wave2_anchors_into_the_compact_core_tier(world: str) -> None:
+    """M2: a 25-place core exceeds the 24-row detail cap — the 25th entity
+    rides the COMPACT roster, so a wave-2 edge to C24 validates and anchors
+    (pre-M2 it died as 'names no context entity': the ledger's phantom
+    orphan at scale)."""
+    places = [f"Place {i}" for i in range(25)]
+    prompts: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        prompts.append(prompt)
+        if "PART 1 of 2" in prompt:
+            return json.dumps(_places_chunk_output(0, 16))
+        if "PART 2 of 2" in prompt:
+            return json.dumps(_places_chunk_output(16, 9))
+        if "wiring an already-generated" in prompt:
+            return json.dumps({"edges": []})
+        return json.dumps(
+            {
+                "entities": [
+                    {"ref": "N0", "kind": "place", "name": "The Late Annex", "text": "past the cap"}
+                ],
+                "edges": [{"src": "N0", "dst": "C24", "type": "located_in"}],
+            }
+        )
+
+    job_id = _enqueue(world, places=places, notes="an annex beyond the cap")
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None and job.result["entity_count"] == 26
+    wave2_prompt = prompts[3]
+    assert "COMPACT CORE ROSTER" in wave2_prompt
+    assert "C24 'Place 24' (place)" in wave2_prompt
+    with session_scope() as session:
+        by_name = {entity.name: entity for entity in world_entities(session, world)}
+        edges = world_edges(session, world)
+    annex = by_name["The Late Annex"]
+    assert any(
+        edge.src == annex.id and edge.dst == by_name["Place 24"].id for edge in edges
+    )  # anchored to the compact tier
+
+
+def test_wave1_commit_rebases_over_a_dm_edit(world: str) -> None:
+    """M4: a DM commit landing DURING wave-1 generation makes the job's
+    base stale — the commit rebases once onto the new head instead of
+    incinerating the generation (at 100-entity scale that window is
+    minutes; the pre-rebase runner died here with zero commits)."""
+    dm_committed = False
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        nonlocal dm_committed
+        if not dm_committed:
+            dm_committed = True
+            keep_id = ids.new_id()
+            with session_scope() as session:
+                head = latest_revision(session, world)
+            commit_subgraph(
+                world,
+                [models.EntityInput(kind="place", name="DM's New Keep", id=keep_id)],
+                [],
+                base_revision=head.id if head is not None else None,
+                allow_orphans=True,
+            )
+        return json.dumps(_wave1_output())
+
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        assert len(revision_chain(session, world)) == 2  # DM edit + rebased wave 1
+        names = {entity.name for entity in world_entities(session, world)}
+    assert {"The Gilded Bar", "Mira Vane", "DM's New Keep"} <= names

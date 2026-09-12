@@ -58,6 +58,15 @@ BUILD_IN_MAX_ENTRIES = 100
 BUILD_IN_MAX_ENTRY_LENGTH = 2000
 BUILD_IN_MAX_NOTE_LENGTH = 2000
 
+#: Build-in budget ladder (improvement plan D): the flat settings default
+#: starved big rosters — rung-50 attempt 5 died AT the flat 64 while the
+#: model was still converging. Floor, per-figure stat-block calls, wave-2
+#: chunk size, fixed wave/repair overhead — see ``_build_in_budget``.
+BUILD_IN_MIN_LLM_CALLS = 64
+BUILD_IN_LLM_CALLS_PER_FIGURE = 3
+BUILD_IN_LLM_CHUNK_ENTRIES = 8
+BUILD_IN_LLM_CALLS_OVERHEAD = 32
+
 #: Closed job-state set; transitions are only ever driven by the store
 #: primitives below.
 JOB_STATES: frozenset[str] = frozenset({"queued", "running", "succeeded", "failed", "cancelled"})
@@ -198,7 +207,9 @@ def enqueue_job(
     (404 — an image payload naming a missing or foreign entity),
     ``DuplicateJobError`` (409, idempotent by job-id), or
     ``QueueFullError`` (409, AR28 pending cap). Budgets default from
-    env; enforcement is Story 1.4 (AR21).
+    env — except ``build_in``, whose LLM ceiling scales with the roster
+    when the caller supplies none (improvement plan D,
+    ``_build_in_budget``); enforcement is Story 1.4 (AR21).
     """
     with session_scope() as session:
         job = _enqueue(session, campaign_id, kind, payload, job_id, max_llm_calls, max_media_calls)
@@ -431,7 +442,14 @@ def _enqueue(
         _check_ulid(job_id)
     settings = queue_settings()
     if max_llm_calls is None:
-        max_llm_calls = settings.max_llm_calls_per_job
+        # Build-in rosters scale their own LLM ceiling (improvement plan
+        # D) — the flat settings default starved rung-50 attempt 5
+        # mid-convergence. An explicit caller-supplied budget never
+        # reaches this branch, so it always wins. Runs after
+        # _validate_build_in_payload, so the section shape is guaranteed.
+        max_llm_calls = (
+            _build_in_budget(payload) if kind == "build_in" else settings.max_llm_calls_per_job
+        )
     if max_media_calls is None:
         max_media_calls = settings.max_media_calls_per_job
     if max_llm_calls < 0:
@@ -552,6 +570,38 @@ def _validate_build_in_payload(payload: dict[str, Any]) -> None:
         any_content = True
     if not any_content:
         raise InvalidJobInputError("build_in requires at least one non-blank section entry")
+
+
+def _build_in_budget(payload: dict[str, Any]) -> int:
+    """Roster-scaled ``max_llm_calls`` for a build_in job (improvement plan D).
+
+    Ladder evidence: rung-50 attempt 5 died AT the flat 64-call default
+    while the model was still converging — BudgetExceeded mid-wave after
+    a long run. The proven runner formula (``run_rung.py``:
+    ``3 * figures + 32``) is generalized with a chunk headroom term —
+    every ``BUILD_IN_LLM_CHUNK_ENTRIES`` non-blank roster entries across
+    the three sections adds one wave-2 chunk call:
+
+    ``max(64, 3 * figures + ceil(total / 8) + 32)``
+
+    ``figures`` counts ``key_figures`` (each figure drives the stat-block
+    write + repair ladder); ``total`` counts all three sections. Only
+    non-blank trimmed strings count (the runner's blank-trim rule), and
+    the ``BUILD_IN_MIN_LLM_CALLS`` floor keeps small rosters at the old
+    settings default. Called from ``_enqueue`` after
+    ``_validate_build_in_payload``, so every section is a list of strings.
+    """
+
+    def _non_blank(section: str) -> int:
+        return sum(1 for entry in payload.get(section) or [] if entry.strip())
+
+    figures = _non_blank("key_figures")
+    total = figures + _non_blank("places") + _non_blank("factions")
+    chunks = -(-total // BUILD_IN_LLM_CHUNK_ENTRIES)  # ceil division
+    return max(
+        BUILD_IN_MIN_LLM_CALLS,
+        BUILD_IN_LLM_CALLS_PER_FIGURE * figures + chunks + BUILD_IN_LLM_CALLS_OVERHEAD,
+    )
 
 
 def _validate_generate_payload(payload: dict[str, Any]) -> None:

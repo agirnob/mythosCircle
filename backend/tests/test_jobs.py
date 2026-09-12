@@ -643,6 +643,70 @@ def test_enqueue_build_in_ignores_unknown_keys(world: str) -> None:
     assert job.state == "queued"
 
 
+def test_enqueue_build_in_budget_scales_with_roster(world: str) -> None:
+    """Plan D: a big roster scales its own ceiling — 60 figures across a
+    100-entry roster gets 3*60 + ceil(100/8) + 32 = 225 calls, so the
+    runner never dies mid-convergence at the flat 64 (rung-50 attempt 5)."""
+    job = enqueue_job(
+        world,
+        "build_in",
+        {
+            "key_figures": [f"figure {i}" for i in range(60)],
+            "places": [f"place {i}" for i in range(20)],
+            "factions": [f"faction {i}" for i in range(20)],
+        },
+    )
+    assert job.max_llm_calls == 225
+
+
+def test_enqueue_build_in_budget_counts_only_non_blank(world: str) -> None:
+    """Blank/whitespace entries never count toward the budget (the
+    runner's blank-trim rule): 10 non-blank figures inside a 26-entry
+    non-blank roster land on 3*10 + ceil(26/8) + 32 = 66 — just over the
+    floor, which only binds below the formula."""
+    job = enqueue_job(
+        world,
+        "build_in",
+        {
+            "key_figures": [f"figure {i}" for i in range(10)] + ["   "],
+            "places": [f"place {i}" for i in range(8)] + [""],
+            "factions": [f"faction {i}" for i in range(8)],
+        },
+    )
+    assert job.max_llm_calls == 66
+    tiny = enqueue_job(world, "build_in", {"places": ["Greymarch"]})
+    assert tiny.max_llm_calls == 64  # max(64, 0 + 1 + 32) — the floor binds
+
+
+def test_enqueue_build_in_explicit_budget_wins(world: str) -> None:
+    """An explicit caller-supplied max_llm_calls beats the roster-scaled
+    computation — the API's optional budget parameter stays authoritative."""
+    job = enqueue_job(
+        world,
+        "build_in",
+        {"key_figures": [f"figure {i}" for i in range(60)]},
+        max_llm_calls=7,
+    )
+    assert job.max_llm_calls == 7  # not the computed 3*60 + 8 + 32 = 220
+
+
+def test_enqueue_generate_keeps_settings_default_budget(world: str) -> None:
+    """Plan D scales build_in ONLY: a generate job (committed entities
+    present, spec-3.1 gate satisfied) still defaults to the settings
+    ceiling, exactly like the text kind's pin above."""
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="Anchor", id=anchor_id),
+            models.EntityInput(kind="character", name="Mira", id=entity_id),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    job = enqueue_job(world, "generate", {"ask": "who watches the watchtower?"})
+    assert job.max_llm_calls == 64
+
+
 # ---------------------------------------------------------------------------
 # CLAIM_EXACTLY_ONE
 # ---------------------------------------------------------------------------

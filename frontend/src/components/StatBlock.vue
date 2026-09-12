@@ -169,18 +169,23 @@ const combatLine = computed(() => {
 
 /** `power` -> "Over-powered — DPR 189 vs band 63–68", stamped
  * deterministically by the pipeline (owner verdict 2026-09-12: an
- * over-powered block commits declared). Only the over-powered verdict
- * renders — committed blocks are otherwise on-target, so a line for
- * those would be noise on every card. */
+ * out-of-band block commits declared). Two verdicts render: over-powered
+ * for any role, and under-powered for NPC/BBEG blocks (the NPC oracle —
+ * authentic class-grade numbers are never band-enforced or repaired, so
+ * the stamp is the DM's only signal that a declared BBEG hits like a
+ * commoner). On-target blocks are never stamped, so no line = in band. */
 const powerFlag = computed<string | null>(() => {
   const raw = isObject(props.block) ? props.block['power'] : null
-  if (!isObject(raw) || raw['verdict'] !== 'over-powered') return null
+  if (!isObject(raw)) return null
+  const verdict = raw['verdict']
+  if (verdict !== 'over-powered' && verdict !== 'under-powered') return null
   const dpr = isFiniteNumber(raw['dpr']) ? String(raw['dpr']) : '?'
   const band = Array.isArray(raw['band'])
     ? raw['band'].filter(isFiniteNumber)
     : []
   const bandText = band.length === 2 ? ` vs band ${band[0]}–${band[1]}` : ''
-  return `Over-powered — DPR ${dpr}${bandText}`
+  const label = verdict === 'over-powered' ? 'Over-powered' : 'Under-powered'
+  return `${label} — DPR ${dpr}${bandText}`
 })
 
 /** The panel's signed-number convention ("+5" / "-2", 5e notation). */

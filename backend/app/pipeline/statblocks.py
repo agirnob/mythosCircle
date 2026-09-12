@@ -40,6 +40,7 @@ from app.pipeline.knowledge import (
     SPELLS,
     audit_power,
     resolve_class,
+    stat_block_role,
     validate_stat_block,
 )
 from app.pipeline.worker import JobPayloadError
@@ -112,35 +113,33 @@ def stat_block_rules_text(spells_reference: bool = True) -> str:
             f"[{ABILITY_MIN}, {ABILITY_MAX}]: str, dex, con, int, wis, cha.",
             "combat (required): ac (a positive integer) and hp (a positive integer).",
             "CHALLENGE SCALING (stats must match the declared level/CR, never be",
-            "flat: a tougher declaration means tougher combat numbers and scores.",
-            "Enforced by the validator on the build-in and generate paths):",
-            "- NPC/BBEG scale with level on the DMG monster table for that number:",
-            "  damage/round ~9-14 at level 1, ~33-38 at level 5, ~63-68 at level 10,",
-            "  ~93-98 at level 15, ~123-140 at level 20; hp ~71-85 at level 1,",
-            "  ~131-145 at level 5, ~206-220 at level 10, ~281-295 at level 15,",
-            "  ~356-375 at level 20. hp below half the band low fails (frail);",
-            "  high hp never fails.",
-            "- Monster scale with CR on the same table: damage/round ~2-3 at CR 1/8,",
-            "  ~6-8 at CR 1/2, ~33-38 at CR 5, ~87-92 at CR 14, ~111-116 at CR 18,",
-            "  ~141-158 at CR 21, 303+ at CR 30; hp ~7-35 at CR 1/8, ~50-70 at",
-            "  CR 1/2, ~131-145 at CR 5, ~266-280 at CR 14, ~326-340 at CR 18,",
-            "  ~376-400 at CR 21, 566+ at CR 30. Unlisted levels/CRs interpolate",
-            "  between the listed rows. A Multiattack routine deals its",
-            "  count times the strongest other attack (the routine itself is",
-            "  excluded, an unnamed count means 2, and 0 with no other attack).",
-            "  Damage counts with the validator's adjustments: save-for-half at",
-            "  0.75x, area effects at 2 targets, limited-use (recharge/per-day)",
-            "  at 1/3.",
-            "- ac and ability scores rise with challenge: ac ~10-13 at the bottom,",
-            "  ~19+ at the top; scores ~8-12 for a low challenge, and 26-30 in a",
-            "  level-15+/CR-15+ creature's best abilities (the DMG monster table — NOT",
-            "  the 20 that caps a player character).",
+            "flat: a tougher declaration means tougher combat numbers and scores):",
+            "- NPC and BBEG blocks carry AUTHENTIC class-grade numbers — a level-5",
+            "  NPC fighter deals roughly 8-15 damage per round, not the DMG monster",
+            "  table's 33-38. The monster table is NOT their grade and the validator",
+            "  does NOT band-enforce them: an NPC/BBEG block below the monster table",
+            "  commits as written, stamped under-powered for DM visibility — never",
+            "  repaired, never inflated toward the band.",
+            "- Monster blocks scale with CR on the DMG monster table and ARE",
+            "  band-enforced (build-in, generate, and stat_block re-rolls):",
+            "  damage/round ~2-3 at CR 1/8, ~6-8 at CR 1/2, ~33-38 at CR 5, ~87-92 at",
+            "  CR 14, ~111-116 at CR 18, ~141-158 at CR 21, 303+ at CR 30; hp ~7-35 at",
+            "  CR 1/8, ~50-70 at CR 1/2, ~131-145 at CR 5, ~266-280 at CR 14, ~326-340",
+            "  at CR 18, ~376-400 at CR 21, 566+ at CR 30. Unlisted CRs interpolate",
+            "  between the listed rows. A Multiattack routine deals its count times the",
+            "  strongest other attack (the routine itself is excluded, an unnamed count",
+            "  means 2, and 0 with no other attack). Damage counts with the validator's",
+            "  adjustments: save-for-half at 0.75x, area effects at 2 targets,",
+            "  limited-use (recharge/per-day) at 1/3. A Monster's hp below half the",
+            "  band low fails (frail); high hp never fails.",
+            "- ac and ability scores rise with challenge: a Monster follows the DMG",
+            "  table (26-30 in a CR-15+ creature's best abilities — NOT the 20 that",
+            "  caps a player character); an NPC/BBEG stays in authentic character",
+            "  range. Guidance only — the validator enforces DPR/HP for Monsters,",
+            "  never ac or scores.",
             "- the action list deepens with challenge: a level-10+/CR-10+ creature has",
             "  TWO TO FOUR entries — a named Multiattack routine plus the distinct",
-            "  attacks it uses. One lone attack is a shallow block, not a shortcut,",
-            "  and it cannot carry the damage band above on its own.",
-            "  Ac and scores are guidance only — the validator",
-            "  enforces the DPR/HP bands above.",
+            "  attacks it uses. One lone attack is a shallow block, not a shortcut.",
             f"skills (optional): entries with an SRD skill name and integer bonus: "
             f"{sorted(SKILLS)}.",
             "actions and traits (optional): entries with a name and a description string.",
@@ -224,32 +223,32 @@ _DPR_RECIPES: str = "\n".join(
         "within/burst) counts double (assumed 2 targets). Adjustment factors multiply.",
         "Non-blank boss.legendary_actions adds one full extra attack — size base damage",
         "one attack lower when the boss has one.",
-        "HP floor: combat.hp at/above the band low (level 1: 71+, 5: 131+, 10: 206+,",
-        "15: 281+, 20: 356+; CR targets use the same table row) — below half the low",
-        "fails frail.",
-        "Worked recipes (nominal averages, tolerance is 0.8x low to 1.2x high):",
-        "- level 1 (band 9-14): one attack `2d6+3` (~10).",
-        "- level 5 (band 33-38): Multiattack `makes three attacks` + `2d8+4` (~13) x3 = ~39.",
-        "- level 10 (band 63-68): Multiattack `makes three attacks` + `4d10+5` (~27) x3 = ~81",
+        "Monster HP floor follows the DPR row (CR 1/4: 36+, CR 1/2: 50+, CR 5: 131+) —",
+        "below half the low fails frail; higher rows: CR 1: 71+, 10: 206+, 15: 281+,",
+        "20: 356+. NPC/BBEG hp is free: authentic to the concept, never band-checked.",
+        "Worked Monster recipes (nominal averages, tolerance is 0.8x low to 1.2x high):",
+        "- CR 1 (band 9-14): one attack `2d6+3` (~10).",
+        "- CR 5 (band 33-38): Multiattack `makes three attacks` + `2d8+4` (~13) x3 = ~39.",
+        "- CR 10 (band 63-68): Multiattack `makes three attacks` + `4d10+5` (~27) x3 = ~81",
         "  (within the 1.2x over-tolerance, 81.6).",
-        "- level 20 (band 123-140): Multiattack `makes four attacks` + `5d10+6` (~33.5) x4 = ~134.",
-        "Unlisted levels/CRs interpolate between the neighboring recipes.",
-        "Prefer hitting the record target band; lower identity.level only if the damage",
-        "cannot reach it. You MAY lower identity.level to a band the damage satisfies",
-        "(record level_cr text is display-only; the export derives level/CR from the",
-        "stat_block numerics).",
-        "With no record target above, declare an identity.level your damage supports —",
-        "the HIGHEST such level (never level 1 for an archmage concept).",
+        "- CR 20 (band 123-140): Multiattack `makes four attacks` + `5d10+6` (~33.5) x4 = ~134.",
+        "Unlisted CRs interpolate between the neighboring recipes.",
+        "Monsters: prefer hitting the record target band. You MAY lower identity.cr to a",
+        "band the damage satisfies (record level_cr text is display-only; the export",
+        "derives level/CR from the stat_block numerics). NPC/BBEG blocks are never",
+        "band-checked — keep their damage authentic to the class and level; never",
+        "inflate an NPC toward the monster table.",
+        "With no record target above: a Monster declares an identity.cr its damage",
+        "supports — the HIGHEST such CR; an NPC/BBEG declares an identity.level fitting",
+        "its record and concept (never level 1 for an archmage) — NPC damage need not",
+        "support the level.",
         "True non-combatants: write zero dice anywhere and the block is exempt from the",
         "power check — with no +/-N damage modifiers either (a lone `+5 damage` still",
         "counts; only `actions` are audited) — one weak attack is worse than none.",
         "spells need identity.class from the SRD list (never for Monster): set one class",
         "whose list holds every spell, drop uncovered spells, or delete the spells array.",
-        "HP floor follows the DPR row (CR 1/4: 36+, CR 1/2: 50+, CR 5: 131+); harmless",
-        "Tiny creatures: CR 0 with zero dice anywhere (exempt from the power check, any",
+        "Tiny Monsters: CR 0 with zero dice anywhere (exempt from the power check, any",
         "hp passes — but a single die averages over 1.2 DPR and overs, so truly none).",
-        "Tiny NPC/BBEG that must stay leveled: zero dice and hp at/above half the band",
-        "low (level 1: 36+).",
         "Challenge number is REQUIRED inside identity, never omitted: Monster carries",
         'identity.cr as a bare integer 0-30 (fractions as quoted strings "1/8", "1/4",',
         '"1/2" — a bare 1/2 is invalid JSON); NPC/BBEG carry identity.level as a',
@@ -262,14 +261,16 @@ _DPR_RECIPES: str = "\n".join(
 
 
 def _record_target_line(entity: models.EntityInput) -> str | None:
-    """One character's DPR target from its AR24 record (``role``/``level_cr``).
+    """One Monster's DPR target from its AR24 record (``role``/``level_cr``).
 
     Pure/deterministic: folds the display-only record text into a band key
-    (``level <n>`` for NPC/BBEG, ``CR <n>`` — int or 1/8, 1/4, 1/2 — for
-    Monster) and reads the band off ``combat.CR_DPR``. Returns ``None``
-    when the record is unparseable or bandless (blank/garbled ``level_cr``,
-    unknown role, out-of-range challenge) — the caller then omits the line
-    and the generic recipes carry the repair.
+    (``CR <n>`` — int or 1/8, 1/4, 1/2) and reads the band off
+    ``combat.CR_DPR``. Returns ``None`` for an NPC/BBEG record — the NPC
+    oracle (owner verdict 2026-09-12) retired the monster table as their
+    grade, and quoting a band the validator no longer enforces is exactly
+    the steer that inflated a gemma level-5 NPC to 10d10+5. ``None`` too
+    when the record is unparseable or bandless — the caller then omits the
+    line and the generic recipes carry the repair.
     """
     data = entity.data if isinstance(entity.data, dict) else {}
     role_raw = data.get("role")
@@ -277,37 +278,27 @@ def _record_target_line(entity: models.EntityInput) -> str | None:
     if not isinstance(role_raw, str) or not isinstance(level_cr_raw, str):
         return None
     canonical = _RECORD_ROLES.get(role_raw.strip().lower())
-    if canonical is None:
+    if canonical != "Monster":
         return None
     text = level_cr_raw.strip()
-    if canonical == "Monster":
-        match = re.search(r"\bcr\s*(\d+\s*/\s*\d+|\d+)(?![\d.])", text, re.IGNORECASE)
-        if match is None:
+    match = re.search(r"\bcr\s*(\d+\s*/\s*\d+|\d+)(?![\d.])", text, re.IGNORECASE)
+    if match is None:
+        return None
+    key: Any = re.sub(r"\s+", "", match.group(1))
+    if "/" in key:
+        if key not in CR_FRACTIONS:
             return None
-        key: Any = re.sub(r"\s+", "", match.group(1))
-        if "/" in key:
-            if key not in CR_FRACTIONS:
-                return None
-        else:
-            key = int(key)
-            if not 0 <= key <= CR_MAX:
-                return None
-        challenge = f"CR {key}"
     else:
-        match = re.search(r"\blevel\s*(\d+)(?![\d.])", text, re.IGNORECASE)
-        if match is None:
+        key = int(key)
+        if not 0 <= key <= CR_MAX:
             return None
-        key = int(match.group(1))
-        if not 1 <= key <= LEVEL_MAX:
-            return None
-        challenge = f"level {key}"
     band = combat.CR_DPR.get(key)
     if band is None:
         return None
     low, high = band
     if low == high:
-        return f"record target: {challenge} -> hit DPR band {low:.0f}+"
-    return f"record target: {challenge} -> hit DPR band {low:.0f}-{high:.0f}"
+        return f"record target: CR {key} -> hit DPR band {low:.0f}+"
+    return f"record target: CR {key} -> hit DPR band {low:.0f}-{high:.0f}"
 
 
 _FULL_REPAIR_SCOPE: frozenset[str] = frozenset(
@@ -484,15 +475,17 @@ def build_stat_repair_prompt(issues: Sequence[StatIssue], *, attempt: int = 1) -
             *violations_header,
             "\n\n".join(flagged),
             "",
-            "POWER DISCIPLINE (audited, then declared: a block above its band",
-            "top still commits, stamped over-powered for the DM — but aim for",
-            "the MIDDLE of each record target band anyway. Move DPR with",
+            "POWER DISCIPLINE (audited, then declared: a Monster block above its",
+            "band top still commits, stamped over-powered for the DM — but aim for",
+            "the MIDDLE of the record target band anyway. NPC/BBEG blocks are NOT",
+            "band-enforced: keep their numbers authentic to the class and level,",
+            "never inflate them toward the monster table. Move a Monster's DPR with",
             "damage dice, damage bonus, to_hit, and attack count — NEVER by",
             "raising identity.level or identity.cr. Fix an identity.level",
             "violation by writing a bare integer 1-20 in identity.level and",
             "changing nothing else.",
             "",
-            "DAMAGE RECIPES (parser-checked — hit each character's record target band)",
+            "DAMAGE RECIPES (parser-checked — Monster bands bind; NPC/BBEG stay authentic)",
             _DPR_RECIPES,
             "",
             "TASK",
@@ -1020,12 +1013,20 @@ def conform_power(block: Any) -> dict[str, Any] | None:
     no reference band for the declared challenge, or no damaging action to
     carry the budget. Damage ABOVE the band is left alone (owner verdict
     2026-09-12): it commits stamped over-powered, trimming deliberately
-    out of scope.
+    out of scope. The rewrite targets the DMG MONSTER row and runs for
+    Monster-role blocks ONLY (NPC oracle, owner verdict 2026-09-12): an
+    NPC/BBEG block is never band-conformed — its authentic numbers stand
+    as written, and a legibility violation (attacks stating no dice)
+    belongs to the model's repair passes, not to this arithmetic.
     """
     if not isinstance(block, dict):
         return None
     identity = block.get("identity")
     if not isinstance(identity, dict):
+        return None
+    if stat_block_role(block) != "Monster":
+        # NPC oracle (owner verdict 2026-09-12): never machine-inflate an
+        # authentic NPC/BBEG block toward the monster table.
         return None
     band = combat.expected_band(identity)
     if band is None:
@@ -1179,6 +1180,30 @@ def conform_stat_power(
     )
 
 
+def conform_first_targets(issues: Sequence[StatIssue]) -> list[StatIssue]:
+    """The issues the deterministic conform fixes BEFORE any LLM pass
+    (conform-first): every violation is conformable AND the block's role is
+    Monster — the only role whose grade the band oracle owns.
+
+    Measured rationale, not style (Qwen3.8 ladder re-measure 2026-09-12):
+    power-only repairs never converge — the model nudged 8.5 -> 13 -> 17
+    against a 51-56 band while the deterministic conform landed it in one
+    pass (13 -> 53 verified) — and gemma's repairs overshoot the band top
+    instead. Spending up to three calls per block on arithmetic Python does
+    exactly was the largest call-count lever after the NPC oracle. Shape
+    violations keep the model's repair passes: there the model is the only
+    writer.
+    """
+    targets: list[StatIssue] = []
+    for issue in issues:
+        if not is_conformable(issue.violations):
+            continue
+        block = (issue.entity.data or {}).get("stat_block")
+        if stat_block_role(block) == "Monster":
+            targets.append(issue)
+    return targets
+
+
 def _damage_part(count: int, sides: int, average: float, damage_type: str) -> dict[str, Any]:
     """One canonical structured damage part (spec 2026-09-11) — the shape
     the auditor, the character sheet and the export read, matching the
@@ -1271,19 +1296,28 @@ def canonicalize_stat_block(block: dict[str, Any]) -> dict[str, Any]:
 
 
 def _stamp_power(block: dict[str, Any]) -> dict[str, Any]:
-    """Stamp the deterministic ``power`` annotation (owner verdict
+    """Stamp the deterministic ``power`` annotation (owner verdicts
     2026-09-12): ``{"dpr", "band", "verdict"}`` from the same audit the
-    validator reads, so an over-powered block commits declared — the DM
-    sees it instead of the job dying on it. Stamps ONLY the over-powered
-    verdict: on-target blocks stay byte-identical (no prompt bloat, no
-    fixture churn), under-powered ones never commit unrepaired. A
-    model-written ``power`` never survives: the repair schema cannot emit
-    it, the strip drops it (no scope set names it), and this overwrites
-    it. Abstains exactly where the audit abstains (no band, or no
-    parseable damage).
+    validator reads, so an out-of-band block commits DECLARED — the DM sees
+    it instead of the job dying on it.
+
+    Stamps two verdicts: over-powered for ANY role (trimming is
+    deliberately out of scope), and under-powered for NPC/BBEG — after the
+    NPC oracle those are no longer violations, and committing them silently
+    would hide the one signal a DM might want (a BBEG that hits like a
+    commoner). On-target blocks stay byte-identical (no prompt bloat, no
+    fixture churn); an under-powered MONSTER never commits unrepaired (its
+    band IS enforced), so that verdict is never stamped. A model-written
+    ``power`` never survives: the repair schema cannot emit it, the strip
+    drops it (no scope set names it), and this overwrites it. Abstains
+    exactly where the audit abstains (no band, or no parseable damage).
     """
     annotation = audit_power(block)
-    if annotation is None or annotation["verdict"] != combat.VERDICT_OVER:
+    verdict = annotation["verdict"] if annotation is not None else None
+    stampable = verdict == combat.VERDICT_OVER or (
+        verdict == combat.VERDICT_UNDER and stat_block_role(block) != "Monster"
+    )
+    if annotation is None or not stampable:
         if "power" not in block:
             return block
         trimmed = dict(block)

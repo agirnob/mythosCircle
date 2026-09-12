@@ -298,3 +298,58 @@ def test_chat_completion_forwards_response_format_verbatim() -> None:
         transport=httpx.MockTransport(handler),
     )
     assert seen["response_format"] == schema
+
+
+def test_chat_completion_sampling_controls_ride_the_body_when_set() -> None:
+    """Configured temperature/top_p/seed ride the body verbatim (plan G
+    sampling passthrough) — and a set FALSY value is still sent: 0.0 is
+    greedy decoding and seed 0 a fixed RNG, never omissions."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.read().decode()))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    chat_completion(
+        "hi",
+        settings=LLMSettings(temperature=0.0, top_p=0.9, seed=0),
+        transport=httpx.MockTransport(handler),
+    )
+    assert seen["temperature"] == 0.0
+    assert seen["top_p"] == 0.9
+    assert seen["seed"] == 0
+
+
+def test_chat_completion_unset_sampling_controls_send_no_fields() -> None:
+    """None = omit the field entirely (the enable_thinking tri-state's
+    rationale): default-settings bodies stay byte-identical and a backend
+    rejecting unknown request fields keeps working."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.read().decode()))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    chat_completion("hi", settings=DEFAULT, transport=httpx.MockTransport(handler))
+    assert "temperature" not in seen
+    assert "top_p" not in seen
+    assert "seed" not in seen
+
+
+def test_chat_completion_sampling_controls_are_independent() -> None:
+    """Each control is its own tri-state: setting only seed leaves
+    temperature and top_p out of the body (never a package deal)."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.read().decode()))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    chat_completion(
+        "hi",
+        settings=LLMSettings(seed=12345),
+        transport=httpx.MockTransport(handler),
+    )
+    assert seen["seed"] == 12345
+    assert "temperature" not in seen
+    assert "top_p" not in seen

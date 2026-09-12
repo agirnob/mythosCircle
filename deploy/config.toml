@@ -42,6 +42,15 @@ max_tokens = 65536
 # true = ask for the thinking channel, <absent> = send no such field at all
 # (some backends reject unknown request fields). Measured 2026-09-10.
 thinking = false
+# Sampling controls (optional; env MYTHOSCIRCLE_LLM_TEMPERATURE /
+# MYTHOSCIRCLE_LLM_TOP_P / MYTHOSCIRCLE_LLM_SEED override). Absent =
+# the request body omits the field entirely, so the server's own default
+# rules and a backend rejecting unknown fields keeps working (the
+# `thinking` tri-state's rationale). Set them to pin reproducible
+# sampling: temperature = 0.0 is greedy decoding, seed fixes the RNG.
+# temperature = 0.7
+# top_p = 0.9
+# seed = 12345
 # Per-job LLM/media call budgets are declared per job and capped here.
 max_llm_calls_per_job = 64
 max_media_calls_per_job = 8

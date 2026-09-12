@@ -33,15 +33,16 @@ failure (the wave-1 core) stay — documented resilience, no compensating
 undo.
 """
 
+import contextlib
 import dataclasses
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from app.core import ids
 from app.core.settings import LLMSettings
-from app.pipeline.budget import CallBudget
+from app.pipeline.budget import BudgetExceededError, CallBudget
 from app.pipeline.fencing import json_error, parse_json_object
 from app.pipeline.fencing import strip_fence as _strip_fence
 from app.pipeline.knowledge import ROLES, identity_field_allowed, identity_field_ok
@@ -53,6 +54,7 @@ from app.pipeline.statblocks import (
     build_stat_repair_schema,
     canonicalize_stat_blocks,
     collect_stat_issues,
+    conform_first_targets,
     conform_stat_power,
     parse_stat_repair_output,
     scope_for_violations,
@@ -62,8 +64,12 @@ from app.pipeline.statblocks import (
     strip_noncharacter_stat_blocks,
 )
 from app.pipeline.worker import JobPayloadError
+from app.providers.llm import ProviderError
 from app.store import (
     EDGE_TYPES,
+    DanglingEdgeError,
+    JobStateConflictError,
+    StaleRevisionError,
     commit_subgraph,
     complete_job,
     edge_counter_semantic,
@@ -155,6 +161,41 @@ RETRIEVAL_ENTITY_CAP = 24
 #: braces stochastically and its same-size retry fails the same way).
 RECORD_REPAIR_CHUNK_SIZE = 4
 
+#: Wave-1 chunking (M1, the 100-entity cut): a roster larger than one chunk
+#: is generated in bounded per-chunk calls instead of one monolithic wave
+#: call. Measured at rung 50: Qwen3.8's single wave-1 call ran 411.5s /
+#: 106,186 chars; the linear extrapolation to 100 lands at the 65,536-token
+#: operator ceiling and the 900s timeout at once, one bad roll costs the
+#: whole roster, and a cancel wastes the entire call. Chunks keep every
+#: call inside the measured-green rung-10/25 envelope; a roster that fits
+#: ONE chunk takes the original single-call path byte-identically.
+WAVE1_CHUNK_SIZE = 12
+#: Weighted chunk slicing: a key-figure entry (full AR24 record + stat
+#: block, ~2.1k output chars) weighs 1.0; a flat place/faction entry ~0.35.
+#: A chunk closes at WAVE1_CHUNK_WEIGHT units or WAVE1_CHUNK_HARD_CAP
+#: entries, whichever binds first — a deterministic pure function of the
+#: roster (AD-16).
+WAVE1_CHUNK_WEIGHT = 12.0
+WAVE1_CHUNK_HARD_CAP = 16
+_WEIGHT_CHARACTER = 1.0
+_WEIGHT_FLAT = 0.35
+#: Per-call generation-window sizing (B): the measured per-entity output at
+#: rung 50 (Qwen3.8 ~530 tokens/entity, gemma ~390) with ~70% headroom,
+#: times the pinned count, plus edge-list headroom — capped at the
+#: operator's settings.max_tokens (never unbounded, config.py). A
+#: truncation retry doubles the window inside the same cap (C).
+TOKENS_PER_ENTITY = 900
+WAVE_CALL_TOKEN_HEADROOM = 4096
+WAVE_CALL_MIN_TOKENS = 2048
+#: Fixed window for the edges-only calls (wiring pass, anchor repair): the
+#: response is a bounded edge list, never a roster.
+EDGES_CALL_MAX_TOKENS = 16384
+#: Wave-2 output caps (E1): notes are <=2000 chars and every measured wave 2
+#: emitted <=9 entities — the caps make a runaway generation structurally
+#: bounded while the roster stays model-decided (unpinned count).
+WAVE2_MAX_ENTITIES = 24
+WAVE2_MAX_EDGES = 256
+
 
 def _repair_retry_prompt(
     base_prompt: str, bad_text: str, retry_note: str, decode_error: str | None = None
@@ -215,7 +256,7 @@ def _run_repair[R: Mapping[int, Any]](
     CONTRACT violations (wrong refs, duplicates, missing entries) inside
     well-formed JSON still fail immediately — they are deterministic, not
     JSON noise."""
-    repair_text = budget.call(lambda: provider(prompt, settings=settings))
+    repair_text = budget.call(lambda: provider(prompt, settings=settings), label=label)
     repaired = parse(repair_text, positions)
     if repaired is not None:
         return repaired
@@ -223,7 +264,8 @@ def _run_repair[R: Mapping[int, Any]](
     retry_text = budget.call(
         lambda: provider(
             _repair_retry_prompt(prompt, repair_text, retry_note, decode_error), settings=settings
-        )
+        ),
+        label=f"{label}_json_retry",
     )
     repaired = parse(retry_text, positions)
     if repaired is None:
@@ -233,6 +275,163 @@ def _run_repair[R: Mapping[int, Any]](
             f"(last output starts: {snippet!r})"
         )
     return repaired
+
+
+class _WaveJsonError(JobPayloadError):
+    """The structural retry signal (C, the retry taxonomy): a wave-class
+    response that is not parseable JSON AT ALL. ``_call_wave`` gives exactly
+    this class one bounded re-elicitation with a rolled seed; semantic
+    rejections (bad refs, kinds, edge types — contract shapes inside
+    well-formed JSON) stay plain ``JobPayloadError`` and stay terminal:
+    they are deterministic, not noise. Subclasses ``JobPayloadError``, so
+    every existing handler and fail-event path keeps working unchanged."""
+
+
+class ContextRef(NamedTuple):
+    """One C-labelable entity of the wave-2 anchor set (M2): the detail
+    tier's committed rows and the compact tier's wave-1 inputs both reduce
+    to ``(id, name, kind)`` — everything the C-ref resolver, the anchor
+    rule, the wave-2 prompt roster, and the anchor-repair rosters read."""
+
+    id: str
+    name: str
+    kind: str
+
+
+def _context_refs(entities: Sequence[models.Entity]) -> list[ContextRef]:
+    """The detail tier's ContextRefs (committed rows, world order)."""
+    return [ContextRef(entity.id, entity.name, entity.kind) for entity in entities]
+
+
+def _rolled_seed(settings: LLMSettings, attempt: int) -> LLMSettings:
+    """The retry's variance roll (C): when the operator pinned a seed, the
+    retry carries seed+attempt so a deterministic profile never re-calls
+    the identical failing sample; with no pinned seed the sampling
+    temperature already varies and the body stays untouched."""
+    if settings.seed is None:
+        return settings
+    return dataclasses.replace(settings, seed=settings.seed + attempt)
+
+
+def _wave_max_tokens(entity_count: int, ceiling: int) -> int:
+    """The per-call generation window for a pinned-count wave call (B):
+    ``TOKENS_PER_ENTITY`` x count + edge headroom, inside the operator's
+    ceiling. Sized from the recorded corpora so a legitimate roster never
+    truncates, while a runaway generation hits the wall in minutes instead
+    of burning the full ceiling."""
+    wanted = TOKENS_PER_ENTITY * entity_count + WAVE_CALL_TOKEN_HEADROOM
+    return max(WAVE_CALL_MIN_TOKENS, min(ceiling, wanted))
+
+
+def _call_with_truncation_retry(
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    prompt: str,
+    *,
+    label: str,
+    ceiling: int,
+) -> str:
+    """One provider call under the truncation class of the retry taxonomy
+    (B/C): ``finish_reason == "length"`` means the WINDOW was too small for
+    this roster — the one retry doubles it inside the operator's cap (a
+    plain re-call would deterministically truncate again, which is what
+    made the naive retry wrong). Every other ``ProviderError`` propagates
+    exactly as before (spec-1.4: connection/http failures are terminal)."""
+    try:
+        return budget.call(lambda: provider(prompt, settings=settings), label=label)
+    except ProviderError as exc:
+        doubled = min(settings.max_tokens * 2, ceiling)
+        if exc.kind != "truncated" or doubled <= settings.max_tokens:
+            raise
+        logger.info(
+            "%s truncated at max_tokens=%s; retrying once at %s",
+            label,
+            settings.max_tokens,
+            doubled,
+        )
+        widened = dataclasses.replace(settings, max_tokens=doubled)
+        return budget.call(lambda: provider(prompt, settings=widened), label=f"{label}_trunc_retry")
+
+
+def _call_wave[P](
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    prompt: str,
+    *,
+    label: str,
+    parse: Callable[[str], P],
+    retry_note: str,
+    ceiling: int,
+) -> P:
+    """One wave-class call under the full bounded retry taxonomy (C):
+
+    * malformed JSON (``_WaveJsonError``) -> exactly ONE re-elicitation
+      quoting the decoder error (the repair gates' proven
+      ``_repair_retry_prompt`` shape) with a rolled seed — never an
+      identical re-call;
+    * truncation -> one doubled-window retry per call (inside
+      ``_call_with_truncation_retry``, so the JSON retry gets its own);
+    * semantic rejection, budget, connection, HTTP -> terminal, unchanged.
+
+    On grammar-enforcing backends the structural classes are near-dead
+    code (the ladder measured 4/4 first-try parses under ``json_schema``);
+    on backends without enforcement they are the difference between a lost
+    multi-minute wave and a recovered one.
+    """
+    text = _call_with_truncation_retry(
+        budget, provider, settings, prompt, label=label, ceiling=ceiling
+    )
+    try:
+        return parse(text)
+    except _WaveJsonError:
+        retry_prompt = _repair_retry_prompt(prompt, text, retry_note, json_error(text))
+        text = _call_with_truncation_retry(
+            budget,
+            provider,
+            _rolled_seed(settings, 1),
+            retry_prompt,
+            label=f"{label}_json_retry",
+            ceiling=ceiling,
+        )
+        return parse(text)
+
+
+def _wave1_roster(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    """The trimmed wave-1 roster: ``(section, entry)`` pairs in fixed prompt
+    order — the same trimming the count pin and the enqueue budget share
+    (``jobs._build_in_budget``). Pure function of the payload."""
+    roster: list[tuple[str, str]] = []
+    for section in SECTION_NAMES:
+        for entry in payload.get(section, []):
+            if isinstance(entry, str) and entry.strip():
+                roster.append((section, entry.strip()))
+    return roster
+
+
+def _wave1_chunks(roster: Sequence[tuple[str, str]]) -> list[list[tuple[int, str, str]]]:
+    """Slice the roster into weighted generation chunks (M1): each item is
+    ``(global_position, section, entry)`` — the position fixes the entity's
+    canonical E-ref, so chunks merge in one deterministic order and edges
+    resolve against the assembled roster. Greedy and pure: a chunk closes
+    when the next entry would cross the weight budget or the hard cap."""
+    chunks: list[list[tuple[int, str, str]]] = []
+    current: list[tuple[int, str, str]] = []
+    weight = 0.0
+    for position, (section, entry) in enumerate(roster):
+        entry_weight = _WEIGHT_CHARACTER if section == "key_figures" else _WEIGHT_FLAT
+        if current and (
+            weight + entry_weight > WAVE1_CHUNK_WEIGHT or len(current) >= WAVE1_CHUNK_HARD_CAP
+        ):
+            chunks.append(current)
+            current = []
+            weight = 0.0
+        current.append((position, section, entry))
+        weight += entry_weight
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def _enforce_stat_blocks(
@@ -262,6 +461,14 @@ def _enforce_stat_blocks(
     is the last word before the job fails, and the model still never gets
     to fix wording.
 
+    Conform runs FIRST for Monster-role power-only misses (2026-09-12, the
+    NPC-oracle cut): both ladder models measured non-convergent on band
+    arithmetic — Qwen nudges 8.5 -> 13 -> 17 and never reaches the band,
+    gemma overshoots it — while the deterministic conform lands the exact
+    DMG row in one pass. A power-only Monster miss therefore costs ZERO
+    provider calls, and the passes below are left to the SHAPE violations
+    where the model is the only writer.
+
     Each repair call carries exactly ONE failing entity (prompt, parse, and
     merge by ref), after the ``RECORD_REPAIR_CHUNK_SIZE`` precedent: a
     multi-entity repair response stays long enough to drop braces
@@ -281,6 +488,15 @@ def _enforce_stat_blocks(
     # (spec: structured attack damage and the missing stat aspects).
     entities = canonicalize_stat_blocks(entities)
     issues = collect_stat_issues(entities)
+    # Conform-first (see the docstring): Monster power-only misses go
+    # straight to the deterministic conform before any LLM pass; NPC/BBEG
+    # power misses are no longer violations at all (the NPC oracle,
+    # knowledge._check_power), so they never reach here.
+    first = conform_first_targets(issues)
+    if first:
+        entities = conform_stat_power(entities, first)
+        entities = canonicalize_stat_blocks(entities)
+        issues = collect_stat_issues(entities)
     # Repair calls carry the strict repair-response schema via a settings
     # copy (spec: edgeless repair scope) — the wave calls keep the wave
     # envelope, the record/name gates keep plain settings (Never list).
@@ -835,22 +1051,315 @@ def _enforce_character_records(
     return entities, False
 
 
+class _Wave2StaleEndpoints(Exception):
+    """The bounded full-repass signal (M4): the wave-2 commit found its
+    validated endpoints gone — a DM DELETE landed mid-job — so neither the
+    original base nor the cheap rebase can commit the staged subgraph.
+    ``run_build_in`` re-runs the WHOLE wave-2 pass exactly once against the
+    new head; a second loss is an actively-rewritten world and fails loud."""
+
+
+def _commit_wave(
+    campaign_id: str,
+    entities: Sequence[models.EntityInput],
+    edges: Sequence[models.EdgeInput],
+    base_revision: str | None,
+    *,
+    allow_orphans: bool = False,
+    label: str,
+) -> models.Revision:
+    """Commit one wave with the cheap stale rebase (M4): a DM edit between
+    the generation read and the commit makes ``base_revision`` stale — at
+    100-entity scale that window is MINUTES, and the pre-rebase runner
+    incinerated the whole generation on it. The staged subgraph is fresh
+    ULIDs whose edges resolve inside the wave or the still-live context, so
+    re-committing against the NEW head is valid whenever the endpoints
+    exist; the store re-checks everything regardless (a deleted endpoint
+    raises ``DanglingEdgeError`` — wave 2's re-pass signal). Bounded to ONE
+    rebase: a second stale head means an actively-editing DM and
+    propagates."""
+    try:
+        return commit_subgraph(
+            campaign_id, entities, edges, base_revision=base_revision, allow_orphans=allow_orphans
+        )
+    except StaleRevisionError:
+        with session_scope() as session:
+            head = latest_revision(session, campaign_id)
+        rebased = head.id if head is not None else None
+        logger.info("%s commit rebased onto head %s (stale base %s)", label, rebased, base_revision)
+        return commit_subgraph(
+            campaign_id, entities, edges, base_revision=rebased, allow_orphans=allow_orphans
+        )
+
+
+def _run_wave1_chunks(
+    job: models.Job,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    seed: models.Campaign,
+    notes: str,
+    chunks: Sequence[Sequence[tuple[int, str, str]]],
+    *,
+    ceiling: int,
+    progress: Callable[[float], None],
+) -> tuple[list[models.EntityInput], list[models.EdgeInput], bool]:
+    """Chunked wave-1 generation plus the edges-only wiring pass (M1).
+
+    Each chunk call is pinned to its slice (count AND ref enums over its
+    GLOBAL positions), carries the full DM notes, and validates its
+    entities independently — a chunk's malformed output retries once
+    inside ``_call_wave`` and then fails the job with ZERO commits, exactly
+    like the single call it replaces, but the blast radius is one bounded
+    call instead of a 15-minute monolith. Chunks merge in fixed positional
+    order (AD-16: same model outputs, same committed graph). The wiring
+    pass then adds cross-chunk edges over the compact roster; it is
+    BEST-EFFORT — any failure degrades to committing the chunk-internal
+    edges only (the edgeless commit is legal, owner verdict 2026-09-11:
+    the DM prunes). Returns ``(entities, edges, cancelled)``."""
+    entities: list[models.EntityInput] = []
+    assigned_ids: list[str] = []
+    raw_edges: list[Any] = []
+    total = len(chunks)
+    retry_note = 'Return ONLY the one JSON object: {"entities": [...], "edges": [...]}.'
+    for index, chunk in enumerate(chunks):
+        if not _job_still_running(job):
+            return entities, [], True
+        refs = [f"E{position}" for position, _section, _entry in chunk]
+        chunk_settings = dataclasses.replace(
+            settings,
+            response_format=build_wave_schema(len(chunk), refs=refs),
+            max_tokens=_wave_max_tokens(len(chunk), ceiling),
+        )
+        prompt = build_wave1_chunk_prompt(seed, notes, chunk, chunk_index=index, chunk_total=total)
+        parsed = _call_wave(
+            budget,
+            provider,
+            chunk_settings,
+            prompt,
+            label=f"wave1_chunk{index}",
+            parse=lambda text: parse_build_output(text, wave=1),
+            retry_note=retry_note,
+            ceiling=ceiling,
+        )
+        raw_entities = parsed.get("entities")
+        chunk_raw_edges = parsed.get("edges")
+        assert isinstance(raw_entities, list) and isinstance(chunk_raw_edges, list)
+        chunk_entities, chunk_ids = _validate_entities(1, raw_entities, ref_offset=chunk[0][0])
+        entities.extend(chunk_entities)
+        assigned_ids.extend(chunk_ids)
+        raw_edges.extend(chunk_raw_edges)
+        progress(0.05 + 0.30 * (index + 1) / total)
+    # The wiring pass: edges-only over the compact full roster — the proven
+    # anchor-repair shape (frozen entities, endpoint/type enums), so a rename
+    # or an invented endpoint is unrepresentable on grammar backends.
+    if not _job_still_running(job):
+        return entities, [], True
+    valid_refs = frozenset(f"E{position}" for position in range(len(entities)))
+    wiring_roster = [
+        (f"E{position}", entity.name, entity.kind, _wiring_excerpt(entity))
+        for position, entity in enumerate(entities)
+    ]
+    wiring_settings = dataclasses.replace(
+        settings,
+        response_format=build_anchor_repair_schema(sorted(valid_refs), []),
+        max_tokens=min(ceiling, EDGES_CALL_MAX_TOKENS),
+    )
+    try:
+        wiring_rows = _call_wave(
+            budget,
+            provider,
+            wiring_settings,
+            _build_wiring_prompt(seed, wiring_roster),
+            label="wave1_wiring",
+            parse=_parse_wiring_output,
+            retry_note='Return ONLY {"edges": [...]} — the additional typed edges.',
+            ceiling=ceiling,
+        )
+        raw_edges.extend(_filter_wiring_edges(wiring_rows, valid_refs))
+    except (JobPayloadError, ProviderError, BudgetExceededError) as exc:
+        logger.warning(
+            "wave-1 wiring pass skipped (%s: %s) — committing chunk edges only (job %s)",
+            exc.__class__.__name__,
+            exc,
+            job.id,
+        )
+    edges, _anchored = _resolve_edges(1, raw_edges, assigned_ids)
+    progress(0.42)
+    return entities, edges, False
+
+
+def _run_wave2(
+    job: models.Job,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    seed: models.Campaign,
+    notes: str,
+    entities_1: Sequence[models.EntityInput],
+    base_revision: str | None,
+    *,
+    ceiling: int,
+    progress: Callable[[float], None],
+) -> tuple[models.Revision, dict[str, Any]] | None:
+    """One FULL wave-2 pass (M4's re-pass unit): retrieve -> two-tier
+    context (M2) -> prompt -> bounded-taxonomy call -> anchor validation
+    against the FULL wave-1 roster -> the one edges-only anchor repair ->
+    the three gates -> commit with the cheap rebase. Returns
+    ``(revision, wave_result)``, or None when the job was cancelled at any
+    poll. Raises ``_Wave2StaleEndpoints`` when the commit — even rebased —
+    finds deleted endpoints; the caller re-runs this whole pass once."""
+    context_entities, context_edges = retrieve_neighborhood(
+        job.campaign_id,
+        seed_ids=_entity_ulids(entities_1),
+        depth=RETRIEVAL_DEPTH,
+        entity_cap=RETRIEVAL_ENTITY_CAP,
+    )
+    core_count = min(len(entities_1), len(context_entities))
+    # Two-tier context (M2): the detail tier stays the AR6 neighborhood
+    # (24 rows, full data); the compact tier names EVERY wave-1 entity the
+    # cap could not carry, so a 100-entity core stays wirable from notes.
+    # Pre-tier, a legal edge to C30 died as a phantom orphan (ledger,
+    # spec-2.3 review) and the model could not even see the roster past
+    # C23. Contiguity invariant: the wave-1 core is always
+    # anchor_context[:full_core] — retrieval seeds with the wave-1 ULIDs,
+    # so the detail tier's first core_count rows are wave-1, and the
+    # compact tier continues them (a sub-cap wave 1 leaves neighbors in
+    # the detail tail and an empty compact tier).
+    detail_refs = _context_refs(context_entities)
+    detail_ids = {ref.id for ref in detail_refs}
+    compact = [
+        ContextRef(cast(str, entity.id), entity.name, entity.kind)
+        for entity in entities_1
+        if entity.id not in detail_ids
+    ]
+    compact_core = [
+        (len(detail_refs) + index, ref.name, ref.kind) for index, ref in enumerate(compact)
+    ]
+    anchor_context = detail_refs + compact
+    full_core = core_count + len(compact)
+    core_ids = frozenset(_entity_ulids(entities_1))
+    if not _job_still_running(job):
+        return None
+    progress(0.55)
+    prompt_2 = build_wave2_prompt(
+        seed,
+        notes,
+        (context_entities, context_edges),
+        core_count=full_core,
+        compact_core=compact_core,
+    )
+    wave_settings = dataclasses.replace(
+        settings,
+        response_format=build_wave_schema(
+            max_entities=WAVE2_MAX_ENTITIES, max_edges=WAVE2_MAX_EDGES
+        ),
+    )
+    parsed_2 = _call_wave(
+        budget,
+        provider,
+        wave_settings,
+        prompt_2,
+        label="wave2",
+        parse=lambda text: parse_build_output(text, wave=2),
+        retry_note='Return ONLY the one JSON object: {"entities": [...], "edges": [...]}.',
+        ceiling=ceiling,
+    )
+    progress(0.7)
+    try:
+        entities_2, edges_2 = _validate_subgraph(
+            2, parsed_2, context=anchor_context, core_count=full_core, core_ids=core_ids
+        )
+    # NOTE: this handler must precede any `except JobPayloadError` —
+    # _OrphanRetryError subclasses it, so a broader handler first would
+    # swallow the retry signal and orphans would fail immediately.
+    except _OrphanRetryError as exc:
+        # ANCHOR_REPAIR (spec: repair sequence step 3) — the only
+        # _validate_subgraph rejection with a repair pass: one edges-only
+        # repair naming the orphans, over entities frozen from the first
+        # attempt, through the same budget and the same gates below. The
+        # core roster is the FULL wave-1 set (M2), so every committed
+        # entity is a legal anchor. Renames and drops are unrepresentable
+        # (no entity list is emitted). Still-orphan after the repair fails
+        # the job with wave 1 committed; any other rejection stays
+        # immediate.
+        repaired_2 = _anchor_repair(
+            job=job,
+            budget=budget,
+            provider=provider,
+            settings=settings,
+            first=parsed_2,
+            orphans=exc.orphans,
+            context=anchor_context,
+            core_count=full_core,
+            ceiling=ceiling,
+        )
+        if repaired_2 is None:
+            return None
+        entities_2, edges_2 = _validate_subgraph(
+            2, repaired_2, context=anchor_context, core_count=full_core, core_ids=core_ids
+        )
+    # The same gates as wave 1 (dogfood fix 2026-09-09): wave-2 names
+    # (name gate), then characters carry full AR24 records (record gate,
+    # then the stat-block gate) before committing.
+    entities_2 = strip_noncharacter_stat_blocks(entities_2)
+    entities_2, cancelled = _enforce_entity_names(
+        job, budget, provider, settings, entities_2, wave=2
+    )
+    if cancelled:
+        return None
+    entities_2, cancelled = _enforce_character_records(
+        job, budget, provider, settings, entities_2, wave=2
+    )
+    if cancelled:
+        return None
+    entities_2, cancelled = _enforce_stat_blocks(
+        job,
+        budget,
+        provider,
+        settings,
+        entities_2,
+        repair_response_format=build_stat_repair_schema(),
+        wave=2,
+    )
+    if cancelled:
+        return None
+    # Cancel-race poll: a cancel during the wave-2 call/validation must
+    # not commit wave 2 — the failed wave writes nothing.
+    if not _job_still_running(job):
+        return None
+    progress(0.9)
+    try:
+        revision_2 = _commit_wave(
+            job.campaign_id, entities_2, edges_2, base_revision, label="wave 2"
+        )
+    except DanglingEdgeError as exc:
+        raise _Wave2StaleEndpoints(str(exc)) from exc
+    return revision_2, _wave_result(2, revision_2.id, entities_2, edges_2)
+
+
 def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSettings) -> None:
     """Run one build-in job to a terminal state (complete_job/fail_job).
 
     Wave 1 commits first (AR5); wave 2 (notes) commits against wave 1's
-    revision. ``report_progress`` marks 0.5 after wave 1 and 1.0 after
-    wave 2 (AD-17). A job cancelled before a wave's provider call — or
-    between a wave's call and its commit — is a no-op for that wave; a
-    cancel racing the commit leaves the committed wave in place but never
-    writes progress or a terminal state on the cancelled job. Any failure
-    (provider, budget, malformed output, invalid subgraph, stale base)
-    propagates so the worker fails the job; earlier committed waves stay.
-    Structure keeps its one bounded pass on wave 2 only (spec: repair
-    sequence step 3, anchor repair): a wave-2 subgraph whose ONLY defect is
-    core-unanchored entities gets one edges-only repair over frozen
-    entities; a still-orphan repair fails the job with wave 1 committed.
-    Wave 1 commits edgeless (owner verdict 2026-09-11) — the DM prunes.
+    revision. Wave-1 GENERATION is chunked above one chunk's roster (M1,
+    the 100-entity cut): bounded per-chunk calls with global E-refs, an
+    edges-only wiring pass over the assembled roster (best-effort — a
+    failure degrades to the legal edgeless commit), and a deterministic
+    ordered merge; a roster that fits ONE chunk keeps the original single
+    call byte-for-byte. Commits rebase once on a stale head instead of
+    dying (M4 — a 100-entity job's generation window is minutes, and a DM
+    hand-edit mid-job used to incinerate it); wave 2 additionally re-runs
+    its whole pass once when the rebase finds endpoints deleted.
+    ``report_progress`` marks per-chunk/per-gate milestones on the way to
+    0.5 (wave 1 committed) and 1.0 (wave 2 committed) (AD-17 + H). A job
+    cancelled before a call — or between a call and its commit — is a
+    no-op for that wave; earlier committed waves stay. Any other failure
+    (provider, budget, malformed output, invalid subgraph) propagates so
+    the worker fails the job. Structure keeps its one bounded pass on
+    wave 2 only (anchor repair); wave 1 commits edgeless (owner verdict
+    2026-09-11) — the DM prunes. The job result carries the call
+    telemetry (J): ``llm_calls`` per label.
     """
     with session_scope() as session:
         seed = campaign_seed(session, job.campaign_id)
@@ -869,30 +1378,71 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     notes = notes.strip()
 
     budget = CallBudget(job)
-    # Wave calls carry the flat envelope schema via settings copies — the
-    # provider doubles keep their ``(prompt, settings)`` shape. Wave 1's
-    # copy pins the entities array to the trimmed roster count (ladder rung
-    # 50: shape pinned but count free emitted 28 then 25 of 50); wave 2's
-    # notes-driven roster is model-decided and stays unpinned.
-    wave1_count = sum(
-        len(
-            [
-                entry
-                for entry in payload.get(section, [])
-                if isinstance(entry, str) and entry.strip()
-            ]
-        )
-        for section in SECTION_NAMES
-    )
-    wave1_settings = dataclasses.replace(settings, response_format=build_wave_schema(wave1_count))
-    wave_settings = dataclasses.replace(settings, response_format=build_wave_schema())
+    ceiling = settings.max_tokens
+    last_progress = [0.0]
+
+    def progress(value: float) -> None:
+        """Monotone milestone progress (H): a 20-minute 100-entity job must
+        never look wedged — every chunk/gate boundary moves the bar, and a
+        milestone behind the bar never regresses it. Cancel-safe: a cancel
+        landing between the poll and the write makes report_progress raise
+        JobStateConflictError — swallowed here (a cancelled job has no
+        progress to show), and the next cancel poll stops the run, the
+        same race contract the terminal writes follow."""
+        if value > last_progress[0]:
+            last_progress[0] = value
+            with contextlib.suppress(JobStateConflictError):
+                report_progress(job.id, value)
+
+    roster = _wave1_roster(payload)
+    chunks = _wave1_chunks(roster)
     # Wave 1: the named sections -> a committed core (edgeless allowed).
     if not _job_still_running(job):
         return
-    prompt_1 = build_wave1_prompt(seed, payload)
-    text_1 = budget.call(lambda: provider(prompt_1, settings=wave1_settings))
-    parsed_1 = parse_build_output(text_1, wave=1)
-    entities_1, edges_1 = _validate_subgraph(1, parsed_1)
+    if len(chunks) <= 1:
+        # Single-call path: the byte-identical prompt for any roster that
+        # fits one chunk (the rung-10/25 regression property). The schema
+        # gains the E1/E2 tightening (kind enum, ref enums, name minLength,
+        # present-key data constraints) and the window is sized from the
+        # pin (B); wave 1's copy pins the entities array to the trimmed
+        # roster count (ladder rung 50: shape pinned but count free emitted
+        # 28 then 25 of 50).
+        refs = [f"E{position}" for position in range(len(roster))]
+        wave1_settings = dataclasses.replace(
+            settings,
+            # An empty roster passes no refs: {"enum": []} is a legal JSON
+            # Schema but a pathological GBNF alternation — with the count
+            # pinned to 0 the items schema is unreachable anyway.
+            response_format=build_wave_schema(len(roster), refs=refs or None),
+            max_tokens=_wave_max_tokens(len(roster), ceiling),
+        )
+        prompt_1 = build_wave1_prompt(seed, payload)
+        parsed_1 = _call_wave(
+            budget,
+            provider,
+            wave1_settings,
+            prompt_1,
+            label="wave1",
+            parse=lambda text: parse_build_output(text, wave=1),
+            retry_note='Return ONLY the one JSON object: {"entities": [...], "edges": [...]}.',
+            ceiling=ceiling,
+        )
+        entities_1, edges_1 = _validate_subgraph(1, parsed_1)
+        progress(0.2)
+    else:
+        entities_1, edges_1, cancelled = _run_wave1_chunks(
+            job,
+            budget,
+            provider,
+            settings,
+            seed,
+            notes,
+            chunks,
+            ceiling=ceiling,
+            progress=progress,
+        )
+        if cancelled:
+            return
     # Only characters carry stat blocks (AR24, spec-2.4 review decision): a
     # stray block from a faction/place is stripped before validation or commit.
     entities_1 = strip_noncharacter_stat_blocks(entities_1)
@@ -905,6 +1455,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     )
     if cancelled:
         return
+    progress(0.3)
     # Record enforcement (dogfood fix 2026-09-09): every wave character
     # carries the full AR24 record — violations go through exactly one
     # bounded repair pass, same AR25 semantics as the stat gate below. It
@@ -914,6 +1465,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     )
     if cancelled:
         return
+    progress(0.4)
     # Stat-block enforcement (AR24/AR25, spec-2.4): every character must carry
     # a valid minimal stat block before the wave commits — or up to three
     # bounded per-entity repair passes; a block still invalid after the
@@ -929,12 +1481,13 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     )
     if cancelled:
         return
+    progress(0.45)
     # Edgeless wave-1 commits through the store's FR2 backstop explicitly
     # (owner verdict 2026-09-11): the pipeline no longer requires internal
     # wiring, so the commit must not either — the DM prunes. Every other
     # caller keeps the default (reject), including wave 2 below.
-    revision_1 = commit_subgraph(
-        job.campaign_id, entities_1, edges_1, base_revision=wave1_base, allow_orphans=True
+    revision_1 = _commit_wave(
+        job.campaign_id, entities_1, edges_1, wave1_base, allow_orphans=True, label="wave 1"
     )
     touched = {edge.src for edge in edges_1} | {edge.dst for edge in edges_1}
     edgeless = sorted(entity.name for entity in entities_1 if entity.id not in touched)
@@ -945,101 +1498,69 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # leaves the committed core in place but stops before progress writes.
     if not _job_still_running(job):
         return
-    report_progress(job.id, 0.5)
+    progress(0.5)
 
     # Wave 2: the free-form notes -> a second subgraph anchored into the core.
     if notes:
-        context_entities, context_edges = retrieve_neighborhood(
-            job.campaign_id,
-            seed_ids=_entity_ulids(entities_1),
-            depth=RETRIEVAL_DEPTH,
-            entity_cap=RETRIEVAL_ENTITY_CAP,
-        )
-        core_count = min(len(entities_1), len(context_entities))
-        if not _job_still_running(job):
-            return
-        prompt_2 = build_wave2_prompt(
-            seed, notes, (context_entities, context_edges), core_count=core_count
-        )
-        text_2 = budget.call(lambda: provider(prompt_2, settings=wave_settings))
-        parsed_2 = parse_build_output(text_2, wave=2)
         try:
-            entities_2, edges_2 = _validate_subgraph(
-                2, parsed_2, context=context_entities, core_count=core_count
+            outcome = _run_wave2(
+                job,
+                budget,
+                provider,
+                settings,
+                seed,
+                notes,
+                entities_1,
+                revision_1.id,
+                ceiling=ceiling,
+                progress=progress,
             )
-        # NOTE: this handler must precede any `except JobPayloadError` —
-        # _OrphanRetryError subclasses it, so a broader handler first would
-        # swallow the retry signal and orphans would fail immediately.
-        except _OrphanRetryError as exc:
-            # ANCHOR_REPAIR (spec: repair sequence step 3) — the only
-            # _validate_subgraph rejection with a repair pass: one
-            # edges-only repair naming the orphans, over entities frozen
-            # from the first attempt, through the same budget and the same
-            # name/record/stat gates below. Renames and drops are
-            # unrepresentable (no entity list is emitted), so the re-emit
-            # drop guard retired with the re-emit. The merged wave re-runs
-            # the same anchor check below: still-orphan raises again and
-            # fails the job with wave 1 committed; any other rejection was
-            # never caught and stays immediate.
-            repaired_2 = _anchor_repair(
-                job=job,
-                budget=budget,
-                provider=provider,
-                settings=settings,
-                first=parsed_2,
-                orphans=exc.orphans,
-                context=context_entities,
-                core_count=core_count,
-            )
-            if repaired_2 is None:
-                return
-            entities_2, edges_2 = _validate_subgraph(
-                2, repaired_2, context=context_entities, core_count=core_count
-            )
-        # The same gates as wave 1 (dogfood fix 2026-09-09): wave-2 names
-        # (name gate), then characters carry full AR24 records (record
-        # gate, then the stat-block gate) before committing.
-        entities_2 = strip_noncharacter_stat_blocks(entities_2)
-        entities_2, cancelled = _enforce_entity_names(
-            job, budget, provider, settings, entities_2, wave=2
-        )
-        if cancelled:
+        except _Wave2StaleEndpoints as exc:
+            # M4's bounded full re-pass: a DM delete mid-job took an
+            # endpoint the validated wave referenced. Re-run the WHOLE
+            # pass once against the live head; a second endpoint loss is
+            # an actively-rewritten world and fails loud.
+            logger.info("wave 2 re-pass against the new head (%s)", exc)
+            with session_scope() as session:
+                head = latest_revision(session, job.campaign_id)
+            try:
+                outcome = _run_wave2(
+                    job,
+                    budget,
+                    provider,
+                    settings,
+                    seed,
+                    notes,
+                    entities_1,
+                    head.id if head is not None else None,
+                    ceiling=ceiling,
+                    progress=progress,
+                )
+            except _Wave2StaleEndpoints as second:
+                raise JobPayloadError(
+                    "wave 2: the committed world changed twice mid-build "
+                    f"(deleted endpoints: {second}) — re-submit the notes"
+                ) from second
+        if outcome is None:
             return
-        entities_2, cancelled = _enforce_character_records(
-            job, budget, provider, settings, entities_2, wave=2
-        )
-        if cancelled:
-            return
-        entities_2, cancelled = _enforce_stat_blocks(
-            job,
-            budget,
-            provider,
-            settings,
-            entities_2,
-            repair_response_format=build_stat_repair_schema(),
-            wave=2,
-        )
-        if cancelled:
-            return
-        # Cancel-race poll: a cancel during the wave-2 call/validation must
-        # not commit wave 2 — the failed wave writes nothing.
-        if not _job_still_running(job):
-            return
-        revision_2 = commit_subgraph(
-            job.campaign_id, entities_2, edges_2, base_revision=revision_1.id
-        )
+        revision_2, wave2_result = outcome
         # Cancel racing the wave-2 commit: the committed wave stays, but a
         # cancelled job gets no progress/terminal write.
         if not _job_still_running(job):
             return
-        report_progress(job.id, 1.0)
-        waves.append(_wave_result(2, revision_2.id, entities_2, edges_2))
+        progress(1.0)
+        waves.append(wave2_result)
 
     entity_count = sum(wave["entities"] for wave in waves)
     edge_count = sum(wave["edges"] for wave in waves)
     complete_job(
         job.id,
-        result={"waves": waves, "entity_count": entity_count, "edge_count": edge_count},
+        result={
+            "waves": waves,
+            "entity_count": entity_count,
+            "edge_count": edge_count,
+            "llm_calls": budget.snapshot(),
+        },
     )
 
 
@@ -1139,22 +1660,214 @@ def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) 
     return "\n".join(lines)
 
 
+def build_wave1_chunk_prompt(
+    campaign_seed: models.Campaign,
+    notes: str,
+    chunk: Sequence[tuple[int, str, str]],
+    *,
+    chunk_index: int,
+    chunk_total: int,
+) -> str:
+    """One wave-1 chunk's prompt (M1): the shared rules text plus ONLY this
+    chunk's roster slice, every entry named with its GLOBAL E-ref.
+
+    Pure and byte-deterministic (AD-16): a function of the seed, the notes,
+    and the chunk slice — the identical static prefix across chunks keeps
+    the backend's per-slot prompt cache warm. The FULL DM notes ride every
+    chunk: a directive like "sanberi is level 18" must land in whichever
+    chunk owns Sanberi (the 2026-09-10 level-miss bug class). Cross-chunk
+    wiring is NOT asked for here — a later edges-only pass wires the
+    assembled world (the proven anchor-repair shape).
+    """
+    start, end = chunk[0][0], chunk[-1][0]
+    lines = [
+        f"You are digesting PART {chunk_index + 1} of {chunk_total} of a TTRPG",
+        "world-build-in submission into the world graph.",
+        "Respond with exactly one JSON object — nothing else.",
+        "",
+        "CAMPAIGN SEED",
+        f"title: {campaign_seed.title}",
+        f"description: {campaign_seed.description}",
+        f"theme: {campaign_seed.theme}",
+        f"custom lore: {campaign_seed.custom_lore}",
+        "",
+        f"YOUR ENTITIES (emit EXACTLY {len(chunk)} entities, IN THIS ORDER — the first",
+        f"is E{start}, the last is E{end}; the other parts' entities are generated",
+        "separately and are NOT visible here):",
+        *(f"- E{position} ({section}): {entry}" for position, section, entry in chunk),
+        *(
+            (
+                "",
+                "DM NOTES (authoritative directives about the entities above: any",
+                "level, role, class, or power named here OVERRIDES what you would",
+                "otherwise infer. Do not create entities for new subjects named only",
+                "here — a later wave digests those.)",
+                notes,
+            )
+            if notes
+            else ()
+        ),
+        "",
+        "TASK",
+        "Create the entities named above: characters for key figures, places for",
+        "places, factions for factions — each character with its full record and",
+        "stat block. Wire entities OF THIS PART to each other with typed directed",
+        "edges where the entries plainly relate; an entity with no edge here is",
+        "fine — a later pass wires the whole world. Edges must connect two",
+        "different entities listed above — no self-loops.",
+        "",
+        "STAT BLOCKS",
+        stat_block_rules_text(),
+        "",
+        spells_reference_text(),
+        "",
+        *_character_record_lines(),
+        "",
+        "OUTPUT CONTRACT",
+        'Respond with one JSON object: {"entities": [...], "edges": [...]}.',
+        "A character keeps its whole record INSIDE the data object — never beside it:",
+        '{"ref": "E2", "kind": "character", "name": "Sanberi", "text": "optional narrative",',
+        '  "data": {"role": "NPC", "level_cr": "level 18", "race_type": "Human",',
+        '           "class_profession": "Paladin", "alignment": "LG", "personality": "...",',
+        '           "secret": "...", "rumor": "...", "party_hook": "...", "appearance": "...",',
+        '           "background": "...", "goals": "...", "relationships": "...",',
+        '           "voice_style": "...", "catchphrases": "...",',
+        '           "world_integration": {"reputation": "...", "factions": "...",',
+        '                                 "current_location": "...", "reaction_matrix": "...",',
+        '                                 "on_defeat": "..."},',
+        '           "stat_block": {the STAT BLOCK RULES above}}}',
+        "role, level_cr, race_type, class_profession, alignment, and stat_block are keys",
+        "of data — never keys of the entity itself. An entity carrying them at the top",
+        "level loses them: the record is read from data and nowhere else.",
+        'A place or faction is flat: {"ref": "E0", "kind": "place", "name": "City of Gallorb",',
+        '  "text": "the hard truth about it"} — data is optional for those two kinds.',
+        f"The refs are FIXED global positions: your first entity is E{start}, your",
+        f"second E{start + 1}, and so on up to E{end} (never E01, E007).",
+        'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
+        '  "counter": <integer, default 1>}.',
+        f"Edge src/dst must be refs from YOUR ENTITIES list (E{start}..E{end}).",
+        "Names must be non-blank.",
+        "",
+        "EDGE VOCABULARY (closed set — never invent a type)",
+        *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
+        "",
+        "COUNTER SEMANTICS (one integer per edge)",
+        *(f"- {edge_type}: {edge_counter_semantic(edge_type)}" for edge_type in sorted(EDGE_TYPES)),
+    ]
+    return "\n".join(lines)
+
+
+def _wiring_excerpt(entity: models.EntityInput) -> str:
+    """One compact wiring-roster line's excerpt (M1): the entity's own text,
+    else its record's most telling line, whitespace-folded and truncated —
+    enough for the wiring pass to see who belongs to what, small enough for
+    a 300-line roster (~3K tokens)."""
+    raw = entity.text
+    if not (isinstance(raw, str) and raw.strip()):
+        data = entity.data if isinstance(entity.data, dict) else {}
+        raw = None
+        for key in ("personality", "goals", "background"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                raw = value
+                break
+    folded = " ".join((raw or "").split())
+    return folded[:100]
+
+
+def _build_wiring_prompt(
+    campaign_seed: models.Campaign,
+    roster: Sequence[tuple[str, str, str, str]],
+) -> str:
+    """The edges-only wiring pass over the assembled wave-1 roster (M1):
+    ref+name+kind+excerpt per entity, the closed vocabulary, and one demand
+    — wire the world. The proven anchor-repair shape: entities are frozen
+    and never re-emitted, the response is ``{"edges": [...]}`` under
+    endpoint/type enums, so renames and drops are unrepresentable. The pass
+    is BEST-EFFORT: on failure the wave commits with its chunk-internal
+    edges only (edgeless commit is legal — owner verdict 2026-09-11, the DM
+    prunes), never a job death over wiring."""
+    lines = [
+        "You are wiring an already-generated TTRPG world: the entities below are",
+        "RECORDED — you add the typed edges between them, nothing else.",
+        "Respond with exactly one JSON object — nothing else.",
+        "",
+        "CAMPAIGN SEED",
+        f"title: {campaign_seed.title}",
+        f"description: {campaign_seed.description}",
+        f"theme: {campaign_seed.theme}",
+        f"custom lore: {campaign_seed.custom_lore}",
+        "",
+        f"RECORDED ENTITIES ({len(roster)} — frozen, never re-emit them):",
+        *(f"- {ref} {name!r} ({kind}) — {excerpt}" for ref, name, kind, excerpt in roster),
+        "",
+        "TASK",
+        'Respond with one JSON object: {"edges": [...]} wiring this world: every',
+        "entity should carry at least one edge where the names and excerpts make a",
+        "relationship plain (members to factions, factions and people to places,",
+        "rivals, allies, enemies, debts as the entries imply). Do not force an edge",
+        "where nothing relates. Do not invent entities.",
+        'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
+        '  "counter": <integer, default 1>}.',
+        "src/dst must be refs from the list above; edges must connect two different",
+        "entities — no self-loops; never repeat an identical edge.",
+        "",
+        "EDGE VOCABULARY (closed set — never invent a type)",
+        *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
+        "",
+        "COUNTER SEMANTICS (one integer per edge)",
+        *(f"- {edge_type}: {edge_counter_semantic(edge_type)}" for edge_type in sorted(EDGE_TYPES)),
+    ]
+    return "\n".join(lines)
+
+
+def _filter_wiring_edges(raw: Sequence[Any], valid_refs: frozenset[str]) -> list[Any]:
+    """Boundary filter for the best-effort wiring pass: keep only rows that
+    are dict-shaped, name two DIFFERENT known refs, carry a vocabulary
+    type, and an integer counter — the things ``_resolve_edges`` would
+    otherwise die on. A bad row degrades to a drop (info log) instead of
+    killing a validated 100-entity wave; exact-duplicate and self-loop
+    handling stays in ``_resolve_edges`` (one boundary, one rule set)."""
+    kept: list[Any] = []
+    dropped = 0
+    for row in raw:
+        if (
+            isinstance(row, dict)
+            and row.get("type") in EDGE_TYPES
+            and isinstance(row.get("src"), str)
+            and isinstance(row.get("dst"), str)
+            and row["src"] in valid_refs
+            and row["dst"] in valid_refs
+            and row["src"] != row["dst"]
+            and type(row.get("counter", 1)) is int
+        ):
+            kept.append(row)
+        else:
+            dropped += 1
+    if dropped:
+        logger.info("wiring pass: dropped %d unusable edge row(s)", dropped)
+    return kept
+
+
 def build_wave2_prompt(
     campaign_seed: models.Campaign,
     notes: str,
     context: tuple[Sequence[models.Entity], Sequence[models.Edge]],
     *,
     core_count: int,
+    compact_core: Sequence[tuple[int, str, str]] = (),
 ) -> str:
     """The wave-2 prompt: digest ``notes`` into entities wired into the core.
 
     Pure and byte-deterministic (AD-16): a function of the campaign seed,
-    the notes, and the retrieved neighborhood. ``core_count`` is how many
-    of the context entities are the wave-1 core (the first entries of the
-    context list); those are the required anchor points for the orphan
-    rule. The context serialization carries hard truths only. New
-    entities use ``N<index>`` refs — never the wave-1 ``E<index>`` labels
-    — so an edge can never silently target the wrong entity.
+    the notes, and the retrieved neighborhood. ``core_count`` is the FULL
+    wave-1 core size (detail tier + compact tier); the compact tier (M2)
+    rides as ``compact_core`` — ``(C-label index, name, kind)`` lines for
+    every wave-1 entity the 24-row detail cap could not carry — so a
+    100-entity core stays wirable from notes without a 200KB context. The
+    detail serialization carries hard truths only. New entities use
+    ``N<index>`` refs — never the wave-1 ``E<index>`` labels — so an edge
+    can never silently target the wrong entity.
     """
     entities, edges = context
     core_label = f"C0..C{core_count - 1}" if core_count > 0 else "(none)"
@@ -1171,16 +1884,27 @@ def build_wave2_prompt(
         "",
         "COMMITTED WORLD CONTEXT",
         serialize_context(entities, edges),
+        *(
+            (
+                "",
+                "COMPACT CORE ROSTER (recorded core entities, details omitted — every",
+                "C-label below is a legal edge endpoint):",
+                *(f"- C{index} {name!r} ({kind})" for index, name, kind in compact_core),
+            )
+            if compact_core
+            else ()
+        ),
         "",
         "NOTES TO DIGEST",
         notes.strip(),
         "",
         "TASK",
         "Create entities for the notable subjects of the notes (character/faction/place).",
-        f"The CORE entities are {core_label} — the first {core_count} context entries —",
-        "the entities this build created first. Wire every new entity to at least one",
-        "CORE entity with a typed edge — no orphans. Other context entities are",
-        "background only. Edges must connect two different entities — no self-loops.",
+        f"The CORE entities are {core_label} — the detail context entries first, then",
+        f"the compact roster — the {core_count} entities this build created first.",
+        "Wire every new entity to at least one CORE entity with a typed edge — no",
+        "orphans. Detail context entries beyond the core are background only.",
+        "Edges must connect two different entities — no self-loops.",
         "",
         "STAT BLOCKS",
         stat_block_rules_text(),
@@ -1203,7 +1927,7 @@ def build_wave2_prompt(
         '                                 "on_defeat": "..."},',
         '           "stat_block": {the STAT BLOCK RULES above}}}',
         'kind is exactly "character", "faction", or "place" — never a role word like',
-        '"Monster" or "NPC": the role belongs to data.role, and an entity carrying',
+        '"Monster" or "NPC": the role belongs in data.role, and an entity carrying',
         "record keys at the top level loses them — the record is read from data alone.",
         'A place or faction is flat: {"ref": "N0", "kind": "faction", "name": "The Guild",',
         '  "text": "the hard truth about it"} — data is optional for those two kinds.',
@@ -1212,7 +1936,7 @@ def build_wave2_prompt(
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
         '  "counter": <integer, default 1>}.',
         "Edge src/dst may be a new-entity ref (N<index>) or a context ref (C<index>)",
-        f"matching the context list above (the core is {core_label}).",
+        f"matching the detail context and the compact roster above (the core is {core_label}).",
         "Names must be non-blank.",
         "",
         "EDGE VOCABULARY (closed set — never invent a type)",
@@ -1224,22 +1948,50 @@ def build_wave2_prompt(
     return "\n".join(lines)
 
 
-def build_wave_schema(entity_count: int | None = None) -> dict[str, Any]:
+#: ``data`` stays an OPEN object in the wave schema. The E2 present-key
+#: constraints (identity role/level enums, attribute bounds, combat ints —
+#: legal JSON Schema that binds only when the keys are present) were tried
+#: and REVERTED on live evidence: ladder attempt d1 (Qwen3.8-27B, rung 10,
+#: 2026-09-12) shipped every character with ``data.stat_block`` — the only
+#: described key — and NO AR24 record fields at all, a described-key bias
+#: under grammar sampling that turned one wave call into a six-record
+#: repair storm and a terminal boss-shape death. The open-``data`` schema
+#: never produced that shape across the whole green ladder. Identity
+#: garbage (attempts 10-15's signature death) stays owned by the
+#: validator, the identity merge guards, and the retry taxonomy.
+
+
+def build_wave_schema(
+    entity_count: int | None = None,
+    refs: Sequence[str] | None = None,
+    *,
+    max_entities: int | None = None,
+    max_edges: int | None = None,
+) -> dict[str, Any]:
     """The flat envelope schema carried on build-in wave calls (spec: JSON-schema
     generation foundation) — the ``response_format`` wrapper follows the prototype's
     measured ``json_schema`` convention; the inner schema is flat and ``$ref``-free
-    (GBNF subset). ``data`` stays an open object (record keys vary);
-    ``additionalProperties: false`` on the entity item makes beside-``data``
-    slips unrepresentable, and the edge ``type`` is an enum single-sourced
-    from ``store.EDGE_TYPES`` (spec: edgeless repair scope), so an invented
-    type is unemittable on grammar-enforcing backends. Parsing, validators,
-    and all gates stay the backstop — the schema is the optimization, so
-    fenced/prose output still parses identically.
+    (GBNF subset). ``additionalProperties: false`` on the entity item makes
+    beside-``data`` slips unrepresentable, and the edge ``type`` is an enum
+    single-sourced from ``store.EDGE_TYPES`` (spec: edgeless repair scope), so an
+    invented type is unemittable on grammar-enforcing backends. Parsing,
+    validators, and all gates stay the backstop — the schema is the optimization,
+    so fenced/prose output still parses identically.
+
     With ``entity_count`` the entities array is pinned to exactly that many
     items (ladder rung 50: the model emitted 28 then 25 of a 50-roster with
     shape pinned but count free — the roster is exact, so the schema is
-    too). Wave 1 carries the trimmed section count; wave 2's notes-driven
-    roster is model-decided and stays unpinned.
+    too); with ``refs`` each entity's ref is an enum of exactly its chunk's
+    GLOBAL refs (E1) — the ref-discipline death class (rung 10 attempt 2's
+    restarted 'E0') becomes unemittable. Tightened further (E1, the
+    100-entity cut): ``kind`` is an enum of the closed contract set and
+    ``name`` carries minLength 1. ``data`` stays an OPEN object — the E2
+    present-key constraints were tried and reverted on live evidence (see
+    the comment above ``build_wave_schema``: described-key bias under
+    grammar sampling dropped whole AR24 records). ``max_entities``/``max_edges``
+    bound the unpinned wave-2 output. Wave 1 carries the trimmed roster
+    count (or its chunk slice); wave 2's notes-driven roster is
+    model-decided and stays count-free.
     """
     return {
         "type": "json_schema",
@@ -1257,13 +2009,16 @@ def build_wave_schema(entity_count: int | None = None) -> dict[str, Any]:
                             if entity_count is not None
                             else {}
                         ),
+                        **({"maxItems": max_entities} if max_entities is not None else {}),
                         "items": {
                             "type": "object",
                             "required": ["ref", "kind", "name"],
                             "properties": {
-                                "ref": {"type": "string"},
-                                "kind": {"type": "string"},
-                                "name": {"type": "string"},
+                                "ref": {"enum": list(refs)}
+                                if refs is not None
+                                else {"type": "string"},
+                                "kind": {"enum": sorted(ENTITY_KINDS)},
+                                "name": {"type": "string", "minLength": 1},
                                 "text": {"type": "string"},
                                 "data": {"type": "object"},
                             },
@@ -1272,6 +2027,7 @@ def build_wave_schema(entity_count: int | None = None) -> dict[str, Any]:
                     },
                     "edges": {
                         "type": "array",
+                        **({"maxItems": max_edges} if max_edges is not None else {}),
                         "items": {
                             "type": "object",
                             "required": ["src", "dst", "type"],
@@ -1297,13 +2053,16 @@ def parse_build_output(text: str, wave: int = 1) -> dict[str, Any]:
     An optional markdown fence is stripped tolerantly (see
     ``_strip_fence``); the result must be an object with ``entities`` and
     ``edges`` lists. Malformed output raises ``JobPayloadError`` naming
-    the wave — the job fails, never a partial commit.
+    the wave — the job fails, never a partial commit. A JSON-DECODE
+    failure raises the ``_WaveJsonError`` subclass: ``_call_wave`` gives
+    exactly that class one bounded re-elicitation (C, the retry taxonomy);
+    semantic rejections inside well-formed JSON stay terminal.
     """
     stripped = _strip_fence(text)
     try:
         parsed = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise JobPayloadError(f"wave {wave}: output is not valid JSON ({exc})") from exc
+        raise _WaveJsonError(f"wave {wave}: output is not valid JSON ({exc})") from exc
     if not isinstance(parsed, dict):
         raise JobPayloadError(f"wave {wave}: output must be a JSON object")
     entities = parsed.get("entities")
@@ -1407,25 +2166,37 @@ def _build_anchor_repair_prompt(
     return "\n".join(lines)
 
 
-def _parse_anchor_repair_output(text: str) -> list[Any]:
-    """Parse the anchor-repair response into raw edge entries.
-
-    The repair carries edges only — an ``entities`` key, if present, is
-    ignored: the wave's entities are frozen from the first attempt, so a
-    renamed or dropped entity list is unrepresentable by construction (the
-    attempt-8 shape now commits). A missing/non-list ``edges`` fails the
-    job exactly like a malformed wave output."""
+def _parse_edges_only_output(text: str, *, what: str) -> list[Any]:
+    """Parse an edges-only response (``{"edges": [...]}``) — the shape the
+    wave-1 wiring pass and the wave-2 anchor repair share. ``what`` names
+    the call in failures. A JSON-decode failure raises ``_WaveJsonError``
+    (``_call_wave``'s one bounded structural retry — the anchor repair had
+    ZERO retries before the taxonomy cut); a contract violation inside
+    well-formed JSON stays terminal ``JobPayloadError``. An ``entities``
+    key, if present, is ignored: both callers freeze the entities, so a
+    renamed or dropped roster is unrepresentable by construction (the
+    attempt-8 shape now commits)."""
     stripped = _strip_fence(text)
     try:
         parsed = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise JobPayloadError(f"wave 2: anchor repair is not valid JSON ({exc})") from exc
+        raise _WaveJsonError(f"{what}: output is not valid JSON ({exc})") from exc
     if not isinstance(parsed, dict):
-        raise JobPayloadError("wave 2: anchor repair must be a JSON object with an 'edges' list")
+        raise JobPayloadError(f"{what}: output must be a JSON object with an 'edges' list")
     edges = parsed.get("edges")
     if not isinstance(edges, list):
-        raise JobPayloadError("wave 2: anchor repair must be a JSON object with an 'edges' list")
+        raise JobPayloadError(f"{what}: output must be a JSON object with an 'edges' list")
     return edges
+
+
+def _parse_anchor_repair_output(text: str) -> list[Any]:
+    """The anchor-repair parse: edges-only under the wave-2 label."""
+    return _parse_edges_only_output(text, what="wave 2: anchor repair")
+
+
+def _parse_wiring_output(text: str) -> list[Any]:
+    """The wiring-pass parse: edges-only under the wave-1 label."""
+    return _parse_edges_only_output(text, what="wave 1: wiring pass")
 
 
 def _anchor_repair(
@@ -1436,18 +2207,21 @@ def _anchor_repair(
     settings: LLMSettings,
     first: dict[str, Any],
     orphans: Sequence[tuple[str, int]],
-    context: Sequence[models.Entity] = (),
+    context: Sequence[ContextRef] = (),
     core_count: int = 0,
+    ceiling: int,
 ) -> dict[str, Any] | None:
     """The one bounded anchor repair (spec: repair sequence step 3) — the
     wave-2 anchor's only repair pass: frozen rosters (new entities as
-    ref+name+kind, core as C-label+name) plus the orphan demand, re-run
-    through the provider under the edges-only schema. Returns the merged
-    wave object — the first attempt's entities verbatim plus its edges with
-    the repair edges appended (exact-duplicate echoes deduped) — for the
-    caller to re-run through the same anchor check; or None when the job
-    was cancelled before the call, the same cancel-race rule as the first
-    attempt."""
+    ref+name+kind, the FULL core as C-label+name — M2: every wave-1 entity
+    is a legal anchor, not just the 24 the detail tier carried) plus the
+    orphan demand, under the edges-only schema and the bounded retry
+    taxonomy (C: one JSON re-elicitation, one doubled-window truncation
+    retry). Returns the merged wave object — the first attempt's entities
+    verbatim plus its edges with the repair edges appended (exact-duplicate
+    echoes deduped) — for the caller to re-run through the same anchor
+    check; or None when the job was cancelled before the call, the same
+    cancel-race rule as the first attempt."""
     if not _job_still_running(job):
         return None
     raw_entities = first["entities"]
@@ -1468,7 +2242,7 @@ def _anchor_repair(
         )
         if isinstance(ref, str):
             new_refs.append(ref)
-    core_roster = [(f"C{i}", entity.name) for i, entity in enumerate(context[:core_count])]
+    core_roster = [(f"C{i}", ref.name) for i, ref in enumerate(context[:core_count])]
     core_refs = [label for label, _name in core_roster]
     existing = [
         f"{raw.get('src')} -> {raw.get('dst')} [{raw.get('type')}]"
@@ -1481,15 +2255,21 @@ def _anchor_repair(
         core_roster=core_roster,
         existing_edges=existing,
     )
-    text = budget.call(
-        lambda: provider(
-            retry_prompt,
-            settings=dataclasses.replace(
-                settings, response_format=build_anchor_repair_schema(new_refs, core_refs)
-            ),
-        )
+    repair_settings = dataclasses.replace(
+        settings,
+        response_format=build_anchor_repair_schema(new_refs, core_refs),
+        max_tokens=min(settings.max_tokens, EDGES_CALL_MAX_TOKENS),
     )
-    repair_edges = _parse_anchor_repair_output(text)
+    repair_edges = _call_wave(
+        budget,
+        provider,
+        repair_settings,
+        retry_prompt,
+        label="anchor_repair",
+        parse=_parse_anchor_repair_output,
+        retry_note='Return ONLY {"edges": [...]} — the additional edges, nothing else.',
+        ceiling=ceiling,
+    )
     merged = list(raw_edges)
     for edge in repair_edges:
         if isinstance(edge, dict) and edge in merged:
@@ -1580,56 +2360,34 @@ def canonicalize_entity_kind(value: Any) -> tuple[str, str | None] | None:
     return None
 
 
-def _validate_subgraph(
-    wave: int,
-    parsed: dict[str, Any],
-    *,
-    context: Sequence[models.Entity] = (),
-    core_count: int = 0,
-) -> tuple[list[models.EntityInput], list[models.EdgeInput]]:
-    """Validate a parsed wave against the spec-2.3 output contract and map
-    refs to runner-generated ULIDs (each entity gets ``ids.new_id()`` so
+def _validate_entities(
+    wave: int, raw_entities: Sequence[Any], *, ref_offset: int = 0
+) -> tuple[list[models.EntityInput], list[str]]:
+    """The entity half of the wave contract (split out for chunked wave-1,
+    M1): refs are positional and canonical — ``E<ref_offset + position>``
+    for wave 1, where a chunk's slice carries its GLOBAL positions, and
+    ``N<position>`` for wave 2 — kinds fold through
+    ``canonicalize_entity_kind``, names fall back to the record's, and a
+    character's beside-``data`` record is relocated. Returns the inputs
+    plus their runner-assigned ULIDs (each entity gets ``ids.new_id()`` so
     edges wire before commit). Rejections are ``JobPayloadError`` naming
-    the wave, the offending entity/edge, and the reason — the job fails,
-    never a partial commit.
-
-    Wave-1 rules: refs are positional and canonical (``E<position>``),
-    kinds in {character, faction, place}, types in ``EDGE_TYPES``,
-    counters integers, names non-blank, no self-loops. Wave-1 entities
-    commit edgeless (owner verdict 2026-09-11 — no internal orphan rule;
-    the DM prunes; the wave-1 commit passes ``allow_orphans`` through the
-    store's FR2 backstop explicitly).
-
-    Wave 2's new-entity refs are ``N<position>``; edges may also reference
-    the committed context as ``C<position>``, and every entity must have
-    >= 1 edge whose other endpoint is a core entity
-    (``context[0:core_count]`` — the wave-1 entities). A wave-2 subgraph
-    that is valid except for such orphans raises ``_OrphanRetryError``
-    (never a plain ``JobPayloadError``) carrying the wave and the orphan
-    ``(name, position)`` pairs — the runner's one bounded anchor repair
-    catches exactly that type; every other rejection stays immediate.
-    """
-    raw_entities = parsed.get("entities")
-    raw_edges = parsed.get("edges")
-    if not isinstance(raw_entities, list) or not isinstance(raw_edges, list):
-        raise JobPayloadError(
-            f"wave {wave}: output must be a JSON object with 'entities' and 'edges' lists"
-        )
+    the wave, the offending entity, and the reason — the job fails, never a
+    partial commit."""
+    if wave not in (1, 2):
+        raise ValueError(f"unknown wave {wave}")
     if not raw_entities:
         raise JobPayloadError(f"wave {wave}: no entities in output")
-
     prefix = "E" if wave == 1 else "N"
     entity_inputs: list[models.EntityInput] = []
     assigned_ids: list[str] = []
-    if wave not in (1, 2):
-        raise ValueError(f"unknown wave {wave}")
     for position, raw in enumerate(raw_entities):
         if not isinstance(raw, dict):
             raise JobPayloadError(f"wave {wave}: entity {position} is not an object")
         ref = raw.get("ref")
-        if ref != f"{prefix}{position}":
+        expected = f"{prefix}{ref_offset + position}" if wave == 1 else f"{prefix}{position}"
+        if ref != expected:
             raise JobPayloadError(
-                f"wave {wave}: entity {position} ref must be {prefix}{position}, got {ref!r}"
+                f"wave {wave}: entity {position} ref must be {expected}, got {ref!r}"
             )
         canonical = canonicalize_entity_kind(raw.get("kind"))
         if canonical is None:
@@ -1688,8 +2446,25 @@ def _validate_subgraph(
                 data=data or {},
             )
         )
+    return entity_inputs, assigned_ids
 
-    core_ids = {context[i].id for i in range(min(core_count, len(context)))}
+
+def _resolve_edges(
+    wave: int,
+    raw_edges: Sequence[Any],
+    assigned_ids: Sequence[str],
+    context: Sequence[ContextRef] = (),
+    *,
+    ref_offset: int = 0,
+    core_ids: frozenset[str] = frozenset(),
+) -> tuple[list[models.EdgeInput], set[int]]:
+    """The edge half of the wave contract: vocabulary types, integer
+    counters, E/N/C refs resolved to ULIDs, and the two boundary drops
+    (self-loops, exact duplicates — first wins, info log). Returns the edge
+    inputs plus the wave positions anchored to a core entity (the wave-2
+    orphan rule's input). ``ref_offset`` maps wave-1 GLOBAL E-refs into the
+    local ``assigned_ids`` slice (chunked generation resolves its merged
+    edges in one pass with offset 0; the single-call path is unchanged)."""
     edge_inputs: list[models.EdgeInput] = []
     anchored_positions: set[int] = set()
     for edge_index, raw in enumerate(raw_edges):
@@ -1705,17 +2480,17 @@ def _validate_subgraph(
         if type(counter) is not int:
             raise JobPayloadError(f"wave {wave}: edge {edge_index} counter must be an integer")
         src_id, src_position = _resolve_endpoint(
-            raw.get("src"), wave, edge_index, "src", assigned_ids, context
+            raw.get("src"), wave, edge_index, "src", assigned_ids, context, ref_offset=ref_offset
         )
         dst_id, dst_position = _resolve_endpoint(
-            raw.get("dst"), wave, edge_index, "dst", assigned_ids, context
+            raw.get("dst"), wave, edge_index, "dst", assigned_ids, context, ref_offset=ref_offset
         )
         if src_id == dst_id:
             # Ladder rung 50: the forced count makes wiring sloppy (self-loop
             # deaths 2/2 pinned runs) and a loop carries zero graph
             # information under the closed vocabulary — no member_of-self or
             # rival_of-self means anything. Drop it at the boundary (first
-            # wins' sibling: the edge dedup above); quality is still judged
+            # wins' sibling: the edge dedup below); quality is still judged
             # by the record/stat/anchor gates, and a wave-2 entity left
             # anchorless by a dropped loop flows to the anchor repair.
             logger.info(
@@ -1746,6 +2521,58 @@ def _validate_subgraph(
             anchored_positions.add(src_position)
         if dst_position is not None and src_id in core_ids:
             anchored_positions.add(dst_position)
+    return edge_inputs, anchored_positions
+
+
+def _validate_subgraph(
+    wave: int,
+    parsed: dict[str, Any],
+    *,
+    context: Sequence[ContextRef] = (),
+    core_count: int = 0,
+    core_ids: frozenset[str] | None = None,
+    ref_offset: int = 0,
+) -> tuple[list[models.EntityInput], list[models.EdgeInput]]:
+    """Validate a parsed wave against the spec-2.3 output contract and map
+    refs to runner-generated ULIDs (each entity gets ``ids.new_id()`` so
+    edges wire before commit). Rejections are ``JobPayloadError`` naming
+    the wave, the offending entity/edge, and the reason — the job fails,
+    never a partial commit.
+
+    Wave-1 rules: refs are positional and canonical (``E<position>``),
+    kinds in {character, faction, place}, types in ``EDGE_TYPES``,
+    counters integers, names non-blank, no self-loops. Wave-1 entities
+    commit edgeless (owner verdict 2026-09-11 — no internal orphan rule;
+    the DM prunes; the wave-1 commit passes ``allow_orphans`` through the
+    store's FR2 backstop explicitly).
+
+    Wave 2's new-entity refs are ``N<position>``; edges may also reference
+    the committed context as ``C<position>`` — the TWO-TIER anchor set
+    (M2): the detail neighborhood plus the compact roster of every wave-1
+    entity the 24-row cap could not carry — and every entity must have
+    >= 1 edge whose other endpoint is a core entity. ``core_ids`` names
+    the core explicitly (the full wave-1 ULID set); absent, it defaults to
+    ``context[0:core_count]``. A wave-2 subgraph that is valid except for
+    such orphans raises ``_OrphanRetryError`` (never a plain
+    ``JobPayloadError``) carrying the wave and the orphan ``(name,
+    position)`` pairs — the runner's one bounded anchor repair catches
+    exactly that type; every other rejection stays immediate.
+    """
+    raw_entities = parsed.get("entities")
+    raw_edges = parsed.get("edges")
+    if not isinstance(raw_entities, list) or not isinstance(raw_edges, list):
+        raise JobPayloadError(
+            f"wave {wave}: output must be a JSON object with 'entities' and 'edges' lists"
+        )
+    entity_inputs, assigned_ids = _validate_entities(wave, raw_entities, ref_offset=ref_offset)
+    resolved_core = (
+        core_ids
+        if core_ids is not None
+        else frozenset(context[i].id for i in range(min(core_count, len(context))))
+    )
+    edge_inputs, anchored_positions = _resolve_edges(
+        wave, raw_edges, assigned_ids, context, ref_offset=ref_offset, core_ids=resolved_core
+    )
 
     if wave == 1:
         # Wave-1 commits edgeless (owner verdict 2026-09-11): no internal
@@ -1754,7 +2581,7 @@ def _validate_subgraph(
     orphans = [p for p in range(len(entity_inputs)) if p not in anchored_positions]
     reason = "orphan entity(ies) with no edge to the core world"
     if orphans:
-        names = ", ".join(f"{entity_inputs[p].name!r} ({prefix}{p})" for p in orphans)
+        names = ", ".join(f"{entity_inputs[p].name!r} (N{p})" for p in orphans)
         if core_count > 0:
             names += f" — core anchors are C0..C{core_count - 1} (the visible core)"
         else:
@@ -1797,21 +2624,26 @@ def _resolve_endpoint(
     edge_index: int,
     side: str,
     assigned_ids: Sequence[str],
-    context: Sequence[models.Entity],
+    context: Sequence[ContextRef],
+    *,
+    ref_offset: int = 0,
 ) -> tuple[str, int | None]:
     """Map an edge endpoint ref to an entity ULID, or reject.
 
-    Wave refs (``E<index>`` for wave 1, ``N<index>`` for wave 2) resolve
-    into the wave's runner-assigned ULIDs and return their position;
-    context refs (``C<index>``, wave 2 only) resolve into the committed
-    context and return ``None`` (a context endpoint is never a wave
-    position). A malformed, non-canonical, or out-of-range ref is a
+    Wave refs (``E<index>`` for wave 1 — GLOBAL positions, so a chunk's
+    edges resolve against the assembled roster via ``ref_offset`` —
+    ``N<index>`` for wave 2) resolve into the wave's runner-assigned ULIDs
+    and return their LOCAL position; context refs (``C<index>``, wave 2
+    only) resolve into the two-tier anchor context (M2: detail rows plus
+    the compact core) and return ``None`` (a context endpoint is never a
+    wave position). A malformed, non-canonical, or out-of-range ref is a
     ``JobPayloadError`` naming the wave, edge, and side.
     """
     prefix = "E" if wave == 1 else "N"
     if isinstance(ref, str) and ref.startswith(prefix):
-        position = _ref_index(ref, prefix, wave=wave, edge_index=edge_index, side=side)
-        if position >= len(assigned_ids):
+        index = _ref_index(ref, prefix, wave=wave, edge_index=edge_index, side=side)
+        position = index - ref_offset if wave == 1 else index
+        if position < 0 or position >= len(assigned_ids):
             raise JobPayloadError(
                 f"wave {wave}: edge {edge_index} {side} {ref!r} names no entity in the wave"
             )

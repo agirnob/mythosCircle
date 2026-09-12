@@ -251,13 +251,27 @@ describe('StatBlock', () => {
     expect(wrapper.text()).toContain('Over-powered — DPR 189 vs band 63–68')
   })
 
-  it('renders no power line without an over-powered stamp', () => {
+  it('renders the under-powered flag for an NPC/BBEG stamp (NPC oracle)', () => {
+    const wrapper = mount(StatBlock, {
+      props: {
+        block: {
+          ...block,
+          power: { dpr: 11, band: [75, 80], verdict: 'under-powered' },
+        },
+      },
+    })
+    expect(wrapper.text()).toContain('Under-powered — DPR 11 vs band 75–80')
+  })
+
+  it('renders no power line without a stamped verdict', () => {
     const wrapper = mount(StatBlock, { props: { block } })
     expect(wrapper.text()).not.toContain('Over-powered')
+    expect(wrapper.text()).not.toContain('Under-powered')
     const onTarget = mount(StatBlock, {
       props: { block: { ...block, power: { dpr: 35, band: [33, 38], verdict: 'on-target' } } },
     })
     expect(onTarget.text()).not.toContain('Over-powered')
+    expect(onTarget.text()).not.toContain('Under-powered')
     expect(onTarget.text()).not.toContain('DPR 35')
   })
 })

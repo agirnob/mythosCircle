@@ -70,8 +70,10 @@ def chat_completion(
 
     POSTs ``{model, max_tokens, messages:[{system}, {user}]}`` to
     ``{endpoint}/chat/completions``, plus ``chat_template_kwargs`` when a
-    reasoning mode is configured and ``response_format`` when
-    ``settings.response_format`` carries a per-call schema (absent by
+    reasoning mode is configured, ``temperature``/``top_p``/``seed`` when
+    the matching sampling control is configured (improvement plan G —
+    each tri-state, omitted when ``None``), and ``response_format`` when
+    ``settings.response_format`` carries a per-call schema (all absent by
     default, so default-settings bodies stay byte-identical). Bare ``httpx``
     transport failures
     (DNS, refused, timeout) -> ``ProviderError("connection")``; non-2xx
@@ -107,6 +109,17 @@ def chat_completion(
         # 26,580 chars, zero content). Sent only when configured — ``None``
         # keeps the body free of a field some backends reject outright.
         body["chat_template_kwargs"] = {"enable_thinking": settings.enable_thinking}
+    if settings.temperature is not None:
+        # Sampling controls (improvement plan G) ride the body ONLY when
+        # configured — ``None`` omits the field so the provider's own
+        # default rules and a backend rejecting unknown request fields
+        # keeps working (the enable_thinking tri-state's rationale).
+        # 0.0/0 are meaningful values, never falsy omissions.
+        body["temperature"] = settings.temperature
+    if settings.top_p is not None:
+        body["top_p"] = settings.top_p
+    if settings.seed is not None:
+        body["seed"] = settings.seed
     if settings.response_format is not None:
         # Opt-in per-call schema (spec: JSON-schema generation) — carried
         # verbatim. Absent by default so default-settings bodies stay

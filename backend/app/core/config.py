@@ -27,6 +27,11 @@ LLM_MODEL_ENV = "MYTHOSCIRCLE_LLM_MODEL"
 LLM_TIMEOUT_ENV = "MYTHOSCIRCLE_LLM_TIMEOUT"
 LLM_MAX_TOKENS_ENV = "MYTHOSCIRCLE_LLM_MAX_TOKENS"
 LLM_THINKING_ENV = "MYTHOSCIRCLE_LLM_THINKING"
+#: Sampling-control overrides (improvement plan G) — tri-state like
+#: LLM_THINKING_ENV: unset (or set-but-empty) omits the request field.
+LLM_TEMPERATURE_ENV = "MYTHOSCIRCLE_LLM_TEMPERATURE"
+LLM_TOP_P_ENV = "MYTHOSCIRCLE_LLM_TOP_P"
+LLM_SEED_ENV = "MYTHOSCIRCLE_LLM_SEED"
 IMAGE_ENDPOINT_ENV = "MYTHOSCIRCLE_IMAGE_ENDPOINT"
 IMAGE_MODEL_ENV = "MYTHOSCIRCLE_IMAGE_MODEL"
 IMAGE_TIMEOUT_ENV = "MYTHOSCIRCLE_IMAGE_TIMEOUT"
@@ -112,6 +117,50 @@ def env_float(name: str, default: float, minimum: float = 0.0) -> float:
     return value
 
 
+def env_float_optional(name: str, default: float | None) -> float | None:
+    """Parse a tri-state float env var (unset or set-but-empty -> ``default``).
+
+    ``None`` is a meaningful value, not a missing one: it means "send no
+    such request field at all" (the ``env_bool_optional`` rationale). A
+    set-but-empty value falls through like the endpoint rule (spec-1.7
+    env > config > default). Malformed, non-finite, or negative values
+    fail loudly — a typo must never silently pick a sampling mode. Unlike
+    ``env_float``, 0.0 is legal: temperature 0 (greedy decoding) is the
+    point of reproducible sampling (improvement plan G).
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a float, got {raw!r}") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0, got {value}")
+    return value
+
+
+def env_int_optional(name: str, default: int | None, minimum: int = 0) -> int | None:
+    """Parse a tri-state integer env var (unset or set-but-empty -> ``default``).
+
+    ``None`` means "send no such request field at all" (improvement plan
+    G); malformed or below-minimum values fail loudly exactly like
+    ``env_int`` — a typo must never silently pick a sampling mode.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got {value}")
+    return value
+
+
 #: Code defaults (fallback when neither config nor env provides).
 DEFAULT_MAX_PENDING = 10
 DEFAULT_LLM_ENDPOINT = "http://127.0.0.1:8080/v1"
@@ -136,6 +185,15 @@ DEFAULT_LLM_MAX_TOKENS = 65536
 #: The local gemma stack sets ``false``: with thinking on, one call spent
 #: 8000 tokens / 26,580 characters reasoning and wrote zero content.
 DEFAULT_LLM_THINKING: bool | None = None
+#: Tri-state sampling controls (improvement plan G): ``None`` = omit the
+#: field from the request body entirely, so the provider's own default
+#: rules and a backend rejecting unknown request fields keeps working
+#: (the ``DEFAULT_LLM_THINKING`` rationale). A set value rides the body
+#: verbatim — temperature 0.0 (greedy decoding) plus a fixed seed pin
+#: reproducible sampling; 0/0.0 are meaningful, never falsy omissions.
+DEFAULT_LLM_TEMPERATURE: float | None = None
+DEFAULT_LLM_TOP_P: float | None = None
+DEFAULT_LLM_SEED: int | None = None
 #: Documented PLACEHOLDER defaults (spec-4.1 ask-first item): the dev
 #: image server + model choice is an owner decision at build — until
 #: confirmed, these are inert placeholders and tests inject a mock
@@ -214,6 +272,11 @@ class RuntimeConfig:
     llm_timeout: float = DEFAULT_LLM_TIMEOUT
     llm_max_tokens: int = DEFAULT_LLM_MAX_TOKENS
     llm_thinking: bool | None = DEFAULT_LLM_THINKING
+    #: Tri-state sampling controls (improvement plan G) — ``None`` omits
+    #: the request-body field entirely (the ``llm_thinking`` rationale).
+    llm_temperature: float | None = DEFAULT_LLM_TEMPERATURE
+    llm_top_p: float | None = DEFAULT_LLM_TOP_P
+    llm_seed: int | None = DEFAULT_LLM_SEED
     max_llm_calls_per_job: int = 64
     max_media_calls_per_job: int = 8
     image_endpoint: str = DEFAULT_IMAGE_ENDPOINT
@@ -325,6 +388,30 @@ def runtime_config() -> RuntimeConfig:
             raise ValueError(f"config {name} must be > 0, got {parsed}")
         return parsed
 
+    def _config_float_optional(value: Any, name: str, default: float | None) -> float | None:
+        if value is None:
+            return default
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"config {name} must be a float, got {value!r}") from exc
+        if not math.isfinite(parsed):
+            raise ValueError(f"config {name} must be finite, got {parsed!r}")
+        if parsed < 0:
+            raise ValueError(f"config {name} must be >= 0, got {parsed}")
+        return parsed
+
+    def _config_int_optional(value: Any, name: str, default: int | None) -> int | None:
+        if value is None:
+            return default
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"config {name} must be an integer, got {value!r}") from exc
+        if parsed < 0:
+            raise ValueError(f"config {name} must be >= 0, got {parsed}")
+        return parsed
+
     # queue cap: env > config > default (AR28 pending = in-flight + queued).
     pending = env_int(
         MAX_PENDING_ENV,
@@ -350,6 +437,23 @@ def runtime_config() -> RuntimeConfig:
     thinking = env_bool_optional(
         LLM_THINKING_ENV,
         _config_bool(llm.get("thinking"), "llm.thinking", DEFAULT_LLM_THINKING),
+    )
+    # Sampling controls (improvement plan G): tri-state like thinking —
+    # env > config > default(None). A set-but-empty env falls through
+    # (the endpoint rule) and None means the request body omits the
+    # field entirely; 0.0/0 are meaningful values, never falsy
+    # fall-throughs (temperature 0 = greedy decoding).
+    temperature = env_float_optional(
+        LLM_TEMPERATURE_ENV,
+        _config_float_optional(llm.get("temperature"), "llm.temperature", DEFAULT_LLM_TEMPERATURE),
+    )
+    top_p = env_float_optional(
+        LLM_TOP_P_ENV,
+        _config_float_optional(llm.get("top_p"), "llm.top_p", DEFAULT_LLM_TOP_P),
+    )
+    seed = env_int_optional(
+        LLM_SEED_ENV,
+        _config_int_optional(llm.get("seed"), "llm.seed", DEFAULT_LLM_SEED),
     )
     image_endpoint = os.environ.get(IMAGE_ENDPOINT_ENV) or str(
         image.get("endpoint", DEFAULT_IMAGE_ENDPOINT)
@@ -485,6 +589,9 @@ def runtime_config() -> RuntimeConfig:
         llm_timeout=timeout,
         llm_max_tokens=max_tokens,
         llm_thinking=thinking,
+        llm_temperature=temperature,
+        llm_top_p=top_p,
+        llm_seed=seed,
         image_endpoint=image_endpoint,
         image_model=image_model,
         image_timeout=image_timeout,

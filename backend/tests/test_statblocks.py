@@ -416,21 +416,26 @@ def test_third_pass_prompt_rereads_second_attempt() -> None:
 
 
 def test_repair_prompt_pins_power_discipline() -> None:
-    """POWER_DISCIPLINE (ladder attempts 9-11, owner verdict 2026-09-12):
+    """POWER_DISCIPLINE (ladder attempts 9-11, owner verdicts 2026-09-12):
     repairs overshoot the band top and fix power by editing level — the
-    prompt still aims at mid-band with an explicit ceiling and names the
-    dial (damage, never level), while stating that above-band commits
-    stamped over-powered instead of failing."""
+    prompt still aims Monsters at mid-band with an explicit ceiling and
+    names the dial (damage, never level), states that above-band commits
+    stamped over-powered instead of failing, and (the NPC oracle) tells the
+    model to keep NPC/BBEG numbers authentic instead of inflating them
+    toward a table the validator no longer enforces for those roles."""
     issue = StatIssue(
         1,
         _entity("character", data={"stat_block": dict(VALID)}),
         ("under-powered for level 5",),
     )
     prompt = build_stat_repair_prompt([issue])
-    assert "a block above its band" in prompt
-    assert "top still commits, stamped over-powered for the DM" in prompt
-    assert "the MIDDLE of each record target band anyway" in prompt
-    assert "Move DPR with" in prompt
+    assert "a Monster block above its" in prompt
+    assert "band top still commits, stamped over-powered for the DM" in prompt
+    assert "the MIDDLE of the record target band anyway" in prompt
+    assert "NPC/BBEG blocks are NOT" in prompt
+    assert "band-enforced: keep their numbers authentic to the class and level" in prompt
+    assert "never inflate them toward the monster table" in prompt
+    assert "Move a Monster's DPR with" in prompt
     assert "damage dice, damage bonus, to_hit, and attack count — NEVER by" in prompt
     assert "raising identity.level or identity.cr. Fix an identity.level" in prompt
     assert "violation by writing a bare integer 1-20 in identity.level and" in prompt
@@ -637,13 +642,20 @@ def test_rules_text_carries_vocabularies() -> None:
 
 
 def test_rules_text_instructs_challenge_scaling() -> None:
-    """Stats must follow the declared level/CR: the model is told a tougher
-    declaration needs tougher combat numbers and scores (not a flat block),
-    with the DMG bands the validator enforces."""
+    """Stats must follow the declared level/CR: Monsters are told the DMG
+    bands the validator enforces, and NPC/BBEG are told the truth the NPC
+    oracle (owner verdict 2026-09-12) made law — authentic class-grade
+    numbers, no band enforcement, under-band commits stamped. A prompt
+    quoting the monster table as the NPC grade is the steer that inflated
+    gemma's level-5 NPC to 10d10+5."""
     rules = stat_block_rules_text()
     assert "CHALLENGE SCALING" in rules
     assert "level" in rules and "CR" in rules
     assert "hp" in rules and "ac" in rules
+    assert "AUTHENTIC class-grade numbers" in rules
+    assert "does NOT band-enforce them" in rules
+    assert "stamped under-powered for DM visibility" in rules
+    assert "Monster blocks scale with CR on the DMG monster table and ARE" in rules
 
 
 def test_spells_reference_text_is_deterministic_and_subsettable() -> None:
@@ -902,18 +914,46 @@ def test_hp_tank_never_flagged() -> None:
     assert validate_stat_block(block) == []
 
 
-def test_bbeg_underpowered_flagged_on_level_band() -> None:
-    """The boss tier keys DPR off level like NPCs: a BBEG 12 dealing
-    6.5 DPR fires under-powered vs 75-80."""
+def test_bbeg_underpowered_commits_stamped_not_flagged() -> None:
+    """NPC oracle (owner verdict 2026-09-12): the boss tier is no longer
+    keyed to the DMG monster table — a BBEG 12 dealing 6.5 DPR raises NO
+    violation (authentic numbers stand) and commits stamped under-powered,
+    so the DM sees the gap instead of the job dying on it or the conform
+    inflating it."""
     block = {
         "identity": {"role": "BBEG", "level": 12, "race": "Human"},
         "attributes": _power_attributes(),
         "actions": [{"name": "Slam", "description": "1d8+2 force"}],
         "combat": {"ac": 18, "hp": 200},
     }
-    assert validate_stat_block(block) == [
-        "under-powered for level 12: estimated DPR 6.5 vs 75-80 expected"
-    ]
+    assert validate_stat_block(block) == []
+    assert canonicalize_stat_block(block)["power"] == {
+        "dpr": 6.5,
+        "band": [75.0, 80.0],
+        "verdict": "under-powered",
+    }
+
+
+def test_npc_underpowered_and_frail_never_violate() -> None:
+    """The Qwen3.8 rung-50 shape (ledger 2026-09-12): an authentic level-5
+    NPC — 6.5 DPR against the monster table's 33-38, hp below the frail
+    line — passes validation whole. Pre-oracle this block was flagged twice
+    and machine-inflated by the conform; now it commits as written,
+    stamped under-powered for DM visibility."""
+    block = {
+        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "attributes": _power_attributes(),
+        "actions": [
+            {"name": "Longsword", "description": "Melee Weapon Attack: +5 to hit, 1d8+2 slashing"}
+        ],
+        "combat": {"ac": 16, "hp": 40},
+    }
+    assert validate_stat_block(block) == []
+    assert canonicalize_stat_block(block)["power"] == {
+        "dpr": 6.5,
+        "band": [33.0, 38.0],
+        "verdict": "under-powered",
+    }
 
 
 def test_bbeg_overpowered_passes_with_power_stamp() -> None:
@@ -967,10 +1007,12 @@ def test_legendary_budget_flips_dpr_verdict() -> None:
 
 
 def test_save_half_and_aoe_adjustments_enforced() -> None:
-    """Nominal 21 DPR passes level 5 only through the adjustments
-    (21 x 0.75 x 2 = 31.5); raw nominal alone would flag under."""
+    """Nominal 21 DPR passes CR 5 only through the adjustments
+    (21 x 0.75 x 2 = 31.5, on-target against the 0.8 x 33 = 26.4 floor);
+    raw nominal alone would flag under-powered. Monster role: the band is
+    enforced exactly where the adjustments are load-bearing."""
     block = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "identity": {"role": "Monster", "cr": 5, "race": "Beast"},
         "attributes": _power_attributes(),
         "actions": [
             {"name": "Burst", "description": "6d6 fire in a 20-ft radius, DC 13 save for half"}
@@ -995,13 +1037,15 @@ def _record_entity(
     return StatIssue(position, entity, ("stat_block section missing",))
 
 
-def test_repair_prompt_missing_with_level_names_band() -> None:
-    """MISSING_WITH_LEVEL: a level-5 record names its 33-38 band; a level-20
-    record names 123-140."""
+def test_repair_prompt_npc_records_never_quote_the_monster_band() -> None:
+    """NPC oracle: an NPC/BBEG record no longer renders a target line —
+    quoting a band the validator does not enforce for those roles is the
+    steer that inflated gemma's level-5 NPC to 10d10+5. Monster records
+    keep their CR band (next test)."""
     prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="level 5")])
-    assert "record target: level 5 -> hit DPR band 33-38" in prompt
+    assert "record target:" not in prompt
     prompt20 = build_stat_repair_prompt([_record_entity(0, role="BBEG", level_cr="level 20")])
-    assert "record target: level 20 -> hit DPR band 123-140" in prompt20
+    assert "record target:" not in prompt20
 
 
 def test_repair_prompt_missing_no_level_omits_target_keeps_recipes() -> None:
@@ -1015,7 +1059,7 @@ def test_repair_prompt_missing_no_level_omits_target_keeps_recipes() -> None:
     assert "DAMAGE RECIPES" in prompt
     assert "d4 2.5" in prompt and "d12 6.5" in prompt
     assert "makes three attacks" in prompt and "makes four attacks" in prompt
-    assert "declare an identity.level your damage supports" in prompt
+    assert "an NPC/BBEG declares an identity.level fitting" in prompt
 
 
 def test_repair_prompt_monster_target_names_cr_band() -> None:
@@ -1038,8 +1082,9 @@ def test_repair_prompt_dpr_guidance_deterministic_and_valved() -> None:
     ]
     first = build_stat_repair_prompt(issues)
     assert build_stat_repair_prompt(issues) == first
-    assert first.count("record target:") == 2
-    assert "You MAY lower identity.level" in first
+    assert first.count("record target:") == 1  # the Monster's only — an NPC
+    # record never quotes the monster band (NPC oracle).
+    assert "You MAY lower identity.cr" in first
     assert "zero dice anywhere and the block is exempt" in first
     assert "one weak attack is worse than none" in first
     # The existing OUTPUT CONTRACT is untouched.
@@ -1056,18 +1101,18 @@ def test_repair_prompt_recipes_cover_audit_adjustments() -> None:
     the legendary extra attack, HP minimums, interpolation, precedence,
     the bounded fallback, and the modifiers-aware diceless valve."""
     prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="level 5")])
-    assert "hit each character's record target band" in prompt
+    assert "Monster bands bind; NPC/BBEG stay authentic" in prompt
     assert "counts double (assumed 2 targets)" in prompt
     assert "Adjustment factors multiply" in prompt
     assert "boss.legendary_actions adds one full extra attack" in prompt
     assert "size base damage" in prompt and "one attack lower" in prompt
-    assert "level 1: 71+" in prompt and "20: 356+" in prompt
-    assert "CR targets use the same table row" in prompt
+    assert "CR 1: 71+" in prompt and "20: 356+" in prompt
+    assert "NPC/BBEG hp is free" in prompt
     assert "below half the low" in prompt and "fails frail" in prompt
     assert "interpolate between the neighboring recipes" in prompt
-    assert "Prefer hitting the record target band" in prompt
-    assert "the HIGHEST such level" in prompt
-    assert "never level 1 for an archmage concept" in prompt
+    assert "prefer hitting the record target band" in prompt
+    assert "the HIGHEST such CR" in prompt
+    assert "never level 1 for an archmage" in prompt
     assert "no +/-N damage modifiers" in prompt
     assert "only `actions` are audited" in prompt
 
@@ -1083,11 +1128,12 @@ def test_repair_prompt_target_word_boundaries() -> None:
 
 
 def test_repair_prompt_target_tolerates_missing_whitespace() -> None:
-    """`CR5` / `level5` still resolve to their bands."""
+    """`CR5` still resolves to its band; an NPC `level5` renders nothing —
+    the NPC oracle retired the level->band fold entirely."""
     prompt = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="CR5")])
     assert "record target: CR 5 -> hit DPR band 33-38" in prompt
     prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="level5")])
-    assert "record target: level 5 -> hit DPR band 33-38" in prompt
+    assert "record target:" not in prompt
 
 
 def test_repair_prompt_target_rejects_decimal_challenges() -> None:
@@ -1131,15 +1177,13 @@ def test_repair_prompt_spells_valve_present() -> None:
 def test_repair_prompt_tiny_valve_present() -> None:
     """TINY_VALVE: frail tiny HP needs the CR-row floor plus the CR-0
     diceless escape; numbers quoted from combat.CR_HP (1/4: 36, 1/2: 50,
-    5: 131) and CR_DPR (CR 0 overs above 1.2)."""
+    5: 131) and CR_DPR (CR 0 overs above 1.2). NPC/BBEG hp is free since
+    the oracle verdict — no leveled-tiny valve exists anymore."""
     prompt = build_stat_repair_prompt([_record_entity(2, role="Monster", level_cr="CR 1/4")])
     assert "HP floor follows the DPR row (CR 1/4: 36+, CR 1/2: 50+, CR 5: 131+)" in prompt
-    assert "Tiny creatures: CR 0 with zero dice anywhere" in prompt
+    assert "Tiny Monsters: CR 0 with zero dice anywhere" in prompt
     assert "a single die averages over 1.2 DPR and overs" in prompt
-    assert (
-        "Tiny NPC/BBEG that must stay leveled: zero dice and hp at/above half the band\n"
-        "low (level 1: 36+)." in prompt
-    )
+    assert "NPC/BBEG hp is free: authentic to the concept, never band-checked." in prompt
 
 
 def test_repair_prompt_valve_numbers_match_combat_tables() -> None:
@@ -1155,22 +1199,22 @@ def test_repair_prompt_valve_numbers_match_combat_tables() -> None:
 def test_repair_prompt_prior_pins_intact() -> None:
     """PIN_KEEP: the earlier recipe/valve lines survive byte-identical."""
     prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="level 5")])
-    assert "You MAY lower identity.level" in prompt
+    assert "You MAY lower identity.cr" in prompt
     assert "zero dice anywhere and the block is exempt" in prompt
     assert "one weak attack is worse than none" in prompt
     assert "counts double (assumed 2 targets)" in prompt
     assert "Adjustment factors multiply" in prompt
     assert "boss.legendary_actions adds one full extra attack" in prompt
-    assert "level 1: 71+" in prompt and "20: 356+" in prompt
-    assert "CR targets use the same table row" in prompt
+    assert "CR 1: 71+" in prompt and "20: 356+" in prompt
+    assert "NPC/BBEG hp is free" in prompt
     assert "below half the low" in prompt and "fails frail" in prompt
     assert "interpolate between the neighboring recipes" in prompt
-    assert "Prefer hitting the record target band" in prompt
-    assert "the HIGHEST such level" in prompt
-    assert "never level 1 for an archmage concept" in prompt
+    assert "prefer hitting the record target band" in prompt
+    assert "the HIGHEST such CR" in prompt
+    assert "never level 1 for an archmage" in prompt
     assert "no +/-N damage modifiers" in prompt
     assert "only `actions` are audited" in prompt
-    assert "hit each character's record target band" in prompt
+    assert "Monster bands bind; NPC/BBEG stay authentic" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1195,18 +1239,18 @@ def test_repair_prompt_challenge_valve_prior_pins_intact() -> None:
     """PIN_KEEP: the challenge valve lands alongside every earlier pin."""
     prompt = build_stat_repair_prompt([_record_entity(1, role="NPC", level_cr="level 5")])
     assert "Challenge number is REQUIRED inside identity, never omitted" in prompt
-    assert "You MAY lower identity.level" in prompt
+    assert "You MAY lower identity.cr" in prompt
     assert "zero dice anywhere and the block is exempt" in prompt
     assert "one weak attack is worse than none" in prompt
     assert "counts double (assumed 2 targets)" in prompt
     assert "Adjustment factors multiply" in prompt
     assert "boss.legendary_actions adds one full extra attack" in prompt
-    assert "declare an identity.level your damage supports" in prompt
+    assert "an NPC/BBEG declares an identity.level fitting" in prompt
     assert (
         "spells need identity.class from the SRD list (never for Monster): set one class\n"
         "whose list holds every spell, drop uncovered spells, or delete the spells array." in prompt
     )
-    assert "Tiny creatures: CR 0 with zero dice anywhere" in prompt
+    assert "Tiny Monsters: CR 0 with zero dice anywhere" in prompt
 
 
 def test_challenge_valve_round_trip_missing_cr_then_cr8() -> None:
@@ -1341,14 +1385,14 @@ def test_canonicalize_completes_damage_parts() -> None:
             {
                 "name": "Claw",
                 "description": "x",
-                "damage": [{"dice": "2d6", "bonus": 12, "reach_ft": 5}],
+                "damage": [{"dice": "4d10", "bonus": 5, "reach_ft": 5}],
             }
         ],
     }
     canonical = canonicalize_stat_block(block)
     part = canonical["actions"][0]["damage"][0]
-    assert part["count"] == 2 and part["sides"] == 6 and part["bonus"] == 12
-    assert part["average"] == 19  # 2 * 3.5 + 12
+    assert part["count"] == 4 and part["sides"] == 10 and part["bonus"] == 5
+    assert part["average"] == 27  # 4 * 5.5 + 5 — on-target, so no power stamp
     assert part["type"] == "untyped"  # absent type names nothing, so it is explicit
     assert part["reach_ft"] == 5  # the model's own key is not dropped
 
@@ -1431,12 +1475,13 @@ def test_rules_text_asks_for_the_structured_shape() -> None:
 def test_conform_moves_structured_damage_with_the_prose() -> None:
     """STRUCTURED_CONFORM: the deterministic conform keeps the parts and
     the description in step — the auditor reads the parts, so a part left
-    behind would silently undo the lift."""
+    behind would silently undo the lift. Monster role: the conform is
+    Monster-only since the NPC oracle (owner verdict 2026-09-12)."""
     from app.pipeline import combat
     from app.pipeline.statblocks import conform_power
 
     weak = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
+        "identity": {"role": "Monster", "cr": 5, "race": "Humanoid", "class": "Fighter"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
         "combat": {"ac": 16, "hp": 66},
         "actions": [
@@ -1491,3 +1536,28 @@ def test_damage_parts_sentence_states_the_parts_it_reads() -> None:
     assert damage_parts_sentence("2d6 + 4 slashing") is None  # a folded string is not parts
     assert damage_parts_sentence([{"dice": "2d6"}]) is None  # no count/sides: unusable
     assert damage_parts_sentence([]) is None
+
+
+def test_conform_first_targets_selects_monster_power_misses_only() -> None:
+    """CONFORM_FIRST selection: a Monster power-only miss is a target (the
+    deterministic conform owns it before any LLM pass); a shape violation
+    is not (the model is the only writer); an NPC/BBEG block is never a
+    target — the NPC oracle retired their band entirely."""
+    from app.pipeline.statblocks import conform_first_targets
+
+    monster_power = StatIssue(
+        0,
+        _entity("character", data={"stat_block": {"identity": {"role": "Monster", "cr": 5}}}),
+        ("under-powered for CR 5: estimated DPR 6.5 vs 33-38 expected",),
+    )
+    monster_shape = StatIssue(
+        1,
+        _entity("character", data={"stat_block": {"identity": {"role": "Monster", "cr": 5}}}),
+        ("attributes.str must be an integer in [1, 30]",),
+    )
+    npc_legacy = StatIssue(
+        2,
+        _entity("character", data={"stat_block": dict(VALID)}),
+        ("under-powered for level 5",),
+    )
+    assert conform_first_targets([monster_power, monster_shape, npc_legacy]) == [monster_power]

@@ -673,3 +673,153 @@ def test_comfyui_image_relative_workflow_path_resolves_against_config_dir(
     reset_runtime_config()
     assert comfyui_image_settings().workflow_path == str(tmp_path / "workflows" / "krea2.json")
     reset_runtime_config()
+
+
+def test_base_url_config_env_default_flows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """[server].base_url is consumed (spec-5.2): missing section and
+    empty values fall back to the code default; env wins; a set-but-empty
+    env falls through to config (the falsy rule, review round 1)."""
+    from app.core.config import DEFAULT_BASE_URL
+    from app.core.settings import configured_base_url
+
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(tmp_path / "nope.toml"))
+    reset_runtime_config()
+    assert configured_base_url() == DEFAULT_BASE_URL  # missing file -> default
+    cfg_file = tmp_path / "cfg.toml"
+    cfg_file.write_text('[server]\nbase_url = "https://cfg.example.test"\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(cfg_file))
+    reset_runtime_config()
+    assert configured_base_url() == "https://cfg.example.test"  # config file wins
+    reset_runtime_config()
+    empty_file = tmp_path / "empty.toml"
+    empty_file.write_text('[server]\nbase_url = ""\n')
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(empty_file))
+    reset_runtime_config()
+    assert configured_base_url() == DEFAULT_BASE_URL  # empty config -> default
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(cfg_file))
+    monkeypatch.setenv("MYTHOSCIRCLE_BASE_URL", "")  # empty env -> config
+    reset_runtime_config()
+    assert configured_base_url() == "https://cfg.example.test"
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_BASE_URL", "https://env.example.test")
+    assert configured_base_url() == "https://env.example.test"  # env wins
+    reset_runtime_config()
+
+
+def test_llm_sampling_defaults_are_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset everywhere = None: the request body omits temperature/top_p/
+    seed entirely (the thinking tri-state's rationale — a backend
+    rejecting unknown fields keeps working). Pinned via a missing config
+    file so the shipped config cannot leak in."""
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", "/nonexistent/mythoscircle.toml")
+    reset_runtime_config()
+    settings = llm_settings()
+    assert settings.temperature is None
+    assert settings.top_p is None
+    assert settings.seed is None
+    cfg = runtime_config()
+    assert cfg.llm_temperature is None
+    assert cfg.llm_top_p is None
+    assert cfg.llm_seed is None
+    reset_runtime_config()
+
+
+def test_llm_sampling_config_driven(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """[llm] temperature/top_p/seed are consumed (improvement plan G) —
+    the config values land in RuntimeConfig and llm_settings()."""
+    path = _write_config(tmp_path, "[llm]\ntemperature = 0.7\ntop_p = 0.9\nseed = 12345\n")
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    cfg = runtime_config()
+    assert cfg.llm_temperature == 0.7
+    assert cfg.llm_top_p == 0.9
+    assert cfg.llm_seed == 12345
+    settings = llm_settings()
+    assert settings.temperature == 0.7
+    assert settings.top_p == 0.9
+    assert settings.seed == 12345
+    reset_runtime_config()
+
+
+def test_llm_sampling_env_overrides_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """MYTHOSCIRCLE_LLM_TEMPERATURE/TOP_P/SEED win over [llm] (env >
+    config > default, spec-1.7)."""
+    path = _write_config(tmp_path, "[llm]\ntemperature = 0.7\ntop_p = 0.9\nseed = 1\n")
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_TEMPERATURE", "0.2")
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_TOP_P", "0.5")
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_SEED", "99")
+    settings = llm_settings()
+    assert settings.temperature == 0.2
+    assert settings.top_p == 0.5
+    assert settings.seed == 99
+    reset_runtime_config()
+
+
+def test_llm_sampling_empty_env_falls_through_to_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A set-but-empty sampling env is treated as unset — the config
+    value wins; the numeric parse never sees "" (the endpoint rule,
+    review round 1)."""
+    path = _write_config(tmp_path, "[llm]\ntemperature = 0.7\ntop_p = 0.9\nseed = 5\n")
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_TEMPERATURE", "")
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_TOP_P", "")
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_SEED", "")
+    settings = llm_settings()
+    assert settings.temperature == 0.7
+    assert settings.top_p == 0.9
+    assert settings.seed == 5
+    reset_runtime_config()
+
+
+def test_llm_sampling_zero_values_are_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """temperature=0 / seed=0 are MEANINGFUL (greedy decoding, a fixed
+    RNG seed), never falsy fall-throughs — env zeros AND config zeros
+    land verbatim."""
+    path = _write_config(tmp_path, "[llm]\ntemperature = 1.5\ntop_p = 1.0\nseed = 7\n")
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(path))
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_TEMPERATURE", "0")
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_SEED", "0")
+    settings = llm_settings()
+    assert settings.temperature == 0.0  # env zero beats config 1.5
+    assert settings.seed == 0
+    assert settings.top_p == 1.0  # untouched config stays
+    reset_runtime_config()
+    monkeypatch.delenv("MYTHOSCIRCLE_LLM_TEMPERATURE")
+    monkeypatch.delenv("MYTHOSCIRCLE_LLM_SEED")
+    zeros = tmp_path / "zeros.toml"
+    zeros.write_text("[llm]\ntemperature = 0.0\nseed = 0\n")
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", str(zeros))
+    reset_runtime_config()
+    settings = llm_settings()
+    assert settings.temperature == 0.0  # config zero is kept, not defaulted
+    assert settings.seed == 0
+    assert settings.top_p is None  # absent key stays the None default
+    reset_runtime_config()
+
+
+def test_llm_sampling_malformed_env_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An operator typo must surface, never silently pick a sampling mode
+    (the env_bool_optional rationale); a negative temperature is rejected
+    too — 0.0 is the floor (greedy), below it is nonsense."""
+    monkeypatch.setenv("MYTHOSCIRCLE_CONFIG", "/nonexistent/mythoscircle.toml")
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_TEMPERATURE", "warm")
+    with pytest.raises(ValueError, match="must be a float"):
+        llm_settings()
+    reset_runtime_config()
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_TEMPERATURE", "-1")
+    with pytest.raises(ValueError, match="must be >= 0"):
+        llm_settings()
+    reset_runtime_config()
+    monkeypatch.delenv("MYTHOSCIRCLE_LLM_TEMPERATURE")
+    monkeypatch.setenv("MYTHOSCIRCLE_LLM_SEED", "12.5")
+    with pytest.raises(ValueError, match="must be an integer"):
+        llm_settings()
+    reset_runtime_config()
