@@ -431,3 +431,74 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   `/tmp/mythos-ladder/calls-c11/`.
 - LADDER COMPLETE: rung 10 (16 calls) → rung 25 (40) → rung 50 (67),
   all green on identical code.
+---
+
+# Qwen3.8-27B (UD-Q4_K_M) re-measure — 2026-09-12
+
+Same rung JSON, same runner (rebuilt after /tmp wipe — tee'd calls + prompts
++ committed.db snapshot per attempt), same endpoint, `enable_thinking: false`
+(verified: 0 reasoning tokens, immediate content), `max_tokens` 65536,
+roster-scaled budget. Model swap is the ONLY variable.
+
+## Rung 10 — attempt 1 — FAILED, 13 calls / 221 model-seconds
+
+- Wave 1 (105.3s, 28,679-char response) parsed first try, 10/10 + 10 edges.
+  **Every character under-powered**: DPR 7.5-11.0 vs bands (L5 33-38,
+  L8 51-56, L10 63-68, L12 75-80). Blocks are authentic SRD: "Melee Weapon
+  Attack: +7 to hit, reach 5 ft., one target. Hit: 10 (1d8 + 4) bludgeoning".
+- Repairs nudge gently (8.5 → 13 → 17) — never near the band, never an
+  overshoot (gemma's death mode is absent).
+- Terminal: E7 `identity.level must be an integer in [1, 20]` — the pass-1
+  and pass-2 repairs each DROPPED `identity.level` while raising damage, and
+  the follow-up passes (scope `['identity']`) edited `spells` instead of
+  restoring the missing field. Same blindness family as gemma's, new
+  variant: drop, not garbage.
+
+## Rung 10 — attempts 2-3 — SUCCEEDED, 16 and 11 calls
+
+- Attempt 2 (pre-guard): 16 calls, 13 entities / 16 edges, 0 stamps.
+- Attempt 3 (after the identity-field merge guard): 11 calls, 13 entities /
+  17 edges. Repairs converged in one pass for wave 1; the deterministic
+  `conform_stat_power` is what carries Qwen's conservative blocks into band
+  (verified directly: a 13-DPR L8 Rogue block conforms to 53 DPR in band).
+
+## Code change this measure produced (commit 3d5f7d0)
+
+- `knowledge.identity_field_ok` + `identity_field_allowed` (single-sourced
+  AR25 shapes) and a generalized merge guard in `_enforce_stat_blocks`:
+  a repair may not degrade `class`/`level`/`cr` (dropped, blanked, re-typed
+  restores the pre-repair value; same-shape edits land; a role change and
+  the Monster level→cr swap are exempt). Live cost of the gap: one job.
+
+## Rung 25 — attempt 1 — SUCCEEDED, 22 calls / 417 model-seconds (≈7 min)
+
+- Wave 1: 25/25 entities emitted (count pin holds), 24 edges, call-01 took
+  199.8s for a 53,079-char response (gemma: 72.9s / 39,217 chars — Qwen is
+  ~2.7x slower and ~1.35x more verbose at the same roster).
+- ALL 15 characters arrived under-powered on the first pass (one repair call
+  each, E10-E24), three needed a second pass, wave 2 needed one. Qwen never
+  overshoots; it under-repairs by ~3-6x and the deterministic
+  `conform_stat_power` is what lands the band (13 → 53 DPR at L8, verified).
+- Wave 2 emitted 2 entities + 3 edges (gemma emitted 3 + 6).
+- Total 27 entities / 27 edges. Calls 22 vs gemma's 40 for the same rung —
+  fewer calls because Qwen's blocks are structurally valid (no skills-shape
+  or spell-link churn), only numerically under.
+
+## Rung 50 — attempt 1 — SUCCEEDED, 48 calls / 867 model-seconds (14.5 min)
+
+- Wave 1: 50/50 emitted (count pin holds at 3x the earlier gemma scale),
+  61 edges, one 411.5s / 106,186-char response (gemma's 25-scale wave was
+  72.9s / 39,217 chars — Qwen is ~4.5x slower per wave call and ~1.35x
+  more verbose). Wave 2: 3 entities + 8 edges. 53 entities (33/8/12),
+  69 edges, closed vocabulary, ZERO power stamps.
+- Repairs: 33 pass-1 calls (one per character — every single block arrived
+  under-band) + 12 later-pass calls = 45 of the 48 calls. Gemma at this
+  rung needed 67 calls but for shape/link churn, not a uniform power miss.
+- Ladder on Qwen3.8: rung 10 (2/3 attempts green, 11-16 calls), rung 25
+  (green first try, 22 calls), rung 50 (green first try, 48 calls).
+- Product finding (owner decision, ledgered): the level->DPR band is
+  MONSTER-grade (a CR-5 monster deals 33-38, a level-5 NPC fighter deals
+  ~10). Qwen writes the authentic NPC number and is flagged under-powered
+  on 100% of characters; the deterministic `conform_stat_power` then
+  rewrites the damage upward, so the committed block is the conform's
+  arithmetic, not the model's. Gemma "passes" the band only by inflating.
