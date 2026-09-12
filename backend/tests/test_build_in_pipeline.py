@@ -37,6 +37,7 @@ from app.pipeline.build_in import (
     build_wave2_prompt,
     build_wave_schema,
     canonicalize_entity_kind,
+    normalize_entity_name,
 )
 from app.pipeline.fencing import json_error
 from app.pipeline.knowledge import validate_stat_block
@@ -56,6 +57,7 @@ from app.store import (
     EDGE_TYPES,
     InvalidJobInputError,
     app_db_url,
+    campaign_seed,
     cancel_job,
     commit_subgraph,
     create_campaign,
@@ -3838,3 +3840,166 @@ def test_wave1_commit_rebases_over_a_dm_edit(world: str) -> None:
         assert len(revision_chain(session, world)) == 2  # DM edit + rebased wave 1
         names = {entity.name for entity in world_entities(session, world)}
     assert {"The Gilded Bar", "Mira Vane", "DM's New Keep"} <= names
+
+
+# ---------------------------------------------------------------------------
+# Identity (owner decisions 2026-09-12): the roster-twin gate and the upsert
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_entity_name_pins() -> None:
+    """The dedup key is exact-name: casefolded, article-stripped,
+    whitespace-collapsed — and deliberately NOT fuzzy (epithet variants
+    stay distinct)."""
+    assert normalize_entity_name("The Cistern King") == "cistern king"
+    assert normalize_entity_name("  cistern   KING. ") == "cistern king"
+    assert normalize_entity_name("A Dock") == "dock"
+    assert normalize_entity_name("An Inn") == "inn"
+    assert normalize_entity_name("Sim (The Drowned)") != normalize_entity_name("Wreck-diver Sim")
+
+
+def test_wave2_prompt_carries_anti_twin_rule(world: str) -> None:
+    """The wave-2 TASK tells the model the roster subjects already exist —
+    the prompt half of the twin decision."""
+    with session_scope() as session:
+        seed = campaign_seed(session, world)
+    assert seed is not None
+    prompt = build_wave2_prompt(seed, "notes", ([], []), core_count=0)
+    assert "never create an entity for one of them" in prompt
+
+
+def test_wave2_roster_twin_dropped_and_renumbered(world: str) -> None:
+    """TWIN GATE: a wave-2 entity whose (kind, normalized name) matches a
+    wave-1 roster entry is dropped BEFORE validation; edges that pointed
+    at it follow it out; the survivor is renumbered (N-refs are
+    positional) and keeps its core anchor."""
+    twin = _wave2_output()
+    twin["entities"][0] = {"ref": "N0", "kind": "character", "name": "Mira Vane"}
+    # N1 (the place) survives as N0; its C0 edge is rewritten, the edge to
+    # the dropped twin is gone.
+    responses = [json.dumps(_wave1_output()), json.dumps(twin)]
+    job_id = _enqueue(world, places=["Greymarch"], notes="Mira Vane returns to the Drowned Rat")
+    run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    merge = (job.result or {})["merge"]["wave2"]
+    assert merge["twins_dropped"] == ["Mira Vane"]
+    with session_scope() as session:
+        rows = world_entities(session, world)
+        edges = world_edges(session, world)
+    mira = [e for e in rows if e.name == "Mira Vane"]
+    assert len(mira) == 1  # no twin row — the wave-1 record stands
+    harlow = next(e for e in rows if e.name == "Captain Harlow")
+    mira_row = mira[0]
+    assert any(e.src == harlow.id and e.dst == mira_row.id for e in edges)
+    # the edge that pointed at the dropped twin is gone with it
+    assert not any(e.dst == harlow.id and e.src == mira_row.id for e in edges)
+
+
+def test_wave2_all_twins_commit_nothing(world: str) -> None:
+    """Every wave-2 subject duplicates the roster: the job succeeds with an
+    empty wave-2 result and NO second revision (the head stands)."""
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(
+            {
+                "entities": [
+                    {"ref": "N0", "kind": "faction", "name": "The Gilded Bar"},
+                    {"ref": "N1", "kind": "character", "name": "Mira Vane"},
+                ],
+                "edges": [{"src": "N1", "dst": "N0", "type": "member_of"}],
+            }
+        ),
+    ]
+    job_id = _enqueue(world, places=["Greymarch"], notes="Mira Vane and the Gilded Bar, again")
+    run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    result = job.result or {}
+    assert result["waves"][1]["entities"] == 0
+    assert result["entity_count"] == 2  # the wave-1 roster view only
+    assert result["merge"]["wave2"]["twins_dropped"] == ["The Gilded Bar", "Mira Vane"]
+    with session_scope() as session:
+        assert len(list(revision_chain(session, world))) == 1
+
+
+def test_upsert_resubmit_updates_rows_not_twins(world: str) -> None:
+    """UPSERT (owner decision 2026-09-12): re-submitting the same lists
+    updates the committed rows in place — no twins, no duplicate edges, no
+    second wave-1 revision — and wave 2 still wires into the ORIGINAL rows
+    (the final-ID roster), not into ghosts."""
+    responses1 = [json.dumps(_wave1_output())]
+    _enqueue(world, places=["Greymarch"], notes="")
+    run_next_job(provider=lambda prompt, settings: responses1.pop(0), settings=SETTINGS)
+    with session_scope() as session:
+        first = {e.name: e.id for e in world_entities(session, world)}
+    assert len(first) == 2
+
+    responses2 = [json.dumps(_wave1_output()), json.dumps(_wave2_output())]
+    job_id2 = _enqueue(world, notes="the docks teem with Captain Harlow")
+    run_next_job(provider=lambda prompt, settings: responses2.pop(0), settings=SETTINGS)
+    job2, _position = job_status(job_id2)
+    assert job2.state == "succeeded"
+    merge = (job2.result or {})["merge"]
+    assert [n["name"] for n in merge["wave1"]["unchanged"]] == [
+        "The Gilded Bar",
+        "Mira Vane",
+    ]
+    assert merge["wave1"]["merged"] == []
+    assert merge["wave2"]["twins_dropped"] == []
+    with session_scope() as session:
+        rows = {e.name: e.id for e in world_entities(session, world)}
+        edges = world_edges(session, world)
+        revisions = list(revision_chain(session, world))
+    assert set(rows) == {
+        "The Gilded Bar",
+        "Mira Vane",
+        "The Drowned Rat",
+        "Captain Harlow",
+    }
+    assert rows["The Gilded Bar"] == first["The Gilded Bar"]  # updated in place
+    assert len(edges) == 5  # wave 1's two + wave 2's three, zero duplicates
+    assert len(revisions) == 2  # job1 wave 1 + job2 wave 2; job2 wave 1 no-op
+    rat, bar = rows["The Drowned Rat"], rows["The Gilded Bar"]
+    assert any(e.src == rat and e.dst == bar for e in edges)
+
+
+def test_upsert_grown_resubmit_adds_only_new(world: str) -> None:
+    """The spec's growth workflow: a grown list keeps the unchanged rows and
+    creates only the new ones."""
+    responses1 = [json.dumps(_wave1_output())]
+    _enqueue(world, places=["Greymarch"], notes="")
+    run_next_job(provider=lambda prompt, settings: responses1.pop(0), settings=SETTINGS)
+    responses2 = [json.dumps(_wave1_output_edgeless())]  # + Myconid Colony, Grymforge
+    job_id2 = _enqueue(world, places=["Greymarch"], notes="")
+    run_next_job(provider=lambda prompt, settings: responses2.pop(0), settings=SETTINGS)
+    job2, _position = job_status(job_id2)
+    assert job2.state == "succeeded"
+    merge = (job2.result or {})["merge"]["wave1"]
+    assert [n["name"] for n in merge["unchanged"]] == ["The Gilded Bar", "Mira Vane"]
+    assert merge["merged"] == []
+    with session_scope() as session:
+        names = {e.name for e in world_entities(session, world)}
+    assert names == {"The Gilded Bar", "Mira Vane", "Myconid Colony", "Grymforge"}
+
+
+def test_upsert_drops_duplicate_relationships(world: str) -> None:
+    """A re-submit whose edges duplicate live relationships drops them (the
+    store would reject them as duplicates) and keeps the ORIGINAL counters
+    — a merge is not a counter update."""
+    responses1 = [json.dumps(_wave1_output())]
+    _enqueue(world, places=["Greymarch"], notes="")
+    run_next_job(provider=lambda prompt, settings: responses1.pop(0), settings=SETTINGS)
+    changed = _wave1_output()
+    changed["edges"][0]["counter"] = 9
+    responses2 = [json.dumps(changed)]
+    job_id2 = _enqueue(world, places=["Greymarch"], notes="")
+    run_next_job(provider=lambda prompt, settings: responses2.pop(0), settings=SETTINGS)
+    job2, _position = job_status(job_id2)
+    assert job2.state == "succeeded"
+    merge = (job2.result or {})["merge"]["wave1"]
+    assert {d["why"] for d in merge["dropped_edges"]} == {"duplicate relationship"}
+    assert len(merge["dropped_edges"]) == 2
+    with session_scope() as session:
+        edges = world_edges(session, world)
+    assert sorted(e.counter for e in edges) == [1, 3]  # originals intact

@@ -667,3 +667,33 @@ frontend 202 passed / vue-tsc+eslint clean):
   pool ≈ 4× wall-clock, gated on the server's parallel-slot config) and
   the owner's dedup call for the variant-entity behavior. Tee'd calls +
   prompts + committed.db in `/tmp/mythos-ladder/calls-d4/`.
+
+## Rung 100 — attempt d5, gemma-4-26B-A4B comparison — SUCCEEDED, 67 calls / 591s ≈ 9.8 min (GREEN, FIRST TRY)
+
+- Same seed (`rung-100.json`), same cut code INCLUDING the 2026-09-12
+  identity work (upsert merge + roster-twin gate), model =
+  unsloth/gemma-4-26B-A4B-it-qat-GGUF (MoE, 4B active).
+- Wave 1 CHUNKED: 8/8 chunks parsed first try (biggest 32,096 chars in
+  67.7s — 2-3x faster per chunk than Qwen), wiring pass 9,070 chars in
+  25.9s. Committed 100/100 + 148 edges.
+- Repairs: one record chunk (6,124 chars, schema=False); 56 stat calls
+  (vs Qwen's 24) — gemma's blocks stay SHAPE-violation-prone
+  (spell/class-link family), each repair 3-4s. ZERO power-driven calls;
+  census 54 under-powered stamps (authentic DPR 2.5-73.5), 0
+  over-powered — the old gemma overshoot death class (rung-50: DPR
+  189/60/31.5) stays extinct under the oracle + conform-first.
+- Wave 2: 26,201-char two-tier prompt -> EXACTLY the four notes subjects
+  (Tollhouse of Teeth, Pale Ledger, Tideglass, Brackish Herald), 4
+  entities / 5 edges, ZERO roster twins — the anti-twin prompt rule held
+  on gemma outright; d4's Qwen needed the gate for its six variants.
+  104 entities / 153 edges total.
+- Head-to-head on the same payload and code: Qwen3.8-27B 35 calls /
+  24.7 min; gemma-4-26B-A4B 67 calls / 9.8 min. Gemma wins wall-clock
+  2.5x on local hardware (its calls are 3-10s); Qwen wins call count ~2x
+  (the number that matters on metered routes). Both green first try at
+  100 — the cut is model-portable, which is the K-profiles precondition.
+- Profile read-off for K: same chunk sizes serve both (gemma's chunks are
+  latency-bound, not size-bound); gemma wants a larger stat-repair
+  allowance, Qwen the reverse. Default-model choice stays the owner's —
+  deploy/config.toml still carries the ask-first placeholder.
+- Tee'd calls + prompts + committed.db in `/tmp/mythos-ladder/calls-d5/`.

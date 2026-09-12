@@ -17,6 +17,14 @@ a still-orphan repair fails the job. Wave 1 commits edgeless (owner verdict 2026
 reversing the 2026-09-11 wave-1 re-emit — wiring the model will not invent is not worth a lost
 build; the DM prunes).
 
+Identity (owner rule 2026-09-12): both waves commit through an upsert
+merge — an incoming entity whose (kind, normalized name) matches a
+committed row of this campaign updates that row instead of creating a
+twin, so re-submitting a grown list grows the world rather than doubling
+it; wave 2 additionally drops exact twins of its own wave-1 roster before
+validation (the prompt says the same). The job result carries the merge
+audit.
+
 Wave ref schemes: wave 1's entities are ``E<index>`` (positional), wave
 2's new entities are ``N<index>`` (positional) so the model never reuses
 wave 1's E labels for different entities, and wave-2 edges may also
@@ -39,6 +47,8 @@ import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, NamedTuple, cast
+
+from sqlalchemy import select
 
 from app.core import ids
 from app.core.settings import LLMSettings
@@ -1059,6 +1069,151 @@ class _Wave2StaleEndpoints(Exception):
     new head; a second loss is an actively-rewritten world and fails loud."""
 
 
+def normalize_entity_name(name: str) -> str:
+    """The dedup identity key (owner rule 2026-09-12): casefolded, leading
+    article stripped, whitespace collapsed, trailing punctuation dropped.
+    EXACT-name matching on purpose — epithet variants ("Sim (The Drowned)")
+    are not merged; the wave-2 prompt rule deters them and the DM prunes
+    survivors. A fuzzy merge is the two-Jorahs hazard the ledger warned
+    about and stays out of scope."""
+    normalized = " ".join(name.casefold().split()).strip(".!?,;:")
+    for article in ("the ", "a ", "an "):
+        if normalized.startswith(article):
+            return normalized[len(article) :]
+    return normalized
+
+
+def _merge_with_world(
+    campaign_id: str,
+    entities: Sequence[models.EntityInput],
+    edges: Sequence[models.EdgeInput],
+) -> tuple[
+    list[models.EntityInput],
+    list[models.EdgeInput],
+    list[models.EntityInput],
+    list[models.EdgeInput],
+    dict[str, Any],
+]:
+    """The upsert rule (owner decision 2026-09-12, resolving the 2.3
+    re-submit entry): an incoming entity whose (kind, normalized name)
+    matches a committed entity of this campaign UPDATES that row instead
+    of creating a twin — the store's explicit-id update contract (AD-2:
+    inbound edges and media survive) does the work, so the commit path
+    itself is untouched. Edges follow: endpoints remap to the surviving
+    row, self-loops and relationships the world already has are dropped
+    (the store would reject them as duplicates anyway). An update whose
+    content is byte-equal to the row is skipped entirely — a re-submit of
+    the same lists writes zero events. Twins WITHIN one wave merge the
+    same way (first occurrence wins). Returns ``(staged_entities,
+    staged_edges, roster, remapped_edges, report)``: what the store
+    should write, the FINAL-ID roster the wave represents (wave 2 seeds
+    its retrieval from it, so merged waves stay wirable), the wave's
+    wiring view, and the audit report."""
+    with session_scope() as session:
+        world = [
+            (row.id, row.kind, row.name, row.text, row.data)
+            for row in session.scalars(
+                select(models.Entity).where(models.Entity.campaign_id == campaign_id)
+            )
+        ]
+        live_relationships = {
+            (row.src, row.dst, row.type)
+            for row in session.scalars(
+                select(models.Edge).where(models.Edge.campaign_id == campaign_id)
+            )
+        }
+    index: dict[tuple[str, str], str] = {}
+    for row_id, kind, name, _text, _data in world:
+        index.setdefault((kind, normalize_entity_name(name)), row_id)
+    rows_by_id = {row_id: (kind, name, text, data) for row_id, kind, name, text, data in world}
+    resolution: dict[str, str] = {}
+    seen_keys: dict[tuple[str, str], str] = {}
+    staged: list[models.EntityInput] = []
+    roster: list[models.EntityInput] = []
+    taken: set[str] = set()
+    merge_log: list[dict[str, Any]] = []
+    unchanged: list[dict[str, Any]] = []
+    for entity in entities:
+        staged_id = entity.id or ids.new_id()
+        key = (entity.kind, normalize_entity_name(entity.name))
+        target = index.get(key) or seen_keys.get(key) or staged_id
+        seen_keys.setdefault(key, target)
+        resolution[staged_id] = target
+        if target in taken:
+            continue  # in-batch twin: folded into the first occurrence
+        taken.add(target)
+        final = dataclasses.replace(entity, id=target)
+        roster.append(final)
+        if target == staged_id:
+            staged.append(final)
+            continue
+        row = rows_by_id.get(target)
+        if row is not None and row == (entity.kind, entity.name, entity.text, entity.data):
+            unchanged.append({"name": entity.name, "kind": entity.kind, "into": target})
+            continue
+        staged.append(final)
+        merge_log.append({"name": entity.name, "kind": entity.kind, "into": target})
+
+    remapped: list[models.EdgeInput] = []
+    staged_edges: list[models.EdgeInput] = []
+    dropped_edges: list[dict[str, Any]] = []
+    staged_relationships: set[tuple[str, str, str]] = set()
+    for edge in edges:
+        src = resolution.get(edge.src, edge.src)
+        dst = resolution.get(edge.dst, edge.dst)
+        if src == dst:
+            dropped_edges.append(
+                {
+                    "src": edge.src,
+                    "dst": edge.dst,
+                    "type": edge.type,
+                    "why": "self-loop after merge",
+                }
+            )
+            continue
+        final_edge = dataclasses.replace(edge, src=src, dst=dst)
+        remapped.append(final_edge)
+        relationship = (src, dst, edge.type)
+        if relationship in live_relationships or relationship in staged_relationships:
+            dropped_edges.append(
+                {
+                    "src": edge.src,
+                    "dst": edge.dst,
+                    "type": edge.type,
+                    "why": "duplicate relationship",
+                }
+            )
+            continue
+        staged_relationships.add(relationship)
+        staged_edges.append(final_edge)
+    return (
+        staged,
+        staged_edges,
+        roster,
+        remapped,
+        {
+            "merged": merge_log,
+            "unchanged": unchanged,
+            "dropped_edges": dropped_edges,
+        },
+    )
+
+
+class _MergeOutcome(NamedTuple):
+    """One wave's commit: the revision written (or the head that stands
+    when the merge left nothing to write), the FINAL-ID roster the wave
+    represents (every incoming entity resolved to its committed row —
+    wave 2 seeds its retrieval from this, so merged waves stay wirable),
+    the wave's wiring view (remapped edges, duplicates included — they
+    describe what the wave asserts, the report says what was written),
+    and the audit report."""
+
+    revision: models.Revision
+    roster: list[models.EntityInput]
+    edges: list[models.EdgeInput]
+    report: dict[str, Any]
+
+
 def _commit_wave(
     campaign_id: str,
     entities: Sequence[models.EntityInput],
@@ -1067,29 +1222,71 @@ def _commit_wave(
     *,
     allow_orphans: bool = False,
     label: str,
-) -> models.Revision:
-    """Commit one wave with the cheap stale rebase (M4): a DM edit between
-    the generation read and the commit makes ``base_revision`` stale — at
-    100-entity scale that window is MINUTES, and the pre-rebase runner
-    incinerated the whole generation on it. The staged subgraph is fresh
-    ULIDs whose edges resolve inside the wave or the still-live context, so
-    re-committing against the NEW head is valid whenever the endpoints
-    exist; the store re-checks everything regardless (a deleted endpoint
-    raises ``DanglingEdgeError`` — wave 2's re-pass signal). Bounded to ONE
+) -> _MergeOutcome:
+    """Merge against the live world (upsert), then commit one wave with
+    the cheap stale rebase (M4): a DM edit between the generation read and
+    the commit makes ``base_revision`` stale — at 100-entity scale that
+    window is MINUTES, and the pre-rebase runner incinerated the whole
+    generation on it. The staged subgraph is fresh ULIDs whose edges
+    resolve inside the wave or the still-live context, so re-committing
+    against the NEW head is valid whenever the endpoints exist; the store
+    re-checks everything regardless (a deleted endpoint raises
+    ``DanglingEdgeError`` — wave 2's re-pass signal). Bounded to ONE
     rebase: a second stale head means an actively-editing DM and
-    propagates."""
+    propagates. The merge is RECOMPUTED after a rebase: a DM delete that
+    moved the head also removes the row an earlier merge resolved into, so
+    the entity re-stages as a fresh create under its own ULID instead of
+    resurrecting the deleted one."""
+    staged_entities, staged_edges, roster, remapped_edges, report = _merge_with_world(
+        campaign_id, entities, edges
+    )
+    for note in report["merged"]:
+        logger.info(
+            "%s upsert: %s %r merged into committed row %s",
+            label,
+            note["kind"],
+            note["name"],
+            note["into"],
+        )
+    if not staged_entities and not staged_edges:
+        with session_scope() as session:
+            head = latest_revision(session, campaign_id)
+        if head is None:
+            raise JobPayloadError(f"{label}: nothing left to commit after the merge")
+        logger.info(
+            "%s commit is a no-op after merge (%d unchanged) — head %s stands",
+            label,
+            len(report["unchanged"]),
+            head.id,
+        )
+        return _MergeOutcome(head, roster, remapped_edges, report)
     try:
-        return commit_subgraph(
-            campaign_id, entities, edges, base_revision=base_revision, allow_orphans=allow_orphans
+        revision = commit_subgraph(
+            campaign_id,
+            staged_entities,
+            staged_edges,
+            base_revision=base_revision,
+            allow_orphans=allow_orphans,
         )
     except StaleRevisionError:
         with session_scope() as session:
             head = latest_revision(session, campaign_id)
         rebased = head.id if head is not None else None
         logger.info("%s commit rebased onto head %s (stale base %s)", label, rebased, base_revision)
-        return commit_subgraph(
-            campaign_id, entities, edges, base_revision=rebased, allow_orphans=allow_orphans
+        staged_entities, staged_edges, roster, remapped_edges, report = _merge_with_world(
+            campaign_id, entities, edges
         )
+        if not staged_entities and not staged_edges:
+            assert head is not None  # a merge that skipped everything implies committed rows
+            return _MergeOutcome(head, roster, remapped_edges, report)
+        revision = commit_subgraph(
+            campaign_id,
+            staged_entities,
+            staged_edges,
+            base_revision=rebased,
+            allow_orphans=allow_orphans,
+        )
+    return _MergeOutcome(revision, roster, remapped_edges, report)
 
 
 def _run_wave1_chunks(
@@ -1189,6 +1386,64 @@ def _run_wave1_chunks(
     return entities, edges, False
 
 
+def _drop_roster_twins(
+    parsed: dict[str, Any], roster_keys: set[tuple[str, str]]
+) -> tuple[dict[str, Any], list[str]]:
+    """The twin gate (owner decision 2026-09-12): a wave-2 entity whose
+    (kind, normalized name) EXACTLY matches a wave-1 roster entry is
+    dropped before validation — the roster subject already owns that
+    identity, and the upsert merge would otherwise let the notes-derived
+    thin record overwrite the full committed one. N-refs are positional,
+    so kept entities are renumbered and edges rewritten through the ref
+    map in the same pass; edges that pointed at a twin follow it out, and
+    a survivor the drop orphans goes through the existing anchor-repair
+    taxonomy. Epithet variants are the prompt rule's job, not this gate's
+    (exact matching is deliberate — see ``normalize_entity_name``)."""
+    raw_entities = parsed.get("entities")
+    raw_edges = parsed.get("edges")
+    if not isinstance(raw_entities, list) or not isinstance(raw_edges, list):
+        return parsed, []
+    kept: list[Any] = []
+    dropped: list[str] = []
+    dropped_refs: set[Any] = set()
+    ref_map: dict[Any, str] = {}
+    for raw in raw_entities:
+        if (
+            isinstance(raw, dict)
+            and (
+                raw.get("kind"),
+                normalize_entity_name(str(raw.get("name", ""))),
+            )
+            in roster_keys
+        ):
+            dropped.append(str(raw.get("name")))
+            dropped_refs.add(raw.get("ref"))
+            continue
+        if isinstance(raw, dict):
+            new_ref = f"N{len(kept)}"
+            ref_map[raw.get("ref")] = new_ref
+            kept.append({**raw, "ref": new_ref})
+        else:
+            kept.append(raw)
+    if not dropped:
+        return parsed, []
+    edges: list[Any] = []
+    for edge in raw_edges:
+        if not isinstance(edge, dict):
+            edges.append(edge)
+            continue
+        if edge.get("src") in dropped_refs or edge.get("dst") in dropped_refs:
+            continue
+        edges.append(
+            {
+                **edge,
+                "src": ref_map.get(edge.get("src"), edge.get("src")),
+                "dst": ref_map.get(edge.get("dst"), edge.get("dst")),
+            }
+        )
+    return {"entities": kept, "edges": edges}, dropped
+
+
 def _run_wave2(
     job: models.Job,
     budget: CallBudget,
@@ -1201,12 +1456,13 @@ def _run_wave2(
     *,
     ceiling: int,
     progress: Callable[[float], None],
-) -> tuple[models.Revision, dict[str, Any]] | None:
+) -> tuple[_MergeOutcome, dict[str, Any]] | None:
     """One FULL wave-2 pass (M4's re-pass unit): retrieve -> two-tier
-    context (M2) -> prompt -> bounded-taxonomy call -> anchor validation
-    against the FULL wave-1 roster -> the one edges-only anchor repair ->
-    the three gates -> commit with the cheap rebase. Returns
-    ``(revision, wave_result)``, or None when the job was cancelled at any
+    context (M2) -> prompt -> bounded-taxonomy call -> roster-twin drop ->
+    anchor validation against the FULL wave-1 roster -> the one edges-only
+    anchor repair -> the three gates -> commit with the upsert merge and
+    the cheap rebase. Returns ``(outcome, wave_result)``, or None when the
+    job was cancelled at any
     poll. Raises ``_Wave2StaleEndpoints`` when the commit — even rebased —
     finds deleted endpoints; the caller re-runs this whole pass once."""
     context_entities, context_edges = retrieve_neighborhood(
@@ -1265,6 +1521,33 @@ def _run_wave2(
         retry_note='Return ONLY the one JSON object: {"entities": [...], "edges": [...]}.',
         ceiling=ceiling,
     )
+    parsed_2, twins_dropped = _drop_roster_twins(
+        parsed_2, {(entity.kind, normalize_entity_name(entity.name)) for entity in entities_1}
+    )
+    if twins_dropped:
+        logger.info("wave 2: %d roster twin(s) dropped: %s", len(twins_dropped), twins_dropped)
+    if not parsed_2["entities"] and not parsed_2["edges"]:
+        # Every notes subject duplicated the roster — nothing to commit;
+        # the wave-1 head stands and the job completes with an empty
+        # wave-2 result carrying the drop list.
+        logger.info("wave 2: all subjects duplicate the roster — nothing to commit")
+        with session_scope() as session:
+            head = latest_revision(session, job.campaign_id)
+        assert head is not None  # wave 1 committed moments ago
+        return (
+            _MergeOutcome(
+                head,
+                [],
+                [],
+                {
+                    "merged": [],
+                    "unchanged": [],
+                    "dropped_edges": [],
+                    "twins_dropped": twins_dropped,
+                },
+            ),
+            _wave_result(2, head.id, (), ()),
+        )
     progress(0.7)
     try:
         entities_2, edges_2 = _validate_subgraph(
@@ -1330,12 +1613,13 @@ def _run_wave2(
         return None
     progress(0.9)
     try:
-        revision_2 = _commit_wave(
+        outcome_2 = _commit_wave(
             job.campaign_id, entities_2, edges_2, base_revision, label="wave 2"
         )
     except DanglingEdgeError as exc:
         raise _Wave2StaleEndpoints(str(exc)) from exc
-    return revision_2, _wave_result(2, revision_2.id, entities_2, edges_2)
+    outcome_2.report["twins_dropped"] = twins_dropped
+    return outcome_2, _wave_result(2, outcome_2.revision.id, outcome_2.roster, outcome_2.edges)
 
 
 def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSettings) -> None:
@@ -1359,7 +1643,8 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     the worker fails the job. Structure keeps its one bounded pass on
     wave 2 only (anchor repair); wave 1 commits edgeless (owner verdict
     2026-09-11) — the DM prunes. The job result carries the call
-    telemetry (J): ``llm_calls`` per label.
+    telemetry (J): ``llm_calls`` per label, and the upsert audit:
+    ``merge`` per wave (merged/unchanged/dropped_edges/twins_dropped).
     """
     with session_scope() as session:
         seed = campaign_seed(session, job.campaign_id)
@@ -1486,14 +1771,18 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # (owner verdict 2026-09-11): the pipeline no longer requires internal
     # wiring, so the commit must not either — the DM prunes. Every other
     # caller keeps the default (reject), including wave 2 below.
-    revision_1 = _commit_wave(
+    outcome_1 = _commit_wave(
         job.campaign_id, entities_1, edges_1, wave1_base, allow_orphans=True, label="wave 1"
     )
-    touched = {edge.src for edge in edges_1} | {edge.dst for edge in edges_1}
-    edgeless = sorted(entity.name for entity in entities_1 if entity.id not in touched)
+    revision_1 = outcome_1.revision
+    touched = {edge.src for edge in outcome_1.edges} | {edge.dst for edge in outcome_1.edges}
+    edgeless = sorted(entity.name for entity in outcome_1.roster if entity.id not in touched)
     if edgeless:
         logger.info("wave 1 committed edgeless: %s (job %s)", edgeless, job.id)
-    waves: list[dict[str, Any]] = [_wave_result(1, revision_1.id, entities_1, edges_1)]
+    waves: list[dict[str, Any]] = [
+        _wave_result(1, revision_1.id, outcome_1.roster, outcome_1.edges)
+    ]
+    merge_reports: dict[str, Any] = {"wave1": outcome_1.report}
     # Cancel-race poll: a cancel that landed during wave 1's call/commit
     # leaves the committed core in place but stops before progress writes.
     if not _job_still_running(job):
@@ -1510,7 +1799,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
                 settings,
                 seed,
                 notes,
-                entities_1,
+                outcome_1.roster,
                 revision_1.id,
                 ceiling=ceiling,
                 progress=progress,
@@ -1531,7 +1820,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
                     settings,
                     seed,
                     notes,
-                    entities_1,
+                    outcome_1.roster,
                     head.id if head is not None else None,
                     ceiling=ceiling,
                     progress=progress,
@@ -1543,7 +1832,8 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
                 ) from second
         if outcome is None:
             return
-        revision_2, wave2_result = outcome
+        outcome_2, wave2_result = outcome
+        merge_reports["wave2"] = outcome_2.report
         # Cancel racing the wave-2 commit: the committed wave stays, but a
         # cancelled job gets no progress/terminal write.
         if not _job_still_running(job):
@@ -1560,6 +1850,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             "entity_count": entity_count,
             "edge_count": edge_count,
             "llm_calls": budget.snapshot(),
+            "merge": merge_reports,
         },
     )
 
@@ -1900,6 +2191,9 @@ def build_wave2_prompt(
         "",
         "TASK",
         "Create entities for the notable subjects of the notes (character/faction/place).",
+        "Subjects that already appear in the detail context or the compact",
+        "roster EXIST in the world — never create an entity for one of them;",
+        "wire your new entities to that subject's C-label instead.",
         f"The CORE entities are {core_label} — the detail context entries first, then",
         f"the compact roster — the {core_count} entities this build created first.",
         "Wire every new entity to at least one CORE entity with a typed edge — no",
