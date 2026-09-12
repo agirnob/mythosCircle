@@ -619,3 +619,51 @@ frontend 202 passed / vue-tsc+eslint clean):
   naming >24-position entities to exercise the compact tier as the
   acceptance probe), plus a gemma-4-26B-A4B comparison pass. Tee'd calls
   + prompts in `/tmp/mythos-ladder/calls-d3/`, DB snapshot beside them.
+
+## Rung 100 — attempt d4, chunked path — SUCCEEDED, 35 calls / 1483s ≈ 24.7 min (GREEN, FIRST TRY)
+
+- Seed: `rung-100.json` (60 figures / 24 places / 16 factions + notes-D),
+  the harbor superset extended; notes-D deliberately names late-roster
+  figures (Orm, Sim, Agda, Cistern King "is level 18", Quill,
+  Salt-Marrow, Vess) and four new wave-2 subjects — the compact-tier
+  acceptance probe.
+- Wave 1 CHUNKED: 8 chunks (2 flat-heavy 16-entry chunks at 18-23s each;
+  6 figure chunks, the biggest 54,123 chars in 208.6s) — every count+ref
+  pin held, every chunk parsed FIRST TRY (8/8), zero truncations against
+  the sized windows. Wiring pass: 14,465-char compact-roster prompt ->
+  8,307 chars in 47.6s. Wave 1 committed 100/100 + 189 edges.
+- Repairs: ONE record chunk (3.9s); 24 stat calls total (18 wave-1 + 6
+  wave-2), all SHAPE family (spell/class-link dominant) — zero
+  power-driven calls at 60 characters. The oracle prediction scaled: the
+  same roster pre-oracle would have burned ~60-180 stat calls on band
+  misses alone (rung-50 measured 45/48 at half this size).
+- Wave 2: prompt only 27,235 chars at a 100-entity core — the detail tier
+  happened to be the 24 flat places (rowid order), so 76 core entities
+  rode the COMPACT tier, and the model anchored edges straight into it:
+  located_in/member_of/rival_of touching E28, E31, and E64 (Freshwater
+  Trust, Deep Maw's Brood, the Cistern King) — all beyond C23, all legal,
+  zero phantom orphans, NO anchor repair needed (17 edges, wired first
+  try). 10 entities committed: the four notes subjects (Tollhouse of
+  Teeth, Pale Ledger, Tideglass, Brackish Herald) plus six variants of
+  wave-1 figures the notes mentioned ("Sim (The Drowned)", "The Cistern
+  King (Level 18)", ...). The variants are the long-ledgered dedup
+  question (2.3 entry / L-decision) surfacing WITHIN one job — owner
+  decision, not a defect; names stay distinct so nothing collides.
+- Directive probe: the notes' "Cistern King is level 18" landed on the
+  WAVE-1 figure (chunk 5) — record level_cr "level 18" AND identity.level
+  18, committed stamped `{dpr: 44.0, band: [111, 116], verdict:
+  under-powered}` — the full-notes-per-chunk rule works and the stamp
+  tells the DM exactly what a "level 18" at authentic numbers means.
+- Census: 110 entities (67 characters / 16 factions / 27 places), 206
+  edges, closed vocabulary; 58 characters stamped under-powered
+  (authentic DPR 4.5-44), 4 over-powered, 5 unstamped. Telemetry:
+  8×chunk + wiring + 1 record + 24 stat + wave2 = 35/212 budget.
+- Verdict: the 100-entity target is GREEN first try on Qwen3.8-27B,
+  24.7 min sequential — every call bounded (≤209s), cancellable between
+  chunks, truncation unreachable. The old stack could not have reached
+  this payload: one ~820s/~212KB monolith against the 900s timeout and
+  the 65,536-token ceiling, then an oracle repair storm past any budget.
+  Suggestion: gemma-4-26B-A4B comparison roll next, then Cut-3 (chunk
+  pool ≈ 4× wall-clock, gated on the server's parallel-slot config) and
+  the owner's dedup call for the variant-entity behavior. Tee'd calls +
+  prompts + committed.db in `/tmp/mythos-ladder/calls-d4/`.

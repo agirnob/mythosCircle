@@ -4,6 +4,12 @@ Superset structure. Rung 10: characters 1–6, places P1–P2, factions F1–F2,
 Rung 25: characters 1–15, places P1–P6, factions F1–F4, notes-B.
 Rung 50: all 30 characters, all 12 places, all 8 factions, notes-C.
 Exact JSON payloads: `rung-10.json`, `rung-25.json`, `rung-50.json`.
+Rung 100 (d-series, 2026-09-12): characters 1–60 (the 30 above plus 30 new
+harbor figures — the creche, probate, drowned-court, and empire-remnant
+circles), places P1–P24, factions F1–F16, notes-D. Exact payload:
+`rung-100.json`; notes-D names late-roster figures (positions >24 by
+construction — figures occupy E40..E99) and pins "Cistern King is level
+18" as the compact-tier + authoritative-directive acceptance probe.
 
 ## Characters
 
