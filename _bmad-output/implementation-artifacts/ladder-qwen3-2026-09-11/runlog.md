@@ -410,3 +410,14 @@ instead — variance as the lever, attempts 8+ continue on gemma.
   untouched (test_store/test_edges_api pins hold); pipeline reject-test
   rewritten to the drop contract. Gates: 1185 backend passed, ruff +
   mypy clean. Next: attempt 5 re-rolls.
+
+## Rung 50 — attempt 5 — FAILED, 64 calls (budget ceiling)
+
+- Structure clean (50 emitted, loops/dups dropped at boundary) — died
+  spending the 64-call default inside wave-1 repairs. Not a quality
+  failure: worst-case 50-scale needs ~91 wave-1 calls. Runner now
+  scales the ceiling (3 x figures + 32; rungs 10/25 unchanged at 64/77,
+  rung 50 gets 122). PRODUCT FOLLOW-UP: the 64 default must scale with
+  roster in prod or big DM jobs die while converging — ledger entry.
+  Tee'd calls + prompts in `/tmp/mythos-ladder/calls-c10/`. Next:
+  attempt 6 re-rolls.

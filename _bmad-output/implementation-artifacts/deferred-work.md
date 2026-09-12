@@ -329,3 +329,9 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-json-schema-generation.md`
   summary: `pipeline/mechanics.py` has no input guards (negative challenge, unknown class key, empty tags, non-six ranked, non-int seed, inverted bands) and only Paladin tables — hardening plus multi-class tables land with the first caller (words-only path), which also decides fallback-vs-raise signaling.
   evidence: Blind-hunter + edge-case layers (step-04): the module is a callerless verbatim prototype port today, so guards would deviate from the parity mandate with no reachable trigger; pins stay exact. [backend/app/pipeline/mechanics.py]
+
+## Deferred from: ladder rung 50 vs 26B (2026-09-12)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-repair-sequence.md`
+  summary: `max_llm_calls_per_job` (default 64) cannot fit a converging large-roster job — rung-50 attempt 5 spent the whole budget inside wave-1 repairs (worst case 1 + 30 figures x 3 passes = 91 before wave 2). The ladder runner scales the ceiling per-job (3 x figures + 32); prod needs the same scaling at enqueue (or a roster-aware default), or big DM builds die while converging.
+  evidence: Rung-50 attempt 5, `/tmp/mythos-ladder/calls-c10/` (64 calls, structure clean, budget error). [backend/app/pipeline/budget.py, backend/app/store/jobs.py enqueue_job max_llm_calls]
