@@ -81,3 +81,17 @@ The east tide-gate's blessing lapsed three nights running — Brack swears he sp
 ## Notes-C (rung 50)
 
 Sarella's stolen ledgers name twelve "pickled" citizens whose families still pay hospice tithe; the Brine Sisters want the girl alive and the book burned. Paz has offered to parley with the Brood using terms she will not show either side, and Corvin has recognized one of the Drowned Choir's voices as his former lieutenant.
+
+## Rung 100 (2026-09-12, d4..d13 series)
+
+`rung-100.json` — 60 key figures / 24 places / 16 factions, the Drowned
+Harbor continuing the rung-50 superset style. notes-D (the seed `notes`
+field) names LATE-roster figures by name (positions >24: Bellfounder
+Orm, Wreck-diver Sim, the Brine Sisters choir) plus new wave-2 subjects,
+so the wave-2 prompt (and the two-tier roster) is exercised past the
+detail tier. Key figures include the damning pair (Ssketh the sahuagin
+defector, Tidecaller Wren) and the deniable mix (Harbormaster Ilsa Vane,
+Captain Harlow) — all six faction heads anchored so the wave-2 C-ref
+anchor rule has real endpoints. First green: d4 (Qwen3.8-27B, 35 calls,
+110 entities/206 edges); the series ends d13 GREEN on the 16-type
+vocabulary (64 calls, 105 entities/71 edges, relationship 5.6%).
