@@ -142,9 +142,51 @@ https://www.fantasygrounds.com/modguide/database.xcp):
   `<category>`, `<author>`, `<ruleset>`, `<replaces>`.
 
 **The exact 5E NPC record field-tag names (leaf tags under an `npc` node)
-are UNVERIFIED** — not in any official public doc (SmiteWorks points users
-at a saved campaign db.xml), and no community converter mirror publishes a
-raw 5e NPC record (details in §5).
+are now VERIFIED from a live Export NPC** (2026-09-13, FG Unity 5E, 2024
+record, `dataversion="20260124" release="9|CoreRPG:7"`): the owner
+downloaded FG Unity, made a character, exported it, and annotated every
+field. Full annotated export committed as
+`fixture-fg-npc-record-2024-export.xml`; the complete verified tag set is
+in §2c. The generated 5-3 XML artifact can mirror this shape exactly for
+the **Import** button path (file explorer → `.XML`).
+
+### 2c. VERIFIED 5E NPC record schema (live export, 2026-09-13)
+
+Root: `<root version="5.1" dataversion="20260124" release="9|CoreRPG:7">`
+→ one `<npc>` record. Field tags (value type in parens; annotation values
+prove the mapping):
+
+| Tag | Type | Annotated value / meaning |
+| --- | --- | --- |
+| `name` | string | "name of the character" |
+| `nonid_name` | string | "probably a smal description…" (the Non-ID name on the sheet) |
+| `type` | string | "type of the character" |
+| `size` | string | "siz of the character" |
+| `alignment` | string | "alignment of the character" |
+| `ac` | number | 111 |
+| `damagethreshold` | number | 333 |
+| `hp` | number | 222 (current HP; max lives in `hd` mirror) |
+| `hd` | string | " something to do with hit points I guess" ← hit dice, e.g. `6d10 +12` |
+| `initiative` → `misc` | number | 0 |
+| `cr` | **string** | "CR of the character" (2024 record keeps CR as string; `xp` number separate) |
+| `xp` | number | 0 |
+| `speed` | string | |
+| `senses` | string | |
+| `languages` | string | |
+| `skills` | string | whole line, e.g. `Perception +7, Stealth +5` |
+| `damagevulnerabilities` / `damageresistances` / `damageimmunities` | string | |
+| `gear` / `habitat` / `treasure` | string | |
+| `abilities` → `{strength,dexterity,constitution,intelligence,wisdom,charisma}` → `score` (number) + `savemodifier` (number) | subtree | **444=str, 555=dex, 666=con, 777=int, 888=wis, 999=cha** (owner's annotation) |
+| `actions` / `bonusactions` / `reactions` / `lairactions` / `legendaryactions` / `innatespells` / `spells` / `traits` | subtree of enumerated `id-00001`… children | each entry holds a `name` (string); attack/effect subfields exist but were not populated in this export |
+| `spellslots` → `level1`…`level9` | number | **slots 1-9** (owner's annotation), one element per level |
+| `summon` + `summon_ac_base`, `summon_ac_mod`, `summon_attack`, `summon_dc`, `summon_hp_base`, `summon_hp_mod`, `summon_hp_mod_threshold`, `summon_level`, `summon_mod`, `summon_pb` | number | 0 (summoning bonus block, 2024) |
+| `picture` / `token` / `token3Dflat` | token | empty; image tokens referenced, not embedded |
+| `text` | formattedtext | empty `<p />`; the stat-block text area |
+| `version` | string | `2024` (the Legacy/2024 record selector) |
+
+The plain-text stat-block content for the **Import Text** path maps onto
+these same fields (the parser fills them); for the **Import** XML path we
+can generate this XML directly and skip the text parser entirely.
 
 ### Field list of the 5E NPC record (verified sheet fields)
 
@@ -174,28 +216,31 @@ record fields").
 
 Mapped via the **2024 stat-block Import Text** surface unless noted.
 `[sheet]` = sheet field (official wiki); `[txt]` = stat-block text field
-(FG Academy 2024 guide). **NO MAP** where FG has no receiver.
+(FG Academy 2024 guide); `[xml]` = verified NPC record tag (§2c).
+**NO MAP** where FG has no receiver.
 
 | mythosCircle stat_block field | FG 5E target | Notes |
 | --- | --- | --- |
-| attributes STR/DEX/CON/INT/WIS/CHA | `MOD SAVE` line scores `Str <score> +<mod> +<save>` `[txt]` / Statistics `[sheet]` | bonus auto-calculated; 2024 includes save per ability |
-| saves | `+<save>` column in MOD SAVE line `[txt]` / Saving Throws `[sheet]` | abbreviated ability, e.g. `Dex +3` |
-| skills (name + bonus) | `Skills:` list `[txt]` `[sheet]` | full skill names, e.g. `Perception +7, Stealth +5` |
-| combat.AC | `AC <n>` `[txt]` / Armor Class `[sheet]` (2024 single value) | legacy sheet has extra "with X" text box |
-| combat.HP (max + HD) | `HP <avg> (<hd> + <mod>)` `[txt]` / Hit Points `[sheet]` | second box holds dice string if random/max HP option used |
-| combat initiative | `Initiative +<mod> (<dex>)` `[txt]` `[sheet]` | 2024 record only |
-| speed | `Speed <n> ft.` (comma-separated speeds) `[txt]` `[sheet]` | e.g. `5 ft., Swim 60 ft.` |
-| challenge rating (CR) | `CR <x> (XP <x>; PB +<x>)` `[txt]` / Challenge & XP `[sheet]` | 2022/MM style: `Challenge <x> (<x> XP)` |
-| XP (derived) | inside CR line `[txt]` / sheet | derive like 5-2's level_cr looseness |
-| alignment | name line `<size> <type>, <alignment>` `[txt]` / Alignment `[sheet]` | 2024 stat block carries alignment on the header line |
-| size | `<size>` on header line `[txt]` / Size `[sheet]` | Tiny…Gargantuan; drives token size + some effects |
-| type (creature kind) | `<type>` on header line `[txt]` / Type `[sheet]` | only MM types recognized for effects |
-| senses | `Senses <list>` `[txt]` / Senses `[sheet]` | e.g. `Blindsight 30 ft.; Passive Perception 10` |
-| languages | `Languages <list>` `[txt]` / Languages `[sheet]` | comma-separated |
-| traits | `Traits` block `[txt]` / Traits `[sheet]` | parser keys off exact trait names (Regeneration, Magic Resistance, Improved/Superior Critical, Damage Threshold, Spellcasting, Innate Spellcasting) |
-| actions/attacks (to-hit + damage) | `Actions` block `[txt]` / Actions `[sheet]` | exact attack phrasing: `Melee Attack Roll: +5, reach 10 ft. Hit: 13 (3d6 + 3) cold damage.` |
-| reactions / legendary / lair actions | `Actions` block (named sections) `[txt]` / Reactions, Legendary Actions, Lair Actions `[sheet]` | parser drives CT effects |
-| spells | `Spellcasting` / `Innate Spellcasting` trait text `[txt]` `[sheet]` | spells populate only if the source PHB module is open in campaign; exact slot/level format required |
+| attributes STR/DEX/CON/INT/WIS/CHA | `MOD SAVE` line scores `Str <score> +<mod> +<save>` `[txt]` / Statistics `[sheet]` / `abilities.<attr>.score` `[xml]` | bonus auto-calculated; 2024 includes save per ability |
+| saves | `+<save>` column in MOD SAVE line `[txt]` / Saving Throws `[sheet]` / `abilities.<attr>.savemodifier` `[xml]` | abbreviated ability, e.g. `Dex +3` |
+| skills (name + bonus) | `Skills:` list `[txt]` `[sheet]` / `skills` string `[xml]` | full skill names, e.g. `Perception +7, Stealth +5` |
+| combat.AC | `AC <n>` `[txt]` / Armor Class `[sheet]` (2024 single value) / `ac` `[xml]` | legacy sheet has extra "with X" text box |
+| combat.HP (max + HD) | `HP <avg> (<hd> + <mod>)` `[txt]` / Hit Points `[sheet]` / `hp` + `hd` `[xml]` | second box holds dice string if random/max HP option used |
+| combat initiative | `Initiative +<mod> (<dex>)` `[txt]` `[sheet]` / `initiative.misc` `[xml]` | 2024 record only |
+| speed | `Speed <n> ft.` (comma-separated speeds) `[txt]` `[sheet]` / `speed` `[xml]` | e.g. `5 ft., Swim 60 ft.` |
+| challenge rating (CR) | `CR <x> (XP <x>; PB +<x>)` `[txt]` / Challenge & XP `[sheet]` / `cr` + `xp` `[xml]` | 2022/MM style: `Challenge <x> (<x> XP)` |
+| XP (derived) | inside CR line `[txt]` / sheet / `xp` `[xml]` | derive like 5-2's level_cr looseness |
+| alignment | name line `<size> <type>, <alignment>` `[txt]` / Alignment `[sheet]` / `alignment` `[xml]` | 2024 stat block carries alignment on the header line |
+| size | `<size>` on header line `[txt]` / Size `[sheet]` / `size` `[xml]` | Tiny…Gargantuan; drives token size + some effects |
+| type (creature kind) | `<type>` on header line `[txt]` / Type `[sheet]` / `type` `[xml]` | only MM types recognized for effects |
+| senses | `Senses <list>` `[txt]` / Senses `[sheet]` / `senses` `[xml]` | e.g. `Blindsight 30 ft.; Passive Perception 10` |
+| languages | `Languages <list>` `[txt]` / Languages `[sheet]` / `languages` `[xml]` | comma-separated |
+| traits | `Traits` block `[txt]` / Traits `[sheet]` / `traits.id-0000N.name` `[xml]` | parser keys off exact trait names (Regeneration, Magic Resistance, Improved/Superior Critical, Damage Threshold, Spellcasting, Innate Spellcasting) |
+| actions/attacks (to-hit + damage) | `Actions` block `[txt]` / Actions `[sheet]` / `actions.id-0000N` `[xml]` | exact attack phrasing: `Melee Attack Roll: +5, reach 10 ft. Hit: 13 (3d6 + 3) cold damage.` |
+| reactions / legendary / lair actions | `Actions` block (named sections) `[txt]` / Reactions, Legendary Actions, Lair Actions `[sheet]` / `reactions|legendaryactions|lairactions` `[xml]` | parser drives CT effects |
+| spells | `Spellcasting` / `Innate Spellcasting` trait text `[txt]` `[sheet]` / `spells`, `innatespells` + `spellslots.level1..9` `[xml]` | spells populate only if the source PHB module is open in campaign; exact slot/level format required |
+| gear | `Information: Gear:` `[txt]` (2024) / Gear `[sheet]` / `gear` `[xml]` | 2024 record field |
+| habitat / description | `Information: Habitat:` `[txt]` / Notes tab / `habitat` `[xml]` | |
 | **NOT map-able** | — | FG has no remote-image field (see §4); legendary-"count" is expressed in action text, not a numeric field |
 
 ## 4. Portrait reality
