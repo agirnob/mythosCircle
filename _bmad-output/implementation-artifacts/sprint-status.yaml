@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 08:25
-last_updated: 09-09-2026
+last_updated: 09-13-2026
 project: mythosCircle
 project_key: NOKEY
 tracking_system: file-system
@@ -76,7 +76,7 @@ development_status:
 
   epic-5: in-progress
   5-1-export-engine-pure-projection: done
-  5-2-owlbear-export-first-target: review
+  5-2-owlbear-export-first-target: done
   5-3-fantasy-grounds-export-second-target: backlog
   5-4-maptool-rpgtoken-export-third-target: backlog
   5-5-world-vtt-kill-criterion-demo: backlog
@@ -188,14 +188,17 @@ action_items:
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-09-08.md"
   - id: "epic-4-retro-item-13-land-the-media-retention-pruning-ruling"
     epic: 4
-    action: "Land the media retention/pruning ruling (keep-latest/N/DM-history) now
-      that reclaim-on-delete ships"
-    owner: "owner (DM decision) then a media-retention story"
+    action: "Ship the KEEP-5 media retention/pruning story (current + 4 priors
+      per entity; the RULING landed with owner verdict 2026-09-09; export
+      already references newest available)"
+    owner: "media-retention story"
     status: open
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-09-08.md"
   - id: "epic-4-retro-item-14-decide-undo-of-entity-creation-media-han"
     epic: 4
-    action: "Decide undo-of-entity-creation media handling when an undo surface lands"
+    action: "Undo-of-entity-creation media handling — DECIDED 2026-09-11
+      (e2a6fc4): media are not world graph — no event, no revision, undo
+      never restores them; regeneration is the recovery"
     owner: "owner (contract)"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-09-08.md"

@@ -353,9 +353,19 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: owner audit (2026-09-12)
   summary: Stat-block completeness gap — a warlock with spells and NO actions/attacks commits (d5 Brackish Herald): the AR25 gate validates spell names/class/damage parts and attack-shaped actions but never requires an attack economy to exist. The gate's true-non-combatant exemption makes this a design call, not a clear bug.
   evidence: knowledge.py `validate_stat_block` + d5 Brackish Herald (Warlock, spells Armor of Agathys/Arms of Hadar/Banishment, DPR 0). Needs the owner's read before code.
+  resolved: 2026-09-13, owner verdict (closeout) — KEEP + watch: the true-non-combatant
+  exemption stands (a spellcaster with no attack economy is legit TTRPG fiction), the
+  AR25 gate keeps validating what exists, and the over/under-powered stamps already
+  surface DPR to the DM. Revisit only if dogfooding shows DPR-0 combat-capable
+  characters as a pattern.
 - source_spec: owner audit (2026-09-12)
   summary: The play world at data/mythos.db (the d5 snapshot the user is playing in) still contains the 39 invalid edges the audit found; the pipeline now prevents new ones but the snapshot predates the fix.
   evidence: the world is live at http://localhost:5173 (dm@example.com). Pruning = undoable delete_edge commits; awaiting the owner's go-ahead (nothing deleted without it). The UI relations panel also renders incoming edges with the same text formula, which reads as a self-edge — a small legibility fix (incoming rendered as `X <--type-- `), not yet done.
+  resolved: 2026-09-13, owner verdict (closeout) — PRUNED via the delete_edge REST
+  surface: all 39 audited edges (14 member_of-with-place + 3 reversed located_in + 22
+  mutual member_of rows), each an undoable revision. Re-verified on the export: 114
+  edges, 0 kind violations, 0 mutual pairs. The incoming-edge legibility render
+  (`X <--type-- `) stays open as a next-sprint item.
 
 ## Deferred from: owner decisions on the 100-entity cut (2026-09-12)
 
@@ -426,3 +436,23 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
   repair loop converged on those positions; revisit only if it recurs.
 - member_of is healthy again (12-16/world, canonical direction) after the
   d7-era guidance over-suppression; relationship sits at the enforced cap.
+
+## Owner verdicts 2026-09-13 (sprint closeout)
+
+- 5-2 Owlbear export: DONE. Shipped end-to-end (6920ffd), spec approved, matrix
+  audit 8/8; the deployed world.miscco.uk stack now carries
+  MYTHOSCIRCLE_BASE_URL=https://world.miscco.uk and MYTHOSCIRCLE_MEDIA_URL_SECRET
+  (verified inside the running container), so signed portrait URLs mint live.
+  The live-Forge import demo stays reserved for 5-5's kill criterion.
+- d5 world prune: executed — see the d5-audit resolved note (39 edges, 114
+  remain, 0 violations, 0 mutual pairs).
+- Attack-economy gate: KEEP + watch — see the d5-audit resolved note.
+- Dev LLM endpoint: deploy/config.toml [llm] endpoint now
+  http://127.0.0.1:8888/v1 (commit 4a07a17) — the 8080 default pointed at
+  nothing since llama.cpp left the dev box, so every env-less dev api failed
+  build-ins with 'provider connection error'. The deployed stack is unaffected
+  (env wins, AD-22).
+- Verification at close: backend 1249 passed, frontend 202 passed, ruff/mypy/
+  eslint/vue-tsc clean. Sprint-status flipped (5-2 done; retro item 14 closed
+  — undo never restores media, decided in e2a6fc4; item 13 retasked to the
+  KEEP-5 retention story).
