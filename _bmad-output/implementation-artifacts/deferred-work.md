@@ -366,3 +366,63 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
   summary: Model profiles (K) wait on the gemma-4-26B-A4B comparison roll (d5) — profile fields (chunk size, pass count, temperature/seed, retry counts per model) should be read off measured behavior, not invented.
   evidence: sampling passthrough (temperature/top_p/seed) shipped with the cut so profiles are expressible; Qwen is green at 100 (d4) while gemma has never seen the chunked path. [backend/app/core/settings.py, backend/app/providers/llm.py]
   resolved: 2026-09-12, owner verdict + d5 evidence — gemma-4-26B-A4B became the default model (config.py DEFAULT_LLM_MODEL + deploy/config.toml), Qwen3.8-27B documented as the metered-route choice. The profile registry itself was DROPPED as invented machinery: d4/d5 show no per-model behavioral difference beyond latency and repair traffic (same chunk budget serves both, same retry caps converge, sampling unmeasured on both). What shipped is the call-CLASS profile: repair calls cold+seeded (`REPAIR_TEMPERATURE`, `REPAIR_SEED`, operator pins win, retry rolls seed+1), wave calls warm [backend/app/pipeline/build_in.py `_repair_sampling`]. Per-model batch/pool stays deferred with the Cut-3 parallel-pool entry above (remote-API trigger). CORRECTED 2026-09-12 (d7 attempts 2-3): cold is only valid for the FIRST sample — at temperature 0 every token is argmax, so seeds/rolls are vacuous and a content-level stubbornness (the model deleting identity.class) failed all three stat passes deterministically. `_repair_sampling` now keeps pass 1 cold+seeded and sends every later sample (JSON retry, passes 2+) WARM; the stat-repair prompt forbids removing identity keys. [backend/app/pipeline/build_in.py `_repair_sampling`, backend/app/pipeline/statblocks.py `build_stat_repair_prompt`]
+
+## Deferred from: the vocabulary + wiring sprint (2026-09-13)
+
+- source_spec: owner session (2026-09-13) — "too many relationship nearly no
+  located_in even though there are so many locations" + "add more relation
+  vocabulary"
+  summary: The d7 world (rung-100, gemma) used the catch-all `relationship`
+  for 100 of its 114 edges and only 4 located_in, despite 28 places and a
+  fiction full of residency — the wiring pass saw one-line blurbs (not the
+  records where factions/residence/kin/debts live), and the 10-type vocabulary
+  had no home for the role-bearing meanings (rules a place, employs staff,
+  worships a cult, hails from a district).
+  resolved: d8..d13 — 16-type vocabulary (added bases_at, controls, employs,
+  worships, hails_from, protects; single `EDGE_KIND_RULES` registry feeds
+  prompt text + validator + repair), record profiles + slot-driven wiring
+  prompt (one slot per type citing its record field; 8-edge budget; 2-edge
+  free lane), and four deterministic gates measured live: direction-slip
+  normalization (d8: the slots fired but the model emitted them INVERTED —
+  the kind rule killed the rows and the repair retyped them relationship;
+  the flip turns slips into legal rows), member_of container-first canon,
+  mirror collapse at commit (d7: 26/100 rows were both-orientation
+  duplicates), and the relationship free-lane cap at every model boundary
+  (wiring response, assembled wave-1, wave-2 first attempt; anchor repair
+  exempt). d13 (rung-100, gemma): GREEN, relationship 4/71 (5.6% vs 15%
+  acceptance), 13 types used, 0 kind violations, 0 mirrors, member_of all
+  member->container. World live as "The Drowned Harbor (edge rules)" +
+  Desktop export. Gates: 1249 backend / 202 frontend / lint+mypy+tsc clean.
+  [backend/app/store/commit.py, backend/app/pipeline/build_in.py,
+  backend/app/pipeline/statblocks.py, frontend/src/views/{WorldView,
+  CandidatesView}.vue]
+- source_spec: d9/d11 ladder failures under the same sprint
+  summary: two job-killing flake classes surfaced at rung-100 — (i) d9:
+  the model's honest `damage: []` on a SAVE action is rejected by the
+  validator, so three repair passes re-echoed the byte-perfect block and the
+  job died; (ii) d11: a chunk edge named "Agda" (a NAME where a ref belongs)
+  raised `edge 25 dst ref 'Agda' must be E<index>` at validation.
+  resolved: (i) canonicalizer folds `damage: []` to the ABSENT key (zero
+  information lost — the auditor reads the description for such actions) plus
+  a long-form alignment fold ("Lawful Good" -> LG). A prose-damage extraction
+  fold was tried and REVERTED: it changed the audited DPR of 23 fixtures with
+  zero marginal value (the auditor already reads prose descriptions). (ii)
+  the CHUNK edge boundary now uses the same `_edge_row_usable` predicate as
+  the wiring pass — bad rows degrade to a drop + log, never a wave death;
+  wave-2 stays strict (its edges are load-bearing, anchor repair covers
+  orphans). [backend/app/pipeline/statblocks.py `_fold_empty_damage_lists`,
+  `_fold_alignment_long_forms`; backend/app/pipeline/build_in.py
+  `_edge_row_usable`]
+
+## New deferred observations (2026-09-13, no decision needed yet)
+
+- Residency coverage is ~29/61 characters anchored (located_in|bases_at) and
+  ~half the places entered spatially per world — the graph is honest now, but
+  the DM may want denser geography later (watch over the dogfood runs; the
+  slot-driven wiring already makes the model fill current_location).
+- Skills-as-strings ("skills": ["Athletics"]) shaped a WIDE stat-repair storm
+  in d9: a deterministic bonus derivation was considered and REJECTED (the
+  bonus is a real value the model owns; folding would fabricate it). The
+  repair loop converged on those positions; revisit only if it recurs.
+- member_of is healthy again (12-16/world, canonical direction) after the
+  d7-era guidance over-suppression; relationship sits at the enforced cap.
