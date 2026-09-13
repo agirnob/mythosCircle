@@ -599,15 +599,31 @@ def test_edge_counter_semantics_map_contract() -> None:
         "loyalty": "score",
         "ally_of": "intensity",
         "enemy_of": "intensity",
+        "controls": "intensity",
+        "worships": "score",
+        "protects": "intensity",
     }
-    assert set(EDGE_COUNTER_SEMANTICS) == {"debt", "grudge", "loyalty", "ally_of", "enemy_of"}
+    assert set(EDGE_COUNTER_SEMANTICS) == {
+        "debt",
+        "grudge",
+        "loyalty",
+        "ally_of",
+        "enemy_of",
+        "controls",
+        "worships",
+        "protects",
+    }
     assert DEFAULT_EDGE_COUNTER_SEMANTIC == "neutral"
     resolved = {edge_type: edge_counter_semantic(edge_type) for edge_type in EDGE_TYPES}
     assert set(resolved.values()) == {"amount", "score", "intensity", "neutral"}
     assert resolved["debt"] == "amount"
     assert resolved["grudge"] == resolved["loyalty"] == "score"
     assert resolved["ally_of"] == resolved["enemy_of"] == "intensity"
+    assert resolved["controls"] == "intensity"
+    assert resolved["worships"] == "score"
+    assert resolved["protects"] == "intensity"
     assert resolved["relationship"] == "neutral"
+    assert resolved["bases_at"] == resolved["employs"] == resolved["hails_from"] == "neutral"
     assert resolved["member_of"] == resolved["located_in"] == "neutral"
     assert resolved["kin_of"] == resolved["rival_of"] == "neutral"
 

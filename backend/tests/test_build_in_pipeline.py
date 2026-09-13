@@ -27,13 +27,20 @@ from app.pipeline.build_in import (
     WAVE2_MAX_EDGES,
     WAVE2_MAX_ENTITIES,
     _build_record_repair_prompt,
+    _build_wiring_prompt,
+    _canonicalize_edges,
+    _cap_relationship_rows,
     _collect_record_issues,
+    _edge_row_usable,
+    _filter_wiring_edges,
     _log_stat_repair_scope_breaches,
+    _normalize_edge_directions,
     _OrphanRetryError,
     _repair_retry_prompt,
     _validate_subgraph,
     _wave1_chunks,
     _wave1_roster,
+    _wiring_profile,
     build_anchor_repair_schema,
     build_wave1_prompt,
     build_wave2_prompt,
@@ -4060,9 +4067,12 @@ def test_repair_sampling_respects_operator_pins(world: str) -> None:
 
 
 def test_edge_kind_ok_rules_pin() -> None:
-    """EDGE_KIND_RULES (owner decision 2026-09-12): the single table both
-    layers read. member_of/loyalty never touch a place; located_in must
-    point at a place; the catch-alls stay unrestricted."""
+    """EDGE_KIND_RULES (owner decision 2026-09-12 + 2026-09-13 expansion):
+    the single table both layers read. member_of/loyalty never touch a
+    place; located_in must point at a place; the six role-bearing types
+    (bases_at, hails_from, controls, employs, worships, protects) keep
+    people/groups as sources and places out of the social kinds; the
+    catch-alls stay unrestricted."""
     assert edge_kind_ok("member_of", "character", "faction")
     assert edge_kind_ok("member_of", "faction", "faction")
     assert not edge_kind_ok("member_of", "place", "faction")
@@ -4074,6 +4084,26 @@ def test_edge_kind_ok_rules_pin() -> None:
     assert edge_kind_ok("debt", "place", "place")
     assert edge_kind_ok("relationship", "place", "faction")
     assert not edge_kind_ok("loyalty", "place", "character")
+    assert edge_kind_ok("bases_at", "character", "place")
+    assert edge_kind_ok("bases_at", "faction", "place")
+    assert not edge_kind_ok("bases_at", "character", "character")
+    assert not edge_kind_ok("bases_at", "place", "place")
+    assert edge_kind_ok("hails_from", "character", "place")
+    assert not edge_kind_ok("hails_from", "character", "faction")
+    assert edge_kind_ok("controls", "faction", "place")
+    assert edge_kind_ok("controls", "character", "faction")
+    assert not edge_kind_ok("controls", "place", "faction")
+    assert not edge_kind_ok("controls", "faction", "character")
+    assert edge_kind_ok("employs", "faction", "character")
+    assert edge_kind_ok("employs", "character", "character")
+    assert not edge_kind_ok("employs", "place", "character")
+    assert not edge_kind_ok("employs", "character", "place")
+    assert edge_kind_ok("worships", "character", "faction")
+    assert edge_kind_ok("worships", "faction", "faction")
+    assert not edge_kind_ok("worships", "place", "faction")
+    assert edge_kind_ok("protects", "character", "place")
+    assert edge_kind_ok("protects", "faction", "character")
+    assert not edge_kind_ok("protects", "place", "character")
 
 
 def test_prompts_carry_edge_kind_guidance(world: str) -> None:
@@ -4087,6 +4117,9 @@ def test_prompts_carry_edge_kind_guidance(world: str) -> None:
     assert "- member_of: character|faction -> character|faction" in prompt
     assert "a place is never a member and never a host" in prompt
     assert "- located_in: any -> place" in prompt
+    assert "- bases_at: character|faction -> place" in prompt
+    assert "where X is found at tale-time" in prompt
+    assert "- controls: character|faction -> faction|place" in prompt
     assert "EDGE VOCABULARY" in prompt and "debt: amount" in prompt
     prompt2 = build_wave2_prompt(seed, "notes", ([], []), core_count=0)
     assert "- member_of: character|faction -> character|faction" in prompt2
@@ -4240,7 +4273,7 @@ def test_wave2_mutual_member_of_against_world_fixed(world: str) -> None:
                     }
                 ],
                 "edges": [
-                    {"src": "C1", "dst": "C0", "type": "member_of"},
+                    {"src": "C0", "dst": "C1", "type": "member_of"},
                     {"src": "N0", "dst": "C0", "type": "relationship"},
                 ],
             }
@@ -4257,8 +4290,10 @@ def test_wave2_mutual_member_of_against_world_fixed(world: str) -> None:
         edges = list(world_edges(session, world))
     bar, mira = rows["The Gilded Bar"], rows["Mira Vane"]
     member = [(e.src, e.dst) for e in edges if e.type == "member_of"]
-    assert (bar, mira) in member  # the original direction stands
-    assert (mira, bar) not in member  # the contradiction never committed
+    # member -> container is the canonical direction (2026-09-13
+    # container-first normalization): Mira is a member of the Bar
+    assert (mira, bar) in member
+    assert (bar, mira) not in member  # the contradiction never committed
     assert any(
         e.src == rows["The Drowned Quay"] and e.dst == bar and e.type == "relationship"
         for e in edges
@@ -4294,3 +4329,200 @@ def test_stat_repair_later_passes_go_warm(world: str) -> None:
     assert seen[1].temperature == REPAIR_TEMPERATURE
     assert seen[2].temperature is None  # pass 2 warm — a new sample
     assert seen[2].seed is None
+
+
+def test_canonicalize_edges_collapses_mirrors() -> None:
+    """d7 audit's mirror collapse: A->B and B->A of the same type are ONE
+    link (26 of d7's 100 relationship rows were mirrors; the export
+    printed both directions as separate bullets). The higher counter wins,
+    ties keep the first row (deterministic, AD-16), same-pair different-
+    type rows and other pairs are untouched, and the pass is idempotent
+    (the rebase path re-runs it)."""
+    a, b, c = "A", "B", "C"
+    edges = [
+        models.EdgeInput(src=a, dst=b, type="relationship", counter=1),
+        models.EdgeInput(src=b, dst=a, type="relationship", counter=3),
+        models.EdgeInput(src=a, dst=b, type="debt", counter=1),
+        models.EdgeInput(src=a, dst=c, type="relationship", counter=1),
+    ]
+    canonical = _canonicalize_edges(edges)
+    assert len(canonical) == 3
+    relationship = [e for e in canonical if e.type == "relationship"]
+    # the higher counter (3) wins — that row is B -> A; A -> C is a
+    # different pair and stays with its own counter
+    assert {(e.src, e.dst): e.counter for e in relationship} == {
+        ("A", "C"): 1,
+        ("B", "A"): 3,
+    }
+    assert [e for e in canonical if e.type == "debt"][0].counter == 1
+    assert _canonicalize_edges(canonical) == canonical
+    # a both-ways member_of pair is the anti-mutual graph rule's job at
+    # validation; by commit time none exist, and the collapse would keep
+    # the stronger counter either way.
+    mutual = [
+        models.EdgeInput(src=a, dst=b, type="member_of", counter=1),
+        models.EdgeInput(src=b, dst=a, type="member_of", counter=1),
+    ]
+    assert len(_canonicalize_edges(mutual)) == 1
+
+
+def test_wiring_profile_carries_slot_fields() -> None:
+    """The wiring roster line for a character carries the EDGE SLOTS'
+    cited fields — factions, current_location, relationships, goals,
+    secret, background — the material the d7 wiring pass starved on (its
+    one-line blurbs left relationship as the only defensible type)."""
+    entity = models.EntityInput(
+        kind="character",
+        name="Wren",
+        text="reads flotsam",
+        data={
+            "role": "NPC",
+            "class_profession": "Cleric",
+            "relationships": "spies for the Salt Abbess",
+            "goals": "find the black beacon",
+            "secret": "owes Mirella a debt",
+            "background": "hails from the Night Market Stairs",
+            "world_integration": {
+                "factions": "The Salt Abbey, The Reefwardens",
+                "current_location": "The Brine Chapel",
+            },
+        },
+    )
+    profile = _wiring_profile(entity)
+    assert "at: The Brine Chapel" in profile
+    assert "factions: The Salt Abbey" in profile
+    assert "secret: owes Mirella" in profile
+    assert "relationships: spies" in profile
+    assert "background: hails from the Night Market" in profile
+    # places keep their own text, not an invented profile
+    place = models.EntityInput(kind="place", name="The Rotting Pier", text="Lower docks, whispers")
+    assert _wiring_profile(place) == "Lower docks, whispers"
+
+
+def test_build_wiring_prompt_carries_slots(world: str) -> None:
+    """The wiring prompt (2026-09-13): slot-driven emission — one slot per
+    vocabulary type citing the record fields, an 8-edge per-entity budget,
+    and relationship confined to the 2-edge free lane."""
+    with session_scope() as session:
+        seed = campaign_seed(session, world)
+    assert seed is not None
+    roster = [
+        ("E0", "The Rotting Pier", "place", "Lower docks built on drowned tenements"),
+        ("E1", "Wren", "character", "at: The Brine Chapel | factions: The Salt Abbey"),
+    ]
+    prompt = _build_wiring_prompt(seed, roster)
+    assert "EDGE SLOTS" in prompt
+    assert "- member_of: the faction(s) that CONTAIN this entity" in prompt
+    assert "- bases_at: the home, post, or haunt" in prompt
+    assert "a person's" in prompt and "never located_in" in prompt
+    assert "at most 2 further edges per entity" in prompt
+    assert "relationship is" in prompt and "at most 2 edges in the WHOLE response" in prompt
+    assert "DIRECTION" in prompt and "never the place into the character" in prompt
+    assert "never invent an endpoint" in prompt
+
+
+def test_normalize_edge_directions_flips_slips() -> None:
+    """d8's direction slip: the wiring pass emitted the directed slots
+    INVERTED in bulk (``The Drowned Rat -> Stove`` as bases_at), the kind
+    rule killed the row, and the repair demoted it to relationship. A row
+    whose REVERSED direction is legal is a slip, not a different meaning —
+    normalize it deterministically; both-directions-illegal rows and
+    legal rows pass through untouched."""
+    ref_kinds = {
+        "E0": "place",  # The Drowned Rat
+        "E1": "character",  # Stove
+        "E2": "character",  # Wren
+        "E3": "place",  # The Brine Chapel
+        "E4": "faction",  # The Salt Abbey
+        "E5": "faction",
+    }
+    rows: list[dict[str, Any]] = [
+        # inverted slot — flip expected
+        {"src": "E0", "dst": "E1", "type": "bases_at", "counter": 1},
+        # inverted located_in — flip expected
+        {"src": "E3", "dst": "E2", "type": "located_in", "counter": 1},
+        # already legal — untouched
+        {"src": "E1", "dst": "E0", "type": "bases_at", "counter": 1},
+        # legal relationship — untouched
+        {"src": "E1", "dst": "E2", "type": "relationship", "counter": 1},
+        # illegal both ways (place member_of place / place hails_from faction) — untouched
+        {"src": "E0", "dst": "E3", "type": "member_of", "counter": 1},
+        {"src": "E0", "dst": "E5", "type": "hails_from", "counter": 1},
+        # container-first habit (d10: "The Blackwater Compact -> Harlow"):
+        # exactly one faction endpoint makes the character the member —
+        # canonical direction member -> container, flipped
+        {"src": "E4", "dst": "E1", "type": "member_of", "counter": 1},
+    ]
+    _normalize_edge_directions(1, rows, ref_kinds)
+    assert (rows[0]["src"], rows[0]["dst"]) == ("E1", "E0")
+    assert (rows[1]["src"], rows[1]["dst"]) == ("E2", "E3")
+    assert (rows[2]["src"], rows[2]["dst"]) == ("E1", "E0")
+    assert (rows[3]["src"], rows[3]["dst"]) == ("E1", "E2")
+    assert (rows[4]["src"], rows[4]["dst"]) == ("E0", "E3")
+    # faction hails_from place is the legal reversal of place -> faction —
+    # a direction slip, flipped too
+    assert (rows[5]["src"], rows[5]["dst"]) == ("E5", "E0")
+    assert (rows[6]["src"], rows[6]["dst"]) == ("E1", "E4")
+    # idempotent
+    _normalize_edge_directions(1, rows, ref_kinds)
+    assert (rows[0]["src"], rows[0]["dst"]) == ("E1", "E0")
+
+
+def test_edge_row_usable_shared_boundary() -> None:
+    """The shared best-effort row predicate (wiring + chunk boundaries):
+    the d11 flake class — "edge 25 dst ref 'Agda' must be E<index>", the
+    model writing a NAME where a ref belongs — drops at the boundary with
+    a log instead of killing a 100-entity wave."""
+    valid = frozenset({"E0", "E1"})
+    assert _edge_row_usable({"src": "E0", "dst": "E1", "type": "member_of", "counter": 1}, valid)
+    assert not _edge_row_usable({"src": "E0", "dst": "Agda", "type": "member_of"}, valid)
+    assert not _edge_row_usable({"src": "E0", "dst": "E1", "type": "teleports_to"}, valid)
+    assert not _edge_row_usable({"src": "E0", "dst": "E0", "type": "member_of"}, valid)
+    assert not _edge_row_usable(
+        {"src": "E0", "dst": "E1", "type": "member_of", "counter": "3"}, valid
+    )
+    assert not _edge_row_usable("not a row", valid)
+
+
+def test_cap_relationship_rows_world_level() -> None:
+    """World-level free-lane cap (d10/d12): the chunks re-typed
+    relationship after the wiring boundary capped ITS response, so the cap
+    must apply over the ASSEMBLED model content (chunk + wiring rows).
+    First rows win; slot rows pass through; the wave-2 anchor repair is
+    exempt by not calling this boundary."""
+    rows = [
+        {"src": "E0", "dst": "E1", "type": "relationship"},
+        {"src": "E0", "dst": "E2", "type": "member_of"},
+        {"src": "E1", "dst": "E2", "type": "relationship"},
+        {"src": "E2", "dst": "E3", "type": "relationship"},
+        {"src": "E3", "dst": "E0", "type": "bases_at"},
+        {"src": "E3", "dst": "E1", "type": "relationship"},
+    ]
+    capped = _cap_relationship_rows(rows)
+    assert [r["type"] for r in capped] == [
+        "relationship",
+        "member_of",
+        "relationship",
+        "bases_at",
+    ]
+    assert _cap_relationship_rows(capped) == capped
+
+
+def test_wiring_filter_enforces_relationship_cap() -> None:
+    """FREE_LANE_CAP (d10, 2026-09-13): the wiring prompt promises at most
+    2 relationship edges for the WHOLE response; the model wrote 23. The
+    wiring boundary enforces the cap deterministically — first rows win —
+    while wave-2 and its anchor repair keep their own contract (an
+    orphan's corrective anchor edges are never capped)."""
+    valid = frozenset({"E0", "E1", "E2", "E3"})
+    flood = [
+        {"src": "E0", "dst": "E1", "type": "relationship", "counter": 1},
+        {"src": "E1", "dst": "E2", "type": "relationship", "counter": 1},
+        {"src": "E2", "dst": "E3", "type": "relationship", "counter": 1},
+        {"src": "E3", "dst": "E0", "type": "relationship", "counter": 1},
+        {"src": "E0", "dst": "E2", "type": "member_of", "counter": 1},
+    ]
+    kept = _filter_wiring_edges(flood, valid)
+    assert [row["type"] for row in kept] == ["relationship", "relationship", "member_of"]
+    assert sum(1 for row in kept if row["type"] == "relationship") == 2
+    assert kept[2]["type"] == "member_of"  # slot rows are never capped

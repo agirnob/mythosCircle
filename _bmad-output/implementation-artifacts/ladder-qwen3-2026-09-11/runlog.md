@@ -771,3 +771,51 @@ frontend 202 passed / vue-tsc+eslint clean):
   "The Drowned Harbor (edge rules)" under dm@example.com — the d5 world
   ("The Drowned Harbor") is untouched.
 - Tee'd calls + prompts + committed.db in `/tmp/mythos-ladder/calls-d7/`.
+
+## Edge vocabulary + wiring rework — d8..d13 (2026-09-13)
+
+User verdicts: too many relationship / nearly no located_in despite many
+locations; "add more relation vocabulary too". Shipped:
+
+- EDGE_TYPES 10 -> 16 (bases_at, controls, employs, worships, hails_from,
+  protects added; counters controls=worships=score... controls/protects=
+  intensity, worships=score; single registry EDGE_KIND_RULES feeds prompt
+  text + validator + repair so they cannot drift).
+- Wiring pass reworked: per-entity RECORD profiles (factions,
+  current_location, relationships, goals, secret, background) replace
+  one-line blurbs — d7 proved blurbs starve every slot (relationship 100/114);
+  slot-driven TASK (one slot per type citing the record fields, 8-edge
+  budget, 2-edge free lane), direction sentence, relationship capped at 2.
+- Deterministic gates: direction-slip normalization (d8: the slots fired
+  but the model emitted them INVERTED — "The Drowned Rat -> Stove" — kind
+  rules killed the rows and the repair DEMOTED them to relationship, the
+  73-row flood; the flip turns slips into legal rows), member_of
+  container-first canon, mirror collapse at commit (d7: 26/100 rows were
+  both-orientation duplicates), relationship free-lane cap at every model
+  boundary (wiring response, assembled wave-1, wave-2 first attempt; the
+  anchor repair is exempt — its corrective edges are the safety net).
+- Chunk edge boundary (d11 flake: edge 25 dst ref 'Agda' — a NAME where a
+  ref belongs; shared _edge_row_usable predicate, drops with a log).
+- Stat canonicalizer folds (d9 death: E69's ONLY violation was
+  "Siren's Call" with damage: [] — the model's honest way to write
+  "deals no damage", which the validator rejects; fold maps [] to absent.
+  Alignment long forms fold ("Lawful Good" -> LG). A prose-damage
+  extraction fold was REVERTED: it changed the audit of 23 fixtures with
+  zero marginal value (the auditor already reads prose descriptions).
+
+Results (gemma-4-26B, same rung-100 seed):
+- d7 (before): 100 relationship of 114 edges, 7 types, located_in 4.
+- d8: relationship 73/155, 10 types — slots broke the collapse, direction
+  slip + repair demote leaked.
+- d9: FAILED on E69 damage:[] (empty-list rejection; fixed by the fold).
+- d10: relationship 23/115 (20%), 14 types, 0 violations, 0 mirrors —
+  the cap not yet enforceable at world level.
+- d11: FAILED on the 'Agda' name-as-ref chunk flake (fixed by boundary).
+- d12: relationship 22/98 (22.4%) — the CHUNKS leaked relationship past
+  the wiring cap (fixed by the world-level cap).
+- d13: GREEN 64 calls/9.0min — relationship 4/71 (5.6%) ACCEPT
+  (<=15%), 13 types used, 0 kind violations, 0 mirrors, member_of all
+  member->container, 28/61 characters anchored to a place.
+- World imported as "The Drowned Harbor (edge rules)" (playground) +
+  Desktop export the-drowned-harbor-edge-rules-2KVJ49.md.
+- Gates: backend 1249, ruff/format/mypy clean.

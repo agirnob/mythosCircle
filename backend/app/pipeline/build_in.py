@@ -344,6 +344,21 @@ EDGE_KIND_RULES: Mapping[str, tuple[frozenset[str] | None, frozenset[str] | None
                 frozenset({"character", "faction"}),
                 frozenset({"character", "faction"}),
             ),
+            "bases_at": (frozenset({"character", "faction"}), frozenset({"place"})),
+            "hails_from": (frozenset({"character", "faction"}), frozenset({"place"})),
+            "controls": (
+                frozenset({"character", "faction"}),
+                frozenset({"place", "faction"}),
+            ),
+            "employs": (
+                frozenset({"character", "faction"}),
+                frozenset({"character", "faction"}),
+            ),
+            "worships": (
+                frozenset({"character", "faction"}),
+                frozenset({"character", "faction"}),
+            ),
+            "protects": (frozenset({"character", "faction"}), None),
         }
     )
 )
@@ -353,6 +368,18 @@ EDGE_KIND_RULES: Mapping[str, tuple[frozenset[str] | None, frozenset[str] | None
 _EDGE_GUIDANCE: Mapping[str, str] = MappingProxyType(
     {
         "located_in": "X is physically inside Y — a place's floor, walls, or waters",
+        "bases_at": "X's home, post, or haunt — where X is found at tale-time",
+        "hails_from": "X's origin or home district — where X comes from, not where X is now",
+        "controls": (
+            "X rules or holds Y — people and groups control places and "
+            "organizations, never the reverse"
+        ),
+        "employs": "X employs, commands, or retains Y — a place is never an employer or employee",
+        "worships": (
+            "X serves or reveres Y — faith, cult, devotion; a place is never a "
+            "worshipper or worshipped"
+        ),
+        "protects": "X guards, shelters, or answers for Y",
         "member_of": (
             "membership is hierarchical: Y CONTAINS X; a place is never a "
             "member and never a host; ONE direction only — never both "
@@ -395,12 +422,22 @@ def edge_guidance_lines() -> list[str]:
 def _kind_violation_reason(edge_type: str, src_kind: str, dst_kind: str) -> str:
     if edge_type == "located_in":
         return f"located_in must point at a place, not a {dst_kind}"
+    if edge_type in ("bases_at", "hails_from"):
+        return f"{edge_type} must point at a place, not a {dst_kind}"
     if edge_type == "member_of":
         if src_kind == "place":
             return "a place cannot be a member of anything"
         return "nothing is a member of a place — use located_in"
     if edge_type == "loyalty":
         return "a place holds and receives no loyalty"
+    if edge_type in ("employs", "worships"):
+        return f"{edge_type} is only between people and groups — never a place"
+    if edge_type == "controls":
+        if src_kind == "place":
+            return "a place controls nothing — people and groups rule"
+        return f"controls targets a place or organization, not a {dst_kind}"
+    if edge_type == "protects":
+        return f"a place protects nothing (got {src_kind} -> {dst_kind})"
     return f"{edge_type} is not allowed between {src_kind} and {dst_kind}"
 
 
@@ -483,6 +520,70 @@ def _raw_entity_kinds(raw_entities: Sequence[Any]) -> list[str | None]:
         folded = canonicalize_entity_kind(raw.get("kind"))
         kinds.append(folded[0] if folded is not None else None)
     return kinds
+
+
+def _normalize_edge_directions(
+    wave: int,
+    raw_edges: list[Any],
+    ref_kinds: Mapping[str, str | None],
+    context: Sequence[ContextRef] = (),
+) -> None:
+    """Mutate raw edge rows in place: when a row's direction violates the
+    kind rules but the REVERSED direction is legal, flip src/dst — a
+    direction slip, not a different meaning (d8 wiring evidence 2026-09-13:
+    the slots fired, but the model emitted the directed slots INVERTED in
+    bulk — ``The Drowned Rat -> Stove`` as bases_at — which the kind rule
+    then killed and the repair silently demoted to ``relationship``, the
+    73-row flood). Both-directions-illegal rows stay put for the repair
+    path; both-directions-legal rows pass through untouched (mirrors are
+    the graph rule's job). Deterministic and idempotent: flipped rows are
+    already legal, so a second pass changes nothing."""
+    for row in raw_edges:
+        if not isinstance(row, dict):
+            continue
+        edge_type = row.get("type")
+        src_ref, dst_ref = row.get("src"), row.get("dst")
+        if edge_type not in EDGE_TYPES:
+            continue
+        if not isinstance(src_ref, str) or not isinstance(dst_ref, str):
+            continue
+        src_kind = ref_kinds.get(src_ref)
+        if src_kind is None:
+            src_pos = _endpoint_position(src_ref, "C")
+            if src_pos is not None and 0 <= src_pos < len(context):
+                src_kind = context[src_pos].kind
+        dst_kind = ref_kinds.get(dst_ref)
+        if dst_kind is None:
+            dst_pos = _endpoint_position(dst_ref, "C")
+            if dst_pos is not None and 0 <= dst_pos < len(context):
+                dst_kind = context[dst_pos].kind
+        if not (isinstance(src_kind, str) and isinstance(dst_kind, str)):
+            continue
+        if not edge_kind_ok(edge_type, src_kind, dst_kind) and edge_kind_ok(
+            edge_type, dst_kind, src_kind
+        ):
+            logger.info(
+                "wave %d: edge direction normalized %r -> %r [%s] (flipped)",
+                wave,
+                src_ref,
+                dst_ref,
+                edge_type,
+            )
+            row["src"], row["dst"] = dst_ref, src_ref
+            continue
+        # member_of container-first habit (d9/d10: "The Blackwater Compact
+        # -> Captain Harlow"): when exactly one endpoint is a faction, the
+        # CHARACTER is definitionally the member and the faction the
+        # container — canonical direction is member -> container, so
+        # faction -> character flips even though the kind rule allows it.
+        if edge_type == "member_of" and src_kind == "faction" and dst_kind == "character":
+            logger.info(
+                "wave %d: member_of direction canonicalized %r -> %r (member -> container)",
+                wave,
+                src_ref,
+                dst_ref,
+            )
+            row["src"], row["dst"] = dst_ref, src_ref
 
 
 def _edge_kind_rows(
@@ -638,6 +739,12 @@ def _clean_edge_kinds(
     wiring pass) or fails the job (wave 2 — its anchors matter). Returns
     ``(cleaned_rows, audit)``; the audit is empty when nothing dropped."""
     kinds = [kind for _ref, _name, kind in entity_roster]
+    _normalize_edge_directions(
+        wave,
+        raw_edges,
+        {ref: kind for ref, _name, kind in entity_roster},
+        context=context,
+    )
     violations = _edge_kind_rows(
         wave, raw_edges, kinds, context=context, world_member_edges=world_member_edges
     )
@@ -1646,6 +1753,31 @@ class _MergeOutcome(NamedTuple):
     report: dict[str, Any]
 
 
+def _canonicalize_edges(edges: Sequence[models.EdgeInput]) -> list[models.EdgeInput]:
+    """One canonical row per (unordered endpoint pair, type) — the
+    d7 audit's mirror collapse. A mirror pair (A->B and B->A of the same
+    type) is ONE link: d7 ran 26 of its 100 relationship rows as mirrors,
+    and the export printed both directions as separate bullets. The higher
+    counter wins, ties keep the first row — deterministic under AD-16
+    (the wave's row order is a pure function of the model output). The
+    directed types' direction is already guaranteed by the kind rules
+    (located_in/bases_at/... must point at a place) and the member_of
+    anti-mutual graph rule ran at validation, so no meaning is dropped
+    here; the store's exact-duplicate backstop stays loud. Idempotent.
+
+    Then the free-lane cap is applied by the wiring boundary
+    (``_filter_wiring_edges``), NOT here: this choke point also serves the
+    wave-2 anchor repair, whose corrective relationship rows must never be
+    dropped (an orphan's anchor is the repair's whole job)."""
+    best: dict[tuple[frozenset[str], str], models.EdgeInput] = {}
+    for edge in edges:
+        key = (frozenset({edge.src, edge.dst}), edge.type)
+        current = best.get(key)
+        if current is None or edge.counter > current.counter:
+            best[key] = edge
+    return list(best.values())
+
+
 def _commit_wave(
     campaign_id: str,
     entities: Sequence[models.EntityInput],
@@ -1669,6 +1801,7 @@ def _commit_wave(
     moved the head also removes the row an earlier merge resolved into, so
     the entity re-stages as a fresh create under its own ULID instead of
     resurrecting the deleted one."""
+    edges = _canonicalize_edges(edges)
     staged_entities, staged_edges, roster, remapped_edges, report = _merge_with_world(
         campaign_id, entities, edges
     )
@@ -1790,7 +1923,7 @@ def _run_wave1_chunks(
         return entities, [], True, []
     valid_refs = frozenset(f"E{position}" for position in range(len(entities)))
     wiring_roster = [
-        (f"E{position}", entity.name, entity.kind, _wiring_excerpt(entity))
+        (f"E{position}", entity.name, entity.kind, _wiring_profile(entity))
         for position, entity in enumerate(entities)
     ]
     wiring_settings = dataclasses.replace(
@@ -1817,6 +1950,22 @@ def _run_wave1_chunks(
             exc,
             job.id,
         )
+    # Best-effort boundary for the CHUNK edge rows (d11 / d7-attempt-1
+    # flake: "edge 25 dst ref 'Agda' must be E<index>" — the model wrote
+    # a NAME where a ref belongs). The wiring pass's symbolic source is
+    # the same boundary; a chunk's unusable row degrades to a drop, never
+    # a job death — wave-1 edges are best-effort (the edgeless commit is
+    # legal, owner verdict 2026-09-11). Wave-2 stays strict: its edges
+    # are load-bearing and the anchor repair exists for its orphans.
+    full_refs = frozenset(f"E{position}" for position in range(len(entities)))
+    usable = [row for row in raw_edges if _edge_row_usable(row, full_refs)]
+    if len(usable) != len(raw_edges):
+        logger.info(
+            "wave 1: dropping %d unusable chunk edge row(s) — best-effort boundary",
+            len(raw_edges) - len(usable),
+        )
+        raw_edges = usable
+    raw_edges = _cap_relationship_rows(raw_edges)
     cleaned_edges, kind_dropped = _clean_edge_kinds(
         wave=1,
         raw_edges=raw_edges,
@@ -1974,6 +2123,11 @@ def _run_wave2(
     )
     if twins_dropped:
         logger.info("wave 2: %d roster twin(s) dropped: %s", len(twins_dropped), twins_dropped)
+    # The wave-2 FIRST attempt is model content like any other: the
+    # free-lane cap applies (2 relationship rows). The anchor repair keeps
+    # its exemptions — its corrective edges are the gate's safety net.
+    wave2_edges = _cap_relationship_rows(list(parsed_2.get("edges") or []))
+    parsed_2 = {**parsed_2, "edges": wave2_edges}
     if not parsed_2["entities"] and not parsed_2["edges"]:
         # Every notes subject duplicated the roster — nothing to commit;
         # the wave-1 head stands and the job completes with an empty
@@ -2195,7 +2349,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             ceiling=ceiling,
             allow_drop=True,
         )
-        parsed_1 = {**parsed_1, "edges": cleaned_1}
+        parsed_1 = {**parsed_1, "edges": _cap_relationship_rows(cleaned_1)}
         entities_1, edges_1 = _validate_subgraph(1, parsed_1)
         progress(0.2)
     else:
@@ -2326,9 +2480,18 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             return
         progress(1.0)
         waves.append(wave2_result)
+        wave2_edges = list(outcome_2.edges)
+    else:
+        wave2_edges = []
 
     entity_count = sum(wave["entities"] for wave in waves)
     edge_count = sum(wave["edges"] for wave in waves)
+    committed_edges = [*outcome_1.edges, *wave2_edges]
+    edge_histogram: dict[str, int] = {}
+    for edge in committed_edges:
+        edge_histogram[edge.type] = edge_histogram.get(edge.type, 0) + 1
+    total_edges = sum(edge_histogram.values())
+    relationship_share = edge_histogram.get("relationship", 0) / total_edges if total_edges else 0.0
     complete_job(
         job.id,
         result={
@@ -2337,6 +2500,11 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             "edge_count": edge_count,
             "llm_calls": budget.snapshot(),
             "merge": merge_reports,
+            "edge_histogram": dict(sorted(edge_histogram.items())),
+            "edge_acceptance": {
+                "relationship_share": round(relationship_share, 3),
+                "ok": relationship_share <= 0.15,
+            },
         },
     )
 
@@ -2532,22 +2700,41 @@ def build_wave1_chunk_prompt(
     return "\n".join(lines)
 
 
-def _wiring_excerpt(entity: models.EntityInput) -> str:
-    """One compact wiring-roster line's excerpt (M1): the entity's own text,
-    else its record's most telling line, whitespace-folded and truncated —
-    enough for the wiring pass to see who belongs to what, small enough for
-    a 300-line roster (~3K tokens)."""
-    raw = entity.text
-    if not (isinstance(raw, str) and raw.strip()):
-        data = entity.data if isinstance(entity.data, dict) else {}
-        raw = None
-        for key in ("personality", "goals", "background"):
-            value = data.get(key)
-            if isinstance(value, str) and value.strip():
-                raw = value
-                break
-    folded = " ".join((raw or "").split())
-    return folded[:100]
+def _wiring_profile(entity: models.EntityInput) -> str:
+    """One compact wiring-roster line for the wiring pass (2026-09-13):
+    a character's record fields the EDGE SLOTS cite — role/class, factions,
+    current_location, relationships, goals, secret, background — so the pass
+    wires from the fiction, not invention; places and factions keep their
+    own text. Whitespace-folded and sized so a 300-line roster stays
+    ~6-8K tokens. The d7 world proved one-line blurbs starve every slot
+    except LAST RESORT (100 of 114 edges were ``relationship``)."""
+    woven = " ".join((entity.text or "").split())
+    if entity.kind not in ("character", "faction"):
+        return woven[:120]
+    if entity.kind == "faction":
+        return woven[:160]
+    data = entity.data if isinstance(entity.data, dict) else {}
+    integration = data.get("world_integration")
+    if not isinstance(integration, dict):
+        integration = {}
+    fields: list[str] = []
+    for key, label in (
+        ("role", "role"),
+        ("class_profession", "class"),
+        ("personality", "personality"),
+        ("factions", "factions"),
+        ("current_location", "at"),
+        ("relationships", "relationships"),
+        ("goals", "goals"),
+        ("secret", "secret"),
+        ("background", "background"),
+    ):
+        value = integration.get(key) if key in ("factions", "current_location") else data.get(key)
+        if isinstance(value, str) and value.strip():
+            fields.append(f"{label}: {' '.join(value.split())[:70]}")
+    if fields:
+        return " | ".join(fields)[:440]
+    return woven[:100]
 
 
 def _build_wiring_prompt(
@@ -2577,15 +2764,40 @@ def _build_wiring_prompt(
         *(f"- {ref} {name!r} ({kind}) — {excerpt}" for ref, name, kind, excerpt in roster),
         "",
         "TASK",
-        'Respond with one JSON object: {"edges": [...]} wiring this world: every',
-        "entity should carry at least one edge where the names and excerpts make a",
-        "relationship plain (members to factions, factions and people to places,",
-        "rivals, allies, enemies, debts as the entries imply). Do not force an edge",
-        "where nothing relates. Do not invent entities.",
+        'Respond with one JSON object: {"edges": [...]} wiring this world.',
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
         '  "counter": <integer, default 1>}.',
         "src/dst must be refs from the list above; edges must connect two different",
         "entities — no self-loops; never repeat an identical edge.",
+        "",
+        "EDGE SLOTS — one slot per vocabulary type. Fill a slot ONLY from the",
+        "entity's record excerpt above (the labeled fields in parentheses); a",
+        "slot with no record support is OMITTED — never force an edge the fiction",
+        "does not name, never invent an endpoint. At most 8 slot edges per entity.",
+        "- member_of: the faction(s) that CONTAIN this entity       (factions field)",
+        "- bases_at: the home, post, or haunt                       (at field)",
+        "- hails_from: the origin or home district                  (background field)",
+        "- controls: the organization or place this entity rules   (goals, background)",
+        "- employs: the staff, crew, or retainers it commands      (relationships, goals)",
+        "- worships: the faith, cult, or figure it serves          (background, relationships)",
+        "- protects: the wards, institutions, or charges it guards (relationships, goals)",
+        "- loyalty: sworn allegiances                              (relationships, factions)",
+        "- kin_of: family ties                                     (background, relationships)",
+        "- debt: what it owes or is owed                            (secret, goals)",
+        "- enemy_of / rival_of / grudge: named foes                 (relationships, background)",
+        "- ally_of: named allies                                    (relationships)",
+        "- located_in: PHYSICAL containment — a thing inside a place; a person's",
+        "  home is bases_at, never located_in                       (own text)",
+        "",
+        "DIRECTION — in every slot edge the SOURCE is the roving entity and the",
+        "DESTINATION is its anchor: a character is located_in, bases_at, or",
+        "hails_from A PLACE — never the place into the character; a character",
+        "is member_of a faction — never the faction member_of the person.",
+        "",
+        "FREE LANE — at most 2 further edges per entity, any vocabulary type,",
+        "only for links the record excerpt names explicitly. relationship is",
+        "NOT a slot: use it for at most 2 edges in the WHOLE response, and",
+        "only for a link no slot covers.",
         "",
         *edge_guidance_lines(),
         "",
@@ -2595,32 +2807,94 @@ def _build_wiring_prompt(
     return "\n".join(lines)
 
 
+def _edge_row_usable(row: Any, valid_refs: frozenset[str]) -> bool:
+    """The shared best-effort edge-row predicate (wiring boundary and the
+    wave-1 chunk boundary): dict-shaped, a vocabulary type, two DIFFERENT
+    known refs, and an integer counter — everything ``_resolve_edges``
+    would otherwise die on. Exact-duplicate and self-loop handling stays
+    in ``_resolve_edges`` (one boundary, one rule set)."""
+    return (
+        isinstance(row, dict)
+        and row.get("type") in EDGE_TYPES
+        and isinstance(row.get("src"), str)
+        and isinstance(row.get("dst"), str)
+        and row["src"] in valid_refs
+        and row["dst"] in valid_refs
+        and row["src"] != row["dst"]
+        and type(row.get("counter", 1)) is int
+    )
+
+
+def _cap_relationship_rows(raw: Sequence[Any], cap: int = 2) -> list[Any]:
+    """The deterministic free-lane cap over a MODEL-CONTENT edge set
+    (chunks + wiring assembled, or a wave-2 first attempt): keep the
+    first ``cap`` ``relationship`` rows, drop the rest with a log.
+
+    The wiring prompt already promises "at most 2 for the WHOLE response",
+    but the model's cap compliance is not something to bet a world on and
+    every output channel leaks (d10: 23 committed relationship rows; d12:
+    the chunks re-typed relationship after the wiring cap dropped theirs).
+    Under the 16-type vocabulary every load-bearing link has a slot type,
+    so the catch-all's world-level share is bounded deterministically.
+    Wave-2 ANCHOR-REPAIR output is exempt: its corrective edges are the
+    gate's own safety net and must never be dropped."""
+    kept: list[Any] = []
+    seen = 0
+    for row in raw:
+        if isinstance(row, dict) and row.get("type") == "relationship":
+            seen += 1
+            if seen > cap:
+                logger.info("free-lane cap: dropping relationship row %r (cap %d)", row, cap)
+                continue
+        kept.append(row)
+    return kept
+
+
 def _filter_wiring_edges(raw: Sequence[Any], valid_refs: frozenset[str]) -> list[Any]:
     """Boundary filter for the best-effort wiring pass: keep only rows that
     are dict-shaped, name two DIFFERENT known refs, carry a vocabulary
     type, and an integer counter — the things ``_resolve_edges`` would
     otherwise die on. A bad row degrades to a drop (info log) instead of
     killing a validated 100-entity wave; exact-duplicate and self-loop
-    handling stays in ``_resolve_edges`` (one boundary, one rule set)."""
+    handling stays in ``_resolve_edges`` (one boundary, one rule set).
+
+    Then the free-lane cap: the wiring prompt promises ``relationship`` at
+    most 2 edges for the WHOLE response — every link the catch-all can
+    express has a slot type under the 16-type vocabulary. The model's cap
+    compliance is not something to bet a world on (d10: the prompt said 2,
+    the model wrote 23), so the boundary enforces the same cap
+    deterministically — first rows win. This is the WIRING boundary only:
+    wave-2 and its anchor repair keep their own contract (an orphan's
+    anchor edges are never capped)."""
     kept: list[Any] = []
     dropped = 0
+    relationship_seen = 0
     for row in raw:
-        if (
-            isinstance(row, dict)
-            and row.get("type") in EDGE_TYPES
-            and isinstance(row.get("src"), str)
-            and isinstance(row.get("dst"), str)
-            and row["src"] in valid_refs
-            and row["dst"] in valid_refs
-            and row["src"] != row["dst"]
-            and type(row.get("counter", 1)) is int
-        ):
-            kept.append(row)
-        else:
+        if not _edge_row_usable(row, valid_refs):
             dropped += 1
+            continue
+        if row.get("type") == "relationship":
+            relationship_seen += 1
+            if relationship_seen > _RELATIONSHIP_EDGE_CAP:
+                logger.info(
+                    "wiring pass: dropping relationship %s -> %s (free-lane cap %d)",
+                    row["src"],
+                    row["dst"],
+                    _RELATIONSHIP_EDGE_CAP,
+                )
+                dropped += 1
+                continue
+        kept.append(row)
     if dropped:
         logger.info("wiring pass: dropped %d unusable edge row(s)", dropped)
     return kept
+
+
+#: The free-lane cap the wiring prompt promises ("at most 2 edges in the
+#: WHOLE response") — enforced deterministically at the wiring boundary,
+#: so the prompt's contract and the committed world cannot drift (d10:
+#: the model wrote 23 relationship rows against a prompt that asked for 2).
+_RELATIONSHIP_EDGE_CAP: int = 2
 
 
 def build_wave2_prompt(
@@ -3342,6 +3616,14 @@ def _validate_subgraph(
             f"wave {wave}: output must be a JSON object with 'entities' and 'edges' lists"
         )
     entity_inputs, assigned_ids = _validate_entities(wave, raw_entities, ref_offset=ref_offset)
+    ref_kinds: dict[str, str | None] = {}
+    for raw in raw_entities:
+        if not isinstance(raw, dict):
+            continue
+        ref = raw.get("ref")
+        if isinstance(ref, str):
+            ref_kinds[ref] = raw.get("kind")
+    _normalize_edge_directions(wave, raw_edges, ref_kinds, context=context)
     kind_violations = _edge_kind_rows(
         wave,
         raw_edges,

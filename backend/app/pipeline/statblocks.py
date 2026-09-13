@@ -1295,7 +1295,9 @@ def canonicalize_stat_block(block: dict[str, Any]) -> dict[str, Any]:
     """
     folded = _fold_stat_block_aliases(block)
     completed = _complete_damage_parts(folded)
-    stamped = _fold_string_damage(completed)
+    emptied = _fold_empty_damage_lists(completed)
+    aligned = _fold_alignment_long_forms(emptied)
+    stamped = _fold_string_damage(aligned)
     return _stamp_power(stamped)
 
 
@@ -1478,6 +1480,74 @@ def _fold_string_damage(block: dict[str, Any]) -> dict[str, Any]:
     if not changed:
         return block
     return {**block, "actions": new_actions}
+
+
+def _fold_empty_damage_lists(block: dict[str, Any]) -> dict[str, Any]:
+    """Fold ``damage: []`` back to ABSENT — the model's honest way to
+    write "this action deals no damage".
+
+    d9 evidence (E69, "The Maw's Voice", gemma): the only open violation
+    was a SAVE action — Siren's Call ("DC 17 Wis save or be Charmed") —
+    whose ``damage: []`` the validator rejects ("must be a non-empty list
+    of damage parts"); THREE repair passes re-echoed the byte-perfect
+    block with the same semantically-right empty list, and the job died on
+    it. An empty list carries exactly zero information over the absent
+    key, and the auditor reads the description for such actions anyway —
+    so the canonicalizer maps ``[]`` to omission. A model-written non-empty
+    list and a genuinely missing key are untouched."""
+    actions = block.get("actions")
+    if not isinstance(actions, list):
+        return block
+    changed = False
+    new_actions: list[Any] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            new_actions.append(action)
+            continue
+        if action.get("damage") == []:
+            dropped = {key: value for key, value in action.items() if key != "damage"}
+            new_actions.append(dropped)
+            changed = True
+        else:
+            new_actions.append(action)
+    if not changed:
+        return block
+    return {**block, "actions": new_actions}
+
+
+#: Long-form alignment spellings fold to the canonical code (d9: the model
+#: wrote "Lawful Good" — a closed 9-code set, so the fold is deterministic
+#: and makes the FIRST pass land instead of the repair loop echo). Dashes
+#: and doubled spaces are tolerated; anything else is the repair's job.
+_ALIGNMENT_LONG_FORMS: Mapping[str, str] = {
+    "lawful good": "LG",
+    "neutral good": "NG",
+    "chaotic good": "CG",
+    "lawful neutral": "LN",
+    "true neutral": "N",
+    "chaotic neutral": "CN",
+    "lawful evil": "LE",
+    "neutral evil": "NE",
+    "chaotic evil": "CE",
+}
+
+
+def _fold_alignment_long_forms(block: dict[str, Any]) -> dict[str, Any]:
+    """Fold a long-form alignment spelling into its canonical code.
+
+    Only when the folded form names exactly one code; anything else stays
+    for the repair call (a typo is too ambiguous to canonicalize)."""
+    identity = block.get("identity")
+    if not isinstance(identity, dict):
+        return block
+    alignment = identity.get("alignment")
+    if not isinstance(alignment, str) or not alignment.strip():
+        return block
+    key = " ".join(alignment.strip().lower().replace("-", " ").split())
+    canonical = _ALIGNMENT_LONG_FORMS.get(key)
+    if canonical is None or identity.get("alignment") == canonical:
+        return block
+    return {**block, "identity": {**identity, "alignment": canonical}}
 
 
 def canonicalize_action_damage(

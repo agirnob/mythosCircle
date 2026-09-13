@@ -1561,3 +1561,50 @@ def test_conform_first_targets_selects_monster_power_misses_only() -> None:
         ("under-powered for level 5",),
     )
     assert conform_first_targets([monster_power, monster_shape, npc_legacy]) == [monster_power]
+
+
+def test_canonicalize_folds_empty_damage_lists() -> None:
+    """EMPTY_DAMAGE_FOLD (d9, E69 "The Maw's Voice", 2026-09-13): the model
+    marks a SAVE action with ``damage: []`` — its honest way to write
+    "deals no damage" — and the validator rejects empty lists, so three
+    repair passes re-echoed the same byte-perfect block and the job died.
+    The canonicalizer folds ``[]`` to the ABSENT key (zero information
+    lost); non-empty lists and truly missing keys are untouched."""
+    from app.pipeline.statblocks import canonicalize_stat_block
+
+    block = dict(VALID)
+    block["actions"] = [
+        {"name": "Multiattack", "description": "The Maw's Voice makes three Trident attacks."},
+        {
+            "name": "Trident",
+            "description": (
+                "Melee Weapon Attack: +9 to hit, reach 5 ft., one target. "
+                "Hit: 11 (1d6 + 8) piercing damage."
+            ),
+            "damage": [{"dice": "1d6", "count": 1, "sides": 6, "bonus": 8}],
+        },
+        {"name": "Siren's Call", "description": "DC 17 Wis save or be Charmed", "damage": []},
+    ]
+    canonical = canonicalize_stat_block(block)
+    siren = canonical["actions"][2]
+    assert "damage" not in siren
+    assert canonical["actions"][1]["damage"] == [
+        {"dice": "1d6", "count": 1, "sides": 6, "bonus": 8, "average": 11.5, "type": "untyped"}
+    ]
+    assert validate_stat_block(canonical) == []
+
+
+def test_canonicalize_folds_alignment_long_forms() -> None:
+    """ALIGNMENT_FOLD (d9): "Lawful Good" is a closed 9-code spelling —
+    fold to LG on the first pass instead of letting the repair loop echo.
+    A typo is too ambiguous to canonicalize and stays for the repair."""
+    from app.pipeline.statblocks import canonicalize_stat_block
+
+    block = dict(VALID)
+    block["identity"] = {**block["identity"], "alignment": "Lawful Good"}
+    canonical = canonicalize_stat_block(block)
+    assert canonical["identity"]["alignment"] == "LG"
+    assert validate_stat_block(canonical) == []
+    typo = dict(VALID)
+    typo["identity"] = {**typo["identity"], "alignment": "Lawful god"}
+    assert canonicalize_stat_block(typo)["identity"]["alignment"] == "Lawful god"

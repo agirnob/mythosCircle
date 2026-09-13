@@ -28,8 +28,12 @@ from app.store import models
 from app.store.db import session_scope
 from app.store.read import entity_live_edges, latest_revision
 
-#: Closed Phase-1 edge vocabulary (AD-5): directed, per-type counter
-#: semantics (AD-23). Extensible by adding a type, never by free text.
+#: Closed edge vocabulary (AD-5): directed, per-type counter semantics
+#: (AD-23). Extensible by adding a type, never by free text. The
+#: 2026-09-13 expansion (owner verdict: "add more relation vocabulary")
+#: added the six role-bearing types — bases_at, controls, employs,
+#: worships, hails_from, protects — whose meanings the d7 world forced
+#: into the catch-all ``relationship`` (100 of 114 rows).
 EDGE_TYPES: frozenset[str] = frozenset(
     {
         "relationship",
@@ -42,6 +46,12 @@ EDGE_TYPES: frozenset[str] = frozenset(
         "kin_of",
         "ally_of",
         "enemy_of",
+        "bases_at",
+        "controls",
+        "employs",
+        "worships",
+        "hails_from",
+        "protects",
     }
 )
 
@@ -61,6 +71,9 @@ EDGE_COUNTER_SEMANTICS: MappingProxyType[str, EdgeCounterSemantic] = MappingProx
         "loyalty": "score",
         "ally_of": "intensity",
         "enemy_of": "intensity",
+        "controls": "intensity",
+        "worships": "score",
+        "protects": "intensity",
     }
 )
 
