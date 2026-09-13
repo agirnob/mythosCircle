@@ -131,13 +131,22 @@ const COUNTER_TYPES: ReadonlySet<string> = new Set([
   'loyalty',
   'ally_of',
   'enemy_of',
+  'controls',
+  'worships',
+  'protects',
 ])
 
 function edgeLabel(edge: EdgeExport): string {
   return COUNTER_TYPES.has(edge.type) ? `${edge.type}(${edge.counter})` : edge.type
 }
 
-/** The closed Phase-1 edge vocabulary (AD-5) — the add-relation picker. */
+/**
+ * The closed edge vocabulary (AD-5, 16 members since 2026-09-13) — the
+ * add-relation picker. Mirrors app/store/commit.py EDGE_TYPES: the six
+ * role-bearing types (bases_at, controls, employs, worships, hails_from,
+ * protects) were added to absorb the meanings that used to collapse into
+ * ``relationship``.
+ */
 const EDGE_VOCAB: readonly string[] = [
   'relationship',
   'debt',
@@ -149,6 +158,12 @@ const EDGE_VOCAB: readonly string[] = [
   'kin_of',
   'ally_of',
   'enemy_of',
+  'bases_at',
+  'controls',
+  'employs',
+  'worships',
+  'hails_from',
+  'protects',
 ]
 
 interface RelationLine {

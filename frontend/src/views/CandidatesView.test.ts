@@ -427,6 +427,11 @@ describe('CandidatesView', () => {
     const type = wrapper.find('select[aria-label="Relation type"]')
     const target = wrapper.find('select[aria-label="Target entity"]')
     const counter = wrapper.find('form.add-relation input[aria-label="Counter"]')
+    // The picker mirrors the backend's 16-member vocabulary (2026-09-13).
+    const options = type.element.querySelectorAll('option')
+    expect(Array.from(options).map((o) => o.value)).toContain('bases_at')
+    expect(Array.from(options).map((o) => o.value)).toContain('protects')
+    expect(Array.from(options).length).toBe(16)
     await type.setValue('ally_of')
     await target.setValue('E1')
     await counter.setValue('2')

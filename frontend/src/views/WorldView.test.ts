@@ -320,6 +320,28 @@ describe('WorldView', () => {
     const type = card.find('select[aria-label="Relation type"]')
     const target = card.find('select[aria-label="Target entity"]')
     const counter = card.find('input[aria-label="Counter"]')
+    // The picker mirrors the backend's 16-member vocabulary (2026-09-13:
+    // bases_at/controls/employs/worships/hails_from/protects added) — an
+    // unlisted type the DM cannot choose stays unrepresentable.
+    const options = type.element.querySelectorAll('option')
+    expect(Array.from(options).map((o) => o.value)).toEqual([
+      'relationship',
+      'debt',
+      'grudge',
+      'loyalty',
+      'member_of',
+      'located_in',
+      'rival_of',
+      'kin_of',
+      'ally_of',
+      'enemy_of',
+      'bases_at',
+      'controls',
+      'employs',
+      'worships',
+      'hails_from',
+      'protects',
+    ])
     await direction.setValue('outbound')
     await type.setValue('debt')
     await target.setValue('E2')

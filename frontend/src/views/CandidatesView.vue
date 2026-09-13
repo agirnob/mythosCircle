@@ -333,7 +333,10 @@ function relationLine(candidate: Candidate, edge: StagedEdge): string {
 // proposed).
 // ---------------------------------------------------------------------------
 
-/** The closed Phase-1 edge vocabulary (AD-5) — the add-relation picker. */
+/**
+ * The closed edge vocabulary (AD-5, 16 members since 2026-09-13) — the
+ * add-relation picker. Mirrors app/store/commit.py EDGE_TYPES.
+ */
 const EDGE_VOCAB: readonly string[] = [
   'relationship',
   'debt',
@@ -345,6 +348,12 @@ const EDGE_VOCAB: readonly string[] = [
   'kin_of',
   'ally_of',
   'enemy_of',
+  'bases_at',
+  'controls',
+  'employs',
+  'worships',
+  'hails_from',
+  'protects',
 ]
 const EDGE_DIRECTIONS = ['outbound', 'inbound'] as const
 
