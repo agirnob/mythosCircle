@@ -2,7 +2,7 @@
 title: '5.4 MapTool / RPGToken Export (Third Target)'
 type: 'feature'
 created: '2026-09-14'
-status: 'in-review'
+status: 'done'
 baseline_commit: '40946c0e4a1d294df8925b54b8e776a62a3f9b42'
 review_loop_iteration: 0
 context:
@@ -131,3 +131,63 @@ Provisional wrapper shapes (verified against the owner's export): `GUID` → `<i
 
 **Manual checks (owner, acceptance):**
 - Owner's machine (no dev-box install): MapTool 1.18.6 → open any campaign → download the generated `.rptok` → drag it onto the map → confirm the token lands with the editable name, the full stat-block notes visible, GM Notes showing lore only to the GM view, and the portrait rendering on the token. Re-save via right-click → Save As… and commit the result as the round-trip fixture.
+
+## Suggested Review Order
+
+**Design intent — the deterministic .rptok assembly**
+
+- Entry point: committed state → bytes — read-only, byte-identical, FR18 envelope
+  [`export_sheets.py:1858`](../../backend/app/api/export_sheets.py#L1858)
+- content.xml carries the frozen named stable subset, never runtime/campaign state
+  [`export_sheets.py:1755`](../../backend/app/api/export_sheets.py#L1755)
+- Fixed member timestamps, pinned compress_type, no extra fields, stable order
+  [`export_sheets.py:1844`](../../backend/app/api/export_sheets.py#L1844)
+
+**Text safety**
+
+- XML 1.0-legal filter + full `>` escaping, one pass at the boundary (control chars, U+FFFE/U+FFFF)
+  [`export_sheets.py:1254`](../../backend/app/api/export_sheets.py#L1254)
+
+**Portrait and the default image**
+
+- Newest-first scan for a PNG-magic portrait; bundled default only when none; honest `[missing]`/`[unusable]` marker
+  [`export_sheets.py:1298`](../../backend/app/api/export_sheets.py#L1298)
+
+**Stat carrier — notes, gmNotes, macros**
+
+- 2024-Core lines as bold-labelled HTML, Spells block, sparse-safe layout
+  [`export_sheets.py:1414`](../../backend/app/api/export_sheets.py#L1414)
+- AR24 lore as labelled HTML paragraphs for gmNotes
+  [`export_sheets.py:1575`](../../backend/app/api/export_sheets.py#L1575)
+- Bare-roll buttons from structured AR25 fields; derived uuid5; integral-guarded to_hit
+  [`export_sheets.py:1665`](../../backend/app/api/export_sheets.py#L1665)
+- Fixture-shaped MacroButtonProperties XML (`<entry><int>N</int>`)
+  [`export_sheets.py:1709`](../../backend/app/api/export_sheets.py#L1709)
+
+**Route and API surface**
+
+- `format=maptool` Literal + attachment branch with FR18 logging
+  [`exports.py:366`](../../backend/app/api/exports.py#L366)
+
+**Tests**
+
+- Happy path: zip structure, subset inventory, exact notes/gmNotes, macros, determinism, read-only
+  [`test_export_api.py:1679`](../../backend/tests/test_export_api.py#L1679)
+- Older portrait wins over corrupt newer; corrupt vs missing marker branches; broken default
+  [`test_export_api.py:1937`](../../backend/tests/test_export_api.py#L1937)
+  [`test_export_api.py:1912`](../../backend/tests/test_export_api.py#L1912)
+  [`test_export_api.py:2083`](../../backend/tests/test_export_api.py#L2083)
+- Caster spells + BBEG challenge; sparse abilities + integral guards
+  [`test_export_api.py:1966`](../../backend/tests/test_export_api.py#L1966)
+  [`test_export_api.py:2019`](../../backend/tests/test_export_api.py#L2019)
+
+**Frontend**
+
+- MapTool export link + `maptool` format union
+  [`../../frontend/src/views/WorldView.vue:1272`](../../frontend/src/views/WorldView.vue#L1272)
+  [`../../frontend/src/views/WorldView.vue:439`](../../frontend/src/views/WorldView.vue#L439)
+- Anchor row test + regenerated schema member
+  [`../../frontend/src/views/WorldView.test.ts:1760`](../../frontend/src/views/WorldView.test.ts#L1760)
+  [`../../frontend/src/api/schema.ts:1752`](../../frontend/src/api/schema.ts#L1752)
+
+> Ctrl+click (Cmd+click on macOS) the links above to jump to each stop.
