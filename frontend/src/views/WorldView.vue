@@ -434,7 +434,10 @@ function worldExportUrl(format: 'markdown' | 'html'): string {
   return `/api/campaigns/${encodeURIComponent(campaignId)}/export?format=${format}`
 }
 
-function entityExportUrl(entityId: string, format: 'markdown' | 'html' | 'owlbear' | 'fg'): string {
+function entityExportUrl(
+  entityId: string,
+  format: 'markdown' | 'html' | 'owlbear' | 'fg' | 'maptool',
+): string {
   return `/api/campaigns/${encodeURIComponent(campaignId)}/entities/${encodeURIComponent(entityId)}/export?format=${format}`
 }
 
@@ -1266,7 +1269,12 @@ function additionalDataBlock(entity: EntityExport): string {
               <a class="link" :href="entityExportUrl(entity.id, 'fg')" download>
                 Fantasy Grounds
               </a>
-              <span class="muted small">Forge: file → Import paste · link → portrait override</span>
+              <a class="link" :href="entityExportUrl(entity.id, 'maptool')" download>
+                MapTool (rptok)
+              </a>
+              <span class="muted small">
+                Forge: file → Import paste · link → portrait override · MapTool: download → drag onto map
+              </span>
               <!-- Destructive, so last in the row and labelled to disambiguate
                    it from the relation/portrait deletes below. The DELETE
                    cascades over the entity's relations in one revision. -->

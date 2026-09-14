@@ -18,16 +18,21 @@ Markdown carries the full ``data`` fence (AR24 forward-compat, FR5/NFR10).
 from __future__ import annotations
 
 import base64
+import hashlib
 import html as _html
+import io
 import json
 import math
 import re
+import uuid
 import xml.etree.ElementTree as ET
+import zipfile
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.core.settings import configured_media_dir
+from app.media.service import PNG_SIGNATURE
 from app.pipeline.statblocks import damage_parts_sentence
 from app.store.commit import edge_counter_semantic
 
@@ -1228,3 +1233,586 @@ def render_entity_fg(export: WorldExport, entity_id: str) -> str:
     ET.indent(root, space="\t")
     body = ET.tostring(root, encoding="unicode")
     return '<?xml version="1.0" encoding="utf-8"?>\n' + body
+
+
+# ---------------------------------------------------------------------------
+# spec-5-4: MapTool / RPGToken export — deterministic .rptok ZIP
+# ---------------------------------------------------------------------------
+# The .rptok is an ordinary ZIP (research-5-4 §2b): content.xml (the
+# Token XStream-serialized as the fixture's named stable subset),
+# properties.xml (version 1.18.6 + herolab), and one embedded image as
+# the ``assets/<md5>`` Asset descriptor + ``assets/<md5>.png`` pair. The
+# token id GUID is DERIVED from the entity id (never random), the zip is
+# written with fixed timestamps/pinned deflate/no extra fields, and every
+# text run is XML 1.0-filtered + fully escaped — byte-identical repeats.
+# The html for notes/gmNotes is deliberately conservative and
+# attribute-free (<b>, <br>, <p> only — the owner ruling 2026-09-14).
+
+#: Illegal XML 1.0 control characters (dropped — escaping alone cannot
+#: legalize them; the matrix pins \x00-\x08, \x0B, \x0C, \x0E-\x1F).
+_XML10_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _xml10(text: str) -> str:
+    """An XML 1.0-legal text run: illegal chars dropped, then fully
+    escaped (``&<>"'``). Full ``>`` escaping also neutralizes ``]]>``, so
+    any value can round-trip through an XML parse."""
+    return _html.escape(_XML10_ILLEGAL.sub("", text), quote=True)
+
+
+def _rptok_guid(entity_id: str) -> str:
+    """The token id GUID, derived from the entity id (spec-5-4): the
+    first 16 bytes of sha256(entity_id), standard-base64 — the exact
+    on-disk ``<id><baGUID>…</baGUID></id>`` shape from the owner's real
+    1.18.6 export. Unique per entity, deterministic across exports,
+    never random."""
+    digest = hashlib.sha256(entity_id.encode("utf-8")).digest()[:16]
+    return base64.b64encode(digest).decode("ascii")
+
+
+def _rptok_md5(data: bytes) -> str:
+    """The 32-lowercase-hex MD5 of the image bytes (MD5Key.java) —
+    FIPS-safe (``usedforsecurity=False``, spec-5-4 review loop)."""
+    return hashlib.new("md5", data, usedforsecurity=False).hexdigest()
+
+
+#: The bundled token image embedded when the portrait pipeline produced
+#: nothing usable (spec-5-4): one swappable 256×256 RGBA PNG committed at
+#: backend/app/media/maptool_default_token.png.
+_RPTOK_DEFAULT_IMAGE = (
+    Path(__file__).resolve().parent.parent / "media" / "maptool_default_token.png"
+)
+
+
+def _rptok_default_image() -> bytes | None:
+    """The bundled default token PNG bytes, or None when the file is
+    missing/not a PNG — the old no-image fallback + marker."""
+    try:
+        raw = _RPTOK_DEFAULT_IMAGE.read_bytes()
+    except OSError:
+        return None
+    return raw if raw.startswith(PNG_SIGNATURE) else None
+
+
+def _rptok_token_image(
+    export: WorldExport, entity: EntityExport
+) -> tuple[bytes | None, str | None]:
+    """The embedded image bytes + the broken-portrait marker filename
+    (spec-5-4). Image = the newest AVAILABLE ``kind=image`` row whose
+    on-disk bytes start with the PNG magic (no size cap — the .rptok
+    member is raw, unlike the fg path's MAX_INLINE_BYTES); a
+    missing/broken portrait embeds the bundled default instead; a broken
+    default falls back to no image (the matrix's old no-image shape).
+    The marker names the unusable portrait filename only when the entity
+    HAS media rows — never invented, never when there is no media."""
+    image_rows = [row for row in entity.media if row.kind == "image"]
+    usable: bytes | None = None
+    marker: str | None = None
+    if image_rows:
+        available = [row for row in image_rows if row.available]
+        if available:
+            row = available[-1]
+            path = Path(configured_media_dir()) / export.campaign.id / entity.id / row.filename
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                raw = None
+            if raw is not None and raw.startswith(PNG_SIGNATURE):
+                usable = raw
+            elif marker is None:
+                marker = row.filename
+        elif marker is None:
+            marker = image_rows[0].filename
+    if usable is None:
+        default = _rptok_default_image()
+        if default is not None:
+            usable = default
+    return usable, marker
+
+
+def _rptok_identity_header(
+    identity: dict[str, Any], block: dict[str, Any], data: dict[str, Any]
+) -> str:
+    """The stat-block opening line (2024-Core line 2 shape: ``<size>
+    <type>, <alignment>``): the D&D creature type (+ size) and alignment
+    from the committed identity — record fields win over the top-level
+    AR24 keys (the fg renderer's rule). Any piece is sparse-omitted,
+    never invented."""
+    size = _forge_text(block.get("size")) or _forge_text(data.get("size"))
+    race = _forge_text(identity.get("race")) or _forge_text(data.get("race_type"))
+    alignment = _forge_text(identity.get("alignment")) or _forge_text(data.get("alignment"))
+    head: list[str] = []
+    if size is not None and race is not None:
+        head.append(f"{size} {race}")
+    elif race is not None:
+        head.append(race)
+    elif size is not None:
+        head.append(size)
+    if alignment is not None:
+        head.append(alignment)
+    return ", ".join(head)
+
+
+#: The ability columns of the 2024-Core stat block (research-5-3 §2d):
+#: three abilities per row, the grammar's lines 7-8.
+_RPTOK_ABILITY_COLUMNS: tuple[tuple[str, ...], ...] = (("str", "dex", "con"), ("int", "wis", "cha"))
+
+#: The 2024-Core keyword labels for the damage/condition lines (same
+#: committed keys the fg renderer maps; order pinned, never sorted).
+_RPTOK_DAMAGE_LABELS: tuple[tuple[str, str], ...] = (
+    ("damage_vulnerabilities", "Damage Vulnerabilities"),
+    ("damage_resistances", "Damage Resistances"),
+    ("damage_immunities", "Damage Immunities"),
+    ("condition_immunities", "Condition Immunities"),
+)
+
+
+def _rptok_power_lines(items: Any, *, with_damage: bool = False) -> list[str]:
+    """2024-Core section entries (Traits/Actions) as bold-labelled lines:
+    ``<b>Name.</b> <description>``. The description gains the structured
+    damage sentence when the prose dropped the dice (the fg rule — the
+    numbers the DM reads come from the parts, not a re-parse). Nameless
+    members and non-dict junk are skipped, never failed."""
+    if not isinstance(items, list):
+        return []
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        description = item.get("description")
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            description = str(description)
+        if with_damage:
+            sentence = damage_parts_sentence(item.get("damage"))
+            if sentence is not None and not _states_damage_dice(description, sentence):
+                description = f"{description} {sentence}" if description else sentence
+        line = f"<b>{name}.</b>"
+        if description:
+            line += f" {description}"
+        out.append(line)
+    return out
+
+
+def _rptok_notes_html(block: dict[str, Any], data: dict[str, Any]) -> str:
+    """The 5e stat block as conservative attribute-free HTML (spec-5-4):
+    the 2024-Core import-grammar lines (research-5-3 §2d) as bold-labelled
+    lines separated by ``<br>``, race/type/alignment header first. Line
+    order and labels follow the 2024-Core grammar so the visible text
+    stays FG-paste-shaped at the content level. Sparse is legal — only
+    committed keys render. The caller (content.xml) applies the single
+    XML-escape pass over the whole HTML run at the element boundary, so
+    the text here is raw HTML; the builder itself never invents text."""
+    identity = block.get("identity")
+    identity = identity if isinstance(identity, dict) else {}
+    combat = block.get("combat")
+    combat = combat if isinstance(combat, dict) else {}
+    attributes = block.get("attributes")
+    attributes = attributes if isinstance(attributes, dict) else {}
+    saves = block.get("saves")
+    saves = saves if isinstance(saves, dict) else {}
+
+    lines: list[str] = []
+    header = _rptok_identity_header(identity, block, data)
+    if header:
+        lines.append(f"<b>{header}</b>")
+
+    # AC (2024-Core line 3) with the optional Initiative marker riding
+    # the same line; the parenthetical is the Dex score, the 2024 shape.
+    ac = _forge_number(combat.get("ac"))
+    if ac is None:
+        ac = _forge_number(combat.get("armor_class"))
+    if ac is not None:
+        ac_line = f"AC {ac:g}"
+        initiative = _forge_number(block.get("initiative"))
+        if initiative is None:
+            initiative = _forge_number(combat.get("initiative"))
+        if initiative is not None:
+            ac_line += f" Initiative {int(initiative):+d}"
+            dex_score = _fg_ability_score(attributes, "dex")
+            if dex_score is not None:
+                ac_line += f" ({dex_score})"
+        lines.append(ac_line)
+
+    # HP (2024-Core line 4): the parenthetical holds the raw hit-dice
+    # string verbatim.
+    hp = _forge_number(combat.get("hp"))
+    if hp is None:
+        hp = _forge_number(combat.get("hit_points"))
+    if hp is not None:
+        hp_line = f"HP {hp:g}"
+        hit_dice = _forge_text(combat.get("hit_dice"))
+        if hit_dice is not None:
+            hp_line += f" ({hit_dice})"
+        lines.append(hp_line)
+
+    speed = _forge_text(combat.get("speed")) or _forge_text(block.get("speed"))
+    if speed is not None:
+        lines.append(f"Speed {speed}")
+
+    # Ability columns (2024-Core lines 6-8): MOD SAVE header + two rows of
+    # ``Abl <score> <+mod> <+save>``; saves ride the columns (the 2024
+    # shape — the fg renderer's savemodifier source).
+    if attributes:
+        lines.append("MOD SAVE MOD SAVE MOD SAVE")
+        for row in _RPTOK_ABILITY_COLUMNS:
+            cells: list[str] = []
+            for ability in row:
+                score = _fg_ability_score(attributes, ability)
+                if score is None:
+                    continue
+                bonus = _fg_ability_bonus(score) or 0
+                cell = f"{ability.capitalize()} {score} {bonus:+d}"
+                saved = _forge_number(saves.get(ability))
+                if saved is not None:
+                    cell += f" {int(saved):+d}"
+                cells.append(cell)
+            if cells:
+                lines.append(" ".join(cells))
+
+    # Skills: the Z014 sign join (full names, sign-aware bonuses).
+    skills = block.get("skills")
+    if isinstance(skills, list):
+        skill_parts: list[str] = []
+        for entry in skills:
+            if not isinstance(entry, dict):
+                continue
+            skill_name = entry.get("name")
+            if not isinstance(skill_name, str) or not skill_name.strip():
+                continue
+            skill_bonus = _forge_number(entry.get("bonus"))
+            if skill_bonus is None:
+                skill_parts.append(skill_name)
+            elif isinstance(skill_bonus, float):
+                skill_parts.append(f"{skill_name} {skill_bonus:g}")
+            else:
+                skill_parts.append(f"{skill_name} {skill_bonus:+d}")
+        if skill_parts:
+            lines.append("Skills " + ", ".join(skill_parts))
+
+    for key, label in _RPTOK_DAMAGE_LABELS:
+        text = _forge_text(block.get(key)) or _forge_text(data.get(key))
+        if text is not None:
+            lines.append(f"{label} {text}")
+
+    # Senses — the 2024 shape carries Passive Perception on this line.
+    senses = _forge_text(block.get("senses")) or _forge_text(data.get("senses"))
+    perception = _forge_number(block.get("passive_perception"))
+    if senses is not None or perception is not None:
+        senses_bits: list[str] = []
+        if senses is not None:
+            senses_bits.append(senses)
+        if perception is not None:
+            senses_bits.append(f"Passive Perception {int(perception)}")
+        lines.append("Senses " + "; ".join(senses_bits))
+
+    languages = _forge_text(block.get("languages")) or _forge_text(data.get("languages"))
+    if languages is not None:
+        lines.append(f"Languages {languages}")
+
+    # Challenge derives from the stat_block.identity numerics — level for
+    # NPC/BBEG, the CR decimal for Monster (the fg derivation).
+    role = identity.get("role")
+    challenge: int | float | None = None
+    if role in ("NPC", "BBEG"):
+        challenge = _forge_number(identity.get("level"))
+    elif role == "Monster":
+        challenge = _forge_number(identity.get("cr"))
+    if challenge is not None:
+        lines.append(f"CR {challenge:g}")
+
+    proficiency = _forge_number(block.get("proficiency_bonus"))
+    if proficiency is not None:
+        lines.append(f"Proficiency Bonus {proficiency:g}")
+
+    trait_lines = _rptok_power_lines(block.get("traits"))
+    if trait_lines:
+        lines.append("Traits")
+        lines.extend(trait_lines)
+    action_lines = _rptok_power_lines(block.get("actions"), with_damage=True)
+    if action_lines:
+        lines.append("Actions")
+        lines.extend(action_lines)
+
+    return "<br>".join(lines)
+
+
+def _rptok_gmnotes_html(data: dict[str, Any]) -> str:
+    """The AR24 lore sections as labelled HTML paragraphs (spec-5-4): one
+    ``<p><b>Label</b><br>…</p>`` per non-blank section in the AR24
+    profile order (_FG_LORE_FIELDS — the fg notes' order). Blank/absent
+    sections are skipped, never invented; the caller escapes the whole
+    run once at the content.xml element boundary."""
+    paragraphs: list[str] = []
+    for key in _FG_LORE_FIELDS:
+        value = data.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        runs = [f"<b>{_label(key)}</b>"]
+        runs.extend(_fg_note_lines(value))
+        paragraphs.append("<p>" + "<br>".join(runs) + "</p>")
+    return "".join(paragraphs)
+
+
+def _rptok_damage_roll(part: Any) -> str | None:
+    """One roll token from an AR25 damage part (spec-5-4): the part's own
+    ``dice`` string verbatim when present, else ``{count}d{sides}{±bonus}``
+    from the integer fields; bonuses are tight-joined (``+0`` dropped). A
+    part with neither usable dice nor integer count/sides is unparseable
+    -> None."""
+    if not isinstance(part, dict):
+        return None
+    dice = part.get("dice")
+    if isinstance(dice, str) and dice.strip():
+        roll = dice.strip()
+    else:
+        count, sides = part.get("count"), part.get("sides")
+        if type(count) is not int or type(sides) is not int or sides <= 0:
+            return None
+        roll = f"{count}d{sides}"
+    bonus = part.get("bonus")
+    if type(bonus) is int and bonus != 0:
+        roll = f"{roll}{bonus:+d}"
+    return roll
+
+
+#: uuid5 namespace for derived macro UUIDs — any fixed value yields
+#: deterministic uuid5s; the nil namespace is pinned so the derived IDs
+#: can never drift across builds (spec-5-4: derived, never random).
+_RPTOK_UUID_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+
+def _rptok_attack_macros(block: dict[str, Any], entity_id: str) -> list[dict[str, Any]]:
+    """One bare-roll MacroButtonProperties per action with structured
+    damage (spec-5-4). Command = ``[1d20+N]`` (only when ``to_hit`` is
+    stored, sign-aware) + one ``[XdY±Z]`` per AR25 damage part, tight
+    operators, chained in a single chat message; ``macroUUID`` =
+    uuid5(pinned namespace, entity_id + 1-based action index) —
+    deterministic, never random; ``index`` = the 1-based position in the
+    stat-block action order. Actions without usable damage parts —
+    pre-2026-09-11 prose-only blocks included — get no button."""
+    actions = block.get("actions")
+    if not isinstance(actions, list):
+        return []
+    buttons: list[dict[str, Any]] = []
+    for position, item in enumerate(actions, start=1):
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        rolls: list[str] = []
+        damage = item.get("damage")
+        if isinstance(damage, list):
+            for part in damage:
+                roll = _rptok_damage_roll(part)
+                if roll is not None:
+                    rolls.append(f"[{roll}]")
+        if not rolls:
+            continue
+        command: list[str] = []
+        to_hit = _forge_number(item.get("to_hit"))
+        if to_hit is not None:
+            command.append(f"[1d20{int(to_hit):+d}]")
+        command.extend(rolls)
+        buttons.append(
+            {
+                "macroUUID": str(uuid.uuid5(_RPTOK_UUID_NS, f"{entity_id}{position}")),
+                "index": position,
+                "label": name,
+                "command": " ".join(command),
+            }
+        )
+    return buttons
+
+
+def _rptok_macro_buttons_xml(buttons: list[dict[str, Any]]) -> str:
+    """The ``macroPropertiesMap`` block — the fixture's MacroButtonProperties
+    form copied field-for-field (saveLocation=Token, colorKey=default,
+    hotKey=None, autoExecute=true, includeLabel=false, applyToTokens=false,
+    fontColorKey=default, fontSize=1.00em, displayHotKey=true,
+    commonMacro=false, compare* true, allowPlayerEdits=true), one
+    ``<entry><int>N</int>`` per button (spec-5-4)."""
+    entries: list[str] = []
+    for button in buttons:
+        index = button["index"]
+        entries.append(
+            "    <entry>\n"
+            f"      <int>{index}</int>\n"
+            "      <net.rptools.maptool.model.MacroButtonProperties>\n"
+            f"        <macroUUID>{button['macroUUID']}</macroUUID>\n"
+            "        <saveLocation>Token</saveLocation>\n"
+            f"        <index>{index}</index>\n"
+            "        <colorKey>default</colorKey>\n"
+            "        <hotKey>None</hotKey>\n"
+            f"        <command>{_xml10(button['command'])}</command>\n"
+            f"        <label>{_xml10(button['label'])}</label>\n"
+            "        <group></group>\n"
+            "        <sortby></sortby>\n"
+            "        <autoExecute>true</autoExecute>\n"
+            "        <includeLabel>false</includeLabel>\n"
+            "        <applyToTokens>false</applyToTokens>\n"
+            "        <fontColorKey>default</fontColorKey>\n"
+            "        <fontSize>1.00em</fontSize>\n"
+            "        <minWidth></minWidth>\n"
+            "        <maxWidth></maxWidth>\n"
+            "        <allowPlayerEdits>true</allowPlayerEdits>\n"
+            "        <toolTip></toolTip>\n"
+            "        <displayHotKey>true</displayHotKey>\n"
+            "        <commonMacro>false</commonMacro>\n"
+            "        <compareGroup>true</compareGroup>\n"
+            "        <compareSortPrefix>true</compareSortPrefix>\n"
+            "        <compareCommand>true</compareCommand>\n"
+            "        <compareIncludeLabel>true</compareIncludeLabel>\n"
+            "        <compareAutoExecute>true</compareAutoExecute>\n"
+            "        <compareApplyToSelectedTokens>true</compareApplyToSelectedTokens>\n"
+            "      </net.rptools.maptool.model.MacroButtonProperties>\n"
+            "    </entry>"
+        )
+    return "  <macroPropertiesMap>\n" + "\n".join(entries) + "\n  </macroPropertiesMap>"
+
+
+def _rptok_content_xml(
+    entity: EntityExport,
+    notes: str,
+    gm_notes: str,
+    image_md5: str | None,
+    buttons: list[dict[str, Any]],
+) -> str:
+    """The token's content.xml — the fixture's NAMED STABLE SUBSET of the
+    gold field set (spec-5-4): derived ``<id><baGUID>``, ``name``, the
+    NPC/CIRCLE/TOKEN pins, ``notes``/``gmNotes`` with their explicit
+    ``text/html`` types, the null-key ``imageAssetMap`` when an image is
+    embedded, and the ``macroPropertiesMap`` when buttons exist. Never
+    campaign/runtime state (positions, ``exposedAreaGUID``, ``sizeMap``,
+    ``beingImpersonated``, ``isFlipped*``, ``state``, lights,
+    ``ownerList``, ``terrainModifier*``). notes/gmNotes are raw HTML runs
+    (built by the ``_rptok_*`` text helpers) — the single XML-escape pass
+    here is the ONLY escaping they get (their HTML tags and any hostile
+    text all land escaped, so the value round-trips as one text node);
+    empty ones emit the pinned ``<notes></notes>`` form, never
+    ``<notes/>``."""
+    parts = [
+        "<net.rptools.maptool.model.Token>",
+        "  <id>",
+        f"    <baGUID>{_rptok_guid(entity.id)}</baGUID>",
+        "  </id>",
+    ]
+    if image_md5 is not None:
+        parts.append("  <imageAssetMap>")
+        parts.append("    <entry>")
+        parts.append("      <null/>")
+        parts.append("      <net.rptools.lib.MD5Key>")
+        parts.append(f"        <id>{image_md5}</id>")
+        parts.append("      </net.rptools.lib.MD5Key>")
+        parts.append("    </entry>")
+        parts.append("  </imageAssetMap>")
+    parts.extend(
+        [
+            f"  <name>{_xml10(entity.name)}</name>",
+            "  <tokenShape>CIRCLE</tokenShape>",
+            "  <tokenType>NPC</tokenType>",
+            "  <layer>TOKEN</layer>",
+            f"  <notes>{_xml10(notes)}</notes>",
+            "  <notesType>text/html</notesType>",
+            f"  <gmNotes>{_xml10(gm_notes)}</gmNotes>",
+            "  <gmNotesType>text/html</gmNotesType>",
+        ]
+    )
+    if buttons:
+        parts.append(_rptok_macro_buttons_xml(buttons))
+    parts.append("</net.rptools.maptool.model.Token>")
+    return "\n".join(parts) + "\n"
+
+
+#: properties.xml verbatim — the fixture's Map<String,Object> shape with
+#: the pinned version 1.18.6 (research-5-4 §2b: version ≤ client loads).
+_RPTOK_PROPERTIES_XML = (
+    "<map>\n"
+    "  <entry>\n"
+    "    <string>version</string>\n"
+    "    <string>1.18.6</string>\n"
+    "  </entry>\n"
+    "  <entry>\n"
+    "    <string>herolab</string>\n"
+    "    <boolean>false</boolean>\n"
+    "  </entry>\n"
+    "</map>\n"
+)
+
+
+def _rptok_asset_descriptor_xml(entity: EntityExport, image_md5: str) -> str:
+    """The ``assets/<md5>`` Asset descriptor — the fixture's exact shape:
+    a nested ``<id>`` holding the 32-hex md5, the token name, and the
+    png/IMAGE pins (the parse contract in PackedFile.getAsset)."""
+    return (
+        "<net.rptools.maptool.model.Asset>\n"
+        "  <id>\n"
+        f"    <id>{image_md5}</id>\n"
+        "  </id>\n"
+        f"  <name>{_xml10(entity.name)}</name>\n"
+        "  <extension>png</extension>\n"
+        "  <type>IMAGE</type>\n"
+        "</net.rptools.maptool.model.Asset>\n"
+    )
+
+
+#: Fixed member timestamp for every zip entry (spec-5-4: no wall clock).
+_RPTOK_ZIP_DATE = (1980, 1, 1, 0, 0, 0)
+
+
+def _rptok_zip(entries: list[tuple[str, bytes]]) -> bytes:
+    """A deterministic ZIP (spec-5-4): fixed member timestamps, pinned
+    deflate, no member extra fields, stable entry order. Deflate is
+    deterministic for identical inputs — byte-identity is scoped to one
+    Python/zlib build (design note)."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for arcname, payload in entries:
+            info = zipfile.ZipInfo(arcname, date_time=_RPTOK_ZIP_DATE)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, payload)
+    return buffer.getvalue()
+
+
+def render_entity_maptool(export: WorldExport, entity_id: str) -> bytes:
+    """MapTool 1.18.6 token file (spec-5-4): one committed entity as a
+    deterministic ``.rptok`` ZIP — content.xml (the Token XML = the
+    fixture's named stable subset), properties.xml (version 1.18.6), and
+    the ``assets/<md5>`` Asset descriptor + raw PNG member pair. The
+    portrait is the newest AVAILABLE ``kind=image`` row whose on-disk
+    bytes start with the PNG magic; a missing/broken portrait embeds the
+    bundled default token image instead (honesty marker in the notes; no
+    marker when the entity has no media); a broken default falls back to
+    the no-image shape. Pure function of the snapshot plus file bytes —
+    no wall clock, no store write, byte-identical repeats (FR18)."""
+    entity = next(e for e in export.entities if e.id == entity_id)
+    data = entity.data if isinstance(entity.data, dict) else {}
+    block = data.get("stat_block")
+    block = block if isinstance(block, dict) else {}
+
+    notes = _rptok_notes_html(block, data)
+    image_bytes, marker = _rptok_token_image(export, entity)
+    if marker is not None:
+        marker_html = f"Portrait: {marker} [missing — default image used]"
+        notes = f"{notes}<br>{marker_html}" if notes else marker_html
+    gm_notes = _rptok_gmnotes_html(data)
+    buttons = _rptok_attack_macros(block, entity.id)
+
+    image_md5 = _rptok_md5(image_bytes) if image_bytes is not None else None
+    content = _rptok_content_xml(entity, notes, gm_notes, image_md5, buttons)
+    entries: list[tuple[str, bytes]] = [
+        ("content.xml", content.encode("utf-8")),
+        ("properties.xml", _RPTOK_PROPERTIES_XML.encode("utf-8")),
+    ]
+    if image_md5 is not None:
+        assert image_bytes is not None
+        entries.append(
+            (f"assets/{image_md5}", _rptok_asset_descriptor_xml(entity, image_md5).encode("utf-8"))
+        )
+        entries.append((f"assets/{image_md5}.png", image_bytes))
+    return _rptok_zip(entries)

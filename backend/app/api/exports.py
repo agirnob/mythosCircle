@@ -210,7 +210,7 @@ def _build_export(
 
 
 def _attachment(
-    render: Callable[[], str],
+    render: Callable[[], str | bytes],
     *,
     filename: str,
     media_type: str,
@@ -302,13 +302,14 @@ def export_entity(
     campaign_id: str,
     entity_id: str,
     current: Annotated[models.Account, Depends(get_current_account)],
-    format: Literal["json", "markdown", "html", "owlbear", "fg"] = "json",
+    format: Literal["json", "markdown", "html", "owlbear", "fg", "maptool"] = "json",
 ) -> EntityExportDetail | Response:
     """One committed entity — edges touching it and the revision head —
     as JSON, Markdown, a print-ready HTML sheet, the Owlbear/Forge
-    transfer payload, or the Fantasy Grounds Unity 2024-record XML
-    (spec-5-3). The entity-level projection is the engine Epic 5's VTT
-    adapters consume (spec-5.1, spec-5-2, spec-5.3)."""
+    transfer payload, the Fantasy Grounds Unity 2024-record XML
+    (spec-5-3), or the MapTool 1.18.6 ``.rptok`` token ZIP (spec-5-4).
+    The entity-level projection is the engine Epic 5's VTT adapters
+    consume (spec-5.1, spec-5-2, spec-5.3)."""
     campaign = get_campaign(current.id, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")
@@ -360,6 +361,16 @@ def export_entity(
             campaign_id=campaign_id,
             entity_id=entity_id,
             fmt="fg",
+        )
+    if format == "maptool":
+        stem = _download_stem(export_sheets.name_labels(export)[entity_id], entity_id, "entity")
+        return _attachment(
+            lambda: export_sheets.render_entity_maptool(export, entity_id),
+            filename=f"{stem}.rptok",
+            media_type="application/zip",
+            campaign_id=campaign_id,
+            entity_id=entity_id,
+            fmt="maptool",
         )
     stem = _download_stem(export_sheets.name_labels(export)[entity_id], entity_id, "entity")
     return _attachment(

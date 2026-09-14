@@ -428,9 +428,10 @@ export interface paths {
          * Export Entity
          * @description One committed entity — edges touching it and the revision head —
          *     as JSON, Markdown, a print-ready HTML sheet, the Owlbear/Forge
-         *     transfer payload, or the Fantasy Grounds Unity 2024-record XML
-         *     (spec-5-3). The entity-level projection is the engine Epic 5's VTT
-         *     adapters consume (spec-5.1, spec-5-2, spec-5.3).
+         *     transfer payload, the Fantasy Grounds Unity 2024-record XML
+         *     (spec-5-3), or the MapTool 1.18.6 ``.rptok`` token ZIP (spec-5-4).
+         *     The entity-level projection is the engine Epic 5's VTT adapters
+         *     consume (spec-5.1, spec-5-2, spec-5.3).
          */
         get: operations["export_entity_api_campaigns__campaign_id__entities__entity_id__export_get"];
         put?: never;
@@ -1748,7 +1749,7 @@ export interface operations {
     export_entity_api_campaigns__campaign_id__entities__entity_id__export_get: {
         parameters: {
             query?: {
-                format?: "json" | "markdown" | "html" | "owlbear" | "fg";
+                format?: "json" | "markdown" | "html" | "owlbear" | "fg" | "maptool";
             };
             header?: never;
             path: {

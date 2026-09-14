@@ -9,10 +9,14 @@ float coercion (a pure read endpoint never 500s on its own data).
 """
 
 import base64
+import hashlib
+import io
 import json as _json
 import logging
 import re
+import uuid
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +26,7 @@ from sqlalchemy import func, select
 
 from app.core import time
 from app.core.ids import new_id
+from app.media.service import PNG_SIGNATURE
 from app.store import add_media, models
 from app.store.commit import commit_subgraph
 from app.store.db import session_scope
@@ -1411,6 +1416,596 @@ def test_fg_render_failure_is_logged_as_event(
             events = [r for r in caplog.records if "export_failure" in r.getMessage()]
             assert len(events) == 1
             assert "format=fg" in events[0].getMessage()
+            assert _counts(campaign_id) == before
+    finally:
+        init_db(previous)
+
+
+# ---------------------------------------------------------------------------
+# spec-5-4: MapTool / RPGToken export — deterministic .rptok ZIP
+# ---------------------------------------------------------------------------
+
+#: The owner's real 1.18.6 content.xml top-level tag set (the gold
+#: fixture) — our emitted set is the NAMED STABLE SUBSET and must always
+#: be a subset of this (the acceptance contract, spec-5-4).
+_RPTOK_GOLD_TAGS = frozenset(
+    {
+        "id",
+        "beingImpersonated",
+        "exposedAreaGUID",
+        "imageAssetMap",
+        "x",
+        "y",
+        "z",
+        "lastX",
+        "lastY",
+        "anchorX",
+        "anchorY",
+        "sizeScale",
+        "scaleX",
+        "scaleY",
+        "snapToScale",
+        "width",
+        "height",
+        "isoWidth",
+        "isoHeight",
+        "sizeMap",
+        "snapToGrid",
+        "isVisible",
+        "visibleOnlyToOwner",
+        "vblColorSensitivity",
+        "alwaysVisibleTolerance",
+        "isAlwaysVisible",
+        "name",
+        "ownerList",
+        "ownerType",
+        "tokenShape",
+        "tokenType",
+        "layer",
+        "propertyType",
+        "tokenOpacity",
+        "speechName",
+        "terrainModifier",
+        "terrainModifierOperation",
+        "terrainModifiersIgnored",
+        "isFlippedX",
+        "isFlippedY",
+        "isFlippedIso",
+        "uniqueLightSources",
+        "lightSourceList",
+        "sightType",
+        "hasSight",
+        "hasImageTable",
+        "notes",
+        "notesType",
+        "gmNotes",
+        "gmNotesType",
+        "state",
+        "propertyMapCI",
+        "macroPropertiesMap",
+        "speechMap",
+        "allowURIAccess",
+    }
+)
+
+#: Exactly the set render_entity_maptool emits for a full NPC (spec-5-4:
+#: the named stable subset — never campaign/runtime state).
+_RPTOK_SUBSET_TAGS = frozenset(
+    {
+        "id",
+        "imageAssetMap",
+        "name",
+        "tokenShape",
+        "tokenType",
+        "layer",
+        "notes",
+        "notesType",
+        "gmNotes",
+        "gmNotesType",
+        "macroPropertiesMap",
+    }
+)
+
+#: The MacroButtonProperties shape (copied from the gold fixture) — pins
+#: every field name so the emitted buttons stay fixture-shaped.
+_RPTOK_BUTTON_FIELDS = frozenset(
+    {
+        "macroUUID",
+        "saveLocation",
+        "index",
+        "colorKey",
+        "hotKey",
+        "command",
+        "label",
+        "group",
+        "sortby",
+        "autoExecute",
+        "includeLabel",
+        "applyToTokens",
+        "fontColorKey",
+        "fontSize",
+        "minWidth",
+        "maxWidth",
+        "allowPlayerEdits",
+        "toolTip",
+        "displayHotKey",
+        "commonMacro",
+        "compareGroup",
+        "compareSortPrefix",
+        "compareCommand",
+        "compareIncludeLabel",
+        "compareAutoExecute",
+        "compareApplyToSelectedTokens",
+    }
+)
+
+_RPTOK_DEFAULT_IMAGE_PATH = (
+    Path(__file__).resolve().parent.parent / "app" / "media" / "maptool_default_token.png"
+)
+
+_RPTOK_UUID_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+
+def _maptool(client: Any, campaign_id: str, entity_id: str) -> Any:
+    return client.get(
+        f"/api/campaigns/{campaign_id}/entities/{entity_id}/export",
+        params={"format": "maptool"},
+    )
+
+
+def _rptok_zip(payload: bytes) -> zipfile.ZipFile:
+    return zipfile.ZipFile(io.BytesIO(payload))
+
+
+def _md5_hex(data: bytes) -> str:
+    return hashlib.new("md5", data, usedforsecurity=False).hexdigest()
+
+
+def _write_media_png(tmp_path: Path, campaign_id: str, row: models.Media, data: bytes) -> None:
+    """A PNG-magic file on disk for a manifest row (the .rptok image
+    member is validated by magic, unlike the fg path's byte-blindness)."""
+    path = tmp_path / "media" / campaign_id / row.entity_id / row.filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+def _commit_maptool_warrior(campaign_id: str) -> str:
+    """One stat-blocked NPC with structured AR25 actions for the macro
+    rows: Spear (to_hit + two damage parts), Smite (damage only — no
+    to_hit still gets a button), Trip (negative to_hit), and Bite
+    (prose-only — no button). Returns the entity id."""
+    entity_id, anchor_id = new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=entity_id,
+                kind="character",
+                name="Marta",
+                text="Guard.",
+                data={
+                    "appearance": "Scarred veteran.",
+                    "personality": "Laconic.",
+                    "secret": "Owes the watch captain.",
+                    "background": "Fought at the eastern gate.",
+                    "stat_block": {
+                        "identity": {
+                            "role": "NPC",
+                            "race": "Human",
+                            "alignment": "LN",
+                            "level": 5,
+                        },
+                        "attributes": {
+                            "str": 16,
+                            "dex": 14,
+                            "con": 14,
+                            "int": 10,
+                            "wis": 12,
+                            "cha": 10,
+                        },
+                        "combat": {
+                            "ac": 15,
+                            "hp": 45,
+                            "hit_dice": "6d10 + 12",
+                            "speed": "30 ft.",
+                            "initiative": 3,
+                        },
+                        "saves": {"str": 5, "dex": 4, "con": 5, "int": 0, "wis": 3, "cha": 0},
+                        "skills": [
+                            {"name": "Athletics", "bonus": 6},
+                            {"name": "Perception", "bonus": 1},
+                        ],
+                        "senses": "Darkvision 60 ft.",
+                        "languages": "Common",
+                        "proficiency_bonus": 3,
+                        "passive_perception": 11,
+                        "traits": [{"name": "Vigilant", "description": "Never sleeps on duty."}],
+                        "actions": [
+                            {
+                                "name": "Spear",
+                                "description": "Melee Weapon Attack, reach 10 ft.",
+                                "to_hit": 5,
+                                "damage": [
+                                    {"count": 1, "sides": 8, "bonus": 7, "type": "piercing"},
+                                    {"count": 3, "sides": 10, "bonus": 2, "type": "radiant"},
+                                ],
+                            },
+                            {
+                                "name": "Smite",
+                                "description": "Radiant smite.",
+                                "damage": [
+                                    {"count": 2, "sides": 6, "bonus": 12, "type": "radiant"}
+                                ],
+                            },
+                            {
+                                "name": "Trip",
+                                "to_hit": -1,
+                                "damage": [{"count": 1, "sides": 4, "type": "bludgeoning"}],
+                            },
+                            {"name": "Hurl", "damage": [{"dice": "1d12+1"}]},
+                            {"name": "Bite", "description": "Melee attack, 1d8+2."},
+                        ],
+                    },
+                },
+            ),
+            models.EntityInput(id=anchor_id, kind="place", name="Gate", text="."),
+        ],
+        edges=[models.EdgeInput(src=entity_id, dst=anchor_id, type="located_in", counter=1)],
+    )
+    return entity_id
+
+
+def _rptok_button_props(root: ET.Element) -> list[ET.Element]:
+    """The MacroButtonProperties elements of a parsed content.xml (never
+    None — the test fixtures emit them; the assert narrows for mypy)."""
+    props: list[ET.Element] = []
+    for entry in root.findall("macroPropertiesMap/entry"):
+        prop = entry.find("net.rptools.maptool.model.MacroButtonProperties")
+        assert prop is not None
+        props.append(prop)
+    return props
+
+
+def test_maptool_happy_npc(client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """HAPPY NPC (spec-5-4 matrix): the .rptok zip structure (content.xml
+    + properties.xml + assets/<md5> + .png with exact md5), the XML
+    element inventory (a subset of the gold fixture's tag set), the HTML
+    stat-block notes, the AR24 lore gmNotes, the derived GUID, one
+    deterministic macro button per damage-bearing action, and the
+    read-only invariant (AR18/FR18)."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    marta_id = _commit_maptool_warrior(campaign_id)
+    row = add_media(campaign_id, marta_id, f"{new_id()}.png", "image")
+    png = PNG_SIGNATURE + b"fixture-portrait"
+    _write_media_png(tmp_path, campaign_id, row, png)
+    before = _counts(campaign_id)
+
+    first = _maptool(client, campaign_id, marta_id)
+    assert first.status_code == 200
+    assert first.headers["content-type"].startswith("application/zip")
+    disposition = first.headers["content-disposition"]
+    assert disposition.startswith("attachment") and disposition.endswith('.rptok"')
+    archive = _rptok_zip(first.content)
+
+    md5 = _md5_hex(png)
+    assert archive.namelist() == [
+        "content.xml",
+        "properties.xml",
+        f"assets/{md5}",
+        f"assets/{md5}.png",
+    ]
+    assert archive.read(f"assets/{md5}.png") == png
+    for info in archive.infolist():
+        assert info.date_time == (1980, 1, 1, 0, 0, 0)  # fixed timestamps, no wall clock
+        assert info.compress_type == zipfile.ZIP_DEFLATED  # pinned compress_type
+        assert info.extra == b""  # no member extra fields
+    properties = archive.read("properties.xml")
+    assert b"<string>version</string>\n    <string>1.18.6</string>" in properties
+    assert b"<boolean>false</boolean>" in properties
+
+    content = archive.read("content.xml")
+    root = ET.fromstring(content)
+    # The named stable subset — a subset of the gold fixture, nothing else.
+    emitted = {child.tag for child in root}
+    assert emitted == _RPTOK_SUBSET_TAGS
+    assert emitted <= _RPTOK_GOLD_TAGS
+    assert root.find("x") is None and root.find("exposedAreaGUID") is None
+    assert root.find("propertyMapCI") is None  # deferred (Ask First)
+    assert root.find("portraitImage") is None  # portrait rides the null-key image
+
+    # Derived (never random) GUID: base64 of sha256(entity_id)[:16].
+    expected_guid = base64.b64encode(hashlib.sha256(marta_id.encode()).digest()[:16]).decode()
+    assert root.findtext("id/baGUID") == expected_guid
+    assert root.findtext("name") == "Marta"
+    assert root.findtext("tokenType") == "NPC"
+    assert root.findtext("tokenShape") == "CIRCLE"
+    assert root.findtext("layer") == "TOKEN"
+    assert root.findtext("notesType") == "text/html"
+    assert root.findtext("gmNotesType") == "text/html"
+
+    # The notes: the 2024-Core stat block as bold-labelled HTML lines.
+    notes = root.findtext("notes")
+    assert notes == (
+        "<b>Human, LN</b><br>"
+        "AC 15 Initiative +3 (14)<br>"
+        "HP 45 (6d10 + 12)<br>"
+        "Speed 30 ft.<br>"
+        "MOD SAVE MOD SAVE MOD SAVE<br>"
+        "Str 16 +3 +5 Dex 14 +2 +4 Con 14 +2 +5<br>"
+        "Int 10 +0 +0 Wis 12 +1 +3 Cha 10 +0 +0<br>"
+        "Skills Athletics +6, Perception +1<br>"
+        "Senses Darkvision 60 ft.; Passive Perception 11<br>"
+        "Languages Common<br>"
+        "CR 5<br>"
+        "Proficiency Bonus 3<br>"
+        "Traits<br><b>Vigilant.</b> Never sleeps on duty.<br>"
+        "Actions<br>"
+        "<b>Spear.</b> Melee Weapon Attack, reach 10 ft. "
+        "Hit: 11.5 (1d8 + 7) piercing damage plus 18.5 (3d10 + 2) radiant damage.<br>"
+        "<b>Smite.</b> Radiant smite. Hit: 19 (2d6 + 12) radiant damage.<br>"
+        "<b>Trip.</b> Hit: 2.5 (1d4) bludgeoning damage.<br>"
+        "<b>Hurl.</b><br>"
+        "<b>Bite.</b> Melee attack, 1d8+2."
+    )
+
+    # gmNotes: the AR24 lore as labelled HTML paragraphs, verbatim text,
+    # in the AR24 profile order (_FG_LORE_FIELDS).
+    assert root.findtext("gmNotes") == (
+        "<p><b>Appearance</b><br>Scarred veteran.</p>"
+        "<p><b>Personality</b><br>Laconic.</p>"
+        "<p><b>Background</b><br>Fought at the eastern gate.</p>"
+        "<p><b>Secret</b><br>Owes the watch captain.</p>"
+    )
+
+    # imageAssetMap: single null-key entry -> the embedded PNG's MD5Key.
+    entry = root.find("imageAssetMap/entry")
+    assert entry is not None
+    assert entry.find("null") is not None
+    assert entry.findtext("net.rptools.lib.MD5Key/id") == md5
+
+    # Asset descriptor round-trips the same md5 + name + png pins.
+    asset = ET.fromstring(archive.read(f"assets/{md5}"))
+    assert asset.findtext("id/id") == md5
+    assert asset.findtext("name") == "Marta"
+    assert asset.findtext("extension") == "png"
+    assert asset.findtext("type") == "IMAGE"
+
+    # One macro button per action with structured damage, action order.
+    buttons = root.findall("macroPropertiesMap/entry")
+    assert [entry.findtext("int") for entry in buttons] == ["1", "2", "3", "4"]
+    props = _rptok_button_props(root)
+    assert [p.findtext("label") for p in props] == ["Spear", "Smite", "Trip", "Hurl"]
+    assert [p.findtext("index") for p in props] == ["1", "2", "3", "4"]
+    assert [p.findtext("command") for p in props] == [
+        "[1d20+5] [1d8+7] [3d10+2]",
+        "[2d6+12]",
+        "[1d20-1] [1d4]",
+        "[1d12+1]",
+    ]
+    for p in props:
+        assert {child.tag for child in p} == _RPTOK_BUTTON_FIELDS  # fixture shape
+        assert p.findtext("saveLocation") == "Token"
+        assert p.findtext("colorKey") == "default"
+        assert p.findtext("hotKey") == "None"
+        assert p.findtext("autoExecute") == "true"
+        assert p.findtext("fontSize") == "1.00em"
+        assert p.findtext("allowPlayerEdits") == "true"
+    # macroUUIDs are derived (uuid5 of entity id + action index), never random.
+    assert [p.findtext("macroUUID") for p in props] == [
+        str(uuid.uuid5(_RPTOK_UUID_NS, f"{marta_id}{position}")) for position in (1, 2, 3, 4)
+    ]
+
+    # Byte-identical repeats (determinism: fixed timestamps, derived GUID).
+    second = _maptool(client, campaign_id, marta_id)
+    assert second.status_code == 200 and second.content == first.content
+    assert _counts(campaign_id) == before  # no revision, no event (AR18)
+
+
+def test_maptool_monster_sparse_place_and_remint(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Matrix: Monster CR fraction derives to a decimal Challenge line;
+    a stat-block-less place emits the minimal token with the pinned
+    empty-element notes form; re-minting the portrait (new bytes) changes
+    the asset md5 but never the derived token GUID, and stays
+    byte-identical across repeats."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    _, gnasher_id, anchor_id = _commit_owlbear_cast(campaign_id)
+
+    gnasher = _maptool(client, campaign_id, gnasher_id)
+    assert gnasher.status_code == 200
+    root = ET.fromstring(_rptok_zip(gnasher.content).read("content.xml"))
+    assert root.findtext("name") == "Gnasher"
+    notes = root.findtext("notes")
+    assert notes is not None
+    assert "<b>Beast</b>" in notes
+    assert "CR 0.5" in notes  # fraction → decimal, the fg derivation
+    assert "Str 15 +2" in notes
+    assert "MOD SAVE" in notes
+    assert root.findtext("gmNotes") == ""
+    # Gnasher's actions are prose-only → no macro buttons at all.
+    assert root.find("macroPropertiesMap") is None
+
+    anchor = _maptool(client, campaign_id, anchor_id)
+    assert anchor.status_code == 200
+    content = _rptok_zip(anchor.content).read("content.xml")
+    assert b"<notes></notes>" in content  # pinned empty-element form, never <notes/>
+    assert b"<notes/>" not in content
+    assert b"<gmNotes></gmNotes>" in content
+    assert b"<gmNotes/>" not in content
+    bare = ET.fromstring(content)
+    assert {child.tag for child in bare} <= _RPTOK_SUBSET_TAGS
+    assert bare.findtext("name") == "Docks"  # place tokens still carry the name
+    assert bare.find("macroPropertiesMap") is None
+    # No portrait and no other media → the bundled default image, no marker.
+    default_png = _RPTOK_DEFAULT_IMAGE_PATH.read_bytes()
+    default_md5 = _md5_hex(default_png)
+    assert bare.findtext("imageAssetMap/entry/net.rptools.lib.MD5Key/id") == default_md5
+    assert "Portrait:" not in (bare.findtext("notes") or "")
+
+    # Re-mint: replace the portrait bytes on disk — derived GUID unchanged,
+    # asset md5 follows the new bytes, repeats stay byte-identical.
+    row = add_media(campaign_id, gnasher_id, f"{new_id()}.png", "image")
+    version_two = PNG_SIGNATURE + b"portrait-v2"
+    _write_media_png(tmp_path, campaign_id, row, version_two)
+    remint_archive = _rptok_zip(_maptool(client, campaign_id, gnasher_id).content)
+    remint_names = remint_archive.namelist()
+    assert f"assets/{_md5_hex(version_two)}.png" in remint_names
+    assert f"assets/{_md5_hex(version_two)}" in remint_names
+    remint_root = ET.fromstring(remint_archive.read("content.xml"))
+    assert remint_root.findtext("id/baGUID") == root.findtext("id/baGUID")
+    assert remint_root.findtext("imageAssetMap/entry/net.rptools.lib.MD5Key/id") == _md5_hex(
+        version_two
+    )
+    first = _maptool(client, campaign_id, gnasher_id)
+    second = _maptool(client, campaign_id, gnasher_id)
+    assert first.status_code == 200 and second.content == first.content
+
+
+def test_maptool_broken_portrait_embeds_default_with_marker(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BROKEN portrait (matrix): all image rows unavailable → the bundled
+    default token PNG is embedded (imageAssetMap + assets pair, MD5 of
+    the default's bytes) and the notes carry the honesty marker naming
+    the missing file; the zip still parses."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    marta_id = _commit_maptool_warrior(campaign_id)
+    row = add_media(campaign_id, marta_id, f"{new_id()}.png", "image")  # no file written
+    response = _maptool(client, campaign_id, marta_id)
+    assert response.status_code == 200
+    archive = _rptok_zip(response.content)
+    default_png = _RPTOK_DEFAULT_IMAGE_PATH.read_bytes()
+    default_md5 = _md5_hex(default_png)
+    assert f"assets/{default_md5}.png" in archive.namelist()
+    assert archive.read(f"assets/{default_md5}.png") == default_png
+    root = ET.fromstring(archive.read("content.xml"))
+    assert root.findtext("imageAssetMap/entry/net.rptools.lib.MD5Key/id") == default_md5
+    notes = root.findtext("notes")
+    assert notes is not None
+    assert f"Portrait: {row.filename} [missing — default image used]" in notes
+    assert notes.startswith("<b>Human, LN</b>")
+
+
+def test_maptool_escaping_404_and_bad_format(client: Any) -> None:
+    """Matrix: XML 1.0 filtering + full escaping survive hostile
+    content (control chars dropped, values round-trip); the maptool
+    lookup 404s exactly like json (format-independent); a bad format is
+    a 422."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    hostile_id, anchor_id = new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=hostile_id,
+                kind="character",
+                name='Bill & <Ted>\'s "Horde"',
+                text=".",
+                data={
+                    "stat_block": {
+                        "identity": {"role": "NPC", "race": "Humanoid", "level": 2},
+                        "attributes": {
+                            "str": 10,
+                            "dex": 10,
+                            "con": 10,
+                            "int": 10,
+                            "wis": 10,
+                            "cha": 10,
+                        },
+                        "combat": {"ac": 10, "hp": 10},
+                        "actions": [
+                            {"name": "Sneer", "description": "A & B < C \x00\x01 broken"},
+                            {
+                                "name": "Guffaw",
+                                "description": "]]> like this",
+                                "to_hit": 2,
+                                "damage": [{"count": 1, "sides": 6, "bonus": 1}],
+                            },
+                        ],
+                    }
+                },
+            ),
+            models.EntityInput(id=anchor_id, kind="place", name="Pit", text="."),
+        ],
+        edges=[models.EdgeInput(src=hostile_id, dst=anchor_id, type="located_in", counter=1)],
+    )
+    response = _maptool(client, campaign_id, hostile_id)
+    assert response.status_code == 200
+    content = response.content
+    root = ET.fromstring(_rptok_zip(content).read("content.xml"))  # control chars dropped → parses
+    assert root.findtext("name") == 'Bill & <Ted>\'s "Horde"'
+    notes = root.findtext("notes")
+    assert notes is not None
+    assert "A & B < C  broken" in notes  # \x00\x01 dropped, then unescaped on parse
+    # Full > escaping neutralizes ]]>) — the RAW xml never carries it.
+    raw_content = _rptok_zip(content).read("content.xml")
+    assert b"]]>" not in raw_content
+    guffaw = root.find("macroPropertiesMap/entry/net.rptools.maptool.model.MacroButtonProperties")
+    assert guffaw is not None
+    assert guffaw.findtext("label") == "Guffaw"
+    assert guffaw.findtext("command") == "[1d20+2] [1d6+1]"
+    # 404 shape: identical to the json lookup, format-independent.
+    missing_maptool = _maptool(client, campaign_id, new_id())
+    missing_json = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{new_id()}/export", params={"format": "json"}
+    )
+    assert missing_maptool.status_code == 404
+    assert missing_maptool.json() == missing_json.json()
+    foreign = _maptool(client, new_id(), hostile_id)
+    unknown_campaign = client.get(
+        f"/api/campaigns/{new_id()}/entities/{hostile_id}/export", params={"format": "json"}
+    )
+    assert foreign.status_code == 404
+    assert foreign.json() == unknown_campaign.json()  # indistinguishable
+    bad = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{hostile_id}/export", params={"format": "weird"}
+    )
+    assert bad.status_code == 422
+    assert bad.json()["code"] == "validation_error"
+
+
+def test_maptool_render_failure_is_logged_as_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """RENDER FAILURE (matrix, FR18): a raising maptool renderer logs
+    exactly one export_failure event naming format=maptool, then the
+    generic 500; world state untouched."""
+    from app.api import export_sheets
+    from app.main import app
+    from app.store import app_db_url, init_db
+
+    def boom(export: Any, entity_id: str) -> bytes:
+        raise RuntimeError("simulated maptool regression")
+
+    monkeypatch.setattr(export_sheets, "render_entity_maptool", boom)
+    previous = app_db_url()
+    init_db(f"sqlite:///{tmp_path / 'maptool-fail.db'}")
+    try:
+        with TestClient(
+            app, base_url="https://testserver", raise_server_exceptions=False
+        ) as boom_client:
+            _register_login(boom_client)
+            campaign_id = _create_campaign(boom_client).json()["id"]
+            sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+            before = _counts(campaign_id)
+            with caplog.at_level(logging.ERROR):
+                response = boom_client.get(
+                    f"/api/campaigns/{campaign_id}/entities/{sera_id}/export",
+                    params={"format": "maptool"},
+                )
+            assert response.status_code == 500
+            assert response.json()["code"] == "internal_error"
+            events = [r for r in caplog.records if "export_failure" in r.getMessage()]
+            assert len(events) == 1
+            assert "format=maptool" in events[0].getMessage()
             assert _counts(campaign_id) == before
     finally:
         init_db(previous)
