@@ -456,3 +456,16 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
   eslint/vue-tsc clean. Sprint-status flipped (5-2 done; retro item 14 closed
   — undo never restores media, decided in e2a6fc4; item 13 retasked to the
   KEEP-5 retention story).
+
+## Owner verdicts 2026-09-14 (5-3 Fantasy Grounds export)
+
+- 5-3 Fantasy Grounds export: **DONE**. Live acceptance via the owner's
+  FG Unity import of the staged Harbormaster Ilsa Vane sample — the
+  round-trip re-export (fixture-fg-npc-record-2024-import-roundtrip.xml)
+  shows every emitted field landing typed correctly. Follow-up
+  refinements same day: (1) the record's `text` notes carry the AR24
+  lore sections instead of a stat-block copy (owner ruling: FG's sheet
+  already shows the stats — the text slot is the story; d014bd5), (2)
+  the 2024-Core stat-block text builder was deleted with it (the
+  Import-Text paste path is no longer fed by the artifact). ILSA sample
+  re-imported and visually approved by the owner.

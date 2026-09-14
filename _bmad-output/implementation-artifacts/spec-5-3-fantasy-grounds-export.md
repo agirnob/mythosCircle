@@ -2,7 +2,7 @@
 title: '5.3 Fantasy Grounds Export (Second Target)'
 type: 'feature'
 created: '2026-09-14'
-status: 'ready-for-dev'
+status: 'done'
 review_loop_iteration: 0
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-5-context.md'
