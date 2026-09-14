@@ -188,6 +188,42 @@ The plain-text stat-block content for the **Import Text** path maps onto
 these same fields (the parser fills them); for the **Import** XML path we
 can generate this XML directly and skip the text parser entirely.
 
+### 2d. VERIFIED Import Text grammar — straight from the product (2026-09-14)
+
+The 5E ruleset ships the actual parser: `~/.smiteworks/fgdata/rulesets/5E.pak`
+→ `scripts/manager_import_npc.lua` (pak dated 2026-07-14, i.e. the current
+client) plus `campaign/record_npc.xml`. `registerImportModes` registers the
+three modes (`2024`, `2024_dndb`, `2022`); the labels come from the
+interface strings and match the wiki's `2024 - D&D Core Rules` / `2024 -
+D&D Beyond` / `2022 - Monsters of the Multiverse`. This is the ground truth
+for what the exporter must emit — MORE authoritative than the community
+guides.
+
+**`import2024` (2024 - D&D Core Rules) — exact line contract:**
+
+| Line | Format | Notes |
+| --- | --- | --- |
+| 1 | `<name>` | whole line → `name` |
+| 2 | `<size> <type>, <alignment>` | split at the LAST comma; first token = size, rest = type, tail = alignment. No comma → no alignment |
+| 3 | `AC <n> [<ac text>]` + optional `Initiative +<bonus> (<default>)` | e.g. `AC 12 Initiative +2 (12)`; the `Initiative` marker is scanned from token 3 onward; parens stripped |
+| 4 | `HP <n> [<hit dice string>]` | e.g. `HP 65 (10d10 + 10)`; everything after HP → `hd` |
+| 5 | `Speed <text>` | e.g. `Speed 5 ft., Swim 60 ft.` |
+| 6 | `MOD SAVE MOD SAVE MOD SAVE` | token content IGNORED — parser reads line 7 directly; emit it anyway (sheet-format fidelity) |
+| 7 | `Str <score> <+mod> <+save> Dex <score> <+mod> <+save> Con <score> <+mod> <+save>` | whitespace-separated tokens, 4 per ability; score/mod/save via `[+-]?%d+` (unadorned or signed ints) |
+| 8 | `Int <score> <+mod> <+save> Wis <score> <+mod> <+save> Cha <score> <+mod> <+save>` | same shape |
+| 9+ | optional keyword lines, ANY order: `Saving Throws`, `Skills`, `Damage Vulnerabilities` (or bare `Vulnerabilities`), `Damage Resistances`/`Resistances`, `Damage Immunities`/`Immunities`, `Condition Immunities`, `Gear`, `Senses`, `Languages`, `CR`, `Proficiency Bonus` | value = everything after the keyword |
+| CR line | `CR <x> (XP <n>; PB <+p>)` | `cr` (string) = token 2; `xp` (number) from `(XP <digits[,]>)`, commas stripped; `PB +<p>` optional |
+| then | section headers: `Traits` / `Actions` / `Bonus Actions` / `Reactions` / `Legendary Actions` / `Lair Actions` | a header switches mode; content BEFORE the first header is treated as Traits mode |
+| entries | proper-cased sentence ending in `.` (or starting `Recharges after…`) = feature heading; text after the first `. ` becomes its desc | name/dedup: trailing period stripped from stored name; desc lines joined with `\n`; the desc receives summon-macro replacements (`DC equals your spell save DC` → `DC {$SpellDC}`, `Bonus equals your spell attack modifier` → `+{$SpellAttack}`, `plus the spell's level` → `plus +{$SpellLevel}`, `+ your spellcasting ability modifier` → `+ {$SpellAttack}`) |
+
+Stored shape per entry: `{actions|bonusactions|reactions|legendaryactions|lairactions|traits}.id-0000N.{name,desc}` — the `npc_power` record class has exactly `name` (string) and `desc` (string) (verified in `campaign/record_npc.xml`). Ability fields written: `abilities.<attr>.{score,bonus,savemodifier}`; the saved modifier is stored as the DIFFERENCE (save − bonus); `initiative.misc` = Initiative bonus − Dex bonus. The parser also builds the record's `text` (formattedtext) stat-block view and prepends the description field. 2024 modes set `<version>2024</version>`.
+
+**Mode differences (the other two):**
+- `2024_dndb` (D&D Beyond): same lines 1-5; abilities are ONE per line — `Mod Save` header, then `Str <score> <+mod> <+save>` … `Cha …` (six lines).
+- `2022` (Monsters of the Multiverse → Legacy/2014 record): line 3 = `Armor Class <n> (<text>)`, line 4 = `Hit Points <n> (<hd>)`, line 5 = `Speed <text>`; ability header `STR DEX CON INT WIS CHA` then ONE line `16 (+3) 12 (+1) …` (score + parenthesized mod each); the 2014 optional-field grammar; no version set (creates the Legacy record).
+
+**XML import path crystallizes the choice:** generating the `<root><npc>` XML (the shape the owner's live Export NPC produced, fixture in repo) is deterministic — we control every field, no parser tolerances to satisfy, and the **Import** button (file picker) is the documented surface for it. The Import Text path stays as the documented alternative (the parser tolerances above are what it accepts; our text fixtures must satisfy exactly those).
+
 ### Field list of the 5E NPC record (verified sheet fields)
 
 From the official wiki (5E NPCs and Encounters, above): **Name**; **ID
@@ -281,22 +317,20 @@ as well" — Module - Data Files).
    `db.xml`, record the leaf-tag names under the `npc.*` node. Then run
    **Export NPC** (record export button, added 2025-02 per patch notes) and
    diff the exported `.xml`.
-2. **Which Import Text modes exist at the target version + exact parsing**
-   (e.g. does `2024 - D&D Core Rules` require `MOD SAVE` + `Str … +mod
-   +save` exactly as Academy shows; how are `Initiative`/`PB` parsed when
-   absent). The two FG Academy guides agree but are community; the wiki page
-   is "in the process of being updated".
-   *Check:* open NPCs → Import Text, list the `mode` dropdown entries, paste
-   the Water-Weird text verbatim under `2024 - D&D Core Rules`, confirm the
-   field values on the NPC sheet; repeat with a partial stat block (missing
-   PB) to see what is optional.
-3. **Whether the parser auto-creates Combat Tracker effects for actions/
-   traits** exactly as the wiki's wording table describes (Melee Attack / DC
-   saves / Spellcasting wording) — affects how faithfully Actions must be
-   phrased to be "table-ready" (auto-rolls) rather than text-only.
-   *Check:* import the Water-Weird example, drag the NPC onto the Combat
-   Tracker, verify Surge's attack/save/condition effects auto-build
-   (https://fantasygroundsunity.atlassian.net/wiki/spaces/FGCP/pages/996641984/5E+Combat+Tracker).
+2. **Which Import Text modes + exact node parsing** — RESOLVED BY SOURCE
+   2026-09-14: the three modes and their exact grammars are pinned in §2d
+   from the shipped `5E.pak` parser (`manager_import_npc.lua`); the FG
+   Academy worked examples match the parser's `import2024`/`import2022`
+   contracts. Remaining live check: confirm the pasted text renders on the
+   sheet (sanity, not format discovery).
+3. **Whether the parser auto-creates Combat Tracker effects** — partially
+   RESOLVED BY SOURCE: the import writes `desc` text verbatim (with the four
+   summon-macro replacements), and the CT effect parsing of that text lives
+   in the ruleset's power-desc/CT scripts (`string_powerdesc.lua`, the
+   effects module) — the phrasing that triggers rolls follows the wiki's
+   wording table ("Melee Attack Roll: +x, reach … Hit: …"). Live check
+   remains: drag an imported NPC onto the Combat Tracker and confirm
+   auto-effects — the "table-ready" claim.
 4. **FG Classic vs Unity divergence.** Confirmed in direction: the
    modguide/database.xcp is the legacy FG (©2004-2010) doc; the current
    client is FG Unity (4.x) whose NPC tooling is documented on the modern
