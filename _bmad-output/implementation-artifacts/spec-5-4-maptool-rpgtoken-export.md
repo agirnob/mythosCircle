@@ -2,7 +2,8 @@
 title: '5.4 MapTool / RPGToken Export (Third Target)'
 type: 'feature'
 created: '2026-09-14'
-status: 'draft'
+status: 'in-progress'
+baseline_commit: '40946c0e4a1d294df8925b54b8e776a62a3f9b42'
 review_loop_iteration: 0
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-5-context.md'
