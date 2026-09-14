@@ -19,8 +19,7 @@ context:
 
 ## Boundaries & Constraints
 
-**Always:** Export stays read-only — no revision, no event row, no store write (AD-1/AD-11); renderer pure of the snapshot, byte-identical across repeats. Ownership 404s stay the single indistinguishable shape. Wire shape = the verified 2024 record (`fixture-fg-npc-record-2024-export.xml`): root `version="5.1"`, one `npc` node, `version` = `2024`. Numeric fields (`ac`, `hp`, `damagethreshold`, `xp`, ability `score`/`savemodifier`) are numbers; `cr` is a STRING (2024 record) derived from `stat_block.identity` numerics (owner 5-2 verdict: derive from numerics, top-level string display-only); fraction→decimal for Monster (`cr "1/2"` → `0.5`). `spellslots` and `summon*` omitted when unknown — sparse payloads import validly (action/trait entries are `npc_power` = `name` + `desc`). The embedded `text` element is the 2024-Core grammar from research §2d (name, size/type/alignment, `AC … Initiative`, `HP`, `Speed`, MOD SAVE rows, optional keyword lines, `Traits`/`Actions` headers), so a paste through the fallback
-path lands the same fields the XML carries). Portrait: FG image fields
+**Always:** Export stays read-only — no revision, no event row, no store write (AD-1/AD-11); renderer pure of the snapshot, byte-identical across repeats. Ownership 404s stay the single indistinguishable shape. Wire shape = the verified 2024 record (`fixture-fg-npc-record-2024-export.xml`): root `version="5.1"`, one `npc` node, `version` = `2024`. Numeric fields (`ac`, `hp`, `damagethreshold`, `xp`, ability `score`/`savemodifier`) are numbers; `cr` is a STRING (2024 record) derived from `stat_block.identity` numerics (owner 5-2 verdict: derive from numerics, top-level string display-only); fraction→decimal for Monster (`cr "1/2"` → `0.5`). `spellslots` and `summon*` omitted when unknown — sparse payloads import validly (action/trait entries are `npc_power` = `name` + `desc`). The record's `text` notes carry the character's AR24 LORE sections (appearance, personality, background, goals, relationships, secret, rumor, party_hook, voice_style, catchphrases — owner ruling 2026-09-14: FG's sheet already shows the stats, so the text slot is the story, not a stat-block duplicate; an empty notes area still emits the `<p />` shape FG itself exports). Portrait: FG image fields
 are embedded-bitmap only (no remote field), and embedding a LIVE signed
 URL would break byte-identical determinism (the mint's ``exp`` is a
 wall-clock read) — so the artifact NAMES the newest available portrait
@@ -39,7 +38,7 @@ not emitted.
 
 | Scenario | Input / State | Expected Output / Behavior | Error Handling |
 |----------|--------------|---------------------------|----------------|
-| HAPPY NPC | committed NPC, stat_block, portrait available | `.xml` attachment (`text/xml`, `{stem}.xml`) with full 2024 record; `text` carries the 2024-Core stat block + `Information: Portrait: <filename>`; the live signed URL comes from the portrait-url route | N/A |
+| HAPPY NPC | committed NPC, stat_block, portrait available | `.xml` attachment (`text/xml`, `{stem}.xml`) with full 2024 record; `text` notes carry the AR24 lore sections + `Information: Portrait: <filename>` pointer; the live signed URL comes from the portrait-url route | N/A |
 | HAPPY Monster | committed Monster, `cr "1/2"`, level absent | `cr` = `0.5` (fraction→decimal); numeric fields from `combat`/`attributes`; spells list → `spells.id-0000N.name` | N/A |
 | NO portrait | entity with only broken/absent media | record exports fine; `text` carries `Information: Portrait: <filename> [missing]` when only unavailable rows exist, no line when there is no media at all | N/A |
 | NO stat_block | entity with no stat_block (place/faction) | minimal record (name + type/size where derivable), no `abilities`/`combat` block — sparse is legal | N/A |
@@ -73,8 +72,8 @@ not emitted.
 - Given the same entity exported twice, then both files are byte-identical (pure projection, no timestamps).
 - Given an unknown entity or campaign, then the response is the single indistinguishable 404.
 - Given a renderer exception, then exactly one `export_failure` event is logged and the response is the generic 500 (FR18).
-- Given the generated xml in FG Unity 5E (NPCs → Import), then the NPC record lands with correct 2024 fields (owner live check at acceptance).
-- Given the exported file opened to copy the embedded `text` block, pasting into NPCs → Import Text → 2024 - D&D Core Rules reproduces the same record (fallback path).
+- Given the generated xml in FG Unity 5E (NPCs → Import), then the NPC record lands with correct 2024 fields (owner live check at acceptance — RESOLVED 2026-09-14, round-trip fixture committed).
+- Given an entity with AR24 lore sections committed, then the record's `text` notes contain those sections in AR24 order, labelled, with content verbatim — and no duplicate stat block (owner ruling 2026-09-14).
 
 ## Spec Change Log
 
@@ -90,7 +89,7 @@ not emitted.
 
 **Actions.** Each `actions`/`traits`/etc. entry = `npc_power` (`name` string, `desc` string). Name = the attack/trait heading with the trailing period stripped (parser convention); desc = the committed text with the 2024 phrasing (`Melee Attack Roll: +x, reach … Hit: …`) so the CT effects parser can drive rolls — the "table-ready" claim.
 
-**Why XML over Text.** The XML shape is fully verified and the Import button is the documented file-picker surface; the text parser's tolerances (research §2d) are now known but still a second source of drift. XML = one deterministic contract. Text stays embedded for the paste path and as the documented fallback.
+**Why XML over Text.** The XML shape is fully verified and the Import button is the documented file-picker surface; the text parser's tolerances (research §2d) are known but the artifact no longer needs them — the stat block lives in FG's structured fields, and the `text` slot is the DM's lore notes (owner ruling 2026-09-14). A DM who still wants the paste path can build the stat-block text from the Markdown/HTML exports.
 
 **Field-set provenance.** Every emitted tag is pinned by the owner's live Export NPC fixture EXCEPT `conditionimmunities`, which the fixture omits — it is confirmed by the ruleset's own parser/record (`record_npc.xml` label + `manager_import_npc.lua` keyword both write `conditionimmunities`), so it follows the same verified family.
 

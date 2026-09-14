@@ -1034,6 +1034,7 @@ _SERA_DATA: dict[str, Any] = {
         {"name": "Spellbook", "description": "Leather-bound, singed."},
         {"name": "Dagger", "description": "Silvered."},
     ],
+    "background": "Sera grew up reading forbidden tomes in the docks.",
     "stat_block": {
         # Identity race/alignment DELIBERATELY diverge from the record
         # (Elf/CE vs Human/NG): the export reads the record fields —
@@ -1256,15 +1257,16 @@ def test_fg_npc_happy(client: Any) -> None:
     spells_elem = npc.find("spells")
     assert spells_elem is not None
     assert [e.findtext("name") for e in spells_elem] == ["Fireball", "Mage Hand"]
-    # The embedded 2024-Core stat block (the Import-Text fallback).
+    # The record's notes carry the AR24 lore, not a stat-block copy
+    # (owner ruling 2026-09-14: the sheet already shows the stats).
     text_elem = npc.find("text")
     assert text_elem is not None
-    paragraphs = [p.text or "" for p in text_elem]
-    joined = "\n".join(paragraphs)
-    assert "AC 12" in joined and "HP 27" in joined
-    assert "Saving Throws Str +2" in joined
-    assert "CR 5" in joined
-    assert "Fire Bolt." in joined
+    note_paragraphs = [p.text or "" for p in text_elem]
+    assert any("forbidden tomes in the docks" in p for p in note_paragraphs)
+    assert any("Sold the map" in p for p in note_paragraphs)
+    labels = [p for p in note_paragraphs if p in ("Appearance", "Background", "Secret")]
+    assert labels == ["Appearance", "Background", "Secret"]  # AR24 order
+    assert not any("AC 12" in p or "CR 5" in p for p in note_paragraphs)
     assert _counts(campaign_id) == before  # no revision, no event (AR18/FR18)
 
 
@@ -1301,6 +1303,11 @@ def test_fg_sparse_place_and_long_combat_keys(client: Any) -> None:
     assert npc.findtext("name") == "Docks"
     assert npc.find("ac") is None and npc.find("abilities") is None
     assert npc.findtext("version") == "2024"
+    # No lore sections, no media — the notes are the empty <p/> shape FG
+    # itself exports for a record with no stat block text.
+    text_elem = npc.find("text")
+    assert text_elem is not None
+    assert [p.text for p in text_elem] == [None]
     long_id = new_id()
     commit_subgraph(
         campaign_id,

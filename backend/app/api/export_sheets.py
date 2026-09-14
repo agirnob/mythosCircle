@@ -926,9 +926,22 @@ _FG_ABILITY_LABEL: dict[str, str] = {
     "cha": "Cha",
 }
 
-#: The 2024-Core Import-Text section headers (research §2d — parser
-#: keywords, not display labels).
-_FG_SECTION_HEADERS: tuple[str, ...] = ("Traits", "Actions")
+#: The AR24 lore sections that fill the record's ``text`` notes (owner
+#: ruling 2026-09-14: the sheet already shows the stats — the text slot
+#: carries the character's lore). Order = the AR24 profile order
+#: (CandidatesView LORE_FIELDS).
+_FG_LORE_FIELDS: tuple[str, ...] = (
+    "appearance",
+    "personality",
+    "background",
+    "goals",
+    "relationships",
+    "secret",
+    "rumor",
+    "party_hook",
+    "voice_style",
+    "catchphrases",
+)
 
 
 def _fg_num(value: Any) -> str | None:
@@ -996,201 +1009,52 @@ def _fg_power_entries(node: ET.Element, tag: str, items: Any, *, with_damage: bo
 
 
 def _fg_fg_text(paragraphs: list[str], node: ET.Element) -> None:
-    """The record's ``text`` formattedtext element: the embedded 2024-Core
-    stat block the DM can paste through Import Text (fallback path) plus
-    the portrait pointer. Paragraphs render as ``<p>`` children — the
-    same shape the ruleset's own importer writes."""
+    """The record's ``text`` formattedtext element: the character's AR24
+    lore notes (owner ruling 2026-09-14) plus the portrait pointer — the
+    sheet already displays the stats, so the notes carry the story. An
+    empty notes area still emits one empty ``<p />`` — FG's own export
+    writes the same shape."""
     text = ET.SubElement(node, "text")
     text.set("type", "formattedtext")
+    if not paragraphs:
+        ET.SubElement(text, "p")
+        return
     for paragraph in paragraphs:
         p = ET.SubElement(text, "p")
         p.text = paragraph
 
 
-def _fg_stat_block_lines(
-    name: str,
-    data: dict[str, Any],
-    block: dict[str, Any],
-    identity: dict[str, Any],
-    combat: dict[str, Any],
-    attributes: dict[str, Any],
-    saves: dict[str, Any],
-) -> list[str]:
-    """The 2024 - D&D Core Rules Import-Text stat block (research §2d —
-    the parser's exact line contract, so a paste through the fallback
-    path lands the same fields the XML carries). Lines that cannot be
-    composed honestly are omitted — the parser tolerates blank lines."""
-    lines: list[str] = []
-
-    lines.append(name)
-
-    # Line 2: "<size> <type>, <alignment>" — the parser reads the FIRST
-    # token as size, so the line is only emitted when a size is actually
-    # committed. We do not track creature size today, so this is usually
-    # blank (tolerated); the XML carries type/alignment directly.
-    fg_size = _fg_text(data.get("size")) or _fg_text(block.get("size"))
-    if fg_size is not None:
-        parts = [fg_size]
-        fg_type = _fg_text(identity.get("race")) or _fg_text(data.get("race_type"))
-        if fg_type is not None:
-            parts.append(fg_type)
-        fg_alignment = _fg_text(identity.get("alignment")) or _fg_text(data.get("alignment"))
-        if fg_alignment is not None:
-            parts[-1] = f"{parts[-1]}, {fg_alignment}"
-        lines.append(" ".join(parts))
-    else:
-        lines.append("")
-
-    # Line 3: AC, with the optional Initiative (+bonus) (dex-score default).
-    ac = _forge_number(combat.get("ac"))
-    if ac is None:
-        ac = _forge_number(combat.get("armor_class"))
-    if ac is not None:
-        ac_line = f"AC {_fg_num(ac)}"
-        init_raw = _forge_number(block.get("initiative"))
-        if init_raw is None:
-            init_raw = _forge_number(combat.get("initiative"))
-        dex_score: int | None = None
-        if init_raw is not None:
-            dex_score = _fg_ability_score(attributes, "dex")
-            if dex_score is not None:
-                ac_line += f" Initiative +{_fg_num(init_raw)} ({_fg_num(dex_score)})"
-        lines.append(ac_line)
-    else:
-        lines.append("")
-
-    # Line 4: HP + hit dice.
-    hp = _forge_number(combat.get("hp"))
-    if hp is None:
-        hp = _forge_number(combat.get("hit_points"))
-    if hp is not None:
-        hp_line = f"HP {_fg_num(hp)}"
-        hd = _fg_text(combat.get("hit_dice"))
-        if hd is not None:
-            hp_line += f" {hd}"
-        lines.append(hp_line)
-    else:
-        lines.append("")
-
-    # Line 5: Speed.
-    speed = _fg_text(combat.get("speed")) or _fg_text(block.get("speed"))
-    lines.append(f"Speed {speed}" if speed else "")
-
-    # Line 6: the MOD SAVE header (its tokens are ignored by the parser —
-    # emitted for sheet-format fidelity).
-    lines.append("MOD SAVE MOD SAVE MOD SAVE")
-
-    # Lines 7-8: ability rows, 4 tokens per ability (score mod save).
-    def _ability_row(abilities: tuple[str, ...]) -> str:
-        cells = []
-        for ability in abilities:
-            score = _fg_ability_score(attributes, ability)
-            if score is None:
-                cells.extend(["", "", "", ""])
-                continue
-            bonus = _fg_ability_bonus(score)
-            saved = _forge_number(saves.get(ability))
-            save = int(saved) if saved is not None else bonus
-            label = _FG_ABILITY_LABEL[ability]
-            cells.append(f"{label} {score} {bonus:+d} {save:+d}")
-        return " ".join(cells)
-
-    lines.append(_ability_row(("str", "dex", "con")))
-    lines.append(_ability_row(("int", "wis", "cha")))
-
-    # Optional keyword lines (any order, keyword-initial — §2d).
-    save_parts = []
-    for ability in _ABILITY_ORDER:
-        saved = _forge_number(saves.get(ability))
-        if saved is None:
-            continue
-        save_parts.append(f"{_FG_ABILITY_LABEL[ability]} {int(saved):+d}")
-    if save_parts:
-        lines.append("Saving Throws " + ", ".join(save_parts))
-    skills = block.get("skills")
-    if isinstance(skills, list):
-        parts = []
-        for entry in skills:
-            if not isinstance(entry, dict):
-                continue
-            skill_name = entry.get("name")
-            if not isinstance(skill_name, str) or not skill_name.strip():
-                continue
-            bonus = _forge_number(entry.get("bonus"))
-            if bonus is None:
-                parts.append(skill_name)
-            elif isinstance(bonus, int):
-                parts.append(f"{skill_name} {bonus:+d}")
+def _fg_note_lines(value: Any) -> list[str]:
+    """Deterministic note paragraphs for the record's ``text`` field:
+    multi-line strings split on newlines, lists one item per line,
+    anything else a compact JSON line — never dropped, never re-ordered."""
+    if isinstance(value, str):
+        return [line.strip() for line in value.splitlines() if line.strip()] or [value.strip()]
+    if isinstance(value, list):
+        notes: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                notes.extend(line for line in item.splitlines() if line.strip())
             else:
-                parts.append(f"{skill_name} {bonus:g}")
-        if parts:
-            lines.append("Skills: " + ", ".join(parts))
-    for key in (
-        "damage_vulnerabilities",
-        "damage_resistances",
-        "damage_immunities",
-        "condition_immunities",
-        "senses",
-        "languages",
-    ):
-        value = _fg_text(block.get(key))
-        if value is None:
-            value = _fg_text(data.get(key))
-        if value is not None:
-            label = {
-                "damage_vulnerabilities": "Damage Vulnerabilities",
-                "damage_resistances": "Damage Resistances",
-                "damage_immunities": "Damage Immunities",
-                "condition_immunities": "Condition Immunities",
-                "senses": "Senses",
-                "languages": "Languages",
-            }[key]
-            lines.append(f"{label} {value}")
-    pb = _forge_number(block.get("proficiency_bonus"))
-    if pb is not None:
-        lines.append(f"Proficiency Bonus {_fg_num(pb)}")
+                notes.append(json.dumps(item, ensure_ascii=False, separators=(", ", ": ")))
+        return notes
+    return [json.dumps(value, ensure_ascii=False, separators=(", ", ": "))]
 
-    # Challenge line: 2024 grammar is "CR <x> (XP <n>; PB <+p>)" — we do
-    # not track XP/proficiency on the record, so the bare CR is emitted.
-    role = identity.get("role")
-    cr: str | None = None
-    if role in ("NPC", "BBEG"):
-        level = _forge_number(identity.get("level"))
-        if level is not None:
-            cr = _fg_num(level)
-    elif role == "Monster":
-        challenge = _forge_number(identity.get("cr"))
-        if challenge is not None:
-            cr = _fg_num(challenge)
-    if cr is not None:
-        lines.append(f"CR {cr}")
 
-    # Sections: Traits then Actions, entries as "Heading. body" lines
-    # (proper-cased headings ending in a period — §2d).
-    for section, key in (("Traits", "traits"), ("Actions", "actions")):
-        items = block.get(key)
-        if not isinstance(items, list) or not items:
+def _fg_lore_paragraphs(data: dict[str, Any]) -> list[str]:
+    """The record's ``text`` notes: the AR24 lore sections (owner ruling
+    2026-09-14 — the sheet already shows the stats, so the text slot
+    carries the character's lore, not a duplicate stat block). The known
+    section order is the AR24 profile order (CandidatesView LORE_FIELDS);
+    blank/absent sections are skipped, never invented."""
+    paragraphs: list[str] = []
+    for key in _FG_LORE_FIELDS:
+        value = data.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
             continue
-        lines.append(section)
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            heading = item.get("name")
-            if not isinstance(heading, str) or not heading.strip():
-                continue
-            description = item.get("description")
-            if description is None:
-                description = ""
-            if not isinstance(description, str):
-                description = str(description)
-            if section == "Actions":
-                sentence = damage_parts_sentence(item.get("damage"))
-                if sentence is not None and not _states_damage_dice(description, sentence):
-                    description = f"{description} {sentence}" if description else sentence
-            heading_line = heading.rstrip(".")
-            lines.append(f"{heading_line}. {description}" if description else f"{heading_line}.")
-
-    return lines
+        paragraphs.append(_label(key))
+        paragraphs.extend(_fg_note_lines(value))
+    return paragraphs
 
 
 def render_entity_fg(export: WorldExport, entity_id: str) -> str:
@@ -1333,12 +1197,13 @@ def render_entity_fg(export: WorldExport, entity_id: str) -> str:
                 name_el.set("type", "string")
                 name_el.text = name.strip()
 
-    # The embedded stat block (+ portrait pointer) — the Import-Text
-    # fallback and the DM's at-a-glance sheet. The signed portrait URL
-    # comes from the portrait-url route (mint-on-demand, expiring);
-    # embedding a live URL here would break byte-identical determinism,
-    # so the artifact names the file it expects instead.
-    paragraphs = _fg_stat_block_lines(entity.name, data, block, identity, combat, attributes, saves)
+    # The record's notes: the AR24 lore sections (owner ruling
+    # 2026-09-14 — the sheet already shows the stats, so the text slot
+    # carries the character's story) + the portrait pointer. The signed
+    # portrait URL comes from the portrait-url route (mint-on-demand,
+    # expiring); embedding a live URL here would break byte-identical
+    # determinism, so the artifact names the file it expects instead.
+    paragraphs = _fg_lore_paragraphs(data)
     portrait: str | None = None
     portrait_missing: str | None = None
     newest_available: str | None = None
