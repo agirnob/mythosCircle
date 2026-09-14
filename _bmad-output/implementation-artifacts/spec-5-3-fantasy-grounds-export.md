@@ -47,7 +47,7 @@ not emitted.
 | BAD FORMAT | `format=weird` | OpenAPI 422 before auth ordering (existing route pattern) | 422 envelope |
 | RENDER FAILURE | renderer raises (simulated) | one `export_failure` log line, generic 500 | FR18 |
 | TEXT ESCAPING | `&<>` in name/trait/desc | valid XML (entities escaped) | N/A |
-| IMPORT (live) | generated `.xml` in FG Unity 5E, NPCs → Import | record lands; sheet fields match; 2024 badge shown (owner live check at acceptance) | manual |
+| IMPORT (live) | generated `.xml` in FG Unity 5E, NPCs → Import | record lands; sheet fields match; 2024 badge shown (owner live check at acceptance) — **RESOLVED 2026-09-14**: Harbormaster Ilsa Vane imported into FG Unity from the staged sample and re-exported; every emitted field survived typed correctly (see fixture-fg-npc-record-2024-import-roundtrip.xml). FG added only its own defaults (empty sections, level1-9 slots 0, summon\* 0, root updater attrs) | manual ✓ |
 
 ## Code Map
 
