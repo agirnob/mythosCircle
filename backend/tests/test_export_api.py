@@ -1425,86 +1425,113 @@ def test_fg_render_failure_is_logged_as_event(
 # spec-5-4: MapTool / RPGToken export — deterministic .rptok ZIP
 # ---------------------------------------------------------------------------
 
-#: The owner's real 1.18.6 content.xml top-level tag set (the gold
-#: fixture) — our emitted set is the NAMED STABLE SUBSET and must always
-#: be a subset of this (the acceptance contract, spec-5-4).
-_RPTOK_GOLD_TAGS = frozenset(
+#: The Dragon template's 55 top-level element names, in order — every
+#: emitted content.xml has exactly this inventory (no more, no less).
+_RPTOK_TEMPLATE_TAGS: tuple[str, ...] = (
+    "id",
+    "beingImpersonated",
+    "exposedAreaGUID",
+    "imageAssetMap",
+    "x",
+    "y",
+    "z",
+    "lastX",
+    "lastY",
+    "anchorX",
+    "anchorY",
+    "sizeScale",
+    "scaleX",
+    "scaleY",
+    "snapToScale",
+    "width",
+    "height",
+    "isoWidth",
+    "isoHeight",
+    "sizeMap",
+    "snapToGrid",
+    "isVisible",
+    "visibleOnlyToOwner",
+    "vblColorSensitivity",
+    "alwaysVisibleTolerance",
+    "isAlwaysVisible",
+    "name",
+    "ownerList",
+    "ownerType",
+    "tokenShape",
+    "tokenType",
+    "layer",
+    "propertyType",
+    "tokenOpacity",
+    "speechName",
+    "terrainModifier",
+    "terrainModifierOperation",
+    "terrainModifiersIgnored",
+    "isFlippedX",
+    "isFlippedY",
+    "isFlippedIso",
+    "uniqueLightSources",
+    "lightSourceList",
+    "sightType",
+    "hasSight",
+    "hasImageTable",
+    "notes",
+    "notesType",
+    "gmNotes",
+    "gmNotesType",
+    "state",
+    "propertyMapCI",
+    "macroPropertiesMap",
+    "speechMap",
+    "allowURIAccess",
+)
+
+#: The template paths where entity data lands (substituted markers).
+_RPTOK_MARKED_PATHS: frozenset[tuple[str, ...]] = frozenset(
     {
-        "id",
-        "beingImpersonated",
-        "exposedAreaGUID",
-        "imageAssetMap",
-        "x",
-        "y",
-        "z",
-        "lastX",
-        "lastY",
-        "anchorX",
-        "anchorY",
-        "sizeScale",
-        "scaleX",
-        "scaleY",
-        "snapToScale",
-        "width",
-        "height",
-        "isoWidth",
-        "isoHeight",
-        "sizeMap",
-        "snapToGrid",
-        "isVisible",
-        "visibleOnlyToOwner",
-        "vblColorSensitivity",
-        "alwaysVisibleTolerance",
-        "isAlwaysVisible",
-        "name",
-        "ownerList",
-        "ownerType",
-        "tokenShape",
-        "tokenType",
-        "layer",
-        "propertyType",
-        "tokenOpacity",
-        "speechName",
-        "terrainModifier",
-        "terrainModifierOperation",
-        "terrainModifiersIgnored",
-        "isFlippedX",
-        "isFlippedY",
-        "isFlippedIso",
-        "uniqueLightSources",
-        "lightSourceList",
-        "sightType",
-        "hasSight",
-        "hasImageTable",
-        "notes",
-        "notesType",
-        "gmNotes",
-        "gmNotesType",
-        "state",
-        "propertyMapCI",
-        "macroPropertiesMap",
-        "speechMap",
-        "allowURIAccess",
+        ("id", "baGUID"),
+        ("imageAssetMap", "entry", "net.rptools.lib.MD5Key", "id"),
+        ("name",),
+        ("notes",),
+        ("gmNotes",),
+        ("macroPropertiesMap",),
     }
 )
 
-#: Exactly the set render_entity_maptool emits for a full NPC (spec-5-4:
-#: the named stable subset — never campaign/runtime state).
-_RPTOK_SUBSET_TAGS = frozenset(
-    {
-        "id",
-        "imageAssetMap",
-        "name",
-        "tokenShape",
-        "tokenType",
-        "layer",
-        "notes",
-        "notesType",
-        "gmNotes",
-        "gmNotesType",
-        "macroPropertiesMap",
-    }
+#: The committed Dragon template file (the canonical owner export).
+_RPTOK_TEMPLATE_FILE = (
+    Path(__file__).resolve().parents[2]
+    / "_bmad-output"
+    / "implementation-artifacts"
+    / "maptool-token-template-dragon.xml"
 )
+
+
+def _assert_rptok_template_fidelity(root: ET.Element) -> None:
+    """Template-fidelity contract (owner directive 2026-09-14): every
+    non-marker node of an emitted content.xml equals the committed Dragon
+    template — same tags, attributes and fixed values, VERBATIM. Only the
+    marker slots (baGUID, imageAssetMap MD5Key, name, notes, gmNotes, the
+    propertyMapCI ``value`` elements, the macroPropertiesMap subtree)
+    may differ. A drift anywhere else is a failed contract."""
+    template = ET.fromstring(_RPTOK_TEMPLATE_FILE.read_bytes())
+
+    def walk(parsed: ET.Element, reference: ET.Element, path: tuple[str, ...]) -> None:
+        label = "/".join(path) or "<root>"
+        assert parsed.tag == reference.tag, f"tag drift at {label}"
+        assert parsed.attrib == reference.attrib, f"attrib drift at {label}"
+        if path in _RPTOK_MARKED_PATHS or path[-1:] == ("value",) and "propertyMapCI" in path:
+            return
+        assert len(parsed) == len(reference), f"arity drift at {label}"
+        assert parsed.text == reference.text, f"text drift at {label}"
+        for child, ref_child in zip(parsed, reference, strict=True):
+            walk(child, ref_child, path + (child.tag,))
+
+    walk(root, template, ())
+
+
+def _rptok_tags(root: ET.Element) -> list[str]:
+    return [child.tag for child in root]
+
 
 #: The MacroButtonProperties shape (copied from the gold fixture) — pins
 #: every field name so the emitted buttons stay fixture-shaped.
@@ -1717,13 +1744,17 @@ def test_maptool_happy_npc(client: Any, tmp_path: Path, monkeypatch: pytest.Monk
 
     content = archive.read("content.xml")
     root = ET.fromstring(content)
-    # The named stable subset — a subset of the gold fixture, nothing else.
-    emitted = {child.tag for child in root}
-    assert emitted == _RPTOK_SUBSET_TAGS
-    assert emitted <= _RPTOK_GOLD_TAGS
-    assert root.find("x") is None and root.find("exposedAreaGUID") is None
-    assert root.find("propertyMapCI") is None  # deferred (Ask First)
-    assert root.find("portraitImage") is None  # portrait rides the null-key image
+    # Template fidelity (owner directive 2026-09-14): EXACTLY the Dragon
+    # template's inventory — all 55 children in order; the runtime and
+    # campaign fields ride verbatim, only the marker slots carry entity
+    # data (checked by the fidelity walker below).
+    assert _rptok_tags(root) == list(_RPTOK_TEMPLATE_TAGS)
+    assert root.findtext("x") == "400"
+    assert root.findtext("exposedAreaGUID/baGUID") == "9maH6b4tRVGCP61AXNzjpA=="
+    assert root.findtext("beingImpersonated") == "true"
+    assert root.find("propertyMapCI") is not None
+    assert root.find("portraitImage") is None  # the template has none either
+    _assert_rptok_template_fidelity(root)
 
     # Derived (never random) GUID: base64 of sha256(entity_id)[:16].
     expected_guid = base64.b64encode(hashlib.sha256(marta_id.encode()).digest()[:16]).decode()
@@ -1843,7 +1874,8 @@ def test_maptool_monster_sparse_place_and_remint(
     assert "<b>Spells</b>" not in notes  # no spells block when empty
     assert root.findtext("gmNotes") == ""
     # Gnasher's actions are prose-only → no macro buttons at all.
-    assert root.find("macroPropertiesMap") is None
+    assert root.findall("macroPropertiesMap/entry") == []
+    _assert_rptok_template_fidelity(root)
 
     anchor = _maptool(client, campaign_id, anchor_id)
     assert anchor.status_code == 200
@@ -1853,9 +1885,10 @@ def test_maptool_monster_sparse_place_and_remint(
     assert b"<gmNotes></gmNotes>" in content
     assert b"<gmNotes/>" not in content
     bare = ET.fromstring(content)
-    assert {child.tag for child in bare} <= _RPTOK_SUBSET_TAGS
+    assert _rptok_tags(bare) == list(_RPTOK_TEMPLATE_TAGS)
     assert bare.findtext("name") == "Docks"  # place tokens still carry the name
-    assert bare.find("macroPropertiesMap") is None
+    assert bare.findall("macroPropertiesMap/entry") == []
+    _assert_rptok_template_fidelity(bare)
     # No portrait and no other media → the bundled default image, no marker.
     default_png = _RPTOK_DEFAULT_IMAGE_PATH.read_bytes()
     default_md5 = _md5_hex(default_png)
@@ -2013,7 +2046,7 @@ def test_maptool_caster_spells_and_bbeg_challenge(client: Any) -> None:
     assert bbeg_notes is not None
     assert "<b>Dragon</b>" in bbeg_notes
     assert "CR 9" in bbeg_notes
-    assert bbeg_root.find("macroPropertiesMap") is None  # no actions, no buttons
+    assert bbeg_root.findall("macroPropertiesMap/entry") == []  # no actions, no buttons
 
 
 def test_maptool_sparse_abilities_and_integral_guards(
@@ -2083,9 +2116,11 @@ def test_maptool_sparse_abilities_and_integral_guards(
 def test_maptool_broken_default_image_falls_back_to_no_image(
     client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Broken bundled default (review r1): when the default token PNG
-    cannot load, an entity with no portrait embeds NO image at all (no
-    imageAssetMap, no assets) and the zip still parses."""
+    """Broken bundled default (review r1, template contract): when the
+    default token PNG cannot load, an entity with no portrait embeds NO
+    image members — the template's imageAssetMap keeps its literal md5 (a
+    dangling reference MapTool skips with a log error) and the zip still
+    parses."""
     from app.api import export_sheets
 
     monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
@@ -2098,9 +2133,32 @@ def test_maptool_broken_default_image_falls_back_to_no_image(
     archive = _rptok_zip(response.content)
     assert archive.namelist() == ["content.xml", "properties.xml"]
     root = ET.fromstring(archive.read("content.xml"))
-    assert root.find("imageAssetMap") is None
+    assert root.find("imageAssetMap") is not None  # template-fixed element stays
+    # The template's own md5 literal rides — a dangling ref, no asset pair.
+    dangling_md5 = root.findtext("imageAssetMap/entry/net.rptools.lib.MD5Key/id")
+    assert dangling_md5 == "87f4e9bfa4f1f3db250b57b3599fa4e9"
+    _assert_rptok_template_fidelity(root)
     notes = root.findtext("notes")
     assert notes is not None and "<b>Human, LN</b>" in notes
+
+
+def test_maptool_content_template_is_committed_verbatim(client: Any) -> None:
+    """Template fidelity (owner directive 2026-09-14): the module's
+    template constant is byte-identical to the committed Dragon template
+    file, every marker token appears exactly once, and a live export's
+    non-marker nodes match the template exactly."""
+    from app.api import export_sheets
+
+    assert _RPTOK_TEMPLATE_FILE.read_text() == export_sheets._RPTOK_TEMPLATE
+    for marker in export_sheets._RPTOK_MARKERS:
+        assert export_sheets._RPTOK_TEMPLATE.count(marker) == 1, marker
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    marta_id = _commit_maptool_warrior(campaign_id)
+    root = ET.fromstring(
+        _rptok_zip(_maptool(client, campaign_id, marta_id).content).read("content.xml")
+    )
+    _assert_rptok_template_fidelity(root)
 
 
 def test_maptool_escaping_404_and_bad_format(client: Any) -> None:

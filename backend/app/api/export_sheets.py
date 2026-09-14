@@ -1239,14 +1239,18 @@ def render_entity_fg(export: WorldExport, entity_id: str) -> str:
 # spec-5-4: MapTool / RPGToken export — deterministic .rptok ZIP
 # ---------------------------------------------------------------------------
 # The .rptok is an ordinary ZIP (research-5-4 §2b): content.xml (the
-# Token XStream-serialized as the fixture's named stable subset),
-# properties.xml (version 1.18.6 + herolab), and one embedded image as
-# the ``assets/<md5>`` Asset descriptor + ``assets/<md5>.png`` pair. The
-# token id GUID is DERIVED from the entity id (never random), the zip is
-# written with fixed timestamps/pinned deflate/no extra fields, and every
-# text run is XML 1.0-filtered + fully escaped — byte-identical repeats.
-# The html for notes/gmNotes is deliberately conservative and
-# attribute-free (<b>, <br>, <p> only — the owner ruling 2026-09-14).
+# Token XStream-serialized by the owner's Dragon template VERBATIM —
+# template-fidelity emission, owner directive 2026-09-14), properties.xml
+# (version 1.18.6 + herolab), and one embedded image as the
+# ``assets/<md5>`` Asset descriptor + ``assets/<md5>.png`` pair. Only the
+# template's MARKER tokens carry entity data (derived id GUID, image
+# md5, name, notes/gmNotes, propertyMapCI values, macro entries); every
+# other byte is the real 1.18.6 save. The token id GUID is DERIVED from
+# the entity id (never random), the zip is written with fixed
+# timestamps/pinned deflate/no extra fields, and every text run is XML
+# 1.0-filtered + fully escaped — byte-identical repeats. The html for
+# notes/gmNotes is deliberately conservative and attribute-free (<b>,
+# <br>, <p> only — the owner ruling 2026-09-14).
 
 #: Illegal XML 1.0 characters: the control chars (dropped — escaping alone
 #: cannot legalize them; the matrix pins \x00-\x08, \x0B, \x0C, \x0E-\x1F)
@@ -1706,50 +1710,303 @@ def _rptok_attack_macros(block: dict[str, Any], entity_id: str) -> list[dict[str
     return buttons
 
 
+_RPTOK_TEMPLATE = (
+    "<net.rptools.maptool.model.Token>" + "\n"
+    "<id>" + "\n"
+    "<baGUID>1C2FKGDORM6JNJ51XguqIw==</baGUID>" + "\n"
+    "</id>" + "\n"
+    "<beingImpersonated>true</beingImpersonated>" + "\n"
+    "<exposedAreaGUID>" + "\n"
+    "<baGUID>9maH6b4tRVGCP61AXNzjpA==</baGUID>" + "\n"
+    "</exposedAreaGUID>" + "\n"
+    "<imageAssetMap>" + "\n"
+    "<entry>" + "\n"
+    "<null/>" + "\n"
+    "<net.rptools.lib.MD5Key>" + "\n"
+    "<id>87f4e9bfa4f1f3db250b57b3599fa4e9</id>" + "\n"
+    "</net.rptools.lib.MD5Key>" + "\n"
+    "</entry>" + "\n"
+    "</imageAssetMap>" + "\n"
+    "<x>400</x>" + "\n"
+    "<y>300</y>" + "\n"
+    "<z>1</z>" + "\n"
+    "<lastX>0</lastX>" + "\n"
+    "<lastY>0</lastY>" + "\n"
+    "<anchorX>0</anchorX>" + "\n"
+    "<anchorY>0</anchorY>" + "\n"
+    "<sizeScale>1.0</sizeScale>" + "\n"
+    "<scaleX>1.0</scaleX>" + "\n"
+    "<scaleY>1.0</scaleY>" + "\n"
+    "<snapToScale>true</snapToScale>" + "\n"
+    "<width>200</width>" + "\n"
+    "<height>200</height>" + "\n"
+    "<isoWidth>0</isoWidth>" + "\n"
+    "<isoHeight>0</isoHeight>" + "\n"
+    "<sizeMap>" + "\n"
+    "<entry>" + "\n"
+    "<string>net.rptools.maptool.model.SquareGrid</string>" + "\n"
+    "<net.rptools.maptool.model.GUID>" + "\n"
+    "<baGUID>fwABAc9lFSoFAAAAKgABAQ==</baGUID>" + "\n"
+    "</net.rptools.maptool.model.GUID>" + "\n"
+    "</entry>" + "\n"
+    "</sizeMap>" + "\n"
+    "<snapToGrid>true</snapToGrid>" + "\n"
+    "<isVisible>true</isVisible>" + "\n"
+    "<visibleOnlyToOwner>false</visibleOnlyToOwner>" + "\n"
+    "<vblColorSensitivity>-1</vblColorSensitivity>" + "\n"
+    "<alwaysVisibleTolerance>2</alwaysVisibleTolerance>" + "\n"
+    "<isAlwaysVisible>false</isAlwaysVisible>" + "\n"
+    "<name>TM_NAME</name>" + "\n"
+    "<ownerList/>" + "\n"
+    "<ownerType>0</ownerType>" + "\n"
+    "<tokenShape>CIRCLE</tokenShape>" + "\n"
+    "<tokenType>NPC</tokenType>" + "\n"
+    "<layer>TOKEN</layer>" + "\n"
+    "<propertyType>Basic</propertyType>" + "\n"
+    "<tokenOpacity>1.0</tokenOpacity>" + "\n"
+    "<speechName/>" + "\n"
+    "<terrainModifier>0.0</terrainModifier>" + "\n"
+    "<terrainModifierOperation>NONE</terrainModifierOperation>" + "\n"
+    "<terrainModifiersIgnored>"
+    + "\n"
+    + (
+        "<net.rptools.maptool.model.Token_-TerrainModifierOperation>NONE"
+        "</net.rptools.maptool.model.Token_-TerrainModifierOperation>"
+    )
+    + "\n"
+    "</terrainModifiersIgnored>" + "\n"
+    "<isFlippedX>false</isFlippedX>" + "\n"
+    "<isFlippedY>false</isFlippedY>" + "\n"
+    "<isFlippedIso>false</isFlippedIso>" + "\n"
+    '<uniqueLightSources class="linked-hash-map"/>' + "\n"
+    "<lightSourceList/>" + "\n"
+    "<sightType>Normal</sightType>" + "\n"
+    "<hasSight>false</hasSight>" + "\n"
+    "<hasImageTable>false</hasImageTable>" + "\n"
+    "<notes>Note_NOTES</notes>" + "\n"
+    "<notesType>text/html</notesType>" + "\n"
+    "<gmNotes>GM_NOTES</gmNotes>" + "\n"
+    "<gmNotesType>text/html</gmNotesType>" + "\n"
+    "<state/>" + "\n"
+    "<propertyMapCI>" + "\n"
+    "<store>" + "\n"
+    "<entry>" + "\n"
+    "<string>dexterity</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>Dexterity</key>" + "\n"
+    '<value class="string">PROP_DEX</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>elevation</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>Elevation</key>" + "\n"
+    '<value class="string">-</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>ac</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>AC</key>" + "\n"
+    '<value class="string">PROP_AC</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>constitution</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>Constitution</key>" + "\n"
+    '<value class="string">PROP_CON</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>strength</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>Strength</key>" + "\n"
+    '<value class="string">PROP_STR</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>defense</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>Defense</key>" + "\n"
+    '<value class="string">-</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>hp</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>HP</key>" + "\n"
+    '<value class="string">PROP_HP</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>description</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>Description</key>" + "\n"
+    '<value class="string">PROP_DESC</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>movement</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>Movement</key>" + "\n"
+    '<value class="string">PROP_MOVE</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>charisma</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>Charisma</key>" + "\n"
+    '<value class="string">PROP_CHA</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>intelligence</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>Intelligence</key>" + "\n"
+    '<value class="string">PROP_INT</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "<entry>" + "\n"
+    "<string>wisdom</string>" + "\n"
+    "<net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "<key>Wisdom</key>" + "\n"
+    '<value class="string">PROP_WIS</value>' + "\n"
+    "</net.rptools.CaseInsensitiveHashMap_-KeyValue>" + "\n"
+    "</entry>" + "\n"
+    "</store>" + "\n"
+    "</propertyMapCI>" + "\n"
+    "<macroPropertiesMap>" + "\n"
+    "MACRO_ENTRIES" + "\n"
+    "</macroPropertiesMap>" + "\n"
+    "<speechMap/>" + "\n"
+    "<allowURIAccess>false</allowURIAccess>" + "\n"
+    "</net.rptools.maptool.model.Token>"
+)
+
+
+#: The template's two identity literals — the token-id baGUID and the
+#: imageAssetMap MD5Key — are replaced with derived/committed values; the
+#: exposedAreaGUID/sizeMap GUIDs stay verbatim (template fidelity).
+_RPTOK_BA_GUID_MARKER = "1C2FKGDORM6JNJ51XguqIw=="
+_RPTOK_IMAGE_MD5_MARKER = "87f4e9bfa4f1f3db250b57b3599fa4e9"
+
+#: All template marker tokens, substituted in ONE regex pass — a replaced
+#: value (name/notes/props/macros) is never re-scanned for marker text.
+_RPTOK_MARKERS: tuple[str, ...] = (
+    _RPTOK_BA_GUID_MARKER,
+    _RPTOK_IMAGE_MD5_MARKER,
+    "TM_NAME",
+    "Note_NOTES",
+    "GM_NOTES",
+    "PROP_STR",
+    "PROP_DEX",
+    "PROP_CON",
+    "PROP_INT",
+    "PROP_WIS",
+    "PROP_CHA",
+    "PROP_AC",
+    "PROP_HP",
+    "PROP_MOVE",
+    "PROP_DESC",
+    "MACRO_ENTRIES",
+)
+_RPTOK_MARKER_RE = re.compile("|".join(re.escape(marker) for marker in _RPTOK_MARKERS))
+
+#: Leading numeric of a speed string ("30 ft." -> 30; "Swim 60 ft." -> None).
+_RPTOK_SPEED_NUM = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _rptok_speed_number(speed: Any) -> int | float | None:
+    """The leading numeric of a committed speed string (the MOVE property):
+    "30 ft." -> 30; a non-numeric speed -> None ("-" per the template's
+    own convention for absent slots)."""
+    if not isinstance(speed, str):
+        return None
+    match = _RPTOK_SPEED_NUM.match(speed.strip())
+    if match is None:
+        return None
+    text = match.group(0)
+    return int(text) if text.isdigit() else float(text)
+
+
+def _rptok_properties(block: dict[str, Any], data: dict[str, Any]) -> dict[str, str]:
+    """The propertyMapCI string values (the template's PROP_* markers ->
+    committed numbers; "-" per the template's own convention for absent
+    slots — Elevation/Defense/Description ride as "-"). Ability scores,
+    AC and HP read exactly like the notes/fg renderers; non-integral
+    values are omitted ("-"), never truncated."""
+    attributes = block.get("attributes")
+    attributes = attributes if isinstance(attributes, dict) else {}
+    combat = block.get("combat")
+    combat = combat if isinstance(combat, dict) else {}
+    values: dict[str, Any] = {}
+    for ability in _ABILITY_ORDER:
+        score = _forge_number(attributes.get(ability))
+        values[f"PROP_{ability.upper()}"] = (
+            int(score) if score is not None and float(score).is_integer() else None
+        )
+    ac = _forge_number(combat.get("ac"))
+    if ac is None:
+        ac = _forge_number(combat.get("armor_class"))
+    hp = _forge_number(combat.get("hp"))
+    if hp is None:
+        hp = _forge_number(combat.get("hit_points"))
+    values["PROP_AC"] = int(ac) if ac is not None and float(ac).is_integer() else None
+    values["PROP_HP"] = int(hp) if hp is not None and float(hp).is_integer() else None
+    speed = combat.get("speed")
+    if not isinstance(speed, str):
+        speed = block.get("speed")
+    values["PROP_MOVE"] = _rptok_speed_number(speed)
+    values["PROP_DESC"] = None
+    return {marker: "-" if value is None else str(value) for marker, value in values.items()}
+
+
 def _rptok_macro_buttons_xml(buttons: list[dict[str, Any]]) -> str:
-    """The ``macroPropertiesMap`` block — the fixture's MacroButtonProperties
-    form copied field-for-field (saveLocation=Token, colorKey=default,
-    hotKey=None, autoExecute=true, includeLabel=false, applyToTokens=false,
-    fontColorKey=default, fontSize=1.00em, displayHotKey=true,
-    commonMacro=false, compare* true, allowPlayerEdits=true), one
-    ``<entry><int>N</int>`` per button (spec-5-4)."""
+    """The MACRO_ENTRIES slot content (template fidelity): one UNINDENTED
+    ``<entry><int>N</int>`` + full MacroButtonProperties block per button —
+    the fixture's field set copied field-for-field (saveLocation=Token,
+    colorKey=default, hotKey=None, autoExecute=true, includeLabel=false,
+    applyToTokens=false, fontColorKey=default, fontSize=1.00em,
+    displayHotKey=true, commonMacro=false, compare* true,
+    allowPlayerEdits=true)."""
     entries: list[str] = []
     for button in buttons:
         index = button["index"]
         entries.append(
-            "    <entry>\n"
-            f"      <int>{index}</int>\n"
-            "      <net.rptools.maptool.model.MacroButtonProperties>\n"
-            f"        <macroUUID>{button['macroUUID']}</macroUUID>\n"
-            "        <saveLocation>Token</saveLocation>\n"
-            f"        <index>{index}</index>\n"
-            "        <colorKey>default</colorKey>\n"
-            "        <hotKey>None</hotKey>\n"
-            f"        <command>{_xml10(button['command'])}</command>\n"
-            f"        <label>{_xml10(button['label'])}</label>\n"
-            "        <group></group>\n"
-            "        <sortby></sortby>\n"
-            "        <autoExecute>true</autoExecute>\n"
-            "        <includeLabel>false</includeLabel>\n"
-            "        <applyToTokens>false</applyToTokens>\n"
-            "        <fontColorKey>default</fontColorKey>\n"
-            "        <fontSize>1.00em</fontSize>\n"
-            "        <minWidth></minWidth>\n"
-            "        <maxWidth></maxWidth>\n"
-            "        <allowPlayerEdits>true</allowPlayerEdits>\n"
-            "        <toolTip></toolTip>\n"
-            "        <displayHotKey>true</displayHotKey>\n"
-            "        <commonMacro>false</commonMacro>\n"
-            "        <compareGroup>true</compareGroup>\n"
-            "        <compareSortPrefix>true</compareSortPrefix>\n"
-            "        <compareCommand>true</compareCommand>\n"
-            "        <compareIncludeLabel>true</compareIncludeLabel>\n"
-            "        <compareAutoExecute>true</compareAutoExecute>\n"
-            "        <compareApplyToSelectedTokens>true</compareApplyToSelectedTokens>\n"
-            "      </net.rptools.maptool.model.MacroButtonProperties>\n"
-            "    </entry>"
+            "<entry>\n"
+            f"<int>{index}</int>\n"
+            "<net.rptools.maptool.model.MacroButtonProperties>\n"
+            f"<macroUUID>{button['macroUUID']}</macroUUID>\n"
+            "<saveLocation>Token</saveLocation>\n"
+            f"<index>{index}</index>\n"
+            "<colorKey>default</colorKey>\n"
+            "<hotKey>None</hotKey>\n"
+            f"<command>{_xml10(button['command'])}</command>\n"
+            f"<label>{_xml10(button['label'])}</label>\n"
+            "<group></group>\n"
+            "<sortby></sortby>\n"
+            "<autoExecute>true</autoExecute>\n"
+            "<includeLabel>false</includeLabel>\n"
+            "<applyToTokens>false</applyToTokens>\n"
+            "<fontColorKey>default</fontColorKey>\n"
+            "<fontSize>1.00em</fontSize>\n"
+            "<minWidth></minWidth>\n"
+            "<maxWidth></maxWidth>\n"
+            "<allowPlayerEdits>true</allowPlayerEdits>\n"
+            "<toolTip></toolTip>\n"
+            "<displayHotKey>true</displayHotKey>\n"
+            "<commonMacro>false</commonMacro>\n"
+            "<compareGroup>true</compareGroup>\n"
+            "<compareSortPrefix>true</compareSortPrefix>\n"
+            "<compareCommand>true</compareCommand>\n"
+            "<compareIncludeLabel>true</compareIncludeLabel>\n"
+            "<compareAutoExecute>true</compareAutoExecute>\n"
+            "<compareApplyToSelectedTokens>true</compareApplyToSelectedTokens>\n"
+            "</net.rptools.maptool.model.MacroButtonProperties>\n"
+            "</entry>"
         )
-    return "  <macroPropertiesMap>\n" + "\n".join(entries) + "\n  </macroPropertiesMap>"
+    return "\n".join(entries)
 
 
 def _rptok_content_xml(
@@ -1758,51 +2015,30 @@ def _rptok_content_xml(
     gm_notes: str,
     image_md5: str | None,
     buttons: list[dict[str, Any]],
+    props: dict[str, str],
 ) -> str:
-    """The token's content.xml — the fixture's NAMED STABLE SUBSET of the
-    gold field set (spec-5-4): derived ``<id><baGUID>``, ``name``, the
-    NPC/CIRCLE/TOKEN pins, ``notes``/``gmNotes`` with their explicit
-    ``text/html`` types, the null-key ``imageAssetMap`` when an image is
-    embedded, and the ``macroPropertiesMap`` when buttons exist. Never
-    campaign/runtime state (positions, ``exposedAreaGUID``, ``sizeMap``,
-    ``beingImpersonated``, ``isFlipped*``, ``state``, lights,
-    ``ownerList``, ``terrainModifier*``). notes/gmNotes are raw HTML runs
-    (built by the ``_rptok_*`` text helpers) — the single XML-escape pass
-    here is the ONLY escaping they get (their HTML tags and any hostile
-    text all land escaped, so the value round-trips as one text node);
-    empty ones emit the pinned ``<notes></notes>`` form, never
-    ``<notes/>``."""
-    parts = [
-        "<net.rptools.maptool.model.Token>",
-        "  <id>",
-        f"    <baGUID>{_rptok_guid(entity.id)}</baGUID>",
-        "  </id>",
-    ]
-    if image_md5 is not None:
-        parts.append("  <imageAssetMap>")
-        parts.append("    <entry>")
-        parts.append("      <null/>")
-        parts.append("      <net.rptools.lib.MD5Key>")
-        parts.append(f"        <id>{image_md5}</id>")
-        parts.append("      </net.rptools.lib.MD5Key>")
-        parts.append("    </entry>")
-        parts.append("  </imageAssetMap>")
-    parts.extend(
-        [
-            f"  <name>{_xml10(entity.name)}</name>",
-            "  <tokenShape>CIRCLE</tokenShape>",
-            "  <tokenType>NPC</tokenType>",
-            "  <layer>TOKEN</layer>",
-            f"  <notes>{_xml10(notes)}</notes>",
-            "  <notesType>text/html</notesType>",
-            f"  <gmNotes>{_xml10(gm_notes)}</gmNotes>",
-            "  <gmNotesType>text/html</gmNotesType>",
-        ]
-    )
-    if buttons:
-        parts.append(_rptok_macro_buttons_xml(buttons))
-    parts.append("</net.rptools.maptool.model.Token>")
-    return "\n".join(parts) + "\n"
+    """The token's content.xml — the owner's Dragon template VERBATIM with
+    ONLY the marker tokens substituted (owner directive 2026-09-14): the
+    derived id GUID, the imageAssetMap MD5Key (when an image embeds; a
+    broken default leaves the template's literal — a dangling reference
+    MapTool skips with a log error, the old no-image behavior), the name,
+    the notes/gmNotes HTML runs, the propertyMapCI values and the
+    MACRO_ENTRIES. Every other byte stays exactly the template's (a real
+    1.18.6 save — positions, exposedAreaGUID, sizeMap grid GUID, runtime
+    flags included). Substitution is ONE regex pass, so replaced values
+    are never re-scanned for marker text; notes/gmNotes get their single
+    XML-escape pass here and keep the pinned ``<notes></notes>`` form
+    when empty."""
+    replacements: dict[str, str] = {
+        _RPTOK_BA_GUID_MARKER: _rptok_guid(entity.id),
+        _RPTOK_IMAGE_MD5_MARKER: image_md5 if image_md5 is not None else _RPTOK_IMAGE_MD5_MARKER,
+        "TM_NAME": _xml10(entity.name),
+        "Note_NOTES": _xml10(notes),
+        "GM_NOTES": _xml10(gm_notes),
+        "MACRO_ENTRIES": _rptok_macro_buttons_xml(buttons),
+    }
+    replacements.update({marker: _xml10(value) for marker, value in props.items()})
+    return _RPTOK_MARKER_RE.sub(lambda match: replacements[match.group(0)], _RPTOK_TEMPLATE)
 
 
 #: properties.xml verbatim — the fixture's Map<String,Object> shape with
@@ -1879,7 +2115,9 @@ def render_entity_maptool(export: WorldExport, entity_id: str) -> bytes:
     buttons = _rptok_attack_macros(block, entity.id)
 
     image_md5 = _rptok_md5(image_bytes) if image_bytes is not None else None
-    content = _rptok_content_xml(entity, notes, gm_notes, image_md5, buttons)
+    content = _rptok_content_xml(
+        entity, notes, gm_notes, image_md5, buttons, _rptok_properties(block, data)
+    )
     entries: list[tuple[str, bytes]] = [
         ("content.xml", content.encode("utf-8")),
         ("properties.xml", _RPTOK_PROPERTIES_XML.encode("utf-8")),
