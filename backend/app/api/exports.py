@@ -302,12 +302,13 @@ def export_entity(
     campaign_id: str,
     entity_id: str,
     current: Annotated[models.Account, Depends(get_current_account)],
-    format: Literal["json", "markdown", "html", "owlbear"] = "json",
+    format: Literal["json", "markdown", "html", "owlbear", "fg"] = "json",
 ) -> EntityExportDetail | Response:
     """One committed entity — edges touching it and the revision head —
-    as JSON, Markdown, a print-ready HTML sheet, or the Owlbear/Forge
-    transfer payload. The entity-level projection is the engine Epic 5's
-    VTT adapters consume (spec-5.1, spec-5-2)."""
+    as JSON, Markdown, a print-ready HTML sheet, the Owlbear/Forge
+    transfer payload, or the Fantasy Grounds Unity 2024-record XML
+    (spec-5-3). The entity-level projection is the engine Epic 5's VTT
+    adapters consume (spec-5.1, spec-5-2, spec-5.3)."""
     campaign = get_campaign(current.id, campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")
@@ -349,6 +350,16 @@ def export_entity(
             campaign_id=campaign_id,
             entity_id=entity_id,
             fmt="owlbear",
+        )
+    if format == "fg":
+        stem = _download_stem(export_sheets.name_labels(export)[entity_id], entity_id, "entity")
+        return _attachment(
+            lambda: export_sheets.render_entity_fg(export, entity_id),
+            filename=f"{stem}.xml",
+            media_type="text/xml",
+            campaign_id=campaign_id,
+            entity_id=entity_id,
+            fmt="fg",
         )
     stem = _download_stem(export_sheets.name_labels(export)[entity_id], entity_id, "entity")
     return _attachment(

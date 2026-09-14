@@ -19,7 +19,17 @@ context:
 
 ## Boundaries & Constraints
 
-**Always:** Export stays read-only — no revision, no event row, no store write (AD-1/AD-11); renderer pure of the snapshot, byte-identical across repeats. Ownership 404s stay the single indistinguishable shape. Wire shape = the verified 2024 record (`fixture-fg-npc-record-2024-export.xml`): root `version="5.1"`, one `npc` node, `version` = `2024`. Numeric fields (`ac`, `hp`, `damagethreshold`, `xp`, ability `score`/`savemodifier`) are numbers; `cr` is a STRING (2024 record) derived from `stat_block.identity` numerics (owner 5-2 verdict: derive from numerics, top-level string display-only); fraction→decimal for Monster (`cr "1/2"` → `0.5`). `spellslots` and `summon*` omitted when unknown — sparse payloads import validly (action/trait entries are `npc_power` = `name` + `desc`). The embedded `text` element is the 2024-Core grammar from research §2d (name, size/type/alignment, `AC … Initiative`, `HP`, `Speed`, MOD SAVE rows, optional keyword lines, `Traits`/`Actions` headers). Portrait: signed URL goes into the `text` block as an `Information:` line — FG image fields are embedded-bitmap only, no remote field; a `[missing]` marker stands in when no image is available (same honesty rule as Markdown). Import requires FG Unity 5E with 2024-record support (current client); the 2022/2014 grammar is not emitted.
+**Always:** Export stays read-only — no revision, no event row, no store write (AD-1/AD-11); renderer pure of the snapshot, byte-identical across repeats. Ownership 404s stay the single indistinguishable shape. Wire shape = the verified 2024 record (`fixture-fg-npc-record-2024-export.xml`): root `version="5.1"`, one `npc` node, `version` = `2024`. Numeric fields (`ac`, `hp`, `damagethreshold`, `xp`, ability `score`/`savemodifier`) are numbers; `cr` is a STRING (2024 record) derived from `stat_block.identity` numerics (owner 5-2 verdict: derive from numerics, top-level string display-only); fraction→decimal for Monster (`cr "1/2"` → `0.5`). `spellslots` and `summon*` omitted when unknown — sparse payloads import validly (action/trait entries are `npc_power` = `name` + `desc`). The embedded `text` element is the 2024-Core grammar from research §2d (name, size/type/alignment, `AC … Initiative`, `HP`, `Speed`, MOD SAVE rows, optional keyword lines, `Traits`/`Actions` headers), so a paste through the fallback
+path lands the same fields the XML carries). Portrait: FG image fields
+are embedded-bitmap only (no remote field), and embedding a LIVE signed
+URL would break byte-identical determinism (the mint's ``exp`` is a
+wall-clock read) — so the artifact NAMES the newest available portrait
+file in the ``text`` block's ``Information:`` line, and the DM fetches
+the actual signed URL from the existing portrait-url route (5-2 surface,
+7-day TTL) and drags the PNG onto the Pictures tab; a ``[missing]``
+marker stands in when only broken rows exist. Import requires FG Unity
+5E with 2024-record support (current client); the 2022/2014 grammar is
+not emitted.
 
 **Ask First:** switching the primary artifact from record-XML to Import-Text (parser tolerances as the contract — currently the fallback, not the contract); emitting 2022-MM/Legacy variants; anything that embeds portrait binaries (violates the no-binary rule, AD-10/AD-11).
 
@@ -29,9 +39,9 @@ context:
 
 | Scenario | Input / State | Expected Output / Behavior | Error Handling |
 |----------|--------------|---------------------------|----------------|
-| HAPPY NPC | committed NPC, stat_block, portrait available | `.xml` attachment (`text/xml`, `{stem}.xml`) with full 2024 record; `text` carries the 2024-Core stat block + `Information: Portrait: <signed-url>` | N/A |
+| HAPPY NPC | committed NPC, stat_block, portrait available | `.xml` attachment (`text/xml`, `{stem}.xml`) with full 2024 record; `text` carries the 2024-Core stat block + `Information: Portrait: <filename>`; the live signed URL comes from the portrait-url route | N/A |
 | HAPPY Monster | committed Monster, `cr "1/2"`, level absent | `cr` = `0.5` (fraction→decimal); numeric fields from `combat`/`attributes`; spells list → `spells.id-0000N.name` | N/A |
-| NO portrait | entity without available image | record exports fine; `text` carries `Information: Portrait: [missing]` | N/A |
+| NO portrait | entity with only broken/absent media | record exports fine; `text` carries `Information: Portrait: <filename> [missing]` when only unavailable rows exist, no line when there is no media at all | N/A |
 | NO stat_block | entity with no stat_block (place/faction) | minimal record (name + type/size where derivable), no `abilities`/`combat` block — sparse is legal | N/A |
 | MISSING/FOREIGN | unknown entity or campaign id | identical 404 | 404 envelope |
 | BAD FORMAT | `format=weird` | OpenAPI 422 before auth ordering (existing route pattern) | 422 envelope |
@@ -81,6 +91,8 @@ context:
 **Actions.** Each `actions`/`traits`/etc. entry = `npc_power` (`name` string, `desc` string). Name = the attack/trait heading with the trailing period stripped (parser convention); desc = the committed text with the 2024 phrasing (`Melee Attack Roll: +x, reach … Hit: …`) so the CT effects parser can drive rolls — the "table-ready" claim.
 
 **Why XML over Text.** The XML shape is fully verified and the Import button is the documented file-picker surface; the text parser's tolerances (research §2d) are now known but still a second source of drift. XML = one deterministic contract. Text stays embedded for the paste path and as the documented fallback.
+
+**Field-set provenance.** Every emitted tag is pinned by the owner's live Export NPC fixture EXCEPT `conditionimmunities`, which the fixture omits — it is confirmed by the ruleset's own parser/record (`record_npc.xml` label + `manager_import_npc.lua` keyword both write `conditionimmunities`), so it follows the same verified family.
 
 ## Verification
 

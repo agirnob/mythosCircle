@@ -4,1897 +4,2028 @@
  */
 
 export interface paths {
-  '/api/auth/register': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Register
-     * @description Create an account; the password is argon2id-hashed, never stored.
-     */
-    post: operations['register_api_auth_register_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/auth/login': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Login
-     * @description Verify credentials, set the session cookie, return the account.
-     *
-     *     Every failure — unknown email, wrong password, rate-limit lockout —
-     *     is the same generic 401 (AR29, no user enumeration). The limiter key
-     *     uses the NORMALIZED email (the same form the store compares), so
-     *     case-rotating ``DM@example.com`` / ``dm@example.com`` cannot mint
-     *     fresh attempt budgets (review round 1). Only failures consume quota —
-     *     five legit logins never lock a user out.
-     */
-    post: operations['login_api_auth_login_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/auth/logout': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Logout
-     * @description Revoke the session immediately and clear the cookie; idempotent.
-     */
-    post: operations['logout_api_auth_logout_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/auth/me': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Me
-     * @description Return the authenticated account.
-     */
-    get: operations['me_api_auth_me_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * List Own
-     * @description The caller's campaigns, oldest first, cursor-paginated.
-     */
-    get: operations['list_own_api_campaigns_get']
-    put?: never
-    /**
-     * Create
-     * @description Create a private world owned by the caller (AR27, AD-9).
-     */
-    post: operations['create_api_campaigns_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/themes': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * List Themes
-     * @description The themes a campaign may carry — registered before the
-     *     ``/{campaign_id}`` route so the literal path wins the match.
-     */
-    get: operations['list_themes_api_campaigns_themes_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get One
-     * @description One owned campaign — foreign/unknown is a single 404 (no oracle).
-     */
-    get: operations['get_one_api_campaigns__campaign_id__get']
-    put?: never
-    post?: never
-    /**
-     * Delete
-     * @description AR20 total hard delete — requires an explicit confirmation body.
-     *
-     *     Frozen contract (spec-1.6): ``DELETE`` with a JSON body
-     *     ``{"confirm": true}``; missing/false confirm -> 400, nothing deleted.
-     *     The body is echoed via ``request`` (FastAPI cannot bind a Pydantic
-     *     body to DELETE directly) and malformed JSON is a 400. Ownership is
-     *     checked FIRST: a foreign id is always 404, even without the confirm
-     *     body (matrix row DELETE_FOREIGN).
-     */
-    delete: operations['delete_api_campaigns__campaign_id__delete']
-    options?: never
-    head?: never
-    /**
-     * Update
-     * @description Update seed fields of an owned campaign (PATCH semantics).
-     */
-    patch: operations['update_api_campaigns__campaign_id__patch']
-    trace?: never
-  }
-  '/api/health': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Health
-     * @description Return the service health status.
-     */
-    get: operations['health_api_health_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/jobs': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * List Campaign Jobs
-     * @description Campaign-scoped FIFO list, oldest first, cursor-paginated (AD-9).
-     */
-    get: operations['list_campaign_jobs_api_jobs_get']
-    put?: never
-    /**
-     * Create Job
-     * @description Enqueue a job at the FIFO tail; idempotent by job_id (AD-3, AR28).
-     */
-    post: operations['create_job_api_jobs_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/jobs/{job_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Job
-     * @description One job plus its current queue position (STATUS_POSITION).
-     */
-    get: operations['get_job_api_jobs__job_id__get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/jobs/{job_id}/cancel': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Cancel Job Route
-     * @description Cancel a queued or running job; frees the queue slot (AR28).
-     */
-    post: operations['cancel_job_route_api_jobs__job_id__cancel_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/entities/{entity_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete Entity
-     * @description FR4/AD-5: delete one entity through the store's commit path.
-     */
-    delete: operations['delete_entity_api_campaigns__campaign_id__entities__entity_id__delete']
-    options?: never
-    head?: never
-    /**
-     * Update Entity
-     * @description FR10/spec-3.6: hand-edit one committed entity through the store's
-     *     commit path — the DM is the final author.
-     *
-     *     Partial fields (identity anchor, lore sections, ``stat_block``,
-     *     ``world_integration``, ``boss``, ``text``, unknown keys) merge onto
-     *     the current record and commit as exactly one ``entity_updated``
-     *     revision; a value-identical PATCH commits none (204, idempotent).
-     *     ``base_revision`` is opt-in optimistic concurrency (omitted targets
-     *     the current head, resolved inside the store call; a moved head is a
-     *     409 ``StaleRevisionError`` — rebase-or-reject). Shape validation is
-     *     conditional (owner decision 2026-09-05): shape-valid records must
-     *     stay shape-valid (422 naming the break, zero revisions); bare
-     *     records merge unconstrained.
-     *
-     *     Ownership-404-first, mirroring ``delete_entity``: the campaign check
-     *     runs BEFORE any body is read, so a foreign/unknown campaign is the
-     *     single indistinguishable 404 even with a malformed body. The body is
-     *     therefore hand-parsed (pydantic body parameters would validate — and
-     *     422 — before the handler ran); malformed/non-object/absent body is a
-     *     400, ``base_revision`` non-string is a 400, and a body whose only
-     *     key is ``base_revision`` is a 400 (at least one content key is
-     *     required). 204 body-less, the DELETE precedent.
-     */
-    patch: operations['update_entity_api_campaigns__campaign_id__entities__entity_id__patch']
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/edges': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Create Edge
-     * @description Create a new typed, directed edge in one atomic commit (AR3).
-     *
-     *     Thin route: type/vocabulary, self-loop, duplicate-relationship, and
-     *     counter checks are the store's. The no-orphan rule is entity-create-
-     *     only (spec-2.5), so a new edge between committed entities is always
-     *     legal and never orphans anyone. The store assigns the edge's ULID
-     *     (creation is id=None — explicit ids never create).
-     */
-    post: operations['create_edge_api_campaigns__campaign_id__edges_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/edges/{edge_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete Campaign Edge
-     * @description Delete one edge in one atomic commit (FR9).
-     *
-     *     No cascade/confirm gate — deleting a single edge is always
-     *     dangling-safe (never orphans an entity; the store's no-orphan rule is
-     *     entity-create-only). Unknown/foreign edge id is the indistinguishable
-     *     404. ``base_revision`` is query-param opt-in optimistic concurrency
-     *     (omitted targets the current head — ``delete_edge`` implements that
-     *     None-means-head semantics internally, like ``delete_entity``).
-     */
-    delete: operations['delete_campaign_edge_api_campaigns__campaign_id__edges__edge_id__delete']
-    options?: never
-    head?: never
-    /**
-     * Update Edge
-     * @description Update one edge's counter in one atomic commit (counter-only, AD-2).
-     *
-     *     src/dst/type are immutable; re-targeting is forbidden, so the PATCH
-     *     body carries only the new counter. Unknown/foreign edge id is the
-     *     indistinguishable 404; a stale ``base_revision`` is a 409
-     *     (StaleRevisionError).
-     */
-    patch: operations['update_edge_api_campaigns__campaign_id__edges__edge_id__patch']
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/export': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Export World
-     * @description The complete latest-revision world state as JSON, Obsidian
-     *     Markdown, or a self-contained styled HTML document.
-     */
-    get: operations['export_world_api_campaigns__campaign_id__export_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/entities/{entity_id}/export': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Export Entity
-     * @description One committed entity — edges touching it and the revision head —
-     *     as JSON, Markdown, a print-ready HTML sheet, or the Owlbear/Forge
-     *     transfer payload. The entity-level projection is the engine Epic 5's
-     *     VTT adapters consume (spec-5.1, spec-5-2).
-     */
-    get: operations['export_entity_api_campaigns__campaign_id__entities__entity_id__export_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/candidates': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * List Campaign Candidates
-     * @description The campaign's staged proposed candidates, oldest first (AR7).
-     *
-     *     Owner-only: unauthenticated is a 401; a foreign or unknown campaign
-     *     is the single indistinguishable 404. Cursor-paginated per the list
-     *     conventions; a fabricated cursor is a 422 (epic-1 retro item 2).
-     *     ``status`` filters the closed lifecycle set and defaults to
-     *     ``proposed`` — settled rows must not regress the accept-screen read.
-     */
-    get: operations['list_campaign_candidates_api_campaigns__campaign_id__candidates_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Accept Campaign Candidate
-     * @description Commit the candidate's subgraph as one atomic transaction and
-     *     settle the row ``accepted`` (spec-3.2, FR11/AD-15).
-     *
-     *     Owner-first, mirroring ``delete_entity``: a foreign or unknown
-     *     campaign is the 404 before anything else is touched. Thin route:
-     *     every decision (fresh-ULID entity, staged edges, base revision,
-     *     one-transaction atomicity, dead-endpoint rejection) is the store's.
-     *     An optional ``{"payload": {...}}`` body (spec-3.3, relaxed by
-     *     spec-3.4) carries the DM's edited sections and the DM's own edge
-     *     set; the store validates the override against the required AR24
-     *     section shape and validates every edge against committed world
-     *     state (invalid edge: 422, row stays ``proposed``). A body that is
-     *     present WITHOUT a payload (``{}`` or ``{"payload": null}``) is a
-     *     422 — only the OMITTED body is the unedited accept, unless it is the
-     *     spec-3.6 confirm flag alone (``{"confirm_overwrite": true}`` — the
-     *     three-way accept-conflict escape must not force resending the
-     *     payload).
-     */
-    post: operations['accept_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__accept_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/candidates/{candidate_id}/reject': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Reject Campaign Candidate
-     * @description Settle the candidate ``rejected`` — the world is untouched (AR7).
-     *
-     *     Owner-first like the accept route; the store flips the status in one
-     *     transaction with no revision, no event, and no world read.
-     */
-    post: operations['reject_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__reject_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/media': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * List Campaign Media
-     * @description The campaign's media manifest (FOREIGN_CAMPAIGN: owner-only, the
-     *     single indistinguishable 404).
-     */
-    get: operations['list_campaign_media_api_campaigns__campaign_id__media_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/entities/{entity_id}/portrait-url': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Portrait Url
-     * @description Mint the Forge portrait URL: owner-only, absolute, expiring.
-     *     Unknown/foreign campaign is the campaign 404; an unknown entity or
-     *     one with no available portrait is the entity 404 (same envelope).
-     *     An unset secret is the generic 500 after one error log line — fail
-     *     closed, never mint unsigned. Read-only (AD-1/AD-11): no revision,
-     *     no event, no store write.
-     */
-    get: operations['portrait_url_api_campaigns__campaign_id__entities__entity_id__portrait_url_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/campaigns/{campaign_id}/media/{entity_id}/{filename}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get File
-     * @description One portrait file — ownership + manifest row + disk checks, all 404.
-     *
-     *     The row lookup is store-side (AD-9) and the disk check is the
-     *     ROW_WITHOUT_FILE row: a manifest row whose file was removed is the
-     *     same 404, never a server error. The filename is a manifest row's
-     *     runner-minted ``<ulid>.png``; the row lookup is the traversal guard
-     *     (a non-row name can never reach the filesystem), and separators are
-     *     rejected outright.
-     *
-     *     With ``exp``/``sig`` (spec-5.2) a valid signature bypasses the
-     *     session entirely — the portrait URL is pasted into Forge, which
-     *     fetches with no cookie. EVERY signed-path failure (absent secret,
-     *     missing/expired/tampered params, unknown row, missing file) is the
-     *     campaign-missing 404: the signature, the row, and the disk check
-     *     are indistinguishable (no oracle). Without the params the cookie
-     *     path is unchanged, including its 401.
-     */
-    get: operations['get_file_api_campaigns__campaign_id__media__entity_id___filename__get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
+    "/api/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register
+         * @description Create an account; the password is argon2id-hashed, never stored.
+         */
+        post: operations["register_api_auth_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Login
+         * @description Verify credentials, set the session cookie, return the account.
+         *
+         *     Every failure — unknown email, wrong password, rate-limit lockout —
+         *     is the same generic 401 (AR29, no user enumeration). The limiter key
+         *     uses the NORMALIZED email (the same form the store compares), so
+         *     case-rotating ``DM@example.com`` / ``dm@example.com`` cannot mint
+         *     fresh attempt budgets (review round 1). Only failures consume quota —
+         *     five legit logins never lock a user out.
+         */
+        post: operations["login_api_auth_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Logout
+         * @description Revoke the session immediately and clear the cookie; idempotent.
+         */
+        post: operations["logout_api_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Me
+         * @description Return the authenticated account.
+         */
+        get: operations["me_api_auth_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Own
+         * @description The caller's campaigns, oldest first, cursor-paginated.
+         */
+        get: operations["list_own_api_campaigns_get"];
+        put?: never;
+        /**
+         * Create
+         * @description Create a private world owned by the caller (AR27, AD-9).
+         */
+        post: operations["create_api_campaigns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/themes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Themes
+         * @description The themes a campaign may carry — registered before the
+         *     ``/{campaign_id}`` route so the literal path wins the match.
+         */
+        get: operations["list_themes_api_campaigns_themes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get One
+         * @description One owned campaign — foreign/unknown is a single 404 (no oracle).
+         */
+        get: operations["get_one_api_campaigns__campaign_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete
+         * @description AR20 total hard delete — requires an explicit confirmation body.
+         *
+         *     Frozen contract (spec-1.6): ``DELETE`` with a JSON body
+         *     ``{"confirm": true}``; missing/false confirm -> 400, nothing deleted.
+         *     The body is echoed via ``request`` (FastAPI cannot bind a Pydantic
+         *     body to DELETE directly) and malformed JSON is a 400. Ownership is
+         *     checked FIRST: a foreign id is always 404, even without the confirm
+         *     body (matrix row DELETE_FOREIGN).
+         */
+        delete: operations["delete_api_campaigns__campaign_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update
+         * @description Update seed fields of an owned campaign (PATCH semantics).
+         */
+        patch: operations["update_api_campaigns__campaign_id__patch"];
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo
+         * @description AD-2: undo ONE revision as a compensating commit — 204, no body.
+         *
+         *     The frozen contract: an absent body undoes the latest revision, a JSON
+         *     object body may name the target with ``{"revision_id": "<ulid>"}``,
+         *     and anything else present is a 400 (malformed JSON or a non-object
+         *     body, the entities.py hand-parse pattern). Ownership is checked FIRST:
+         *     a foreign/unknown campaign is the single indistinguishable 404, even
+         *     with a malformed body. A campaign with no revision at all is a 404
+         *     ("No revision to undo.") — there is nothing to compensate; any other
+         *     revision than the head is the store's ``StaleRevisionError`` -> 409
+         *     through the shared mapper (rebase-or-reject, never a silent
+         *     overwrite), exactly like the other commit routes.
+         *
+         *     Undo appends its own revision (the log is never rewritten) and does
+         *     not restore media rows (``store/undo.py``, spec-4.3).
+         */
+        post: operations["undo_api_campaigns__campaign_id__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Health
+         * @description Return the service health status.
+         */
+        get: operations["health_api_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Campaign Jobs
+         * @description Campaign-scoped FIFO list, oldest first, cursor-paginated (AD-9).
+         */
+        get: operations["list_campaign_jobs_api_jobs_get"];
+        put?: never;
+        /**
+         * Create Job
+         * @description Enqueue a job at the FIFO tail; idempotent by job_id (AD-3, AR28).
+         */
+        post: operations["create_job_api_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Job
+         * @description One job plus its current queue position (STATUS_POSITION).
+         */
+        get: operations["get_job_api_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Job Route
+         * @description Cancel a queued or running job; frees the queue slot (AR28).
+         */
+        post: operations["cancel_job_route_api_jobs__job_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/entities/{entity_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Entity
+         * @description FR4/AD-5: delete one entity through the store's commit path.
+         */
+        delete: operations["delete_entity_api_campaigns__campaign_id__entities__entity_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Entity
+         * @description FR10/spec-3.6: hand-edit one committed entity through the store's
+         *     commit path — the DM is the final author.
+         *
+         *     Partial fields (identity anchor, lore sections, ``stat_block``,
+         *     ``world_integration``, ``boss``, ``text``, unknown keys) merge onto
+         *     the current record and commit as exactly one ``entity_updated``
+         *     revision; a value-identical PATCH commits none (204, idempotent).
+         *     ``base_revision`` is opt-in optimistic concurrency (omitted targets
+         *     the current head, resolved inside the store call; a moved head is a
+         *     409 ``StaleRevisionError`` — rebase-or-reject). Shape validation is
+         *     conditional (owner decision 2026-09-05): shape-valid records must
+         *     stay shape-valid (422 naming the break, zero revisions); bare
+         *     records merge unconstrained.
+         *
+         *     Ownership-404-first, mirroring ``delete_entity``: the campaign check
+         *     runs BEFORE any body is read, so a foreign/unknown campaign is the
+         *     single indistinguishable 404 even with a malformed body. The body is
+         *     therefore hand-parsed (pydantic body parameters would validate — and
+         *     422 — before the handler ran); malformed/non-object/absent body is a
+         *     400, ``base_revision`` non-string is a 400, and a body whose only
+         *     key is ``base_revision`` is a 400 (at least one content key is
+         *     required). 204 body-less, the DELETE precedent.
+         */
+        patch: operations["update_entity_api_campaigns__campaign_id__entities__entity_id__patch"];
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Edge
+         * @description Create a new typed, directed edge in one atomic commit (AR3).
+         *
+         *     Thin route: type/vocabulary, self-loop, duplicate-relationship, and
+         *     counter checks are the store's. The no-orphan rule is entity-create-
+         *     only (spec-2.5), so a new edge between committed entities is always
+         *     legal and never orphans anyone. The store assigns the edge's ULID
+         *     (creation is id=None — explicit ids never create).
+         */
+        post: operations["create_edge_api_campaigns__campaign_id__edges_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/edges/{edge_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Campaign Edge
+         * @description Delete one edge in one atomic commit (FR9).
+         *
+         *     No cascade/confirm gate — deleting a single edge is always
+         *     dangling-safe (never orphans an entity; the store's no-orphan rule is
+         *     entity-create-only). Unknown/foreign edge id is the indistinguishable
+         *     404. ``base_revision`` is query-param opt-in optimistic concurrency
+         *     (omitted targets the current head — ``delete_edge`` implements that
+         *     None-means-head semantics internally, like ``delete_entity``).
+         */
+        delete: operations["delete_campaign_edge_api_campaigns__campaign_id__edges__edge_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Edge
+         * @description Update one edge's counter in one atomic commit (counter-only, AD-2).
+         *
+         *     src/dst/type are immutable; re-targeting is forbidden, so the PATCH
+         *     body carries only the new counter. Unknown/foreign edge id is the
+         *     indistinguishable 404; a stale ``base_revision`` is a 409
+         *     (StaleRevisionError).
+         */
+        patch: operations["update_edge_api_campaigns__campaign_id__edges__edge_id__patch"];
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export World
+         * @description The complete latest-revision world state as JSON, Obsidian
+         *     Markdown, or a self-contained styled HTML document.
+         */
+        get: operations["export_world_api_campaigns__campaign_id__export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/entities/{entity_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Entity
+         * @description One committed entity — edges touching it and the revision head —
+         *     as JSON, Markdown, a print-ready HTML sheet, the Owlbear/Forge
+         *     transfer payload, or the Fantasy Grounds Unity 2024-record XML
+         *     (spec-5-3). The entity-level projection is the engine Epic 5's VTT
+         *     adapters consume (spec-5.1, spec-5-2, spec-5.3).
+         */
+        get: operations["export_entity_api_campaigns__campaign_id__entities__entity_id__export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Campaign Candidates
+         * @description The campaign's staged proposed candidates, oldest first (AR7).
+         *
+         *     Owner-only: unauthenticated is a 401; a foreign or unknown campaign
+         *     is the single indistinguishable 404. Cursor-paginated per the list
+         *     conventions; a fabricated cursor is a 422 (epic-1 retro item 2).
+         *     ``status`` filters the closed lifecycle set and defaults to
+         *     ``proposed`` — settled rows must not regress the accept-screen read.
+         */
+        get: operations["list_campaign_candidates_api_campaigns__campaign_id__candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept Campaign Candidate
+         * @description Commit the candidate's subgraph as one atomic transaction and
+         *     settle the row ``accepted`` (spec-3.2, FR11/AD-15).
+         *
+         *     Owner-first, mirroring ``delete_entity``: a foreign or unknown
+         *     campaign is the 404 before anything else is touched. Thin route:
+         *     every decision (fresh-ULID entity, staged edges, base revision,
+         *     one-transaction atomicity, dead-endpoint rejection) is the store's.
+         *     An optional ``{"payload": {...}}`` body (spec-3.3, relaxed by
+         *     spec-3.4) carries the DM's edited sections and the DM's own edge
+         *     set; the store validates the override against the required AR24
+         *     section shape and validates every edge against committed world
+         *     state (invalid edge: 422, row stays ``proposed``). A body that is
+         *     present WITHOUT a payload (``{}`` or ``{"payload": null}``) is a
+         *     422 — only the OMITTED body is the unedited accept, unless it is the
+         *     spec-3.6 confirm flag alone (``{"confirm_overwrite": true}`` — the
+         *     three-way accept-conflict escape must not force resending the
+         *     payload).
+         */
+        post: operations["accept_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/candidates/{candidate_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Campaign Candidate
+         * @description Settle the candidate ``rejected`` — the world is untouched (AR7).
+         *
+         *     Owner-first like the accept route; the store flips the status in one
+         *     transaction with no revision, no event, and no world read.
+         */
+        post: operations["reject_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Campaign Media
+         * @description The campaign's media manifest (FOREIGN_CAMPAIGN: owner-only, the
+         *     single indistinguishable 404).
+         */
+        get: operations["list_campaign_media_api_campaigns__campaign_id__media_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/entities/{entity_id}/media/{media_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Media
+         * @description Delete ONE manifest row (spec-4.3) — the DM's portrait delete.
+         *
+         *     ``media_id`` is the manifest ROW id (the media-list projection's
+         *     ``id``), never the filename: the row lookup is store-side and scoped
+         *     to this campaign AND entity, so a foreign campaign, an unknown id,
+         *     and an id belonging to another entity are all the same 404 (AD-9, no
+         *     oracle). Ownership is checked FIRST — a foreign/unknown campaign is
+         *     the campaign 404.
+         *
+         *     Media rows are NOT world graph: no event, no revision, and undo
+         *     never restores them — the deletion is not undoable and regeneration
+         *     is the recovery (``store/media.py``). The FILE is reclaimed after the
+         *     rows committed (AD-10 rows-first ordering, spec-4.3): a missing file
+         *     is still a 204, never an error.
+         */
+        delete: operations["delete_media_api_campaigns__campaign_id__entities__entity_id__media__media_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/entities/{entity_id}/portrait-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Portrait Url
+         * @description Mint the Forge portrait URL: owner-only, absolute, expiring.
+         *     Unknown/foreign campaign is the campaign 404; an unknown entity or
+         *     one with no available portrait is the entity 404 (same envelope).
+         *     An unset secret is the generic 500 after one error log line — fail
+         *     closed, never mint unsigned. Read-only (AD-1/AD-11): no revision,
+         *     no event, no store write.
+         */
+        get: operations["portrait_url_api_campaigns__campaign_id__entities__entity_id__portrait_url_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/media/{entity_id}/{filename}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get File
+         * @description One portrait file — ownership + manifest row + disk checks, all 404.
+         *     The row lookup is store-side (AD-9) and the disk check is the
+         *     ROW_WITHOUT_FILE row: a manifest row whose file was removed is the
+         *     same 404, never a server error. The filename is a manifest row's
+         *     runner-minted ``<ulid>.png``; the row lookup is the traversal guard
+         *     (a non-row name can never reach the filesystem), and separators are
+         *     rejected outright.
+         *
+         *     With ``exp``/``sig`` (spec-5.2) a valid signature bypasses the
+         *     session entirely — the portrait URL is pasted into Forge, which
+         *     fetches with no cookie. EVERY signed-path failure (absent secret,
+         *     missing/expired/tampered params, unknown row, missing file) is the
+         *     campaign-missing 404: the signature, the row, and the disk check
+         *     are indistinguishable (no oracle). Without the params the cookie
+         *     path is unchanged, including its 401.
+         */
+        get: operations["get_file_api_campaigns__campaign_id__media__entity_id___filename__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
-export type webhooks = Record<string, never>
+export type webhooks = Record<string, never>;
 export interface components {
-  schemas: {
-    /**
-     * AcceptBody
-     * @description Optional accept body (spec-3.3, relaxed by spec-3.4, extended by
-     *     spec-3.6): the accept screen's edit-before-accept override.
-     *     ``payload`` is the full candidate record with the DM's section edits
-     *     AND the DM's own edge set (added/edited/deleted staged edges); the
-     *     store validates every override edge against committed world state —
-     *     an invalid edge is a 422 and the row stays ``proposed``. An omitted
-     *     body is the unedited accept (identical to the 3.2 behavior).
-     *     ``confirm_overwrite`` (spec-3.6 ACCEPT_ANYWAY): the DM's explicit
-     *     confirmation that a regenerate-entity accept may overwrite a hand
-     *     edit that landed on the target since staging — a body carrying ONLY
-     *     this flag is legal (the three-way escape must not force resending
-     *     the payload); the flag alone is NEVER enough for a client to skip a
-     *     human confirmation step.
-     */
-    AcceptBody: {
-      /** Payload */
-      payload?: {
-        [key: string]: unknown
-      } | null
-      /**
-       * Confirm Overwrite
-       * @default false
-       */
-      confirm_overwrite: boolean
-    }
-    /** AccountResponse */
-    AccountResponse: {
-      /** Id */
-      id: string
-      /** Email */
-      email: string
-    }
-    /** CampaignCreate */
-    CampaignCreate: {
-      /** Title */
-      title: string
-      /**
-       * Description
-       * @default
-       */
-      description: string
-      /** Theme */
-      theme: string
-      /**
-       * Custom Lore
-       * @default
-       */
-      custom_lore: string
-    }
-    /** CampaignListResponse */
-    CampaignListResponse: {
-      /** Campaigns */
-      campaigns: components['schemas']['CampaignResponse'][]
-      /** Next Cursor */
-      next_cursor: string | null
-    }
-    /** CampaignMeta */
-    CampaignMeta: {
-      /** Id */
-      id: string
-      /** Title */
-      title: string
-      /** Theme */
-      theme: string
-      /** Description */
-      description: string
-      /** Custom Lore */
-      custom_lore: string
-      /** Created At */
-      created_at: string
-    }
-    /** CampaignResponse */
-    CampaignResponse: {
-      /** Id */
-      id: string
-      /** Owner Id */
-      owner_id: string
-      /** Title */
-      title: string
-      /** Description */
-      description: string
-      /** Theme */
-      theme: string
-      /** Custom Lore */
-      custom_lore: string
-      /** Created At */
-      created_at: string
-    }
-    /** CampaignUpdate */
-    CampaignUpdate: {
-      /** Title */
-      title?: string | null
-      /** Description */
-      description?: string | null
-      /** Theme */
-      theme?: string | null
-      /** Custom Lore */
-      custom_lore?: string | null
-    }
-    /**
-     * CandidateListResponse
-     * @description Cursor-paginated, campaign-scoped candidate list.
-     */
-    CandidateListResponse: {
-      /** Candidates */
-      candidates: components['schemas']['CandidateResponse'][]
-      /** Next Cursor */
-      next_cursor: string | null
-    }
-    /**
-     * CandidateResponse
-     * @description One staged proposed-candidate row.
-     */
-    CandidateResponse: {
-      /** Id */
-      id: string
-      /** Campaign Id */
-      campaign_id: string
-      /** Job Id */
-      job_id: string
-      /** Kind */
-      kind: string
-      /** Status */
-      status: string
-      /** Payload */
-      payload: {
-        [key: string]: unknown
-      }
-      /** Created At */
-      created_at: string
-      /** Accepted Entity Id */
-      accepted_entity_id?: string | null
-      /** Accept Revision Id */
-      accept_revision_id?: string | null
-      /** Regenerates Entity Id */
-      regenerates_entity_id?: string | null
-    }
-    /** EdgeExport */
-    EdgeExport: {
-      /** Id */
-      id: string
-      /** Src */
-      src: string
-      /** Dst */
-      dst: string
-      /** Type */
-      type: string
-      /** Counter */
-      counter: number
-    }
-    /**
-     * EdgeResponse
-     * @description The wire shape of one committed edge (mirrors EdgeExport).
-     */
-    EdgeResponse: {
-      /** Id */
-      id: string
-      /** Src */
-      src: string
-      /** Dst */
-      dst: string
-      /** Type */
-      type: string
-      /** Counter */
-      counter: number
-    }
-    /** EntityExport */
-    EntityExport: {
-      /** Id */
-      id: string
-      /** Kind */
-      kind: string
-      /** Name */
-      name: string
-      /** Text */
-      text: string | null
-      /** Data */
-      data: {
-        [key: string]: unknown
-      }
-      /** Media */
-      media: components['schemas']['MediaRefExport'][]
-    }
-    /**
-     * EntityExportDetail
-     * @description The single-entity JSON projection (spec-5.1): the entity, every
-     *     edge touching it (rowid order — the same ordering the world document
-     *     renders), and the revision head the snapshot was taken at.
-     */
-    EntityExportDetail: {
-      entity: components['schemas']['EntityExport']
-      /** Edges */
-      edges: components['schemas']['EdgeExport'][]
-      revision: components['schemas']['RevisionMeta'] | null
-    }
-    /** HTTPValidationError */
-    HTTPValidationError: {
-      /** Detail */
-      detail?: components['schemas']['ValidationError'][]
-    }
-    /**
-     * JobCreate
-     * @description POST /api/jobs body — the job-submission wire contract.
-     */
-    JobCreate: {
-      /** Campaign Id */
-      campaign_id: string
-      /**
-       * Kind
-       * @enum {string}
-       */
-      kind: 'text' | 'image' | 'video' | 'video_prompt' | 'build_in' | 'generate' | 'regenerate'
-      /** Payload */
-      payload: {
-        [key: string]: unknown
-      }
-      /** Job Id */
-      job_id?: string | null
-      /** Max Llm Calls */
-      max_llm_calls?: number | null
-      /** Max Media Calls */
-      max_media_calls?: number | null
-    }
-    /**
-     * JobListResponse
-     * @description Cursor-paginated, campaign-scoped job list.
-     */
-    JobListResponse: {
-      /** Jobs */
-      jobs: components['schemas']['JobResponse'][]
-      /** Next Cursor */
-      next_cursor: string | null
-    }
-    /**
-     * JobResponse
-     * @description A job row plus its per-campaign queue position.
-     */
-    JobResponse: {
-      /** Id */
-      id: string
-      /** Campaign Id */
-      campaign_id: string
-      /** Kind */
-      kind: string
-      /** Payload */
-      payload: {
-        [key: string]: unknown
-      }
-      /** State */
-      state: string
-      /** Progress */
-      progress: number
-      /** Max Llm Calls */
-      max_llm_calls: number
-      /** Max Media Calls */
-      max_media_calls: number
-      /** Error */
-      error: string | null
-      /** Result */
-      result: {
-        [key: string]: unknown
-      } | null
-      /** Created At */
-      created_at: string
-      /** Started At */
-      started_at: string | null
-      /** Finished At */
-      finished_at: string | null
-      /** Queue Position */
-      queue_position: number | null
-    }
-    /** LoginRequest */
-    LoginRequest: {
-      /**
-       * Email
-       * Format: email
-       */
-      email: string
-      /** Password */
-      password: string
-    }
-    /**
-     * MediaListResponse
-     * @description The campaign's media manifest, rowid (insertion) order.
-     */
-    MediaListResponse: {
-      /** Media */
-      media: components['schemas']['MediaResponse'][]
-    }
-    /**
-     * MediaRefExport
-     * @description One manifest row riding an entity's export (spec-4.3, FR14):
-     *     ``available`` is the file's on-disk presence — a broken reference is
-     *     flagged, never dropped or hidden.
-     */
-    MediaRefExport: {
-      /** Id */
-      id: string
-      /** Kind */
-      kind: string
-      /** Filename */
-      filename: string
-      /** Available */
-      available: boolean
-    }
-    /**
-     * MediaResponse
-     * @description One media manifest row (AD-10) — the entity card's portrait index.
-     */
-    MediaResponse: {
-      /** Id */
-      id: string
-      /** Campaign Id */
-      campaign_id: string
-      /** Entity Id */
-      entity_id: string
-      /** Filename */
-      filename: string
-      /** Kind */
-      kind: string
-      /** Created At */
-      created_at: string
-    }
-    /**
-     * PortraitUrlResponse
-     * @description A signed, expiring portrait URL for Forge's per-unit portrait
-     *     override (spec-5.2) — absolute, fetchable with no session.
-     */
-    PortraitUrlResponse: {
-      /** Url */
-      url: string
-      /** Expires At */
-      expires_at: string
-    }
-    /** RegisterRequest */
-    RegisterRequest: {
-      /**
-       * Email
-       * Format: email
-       */
-      email: string
-      /** Password */
-      password: string
-    }
-    /** RevisionMeta */
-    RevisionMeta: {
-      /** Id */
-      id: string
-      /** Created At */
-      created_at: string
-    }
-    /**
-     * ThemesResponse
-     * @description The AR27 theme seed list (config ``campaigns.themes``) — the
-     *     create/update forms choose from this; free text is a 422 (dogfood
-     *     fix 2026-09-09: the store always validated, the form never showed).
-     */
-    ThemesResponse: {
-      /** Themes */
-      themes: string[]
-    }
-    /** ValidationError */
-    ValidationError: {
-      /** Location */
-      loc: (string | number)[]
-      /** Message */
-      msg: string
-      /** Error Type */
-      type: string
-      /** Input */
-      input?: unknown
-      /** Context */
-      ctx?: Record<string, never>
-    }
-    /** WorldExport */
-    WorldExport: {
-      campaign: components['schemas']['CampaignMeta']
-      revision: components['schemas']['RevisionMeta'] | null
-      /** Entities */
-      entities: components['schemas']['EntityExport'][]
-      /** Edges */
-      edges: components['schemas']['EdgeExport'][]
-    }
-  }
-  responses: never
-  parameters: never
-  requestBodies: never
-  headers: never
-  pathItems: never
+    schemas: {
+        /**
+         * AcceptBody
+         * @description Optional accept body (spec-3.3, relaxed by spec-3.4, extended by
+         *     spec-3.6): the accept screen's edit-before-accept override.
+         *     ``payload`` is the full candidate record with the DM's section edits
+         *     AND the DM's own edge set (added/edited/deleted staged edges); the
+         *     store validates every override edge against committed world state —
+         *     an invalid edge is a 422 and the row stays ``proposed``. An omitted
+         *     body is the unedited accept (identical to the 3.2 behavior).
+         *     ``confirm_overwrite`` (spec-3.6 ACCEPT_ANYWAY): the DM's explicit
+         *     confirmation that a regenerate-entity accept may overwrite a hand
+         *     edit that landed on the target since staging — a body carrying ONLY
+         *     this flag is legal (the three-way escape must not force resending
+         *     the payload); the flag alone is NEVER enough for a client to skip a
+         *     human confirmation step.
+         */
+        AcceptBody: {
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Confirm Overwrite
+             * @default false
+             */
+            confirm_overwrite: boolean;
+        };
+        /** AccountResponse */
+        AccountResponse: {
+            /** Id */
+            id: string;
+            /** Email */
+            email: string;
+        };
+        /** CampaignCreate */
+        CampaignCreate: {
+            /** Title */
+            title: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Theme */
+            theme: string;
+            /**
+             * Custom Lore
+             * @default
+             */
+            custom_lore: string;
+        };
+        /** CampaignListResponse */
+        CampaignListResponse: {
+            /** Campaigns */
+            campaigns: components["schemas"]["CampaignResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** CampaignMeta */
+        CampaignMeta: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Theme */
+            theme: string;
+            /** Description */
+            description: string;
+            /** Custom Lore */
+            custom_lore: string;
+            /** Created At */
+            created_at: string;
+        };
+        /** CampaignResponse */
+        CampaignResponse: {
+            /** Id */
+            id: string;
+            /** Owner Id */
+            owner_id: string;
+            /** Title */
+            title: string;
+            /** Description */
+            description: string;
+            /** Theme */
+            theme: string;
+            /** Custom Lore */
+            custom_lore: string;
+            /** Created At */
+            created_at: string;
+        };
+        /** CampaignUpdate */
+        CampaignUpdate: {
+            /** Title */
+            title?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Theme */
+            theme?: string | null;
+            /** Custom Lore */
+            custom_lore?: string | null;
+        };
+        /**
+         * CandidateListResponse
+         * @description Cursor-paginated, campaign-scoped candidate list.
+         */
+        CandidateListResponse: {
+            /** Candidates */
+            candidates: components["schemas"]["CandidateResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /**
+         * CandidateResponse
+         * @description One staged proposed-candidate row.
+         */
+        CandidateResponse: {
+            /** Id */
+            id: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Job Id */
+            job_id: string;
+            /** Kind */
+            kind: string;
+            /** Status */
+            status: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Created At */
+            created_at: string;
+            /** Accepted Entity Id */
+            accepted_entity_id?: string | null;
+            /** Accept Revision Id */
+            accept_revision_id?: string | null;
+            /** Regenerates Entity Id */
+            regenerates_entity_id?: string | null;
+        };
+        /** EdgeExport */
+        EdgeExport: {
+            /** Id */
+            id: string;
+            /** Src */
+            src: string;
+            /** Dst */
+            dst: string;
+            /** Type */
+            type: string;
+            /** Counter */
+            counter: number;
+        };
+        /**
+         * EdgeResponse
+         * @description The wire shape of one committed edge (mirrors EdgeExport).
+         */
+        EdgeResponse: {
+            /** Id */
+            id: string;
+            /** Src */
+            src: string;
+            /** Dst */
+            dst: string;
+            /** Type */
+            type: string;
+            /** Counter */
+            counter: number;
+        };
+        /** EntityExport */
+        EntityExport: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Text */
+            text: string | null;
+            /** Data */
+            data: {
+                [key: string]: unknown;
+            };
+            /** Media */
+            media: components["schemas"]["MediaRefExport"][];
+        };
+        /**
+         * EntityExportDetail
+         * @description The single-entity JSON projection (spec-5.1): the entity, every
+         *     edge touching it (rowid order — the same ordering the world document
+         *     renders), and the revision head the snapshot was taken at.
+         */
+        EntityExportDetail: {
+            entity: components["schemas"]["EntityExport"];
+            /** Edges */
+            edges: components["schemas"]["EdgeExport"][];
+            revision: components["schemas"]["RevisionMeta"] | null;
+        };
+        /** HTTPValidationError */
+        HTTPValidationError: {
+            /** Detail */
+            detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * JobCreate
+         * @description POST /api/jobs body — the job-submission wire contract.
+         */
+        JobCreate: {
+            /** Campaign Id */
+            campaign_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "text" | "image" | "video" | "video_prompt" | "build_in" | "generate" | "regenerate";
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Job Id */
+            job_id?: string | null;
+            /** Max Llm Calls */
+            max_llm_calls?: number | null;
+            /** Max Media Calls */
+            max_media_calls?: number | null;
+        };
+        /**
+         * JobListResponse
+         * @description Cursor-paginated, campaign-scoped job list.
+         */
+        JobListResponse: {
+            /** Jobs */
+            jobs: components["schemas"]["JobResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /**
+         * JobResponse
+         * @description A job row plus its per-campaign queue position.
+         */
+        JobResponse: {
+            /** Id */
+            id: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Kind */
+            kind: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** State */
+            state: string;
+            /** Progress */
+            progress: number;
+            /** Max Llm Calls */
+            max_llm_calls: number;
+            /** Max Media Calls */
+            max_media_calls: number;
+            /** Error */
+            error: string | null;
+            /** Result */
+            result: {
+                [key: string]: unknown;
+            } | null;
+            /** Created At */
+            created_at: string;
+            /** Started At */
+            started_at: string | null;
+            /** Finished At */
+            finished_at: string | null;
+            /** Queue Position */
+            queue_position: number | null;
+        };
+        /** LoginRequest */
+        LoginRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Password */
+            password: string;
+        };
+        /**
+         * MediaListResponse
+         * @description The campaign's media manifest, rowid (insertion) order.
+         */
+        MediaListResponse: {
+            /** Media */
+            media: components["schemas"]["MediaResponse"][];
+        };
+        /**
+         * MediaRefExport
+         * @description One manifest row riding an entity's export (spec-4.3, FR14):
+         *     ``available`` is the file's on-disk presence — a broken reference is
+         *     flagged, never dropped or hidden.
+         */
+        MediaRefExport: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Filename */
+            filename: string;
+            /** Available */
+            available: boolean;
+        };
+        /**
+         * MediaResponse
+         * @description One media manifest row (AD-10) — the entity card's portrait index.
+         */
+        MediaResponse: {
+            /** Id */
+            id: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Entity Id */
+            entity_id: string;
+            /** Filename */
+            filename: string;
+            /** Kind */
+            kind: string;
+            /** Created At */
+            created_at: string;
+        };
+        /**
+         * PortraitUrlResponse
+         * @description A signed, expiring portrait URL for Forge's per-unit portrait
+         *     override (spec-5.2) — absolute, fetchable with no session.
+         */
+        PortraitUrlResponse: {
+            /** Url */
+            url: string;
+            /** Expires At */
+            expires_at: string;
+        };
+        /** RegisterRequest */
+        RegisterRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Password */
+            password: string;
+        };
+        /** RevisionMeta */
+        RevisionMeta: {
+            /** Id */
+            id: string;
+            /** Created At */
+            created_at: string;
+        };
+        /**
+         * ThemesResponse
+         * @description The AR27 theme seed list (config ``campaigns.themes``) — the
+         *     create/update forms choose from this; free text is a 422 (dogfood
+         *     fix 2026-09-09: the store always validated, the form never showed).
+         */
+        ThemesResponse: {
+            /** Themes */
+            themes: string[];
+        };
+        /** ValidationError */
+        ValidationError: {
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
+        };
+        /** WorldExport */
+        WorldExport: {
+            campaign: components["schemas"]["CampaignMeta"];
+            revision: components["schemas"]["RevisionMeta"] | null;
+            /** Entities */
+            entities: components["schemas"]["EntityExport"][];
+            /** Edges */
+            edges: components["schemas"]["EdgeExport"][];
+        };
+    };
+    responses: never;
+    parameters: never;
+    requestBodies: never;
+    headers: never;
+    pathItems: never;
 }
-export type $defs = Record<string, never>
+export type $defs = Record<string, never>;
 export interface operations {
-  register_api_auth_register_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['RegisterRequest']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['AccountResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  login_api_auth_login_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['LoginRequest']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['AccountResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  logout_api_auth_logout_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      204: {
-        headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  me_api_auth_me_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['AccountResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  list_own_api_campaigns_get: {
-    parameters: {
-      query?: {
-        cursor?: string | null
-        limit?: number
-      }
-      header?: never
-      path?: never
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CampaignListResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  create_api_campaigns_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['CampaignCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CampaignResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  list_themes_api_campaigns_themes_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ThemesResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_one_api_campaigns__campaign_id__get: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CampaignResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_api_campaigns__campaign_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      204: {
-        headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  update_api_campaigns__campaign_id__patch: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['CampaignUpdate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CampaignResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  health_api_health_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: string
-          }
-        }
-      }
-    }
-  }
-  list_campaign_jobs_api_jobs_get: {
-    parameters: {
-      query: {
-        campaign_id: string
-        cursor?: string | null
-        limit?: number
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['JobListResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  create_job_api_jobs_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['JobCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['JobResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_job_api_jobs__job_id__get: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        job_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['JobResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  cancel_job_route_api_jobs__job_id__cancel_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        job_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['JobResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_entity_api_campaigns__campaign_id__entities__entity_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-        entity_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      204: {
-        headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  update_entity_api_campaigns__campaign_id__entities__entity_id__patch: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-        entity_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      204: {
-        headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  create_edge_api_campaigns__campaign_id__edges_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['EdgeResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_campaign_edge_api_campaigns__campaign_id__edges__edge_id__delete: {
-    parameters: {
-      query?: {
-        base_revision?: string | null
-      }
-      header?: never
-      path: {
-        campaign_id: string
-        edge_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      204: {
-        headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  update_edge_api_campaigns__campaign_id__edges__edge_id__patch: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-        edge_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['EdgeResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  export_world_api_campaigns__campaign_id__export_get: {
-    parameters: {
-      query?: {
-        format?: 'json' | 'markdown' | 'html'
-      }
-      header?: never
-      path: {
-        campaign_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['WorldExport']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  export_entity_api_campaigns__campaign_id__entities__entity_id__export_get: {
-    parameters: {
-      query?: {
-        format?: 'json' | 'markdown' | 'html' | 'owlbear'
-      }
-      header?: never
-      path: {
-        campaign_id: string
-        entity_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['EntityExportDetail']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  list_campaign_candidates_api_campaigns__campaign_id__candidates_get: {
-    parameters: {
-      query?: {
-        cursor?: string | null
-        limit?: number
-        status?: string
-      }
-      header?: never
-      path: {
-        campaign_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CandidateListResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  accept_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__accept_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-        candidate_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: {
-      content: {
-        'application/json': components['schemas']['AcceptBody'] | null
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CandidateResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  reject_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__reject_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-        candidate_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CandidateResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  list_campaign_media_api_campaigns__campaign_id__media_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['MediaListResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  portrait_url_api_campaigns__campaign_id__entities__entity_id__portrait_url_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        campaign_id: string
-        entity_id: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['PortraitUrlResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_file_api_campaigns__campaign_id__media__entity_id___filename__get: {
-    parameters: {
-      query?: {
-        exp?: string | null
-        sig?: string | null
-      }
-      header?: never
-      path: {
-        campaign_id: string
-        entity_id: string
-        filename: string
-      }
-      cookie?: {
-        mythoscircle_session?: string | null
-      }
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': unknown
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
+    register_api_auth_register_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_api_auth_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    logout_api_auth_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    me_api_auth_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_own_api_campaigns_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_api_campaigns_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CampaignCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_themes_api_campaigns_themes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThemesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_one_api_campaigns__campaign_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_api_campaigns__campaign_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_api_campaigns__campaign_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CampaignUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undo_api_campaigns__campaign_id__undo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    health_api_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    list_campaign_jobs_api_jobs_get: {
+        parameters: {
+            query: {
+                campaign_id: string;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_job_api_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_api_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_job_route_api_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_entity_api_campaigns__campaign_id__entities__entity_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                entity_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_entity_api_campaigns__campaign_id__entities__entity_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                entity_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_edge_api_campaigns__campaign_id__edges_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EdgeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_campaign_edge_api_campaigns__campaign_id__edges__edge_id__delete: {
+        parameters: {
+            query?: {
+                base_revision?: string | null;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+                edge_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_edge_api_campaigns__campaign_id__edges__edge_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                edge_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EdgeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_world_api_campaigns__campaign_id__export_get: {
+        parameters: {
+            query?: {
+                format?: "json" | "markdown" | "html";
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorldExport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_entity_api_campaigns__campaign_id__entities__entity_id__export_get: {
+        parameters: {
+            query?: {
+                format?: "json" | "markdown" | "html" | "owlbear" | "fg";
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+                entity_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityExportDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_campaign_candidates_api_campaigns__campaign_id__candidates_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+                status?: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    accept_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__accept_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                candidate_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AcceptBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_campaign_candidate_api_campaigns__campaign_id__candidates__candidate_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                candidate_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_campaign_media_api_campaigns__campaign_id__media_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_media_api_campaigns__campaign_id__entities__entity_id__media__media_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                entity_id: string;
+                media_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    portrait_url_api_campaigns__campaign_id__entities__entity_id__portrait_url_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                entity_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortraitUrlResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_file_api_campaigns__campaign_id__media__entity_id___filename__get: {
+        parameters: {
+            query?: {
+                exp?: string | null;
+                sig?: string | null;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+                entity_id: string;
+                filename: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
 }

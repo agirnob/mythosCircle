@@ -12,6 +12,7 @@ import base64
 import json as _json
 import logging
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -1046,6 +1047,7 @@ _SERA_DATA: dict[str, Any] = {
         },
         "attributes": {"str": 8, "dex": 14, "con": 12, "int": 17, "wis": 13, "cha": 10},
         "combat": {"ac": 12, "hp": 27},
+        "saves": {"str": 2, "dex": 4, "con": 3, "int": 6, "wis": 3, "cha": 1},
         "skills": [
             {"name": "Perception", "bonus": 3},
             {"name": "Stealth", "bonus": -1},
@@ -1199,6 +1201,212 @@ def test_owlbear_sparse_place_and_long_combat_keys(client: Any) -> None:
     metadata = _owlbear(client, campaign_id, long_id).json()
     assert metadata[_fk("Z005")] == 40 and metadata[_fk("Z006")] == 40
     assert metadata[_fk("Z007")] == 15
+
+
+def _fg(client: Any, campaign_id: str, entity_id: str) -> Any:
+    return client.get(
+        f"/api/campaigns/{campaign_id}/entities/{entity_id}/export", params={"format": "fg"}
+    )
+
+
+def _fg_tree(payload: bytes) -> ET.Element:
+    return ET.fromstring(payload)
+
+
+def test_fg_npc_happy(client: Any) -> None:
+    """HAPPY NPC (spec-5-3 matrix): the Fantasy Grounds 2024-record XML
+    carries every mapped committed field; the read-only invariant holds."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    before = _counts(campaign_id)
+    response = _fg(client, campaign_id, sera_id)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/xml")
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("attachment") and disposition.endswith('.xml"')
+    npc = _fg_tree(response.content).find("npc")
+    assert npc is not None
+    assert npc.findtext("name") == "Sera"
+    assert npc.findtext("type") == "Elf"
+    assert npc.findtext("alignment") == "CE"
+    ac_el = npc.find("ac")
+    assert ac_el is not None
+    assert ac_el.text == "12" and ac_el.attrib["type"] == "number"
+    assert npc.findtext("hp") == "27"
+    assert npc.findtext("cr") == "5"  # level 5 for an NPC
+    assert npc.findtext("version") == "2024"
+    assert npc.find("xp") is None  # not tracked — sparse omit
+    assert npc.find("spellslots") is None and npc.find("summon") is None
+    abilities = npc.find("abilities")
+    assert abilities is not None
+    strength = abilities.find("strength")
+    assert strength is not None
+    assert strength.findtext("score") == "8"
+    assert strength.find("savemodifier") is not None  # saves ridden on Sera below
+    assert strength.findtext("savemodifier") == "3"  # save 2 − mod −1 = 3
+    assert abilities.findtext("charisma/score") == "10"
+    assert npc.findtext("skills") == "Perception +3, Stealth -1"
+    traits = npc.find("traits")
+    assert traits is not None
+    fire_bolt = npc.find("actions/id-00001")
+    assert fire_bolt is not None
+    assert fire_bolt.findtext("name") == "Fire Bolt"
+    assert fire_bolt.findtext("desc") == "Ranged spell attack, 2d10 fire."
+    spells_elem = npc.find("spells")
+    assert spells_elem is not None
+    assert [e.findtext("name") for e in spells_elem] == ["Fireball", "Mage Hand"]
+    # The embedded 2024-Core stat block (the Import-Text fallback).
+    text_elem = npc.find("text")
+    assert text_elem is not None
+    paragraphs = [p.text or "" for p in text_elem]
+    joined = "\n".join(paragraphs)
+    assert "AC 12" in joined and "HP 27" in joined
+    assert "Saving Throws Str +2" in joined
+    assert "CR 5" in joined
+    assert "Fire Bolt." in joined
+    assert _counts(campaign_id) == before  # no revision, no event (AR18/FR18)
+
+
+def test_fg_monster_cr_fraction_and_determinism(client: Any) -> None:
+    """HAPPY Monster (matrix): CR ``1/2`` ships as ``0.5`` on the string
+    ``cr`` field; repeats are byte-identical (pure projection)."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    _, gnasher_id, _ = _commit_owlbear_cast(campaign_id)
+    first = _fg(client, campaign_id, gnasher_id)
+    second = _fg(client, campaign_id, gnasher_id)
+    assert first.status_code == 200 and second.content == first.content
+    npc = _fg_tree(first.content).find("npc")
+    assert npc is not None
+    assert npc.findtext("cr") == "0.5"
+    assert npc.find("abilities") is not None  # Gnasher has scores
+    assert npc.find("traits") is None  # sparse omit
+    assert npc.findtext("type") == "Beast"
+    # Monster levels never surface.
+    assert npc.findtext("cr") != ""
+
+
+def test_fg_sparse_place_and_long_combat_keys(client: Any) -> None:
+    """SPARSE (matrix): a stat-block-less place exports a minimal valid
+    record (name + version, no combat/abilities); the long combat key
+    spellings (armor_class / hit_points) map like ac / hp."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    _, _, anchor_id = _commit_owlbear_cast(campaign_id)
+    anchor = _fg(client, campaign_id, anchor_id)
+    assert anchor.status_code == 200
+    npc = _fg_tree(anchor.content).find("npc")
+    assert npc is not None
+    assert npc.findtext("name") == "Docks"
+    assert npc.find("ac") is None and npc.find("abilities") is None
+    assert npc.findtext("version") == "2024"
+    long_id = new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=long_id,
+                kind="character",
+                name="Long",
+                data={"stat_block": {"combat": {"armor_class": 15, "hit_points": 40}}},
+            ),
+        ],
+        edges=[models.EdgeInput(src=long_id, dst=anchor_id, type="located_in", counter=1)],
+        base_revision=client.get(f"/api/campaigns/{campaign_id}/export").json()["revision"]["id"],
+    )
+    long_tree = _fg_tree(_fg(client, campaign_id, long_id).content)
+    long_npc = long_tree.find("npc")
+    assert long_npc is not None
+    assert long_npc.findtext("ac") == "15" and long_npc.findtext("hp") == "40"
+
+
+def test_fg_escapes_and_404_shapes(client: Any) -> None:
+    """Matrix: XML escaping survives hostile content; the fg lookup 404s
+    like every other format (format-independent, no oracle)."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    hostile_id, anchor_id = new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=hostile_id,
+                kind="character",
+                name='Bill & <Ted>\'s "Horde"',
+                text=".",
+                data={
+                    "stat_block": {
+                        "identity": {"role": "NPC", "race": "Humanoid", "level": 2},
+                        "attributes": {
+                            "str": 10,
+                            "dex": 10,
+                            "con": 10,
+                            "int": 10,
+                            "wis": 10,
+                            "cha": 10,
+                        },
+                        "combat": {"ac": 10, "hp": 10},
+                        "actions": [{"name": "Sneer", "description": "A & B < C"}],
+                    }
+                },
+            ),
+            models.EntityInput(id=anchor_id, kind="place", name="Pit", text="."),
+        ],
+        edges=[models.EdgeInput(src=hostile_id, dst=anchor_id, type="located_in", counter=1)],
+    )
+    response = _fg(client, campaign_id, hostile_id)
+    assert response.status_code == 200
+    npc = _fg_tree(response.content).find("npc")
+    assert npc is not None
+    assert npc.findtext("name") == 'Bill & <Ted>\'s "Horde"'
+    assert npc.findtext("actions/id-00001/desc") == "A & B < C"
+    # 404 shape: identical to the json lookup, format-independent.
+    missing_fg = _fg(client, campaign_id, new_id())
+    missing_json = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{new_id()}/export", params={"format": "json"}
+    )
+    assert missing_fg.status_code == 404
+    assert missing_fg.json() == missing_json.json()
+
+
+def test_fg_render_failure_is_logged_as_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """RENDER FAILURE (matrix, FR18): a raising fg renderer logs exactly
+    one export_failure event naming format=fg, then the generic 500;
+    world state untouched."""
+    from app.api import export_sheets
+    from app.main import app
+    from app.store import app_db_url, init_db
+
+    def boom(export: Any, entity_id: str) -> str:
+        raise RuntimeError("simulated fg regression")
+
+    monkeypatch.setattr(export_sheets, "render_entity_fg", boom)
+    previous = app_db_url()
+    init_db(f"sqlite:///{tmp_path / 'fg-fail.db'}")
+    try:
+        with TestClient(
+            app, base_url="https://testserver", raise_server_exceptions=False
+        ) as boom_client:
+            _register_login(boom_client)
+            campaign_id = _create_campaign(boom_client).json()["id"]
+            sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+            before = _counts(campaign_id)
+            with caplog.at_level(logging.ERROR):
+                response = boom_client.get(
+                    f"/api/campaigns/{campaign_id}/entities/{sera_id}/export",
+                    params={"format": "fg"},
+                )
+            assert response.status_code == 500
+            assert response.json()["code"] == "internal_error"
+            events = [r for r in caplog.records if "export_failure" in r.getMessage()]
+            assert len(events) == 1
+            assert "format=fg" in events[0].getMessage()
+            assert _counts(campaign_id) == before
+    finally:
+        init_db(previous)
 
 
 def test_owlbear_404_shapes_and_bad_format(client: Any) -> None:

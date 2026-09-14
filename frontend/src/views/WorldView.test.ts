@@ -1738,6 +1738,21 @@ describe('WorldView', () => {
     expect(wrapper.text()).toContain('Forge: file → Import paste · link → portrait override')
     wrapper.unmount()
   })
+  it('renders the Fantasy Grounds export anchor per committed entity', async () => {
+    apiFetchMock.mockResolvedValue(populatedWorld())
+    const wrapper = mountView()
+    await flushPromises()
+    const fg = wrapper
+      .findAll('a')
+      .filter((anchor) => anchor.text().trim() === 'Fantasy Grounds')
+    expect(fg.map((anchor) => anchor.attributes('href'))).toEqual([
+      '/api/campaigns/C1/entities/E1/export?format=fg',
+      '/api/campaigns/C1/entities/E2/export?format=fg',
+    ])
+    expect(fg[0]?.attributes('download')).toBeDefined()
+    // The import hint is a one-click escape hatch, not a wizard.
+    wrapper.unmount()
+  })
   it('portrait link: mints the signed URL, copies it, and shows it for manual copy', async () => {
     const signed =
       'https://table.example.test/api/campaigns/C1/media/E1/01JZZZZZZZZZZZZZZZZZZZZZZX.png?exp=9&sig=abc'

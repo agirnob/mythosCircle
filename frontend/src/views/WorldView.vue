@@ -434,7 +434,7 @@ function worldExportUrl(format: 'markdown' | 'html'): string {
   return `/api/campaigns/${encodeURIComponent(campaignId)}/export?format=${format}`
 }
 
-function entityExportUrl(entityId: string, format: 'markdown' | 'html' | 'owlbear'): string {
+function entityExportUrl(entityId: string, format: 'markdown' | 'html' | 'owlbear' | 'fg'): string {
   return `/api/campaigns/${encodeURIComponent(campaignId)}/entities/${encodeURIComponent(entityId)}/export?format=${format}`
 }
 
@@ -1262,6 +1262,9 @@ function additionalDataBlock(entity: EntityExport): string {
               <a class="link" :href="entityExportUrl(entity.id, 'html')" download> Sheet (HTML) </a>
               <a class="link" :href="entityExportUrl(entity.id, 'owlbear')" download>
                 Owlbear (Forge)
+              </a>
+              <a class="link" :href="entityExportUrl(entity.id, 'fg')" download>
+                Fantasy Grounds
               </a>
               <span class="muted small">Forge: file → Import paste · link → portrait override</span>
               <!-- Destructive, so last in the row and labelled to disambiguate

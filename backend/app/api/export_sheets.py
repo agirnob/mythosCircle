@@ -22,6 +22,7 @@ import html as _html
 import json
 import math
 import re
+import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -897,3 +898,468 @@ def render_entity_owlbear(export: WorldExport, entity_id: str) -> dict[str, Any]
     # inside it — the {name, author, metadata} envelope rejects with
     # "must include a valid unit name". Author has no dictionary slot.
     return {_forge_key("name"): entity.name, **metadata}
+
+
+# ---------------------------------------------------------------------------
+# FG Unity (Fantasy Grounds) — the 2024 NPC record XML (spec-5-3)
+# ---------------------------------------------------------------------------
+
+#: FG 2024-record tag per committed ability key. The record schema is
+#: verified from the product's own Export NPC (fixture:
+#: _bmad-output/implementation-artifacts/fixture-fg-npc-record-2024-export.xml,
+#: owner-annotated 2026-09-13).
+_FG_ABILITY_TAG: dict[str, str] = {
+    "str": "strength",
+    "dex": "dexterity",
+    "con": "constitution",
+    "int": "intelligence",
+    "wis": "wisdom",
+    "cha": "charisma",
+}
+
+_FG_ABILITY_LABEL: dict[str, str] = {
+    "str": "Str",
+    "dex": "Dex",
+    "con": "Con",
+    "int": "Int",
+    "wis": "Wis",
+    "cha": "Cha",
+}
+
+#: The 2024-Core Import-Text section headers (research §2d — parser
+#: keywords, not display labels).
+_FG_SECTION_HEADERS: tuple[str, ...] = ("Traits", "Actions")
+
+
+def _fg_num(value: Any) -> str | None:
+    """A stored numeric as FG XML text: ints stay ints, CR fractions
+    divide out ("1/2" -> "0.5"), everything else is unmapped (omitted —
+    the export path never validates, FR18)."""
+    number = _forge_number(value)
+    if number is None:
+        return None
+    return f"{number:g}"
+
+
+def _fg_text(value: Any) -> str | None:
+    """A non-blank string, else None (sparse omit)."""
+    return _forge_text(value)
+
+
+def _fg_ability_score(attributes: dict[str, Any], ability: str) -> int | None:
+    score = _forge_number(attributes.get(ability))
+    return int(score) if score is not None else None
+
+
+def _fg_ability_bonus(score: int | None) -> int | None:
+    """The 5e ability modifier FG derives from the score."""
+    if score is None:
+        return None
+    return (score - 10) // 2
+
+
+def _fg_power_entries(node: ET.Element, tag: str, items: Any, *, with_damage: bool = False) -> None:
+    """Name/description lists as the record's enumerated power subtrees
+    (``npc_power`` = name + desc — verified in record_npc.xml). The
+    enumeration restarts per subtree in list order, so repeats are
+    byte-identical. Nameless members are skipped, never failed."""
+    if not isinstance(items, list):
+        return
+    group: ET.Element | None = None
+    index = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        description = item.get("description")
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            description = str(description)
+        if with_damage:
+            sentence = damage_parts_sentence(item.get("damage"))
+            if sentence is not None and not _states_damage_dice(description, sentence):
+                description = f"{description} {sentence}" if description else sentence
+        if group is None:
+            group = ET.SubElement(node, tag)
+        index += 1
+        entry = ET.SubElement(group, f"id-{index:05d}")
+        name_el = ET.SubElement(entry, "name")
+        name_el.set("type", "string")
+        name_el.text = name
+        if description:
+            desc_el = ET.SubElement(entry, "desc")
+            desc_el.set("type", "string")
+            desc_el.text = description
+
+
+def _fg_fg_text(paragraphs: list[str], node: ET.Element) -> None:
+    """The record's ``text`` formattedtext element: the embedded 2024-Core
+    stat block the DM can paste through Import Text (fallback path) plus
+    the portrait pointer. Paragraphs render as ``<p>`` children — the
+    same shape the ruleset's own importer writes."""
+    text = ET.SubElement(node, "text")
+    text.set("type", "formattedtext")
+    for paragraph in paragraphs:
+        p = ET.SubElement(text, "p")
+        p.text = paragraph
+
+
+def _fg_stat_block_lines(
+    name: str,
+    data: dict[str, Any],
+    block: dict[str, Any],
+    identity: dict[str, Any],
+    combat: dict[str, Any],
+    attributes: dict[str, Any],
+    saves: dict[str, Any],
+) -> list[str]:
+    """The 2024 - D&D Core Rules Import-Text stat block (research §2d —
+    the parser's exact line contract, so a paste through the fallback
+    path lands the same fields the XML carries). Lines that cannot be
+    composed honestly are omitted — the parser tolerates blank lines."""
+    lines: list[str] = []
+
+    lines.append(name)
+
+    # Line 2: "<size> <type>, <alignment>" — the parser reads the FIRST
+    # token as size, so the line is only emitted when a size is actually
+    # committed. We do not track creature size today, so this is usually
+    # blank (tolerated); the XML carries type/alignment directly.
+    fg_size = _fg_text(data.get("size")) or _fg_text(block.get("size"))
+    if fg_size is not None:
+        parts = [fg_size]
+        fg_type = _fg_text(identity.get("race")) or _fg_text(data.get("race_type"))
+        if fg_type is not None:
+            parts.append(fg_type)
+        fg_alignment = _fg_text(identity.get("alignment")) or _fg_text(data.get("alignment"))
+        if fg_alignment is not None:
+            parts[-1] = f"{parts[-1]}, {fg_alignment}"
+        lines.append(" ".join(parts))
+    else:
+        lines.append("")
+
+    # Line 3: AC, with the optional Initiative (+bonus) (dex-score default).
+    ac = _forge_number(combat.get("ac"))
+    if ac is None:
+        ac = _forge_number(combat.get("armor_class"))
+    if ac is not None:
+        ac_line = f"AC {_fg_num(ac)}"
+        init_raw = _forge_number(block.get("initiative"))
+        if init_raw is None:
+            init_raw = _forge_number(combat.get("initiative"))
+        dex_score: int | None = None
+        if init_raw is not None:
+            dex_score = _fg_ability_score(attributes, "dex")
+            if dex_score is not None:
+                ac_line += f" Initiative +{_fg_num(init_raw)} ({_fg_num(dex_score)})"
+        lines.append(ac_line)
+    else:
+        lines.append("")
+
+    # Line 4: HP + hit dice.
+    hp = _forge_number(combat.get("hp"))
+    if hp is None:
+        hp = _forge_number(combat.get("hit_points"))
+    if hp is not None:
+        hp_line = f"HP {_fg_num(hp)}"
+        hd = _fg_text(combat.get("hit_dice"))
+        if hd is not None:
+            hp_line += f" {hd}"
+        lines.append(hp_line)
+    else:
+        lines.append("")
+
+    # Line 5: Speed.
+    speed = _fg_text(combat.get("speed")) or _fg_text(block.get("speed"))
+    lines.append(f"Speed {speed}" if speed else "")
+
+    # Line 6: the MOD SAVE header (its tokens are ignored by the parser —
+    # emitted for sheet-format fidelity).
+    lines.append("MOD SAVE MOD SAVE MOD SAVE")
+
+    # Lines 7-8: ability rows, 4 tokens per ability (score mod save).
+    def _ability_row(abilities: tuple[str, ...]) -> str:
+        cells = []
+        for ability in abilities:
+            score = _fg_ability_score(attributes, ability)
+            if score is None:
+                cells.extend(["", "", "", ""])
+                continue
+            bonus = _fg_ability_bonus(score)
+            saved = _forge_number(saves.get(ability))
+            save = int(saved) if saved is not None else bonus
+            label = _FG_ABILITY_LABEL[ability]
+            cells.append(f"{label} {score} {bonus:+d} {save:+d}")
+        return " ".join(cells)
+
+    lines.append(_ability_row(("str", "dex", "con")))
+    lines.append(_ability_row(("int", "wis", "cha")))
+
+    # Optional keyword lines (any order, keyword-initial — §2d).
+    save_parts = []
+    for ability in _ABILITY_ORDER:
+        saved = _forge_number(saves.get(ability))
+        if saved is None:
+            continue
+        save_parts.append(f"{_FG_ABILITY_LABEL[ability]} {int(saved):+d}")
+    if save_parts:
+        lines.append("Saving Throws " + ", ".join(save_parts))
+    skills = block.get("skills")
+    if isinstance(skills, list):
+        parts = []
+        for entry in skills:
+            if not isinstance(entry, dict):
+                continue
+            skill_name = entry.get("name")
+            if not isinstance(skill_name, str) or not skill_name.strip():
+                continue
+            bonus = _forge_number(entry.get("bonus"))
+            if bonus is None:
+                parts.append(skill_name)
+            elif isinstance(bonus, int):
+                parts.append(f"{skill_name} {bonus:+d}")
+            else:
+                parts.append(f"{skill_name} {bonus:g}")
+        if parts:
+            lines.append("Skills: " + ", ".join(parts))
+    for key in (
+        "damage_vulnerabilities",
+        "damage_resistances",
+        "damage_immunities",
+        "condition_immunities",
+        "senses",
+        "languages",
+    ):
+        value = _fg_text(block.get(key))
+        if value is None:
+            value = _fg_text(data.get(key))
+        if value is not None:
+            label = {
+                "damage_vulnerabilities": "Damage Vulnerabilities",
+                "damage_resistances": "Damage Resistances",
+                "damage_immunities": "Damage Immunities",
+                "condition_immunities": "Condition Immunities",
+                "senses": "Senses",
+                "languages": "Languages",
+            }[key]
+            lines.append(f"{label} {value}")
+    pb = _forge_number(block.get("proficiency_bonus"))
+    if pb is not None:
+        lines.append(f"Proficiency Bonus {_fg_num(pb)}")
+
+    # Challenge line: 2024 grammar is "CR <x> (XP <n>; PB <+p>)" — we do
+    # not track XP/proficiency on the record, so the bare CR is emitted.
+    role = identity.get("role")
+    cr: str | None = None
+    if role in ("NPC", "BBEG"):
+        level = _forge_number(identity.get("level"))
+        if level is not None:
+            cr = _fg_num(level)
+    elif role == "Monster":
+        challenge = _forge_number(identity.get("cr"))
+        if challenge is not None:
+            cr = _fg_num(challenge)
+    if cr is not None:
+        lines.append(f"CR {cr}")
+
+    # Sections: Traits then Actions, entries as "Heading. body" lines
+    # (proper-cased headings ending in a period — §2d).
+    for section, key in (("Traits", "traits"), ("Actions", "actions")):
+        items = block.get(key)
+        if not isinstance(items, list) or not items:
+            continue
+        lines.append(section)
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            heading = item.get("name")
+            if not isinstance(heading, str) or not heading.strip():
+                continue
+            description = item.get("description")
+            if description is None:
+                description = ""
+            if not isinstance(description, str):
+                description = str(description)
+            if section == "Actions":
+                sentence = damage_parts_sentence(item.get("damage"))
+                if sentence is not None and not _states_damage_dice(description, sentence):
+                    description = f"{description} {sentence}" if description else sentence
+            heading_line = heading.rstrip(".")
+            lines.append(f"{heading_line}. {description}" if description else f"{heading_line}.")
+
+    return lines
+
+
+def render_entity_fg(export: WorldExport, entity_id: str) -> str:
+    """Fantasy Grounds Unity import: one committed entity as the 5E
+    2024-record XML (spec-5-3) — the exact shape FG's own Export NPC
+    writes (fixture-pinned), imported via the NPCs window's Import
+    button (file picker). Pure function of the snapshot: no wall clock,
+    no store read, byte-identical across repeats. Sparse is legal —
+    every field maps only what is committed, nothing is validated
+    (FR18). Levels/CR derive from ``stat_block.identity`` numerics
+    (owner verdict: top-level ``level_cr`` display-only)."""
+    entity = next(e for e in export.entities if e.id == entity_id)
+    data = entity.data if isinstance(entity.data, dict) else {}
+    block = data.get("stat_block")
+    block = block if isinstance(block, dict) else {}
+    identity = block.get("identity")
+    identity = identity if isinstance(identity, dict) else {}
+    combat = block.get("combat")
+    combat = combat if isinstance(combat, dict) else {}
+    attributes = block.get("attributes")
+    attributes = attributes if isinstance(attributes, dict) else {}
+    saves = block.get("saves")
+    saves = saves if isinstance(saves, dict) else {}
+
+    root = ET.Element("root", {"version": "5.1"})
+    npc = ET.SubElement(root, "npc")
+
+    def leaf(tag: str, kind: str, text: str | None) -> None:
+        if text is not None:
+            el = ET.SubElement(npc, tag)
+            el.set("type", kind)
+            el.text = text
+
+    # Identity fields (verified record schema, fixture §2c).
+    leaf("name", "string", entity.name)
+    fg_type = _fg_text(identity.get("race")) or _fg_text(data.get("race_type"))
+    leaf("type", "string", fg_type)
+    fg_size = _fg_text(data.get("size")) or _fg_text(block.get("size"))
+    leaf("size", "string", fg_size)
+    fg_alignment = _fg_text(identity.get("alignment")) or _fg_text(data.get("alignment"))
+    leaf("alignment", "string", fg_alignment)
+
+    # Combat block.
+    ac = _forge_number(combat.get("ac"))
+    if ac is None:
+        ac = _forge_number(combat.get("armor_class"))
+    leaf("ac", "number", _fg_num(ac))
+    hp = _forge_number(combat.get("hp"))
+    if hp is None:
+        hp = _forge_number(combat.get("hit_points"))
+    leaf("hp", "number", _fg_num(hp))
+    leaf("hd", "string", _fg_text(combat.get("hit_dice")))
+    speed = _fg_text(combat.get("speed")) or _fg_text(block.get("speed"))
+    leaf("speed", "string", speed)
+    init_raw = _forge_number(block.get("initiative"))
+    if init_raw is None:
+        init_raw = _forge_number(combat.get("initiative"))
+    # The importer stores initiative.misc as Initiative bonus − Dex mod
+    # (research §2d) — mirror the derivation so the sheet shows the
+    # committed bonus.
+    if init_raw is not None:
+        dex_score = _fg_ability_score(attributes, "dex")
+        dex_bonus = _fg_ability_bonus(dex_score) if dex_score is not None else None
+        if dex_bonus is not None:
+            misc = int(init_raw) - dex_bonus
+            ini = ET.SubElement(npc, "initiative")
+            misc_el = ET.SubElement(ini, "misc")
+            misc_el.set("type", "number")
+            misc_el.text = str(misc)
+
+    # Challenge: cr stays a STRING on the 2024 record; xp is not tracked
+    # (omitted — sparse is legal).
+    role = identity.get("role")
+    if role in ("NPC", "BBEG"):
+        leaf("cr", "string", _fg_num(_forge_number(identity.get("level"))))
+    elif role == "Monster":
+        leaf("cr", "string", _fg_num(_forge_number(identity.get("cr"))))
+
+    # Abilities (verified: abilities.<attr>.score / .savemodifier; the
+    # stored save modifier is save − ability mod, the importer's
+    # derivation — §2c/§2d).
+    if attributes:
+        abilities = ET.SubElement(npc, "abilities")
+        for ability in _ABILITY_ORDER:
+            score = _fg_ability_score(attributes, ability)
+            if score is None:
+                continue
+            group = ET.SubElement(abilities, _FG_ABILITY_TAG[ability])
+            score_el = ET.SubElement(group, "score")
+            score_el.set("type", "number")
+            score_el.text = str(score)
+            saved = _forge_number(saves.get(ability))
+            if saved is not None:
+                bonus = _fg_ability_bonus(score)
+                if bonus is not None:
+                    save_el = ET.SubElement(group, "savemodifier")
+                    save_el.set("type", "number")
+                    save_el.text = str(int(saved) - bonus)
+
+    # Sheet strings (skills joins with sign — the Z014 rule).
+    if isinstance(block.get("skills"), list):
+        parts = []
+        for entry in block["skills"]:
+            if not isinstance(entry, dict):
+                continue
+            skill_name = entry.get("name")
+            if not isinstance(skill_name, str) or not skill_name.strip():
+                continue
+            skill_bonus = _forge_number(entry.get("bonus"))
+            if skill_bonus is None or isinstance(skill_bonus, float):
+                parts.append(skill_name if skill_bonus is None else f"{skill_name} {skill_bonus:g}")
+            else:
+                parts.append(f"{skill_name} {skill_bonus:+d}")
+        if parts:
+            leaf("skills", "string", ", ".join(parts))
+    for key, tag in (
+        ("damage_vulnerabilities", "damagevulnerabilities"),
+        ("damage_resistances", "damageresistances"),
+        ("damage_immunities", "damageimmunities"),
+        ("condition_immunities", "conditionimmunities"),
+        ("senses", "senses"),
+        ("languages", "languages"),
+    ):
+        value = _fg_text(block.get(key)) or _fg_text(data.get(key))
+        leaf(tag, "string", value)
+
+    # Powers: name + desc per entry (npc_power), enumerated per subtree.
+    _fg_power_entries(npc, "traits", block.get("traits"))
+    _fg_power_entries(npc, "actions", block.get("actions"), with_damage=True)
+
+    # Spells: name-only entries (slots are not tracked — omitted).
+    spells = block.get("spells")
+    if isinstance(spells, list):
+        names = [s for s in spells if isinstance(s, str) and s.strip()]
+        if names:
+            group = ET.SubElement(npc, "spells")
+            for index, name in enumerate(names, start=1):
+                entry = ET.SubElement(group, f"id-{index:05d}")
+                name_el = ET.SubElement(entry, "name")
+                name_el.set("type", "string")
+                name_el.text = name.strip()
+
+    # The embedded stat block (+ portrait pointer) — the Import-Text
+    # fallback and the DM's at-a-glance sheet. The signed portrait URL
+    # comes from the portrait-url route (mint-on-demand, expiring);
+    # embedding a live URL here would break byte-identical determinism,
+    # so the artifact names the file it expects instead.
+    paragraphs = _fg_stat_block_lines(entity.name, data, block, identity, combat, attributes, saves)
+    portrait: str | None = None
+    portrait_missing: str | None = None
+    newest_available: str | None = None
+    for media in entity.media:
+        if media.kind != "image":
+            continue
+        if media.available:
+            newest_available = media.filename
+        elif portrait_missing is None:
+            portrait_missing = media.filename
+    if newest_available is not None:
+        portrait = newest_available
+    elif portrait_missing is not None:
+        portrait_missing_marker = f"Portrait: {portrait_missing} [missing]"
+        paragraphs.append(f"Information: {portrait_missing_marker}")
+    if portrait is not None:
+        paragraphs.append(f"Information: Portrait: {portrait}")
+    _fg_fg_text(paragraphs, npc)
+
+    leaf("version", "string", "2024")
+
+    ET.indent(root, space="\t")
+    body = ET.tostring(root, encoding="unicode")
+    return '<?xml version="1.0" encoding="utf-8"?>\n' + body
