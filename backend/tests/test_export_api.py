@@ -1643,6 +1643,16 @@ def _commit_maptool_warrior(campaign_id: str) -> str:
                                 "damage": [{"count": 1, "sides": 4, "type": "bludgeoning"}],
                             },
                             {"name": "Hurl", "damage": [{"dice": "1d12+1"}]},
+                            {
+                                "name": "Bash",
+                                "description": "Heavy swing.",
+                                "damage": [{"dice": "1d8+7", "bonus": 7}],
+                            },
+                            {
+                                "name": "Overcharge",
+                                "description": "Arcane surge.",
+                                "damage": [{"dice": "1d8+2 acid"}],
+                            },
                             {"name": "Bite", "description": "Melee attack, 1d8+2."},
                         ],
                     },
@@ -1746,7 +1756,9 @@ def test_maptool_happy_npc(client: Any, tmp_path: Path, monkeypatch: pytest.Monk
         "Hit: 11.5 (1d8 + 7) piercing damage plus 18.5 (3d10 + 2) radiant damage.<br>"
         "<b>Smite.</b> Radiant smite. Hit: 19 (2d6 + 12) radiant damage.<br>"
         "<b>Trip.</b> Hit: 2.5 (1d4) bludgeoning damage.<br>"
-        "<b>Hurl.</b><br>"
+        "<b>Hurl.</b> Hit: 1d12+1 damage.<br>"
+        "<b>Bash.</b> Heavy swing. Hit: 1d8+7 damage.<br>"
+        "<b>Overcharge.</b> Arcane surge.<br>"
         "<b>Bite.</b> Melee attack, 1d8+2."
     )
 
@@ -1772,17 +1784,19 @@ def test_maptool_happy_npc(client: Any, tmp_path: Path, monkeypatch: pytest.Monk
     assert asset.findtext("extension") == "png"
     assert asset.findtext("type") == "IMAGE"
 
-    # One macro button per action with structured damage, action order.
+    # One macro button per action with structured damage, action order;
+    # Overcharge (unparseable dice string) gets none.
     buttons = root.findall("macroPropertiesMap/entry")
-    assert [entry.findtext("int") for entry in buttons] == ["1", "2", "3", "4"]
+    assert [entry.findtext("int") for entry in buttons] == ["1", "2", "3", "4", "5"]
     props = _rptok_button_props(root)
-    assert [p.findtext("label") for p in props] == ["Spear", "Smite", "Trip", "Hurl"]
-    assert [p.findtext("index") for p in props] == ["1", "2", "3", "4"]
+    assert [p.findtext("label") for p in props] == ["Spear", "Smite", "Trip", "Hurl", "Bash"]
+    assert [p.findtext("index") for p in props] == ["1", "2", "3", "4", "5"]
     assert [p.findtext("command") for p in props] == [
         "[1d20+5] [1d8+7] [3d10+2]",
         "[2d6+12]",
         "[1d20-1] [1d4]",
         "[1d12+1]",
+        "[1d8+7]",  # embedded dice bonus wins; the field bonus is not double-added
     ]
     for p in props:
         assert {child.tag for child in p} == _RPTOK_BUTTON_FIELDS  # fixture shape
@@ -1794,7 +1808,7 @@ def test_maptool_happy_npc(client: Any, tmp_path: Path, monkeypatch: pytest.Monk
         assert p.findtext("allowPlayerEdits") == "true"
     # macroUUIDs are derived (uuid5 of entity id + action index), never random.
     assert [p.findtext("macroUUID") for p in props] == [
-        str(uuid.uuid5(_RPTOK_UUID_NS, f"{marta_id}{position}")) for position in (1, 2, 3, 4)
+        str(uuid.uuid5(_RPTOK_UUID_NS, f"{marta_id}{position}")) for position in (1, 2, 3, 4, 5)
     ]
 
     # Byte-identical repeats (determinism: fixed timestamps, derived GUID).
@@ -1826,6 +1840,7 @@ def test_maptool_monster_sparse_place_and_remint(
     assert "CR 0.5" in notes  # fraction → decimal, the fg derivation
     assert "Str 15 +2" in notes
     assert "MOD SAVE" in notes
+    assert "<b>Spells</b>" not in notes  # no spells block when empty
     assert root.findtext("gmNotes") == ""
     # Gnasher's actions are prose-only → no macro buttons at all.
     assert root.find("macroPropertiesMap") is None
@@ -1866,13 +1881,14 @@ def test_maptool_monster_sparse_place_and_remint(
     assert first.status_code == 200 and second.content == first.content
 
 
-def test_maptool_broken_portrait_embeds_default_with_marker(
+def test_maptool_missing_portrait_embeds_default_with_marker(
     client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """BROKEN portrait (matrix): all image rows unavailable → the bundled
-    default token PNG is embedded (imageAssetMap + assets pair, MD5 of
-    the default's bytes) and the notes carry the honesty marker naming
-    the missing file; the zip still parses."""
+    """BROKEN portrait (matrix): an image row whose file is absent → the
+    bundled default token PNG is embedded (imageAssetMap + assets pair,
+    MD5 of the default's bytes) and the notes carry the honesty marker
+    naming the newest missing file with the '[missing]' cause; the zip
+    still parses."""
     monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
     _register_login(client)
     campaign_id = _create_campaign(client).json()["id"]
@@ -1893,6 +1909,200 @@ def test_maptool_broken_portrait_embeds_default_with_marker(
     assert notes.startswith("<b>Human, LN</b>")
 
 
+def test_maptool_corrupt_portrait_embeds_default_with_unusable_marker(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BROKEN portrait, corrupt bytes: the image row's file EXISTS but is
+    not a PNG → the default token image embeds with the '[unusable]'
+    marker naming that row."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    marta_id = _commit_maptool_warrior(campaign_id)
+    row = add_media(campaign_id, marta_id, f"{new_id()}.png", "image")
+    path = tmp_path / "media" / campaign_id / marta_id / row.filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"not-a-png-at-all")
+    response = _maptool(client, campaign_id, marta_id)
+    assert response.status_code == 200
+    archive = _rptok_zip(response.content)
+    default_png = _RPTOK_DEFAULT_IMAGE_PATH.read_bytes()
+    assert f"assets/{_md5_hex(default_png)}.png" in archive.namelist()
+    root = ET.fromstring(archive.read("content.xml"))
+    notes = root.findtext("notes")
+    assert notes is not None
+    assert f"Portrait: {row.filename} [unusable — default image used]" in notes
+
+
+def test_maptool_older_portrait_wins_over_corrupt_newer(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Portrait scan (review r1): the newest AVAILABLE row whose on-disk
+    bytes start with the PNG magic wins — a corrupt NEWER row falls back
+    to the OLDER valid PNG (no default, no marker)."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    marta_id = _commit_maptool_warrior(campaign_id)
+    older = add_media(campaign_id, marta_id, f"{new_id()}.png", "image")
+    good_png = PNG_SIGNATURE + b"good-older"
+    _write_media_png(tmp_path, campaign_id, older, good_png)
+    newer = add_media(campaign_id, marta_id, f"{new_id()}.png", "image")
+    corrupt_path = tmp_path / "media" / campaign_id / marta_id / newer.filename
+    corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_path.write_bytes(b"corrupt-not-png")
+    response = _maptool(client, campaign_id, marta_id)
+    assert response.status_code == 200
+    archive = _rptok_zip(response.content)
+    assert f"assets/{_md5_hex(good_png)}.png" in archive.namelist()
+    assert f"assets/{_md5_hex(b'corrupt-not-png')}.png" not in archive.namelist()
+    root = ET.fromstring(archive.read("content.xml"))
+    assert root.findtext("imageAssetMap/entry/net.rptools.lib.MD5Key/id") == _md5_hex(good_png)
+    notes = root.findtext("notes")
+    assert notes is not None
+    assert "Portrait:" not in notes  # a usable portrait served — no default, no marker
+
+
+def test_maptool_caster_spells_and_bbeg_challenge(client: Any) -> None:
+    """Notes parity (review r1): a bold-labelled Spells block renders
+    after Actions, one `<b>Name.</b>` per non-blank spell; a BBEG's
+    challenge derives from ``identity.level`` like an NPC's (CR line)."""
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    sera_id, _, _ = _commit_owlbear_cast(campaign_id)
+    sera_root = ET.fromstring(
+        _rptok_zip(_maptool(client, campaign_id, sera_id).content).read("content.xml")
+    )
+    notes = sera_root.findtext("notes")
+    assert notes is not None
+    assert notes.endswith("<b>Spells</b><br><b>Fireball.</b><br><b>Mage Hand.</b>")
+    assert "CR 5" in notes  # Sera is a level-5 NPC
+
+    bbeg_id, anchor_id = new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=bbeg_id,
+                kind="character",
+                name="Vespera",
+                text=".",
+                data={
+                    "stat_block": {
+                        "identity": {"role": "BBEG", "race": "Dragon", "level": 9},
+                        "attributes": {
+                            "str": 20,
+                            "dex": 12,
+                            "con": 18,
+                            "int": 16,
+                            "wis": 14,
+                            "cha": 18,
+                        },
+                    }
+                },
+            ),
+            models.EntityInput(id=anchor_id, kind="place", name="Keep", text="."),
+        ],
+        edges=[models.EdgeInput(src=bbeg_id, dst=anchor_id, type="located_in", counter=1)],
+        base_revision=client.get(f"/api/campaigns/{campaign_id}/export").json()["revision"]["id"],
+    )
+    bbeg_root = ET.fromstring(
+        _rptok_zip(_maptool(client, campaign_id, bbeg_id).content).read("content.xml")
+    )
+    bbeg_notes = bbeg_root.findtext("notes")
+    assert bbeg_notes is not None
+    assert "<b>Dragon</b>" in bbeg_notes
+    assert "CR 9" in bbeg_notes
+    assert bbeg_root.find("macroPropertiesMap") is None  # no actions, no buttons
+
+
+def test_maptool_sparse_abilities_and_integral_guards(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Notes/macros guards (review r1): a sparse ability block emits its
+    cells WITHOUT the MOD SAVE header (only when all six cells render);
+    non-integral to_hit/modifier/initiative/save/perception values are
+    omitted, never truncated; ``count 0`` parts never roll."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    entity_id, anchor_id = new_id(), new_id()
+    commit_subgraph(
+        campaign_id,
+        entities=[
+            models.EntityInput(
+                id=entity_id,
+                kind="character",
+                name="Slack",
+                text=".",
+                data={
+                    "stat_block": {
+                        "identity": {"role": "NPC", "race": "Humanoid", "level": 2},
+                        "attributes": {"str": 10, "dex": 12},
+                        "combat": {"ac": 10, "hp": 10, "initiative": 3.5},
+                        "saves": {"str": 2.5},
+                        "passive_perception": 11.5,
+                        "actions": [
+                            {
+                                "name": "Swing",
+                                "description": "Wild swing.",
+                                "to_hit": 5.5,
+                                "damage": [
+                                    {"count": 0, "sides": 6},
+                                    {"count": 2, "sides": 6, "bonus": 12},
+                                ],
+                            }
+                        ],
+                    }
+                },
+            ),
+            models.EntityInput(id=anchor_id, kind="place", name="Pit", text="."),
+        ],
+        edges=[models.EdgeInput(src=entity_id, dst=anchor_id, type="located_in", counter=1)],
+    )
+    root = ET.fromstring(
+        _rptok_zip(_maptool(client, campaign_id, entity_id).content).read("content.xml")
+    )
+    notes = root.findtext("notes")
+    assert notes is not None
+    assert "MOD SAVE" not in notes  # sparse abilities: no header
+    assert "Str 10 +0 Dex 12 +1" in notes  # only the present cells
+    assert "Int " not in notes and "Wis " not in notes and "Cha " not in notes
+    assert "Initiative" not in notes  # 3.5 is non-integral — omitted, never truncated
+    assert "Senses" not in notes and "Passive Perception" not in notes  # 11.5 dropped
+    assert "Str 10 +0" in notes and "+2.5" not in notes  # non-integral save dropped
+    buttons = _rptok_button_props(root)
+    assert len(buttons) == 1
+    swallow = buttons[0]
+    assert swallow.findtext("label") == "Swing"
+    # 5.5 to_hit is non-integral → no [1d20…] segment; the count-0 part is
+    # skipped; the usable 2d6+12 part still rolls.
+    assert swallow.findtext("command") == "[2d6+12]"
+
+
+def test_maptool_broken_default_image_falls_back_to_no_image(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Broken bundled default (review r1): when the default token PNG
+    cannot load, an entity with no portrait embeds NO image at all (no
+    imageAssetMap, no assets) and the zip still parses."""
+    from app.api import export_sheets
+
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setattr(export_sheets, "_rptok_default_image", lambda: None)
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    marta_id = _commit_maptool_warrior(campaign_id)
+    response = _maptool(client, campaign_id, marta_id)
+    assert response.status_code == 200
+    archive = _rptok_zip(response.content)
+    assert archive.namelist() == ["content.xml", "properties.xml"]
+    root = ET.fromstring(archive.read("content.xml"))
+    assert root.find("imageAssetMap") is None
+    notes = root.findtext("notes")
+    assert notes is not None and "<b>Human, LN</b>" in notes
+
+
 def test_maptool_escaping_404_and_bad_format(client: Any) -> None:
     """Matrix: XML 1.0 filtering + full escaping survive hostile
     content (control chars dropped, values round-trip); the maptool
@@ -1907,7 +2117,7 @@ def test_maptool_escaping_404_and_bad_format(client: Any) -> None:
             models.EntityInput(
                 id=hostile_id,
                 kind="character",
-                name='Bill & <Ted>\'s "Horde"',
+                name='Bill & <Ted>\'s "Horde"\ufffe',
                 text=".",
                 data={
                     "stat_block": {
@@ -1938,10 +2148,10 @@ def test_maptool_escaping_404_and_bad_format(client: Any) -> None:
         edges=[models.EdgeInput(src=hostile_id, dst=anchor_id, type="located_in", counter=1)],
     )
     response = _maptool(client, campaign_id, hostile_id)
-    assert response.status_code == 200
     content = response.content
     root = ET.fromstring(_rptok_zip(content).read("content.xml"))  # control chars dropped → parses
     assert root.findtext("name") == 'Bill & <Ted>\'s "Horde"'
+    assert b"\xef\xbf\xbe" not in content  # U+FFFE dropped like other XML-illegals
     notes = root.findtext("notes")
     assert notes is not None
     assert "A & B < C  broken" in notes  # \x00\x01 dropped, then unescaped on parse

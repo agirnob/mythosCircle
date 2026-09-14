@@ -1248,9 +1248,10 @@ def render_entity_fg(export: WorldExport, entity_id: str) -> str:
 # The html for notes/gmNotes is deliberately conservative and
 # attribute-free (<b>, <br>, <p> only — the owner ruling 2026-09-14).
 
-#: Illegal XML 1.0 control characters (dropped — escaping alone cannot
-#: legalize them; the matrix pins \x00-\x08, \x0B, \x0C, \x0E-\x1F).
-_XML10_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+#: Illegal XML 1.0 characters: the control chars (dropped — escaping alone
+#: cannot legalize them; the matrix pins \x00-\x08, \x0B, \x0C, \x0E-\x1F)
+#: plus the plane-0 non-characters U+FFFE/U+FFFF (outside XML 1.0's Char range).
+_XML10_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
 
 
 def _xml10(text: str) -> str:
@@ -1297,37 +1298,47 @@ def _rptok_default_image() -> bytes | None:
 def _rptok_token_image(
     export: WorldExport, entity: EntityExport
 ) -> tuple[bytes | None, str | None]:
-    """The embedded image bytes + the broken-portrait marker filename
-    (spec-5-4). Image = the newest AVAILABLE ``kind=image`` row whose
-    on-disk bytes start with the PNG magic (no size cap — the .rptok
-    member is raw, unlike the fg path's MAX_INLINE_BYTES); a
-    missing/broken portrait embeds the bundled default instead; a broken
-    default falls back to no image (the matrix's old no-image shape).
-    The marker names the unusable portrait filename only when the entity
-    HAS media rows — never invented, never when there is no media."""
+    """The embedded image bytes + the broken-portrait marker (spec-5-4).
+    Image = the newest AVAILABLE ``kind=image`` row whose on-disk bytes
+    start with the PNG magic (no size cap — the .rptok member is raw,
+    unlike the fg path's MAX_INLINE_BYTES); scan newest-first so an older
+    valid portrait beats the bundled default; a missing/corrupt portrait
+    embeds the bundled default instead; a broken default falls back to
+    no image. The marker — set ONLY when no portrait served and the
+    default rode in — names the NEWEST failed row with its cause:
+    ``[missing]`` when the file is absent from disk, ``[unusable]`` when
+    it exists but fails the magic/read check. No marker when the entity
+    has no image media at all."""
     image_rows = [row for row in entity.media if row.kind == "image"]
     usable: bytes | None = None
+    failed: tuple[str, str] | None = None  # (newest failed filename, cause tag)
+    for row in reversed(image_rows):  # newest first
+        if not row.available:  # manifest-resolved: file absent from disk
+            if failed is None:
+                failed = (row.filename, "missing")
+            continue
+        path = Path(configured_media_dir()) / export.campaign.id / entity.id / row.filename
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            if failed is None:
+                failed = (row.filename, "unusable")
+            continue
+        if raw.startswith(PNG_SIGNATURE):
+            usable = raw
+            break
+        if failed is None:
+            failed = (row.filename, "unusable")
+    if usable is not None:
+        return usable, None
     marker: str | None = None
-    if image_rows:
-        available = [row for row in image_rows if row.available]
-        if available:
-            row = available[-1]
-            path = Path(configured_media_dir()) / export.campaign.id / entity.id / row.filename
-            try:
-                raw = path.read_bytes()
-            except OSError:
-                raw = None
-            if raw is not None and raw.startswith(PNG_SIGNATURE):
-                usable = raw
-            elif marker is None:
-                marker = row.filename
-        elif marker is None:
-            marker = image_rows[0].filename
-    if usable is None:
-        default = _rptok_default_image()
-        if default is not None:
-            usable = default
-    return usable, marker
+    if failed is not None:
+        filename, cause = failed
+        marker = f"Portrait: {filename} [{cause} — default image used]"
+    default = _rptok_default_image()
+    if default is not None:
+        return default, marker
+    return None, marker
 
 
 def _rptok_identity_header(
@@ -1388,9 +1399,11 @@ def _rptok_power_lines(items: Any, *, with_damage: bool = False) -> list[str]:
         if not isinstance(description, str):
             description = str(description)
         if with_damage:
-            sentence = damage_parts_sentence(item.get("damage"))
-            if sentence is not None and not _states_damage_dice(description, sentence):
-                description = f"{description} {sentence}" if description else sentence
+            damage_line = damage_parts_sentence(item.get("damage"))
+            if damage_line is None:
+                damage_line = _rptok_damage_line(item.get("damage"))
+            if damage_line is not None and not _states_damage_dice(description, damage_line):
+                description = f"{description} {damage_line}" if description else damage_line
         line = f"<b>{name}.</b>"
         if description:
             line += f" {description}"
@@ -1431,11 +1444,11 @@ def _rptok_notes_html(block: dict[str, Any], data: dict[str, Any]) -> str:
         initiative = _forge_number(block.get("initiative"))
         if initiative is None:
             initiative = _forge_number(combat.get("initiative"))
-        if initiative is not None:
+        if initiative is not None and float(initiative).is_integer():
             ac_line += f" Initiative {int(initiative):+d}"
-            dex_score = _fg_ability_score(attributes, "dex")
-            if dex_score is not None:
-                ac_line += f" ({dex_score})"
+            dex_score = _forge_number(attributes.get("dex"))
+            if dex_score is not None and float(dex_score).is_integer():
+                ac_line += f" ({int(dex_score)})"
         lines.append(ac_line)
 
     # HP (2024-Core line 4): the parenthetical holds the raw hit-dice
@@ -1456,19 +1469,27 @@ def _rptok_notes_html(block: dict[str, Any], data: dict[str, Any]) -> str:
 
     # Ability columns (2024-Core lines 6-8): MOD SAVE header + two rows of
     # ``Abl <score> <+mod> <+save>``; saves ride the columns (the 2024
-    # shape — the fg renderer's savemodifier source).
+    # shape — the fg renderer's savemodifier source). The header renders
+    # only when ALL six ability cells will (a sparse block would leave a
+    # short row); non-integral scores/saves are omitted, never truncated.
     if attributes:
-        lines.append("MOD SAVE MOD SAVE MOD SAVE")
+        scores: dict[str, int] = {}
+        for ability in _ABILITY_ORDER:
+            score = _forge_number(attributes.get(ability))
+            if score is not None and float(score).is_integer():
+                scores[ability] = int(score)
+        if len(scores) == len(_ABILITY_ORDER):
+            lines.append("MOD SAVE MOD SAVE MOD SAVE")
         for row in _RPTOK_ABILITY_COLUMNS:
             cells: list[str] = []
             for ability in row:
-                score = _fg_ability_score(attributes, ability)
+                score = scores.get(ability)
                 if score is None:
                     continue
                 bonus = _fg_ability_bonus(score) or 0
                 cell = f"{ability.capitalize()} {score} {bonus:+d}"
                 saved = _forge_number(saves.get(ability))
-                if saved is not None:
+                if saved is not None and float(saved).is_integer():
                     cell += f" {int(saved):+d}"
                 cells.append(cell)
             if cells:
@@ -1506,9 +1527,10 @@ def _rptok_notes_html(block: dict[str, Any], data: dict[str, Any]) -> str:
         senses_bits: list[str] = []
         if senses is not None:
             senses_bits.append(senses)
-        if perception is not None:
+        if perception is not None and float(perception).is_integer():
             senses_bits.append(f"Passive Perception {int(perception)}")
-        lines.append("Senses " + "; ".join(senses_bits))
+        if senses_bits:
+            lines.append("Senses " + "; ".join(senses_bits))
 
     languages = _forge_text(block.get("languages")) or _forge_text(data.get("languages"))
     if languages is not None:
@@ -1538,6 +1560,15 @@ def _rptok_notes_html(block: dict[str, Any], data: dict[str, Any]) -> str:
         lines.append("Actions")
         lines.extend(action_lines)
 
+    # Spells: a bold-labelled name-only block (the fg record format) after
+    # Actions; non-blank spell names only, skipped entirely when empty.
+    spells = block.get("spells")
+    if isinstance(spells, list):
+        spell_names = [name.strip() for name in spells if isinstance(name, str) and name.strip()]
+        if spell_names:
+            lines.append("<b>Spells</b>")
+            lines.extend(f"<b>{name}.</b>" for name in spell_names)
+
     return "<br>".join(lines)
 
 
@@ -1558,26 +1589,71 @@ def _rptok_gmnotes_html(data: dict[str, Any]) -> str:
     return "".join(paragraphs)
 
 
+#: A clean dice expression, the pipeline's dice grammar plus an optional
+#: embedded sign+bonus (``1d8`` / ``1d8+7`` / ``2d6 - 1``). Full-match
+#: anchored: a dice string with trailing junk ("1d8+2 acid") is NOT a
+#: clean expression — the part falls back to its integer fields.
+_RPTOK_DICE_RE = re.compile(r"(\d+)[dD](\d+)(?:([+-])\s*(\d+))?", flags=re.IGNORECASE)
+
+
 def _rptok_damage_roll(part: Any) -> str | None:
-    """One roll token from an AR25 damage part (spec-5-4): the part's own
-    ``dice`` string verbatim when present, else ``{count}d{sides}{±bonus}``
-    from the integer fields; bonuses are tight-joined (``+0`` dropped). A
-    part with neither usable dice nor integer count/sides is unparseable
-    -> None."""
+    """One roll token from an AR25 damage part (spec-5-4): ``{count}d{sides}``
+    + ``{±bonus}`` (operators tight, ``+0`` dropped) built from the
+    integer fields, or parsed from a CLEAN ``dice`` string — an embedded
+    bonus in the dice string is respected and never double-added (a
+    separate integer ``bonus`` field is used only when the dice string
+    carries none). A part with neither usable integers nor a parseable
+    dice string yields no roll (the documented parse-or-skip rule);
+    ``count < 1`` or ``sides < 1`` is never rolled."""
     if not isinstance(part, dict):
         return None
+    count: int | None
+    sides: int | None
+    bonus = 0
     dice = part.get("dice")
     if isinstance(dice, str) and dice.strip():
-        roll = dice.strip()
+        match = _RPTOK_DICE_RE.fullmatch(dice.strip())
+        if match is None:
+            count, sides = part.get("count"), part.get("sides")
+            if type(count) is not int or type(sides) is not int or count < 1 or sides < 1:
+                return None
+        else:
+            count, sides = int(match.group(1)), int(match.group(2))
+            if match.group(3) is not None:
+                bonus = int(match.group(4)) * (-1 if match.group(3) == "-" else 1)
+            else:
+                field_bonus = part.get("bonus")
+                if type(field_bonus) is int:
+                    bonus = field_bonus
     else:
         count, sides = part.get("count"), part.get("sides")
-        if type(count) is not int or type(sides) is not int or sides <= 0:
+        if type(count) is not int or type(sides) is not int or count < 1 or sides < 1:
             return None
-        roll = f"{count}d{sides}"
-    bonus = part.get("bonus")
-    if type(bonus) is int and bonus != 0:
+        field_bonus = part.get("bonus")
+        if type(field_bonus) is int:
+            bonus = field_bonus
+    roll = f"{count}d{sides}"
+    if bonus:
         roll = f"{roll}{bonus:+d}"
     return roll
+
+
+def _rptok_damage_line(damage: Any) -> str | None:
+    """A readable damage line for the notes when ``damage_parts_sentence``
+    produced nothing (dice-string parts it cannot average): mirrors its
+    shape — ``Hit: 1d12+1 damage.`` / ``… plus 2d6 damage.`` — from the
+    same ``_rptok_damage_roll`` grammar the macros roll (notes and macro
+    buttons never disagree on the dice). None when no part yields a roll."""
+    if not isinstance(damage, list):
+        return None
+    rolls = [roll for part in damage if (roll := _rptok_damage_roll(part)) is not None]
+    if not rolls:
+        return None
+    head, *tail = rolls
+    line = f"Hit: {head} damage"
+    for roll in tail:
+        line += f" plus {roll} damage"
+    return line + "."
 
 
 #: uuid5 namespace for derived macro UUIDs — any fixed value yields
@@ -1616,7 +1692,7 @@ def _rptok_attack_macros(block: dict[str, Any], entity_id: str) -> list[dict[str
             continue
         command: list[str] = []
         to_hit = _forge_number(item.get("to_hit"))
-        if to_hit is not None:
+        if to_hit is not None and float(to_hit).is_integer():
             command.append(f"[1d20{int(to_hit):+d}]")
         command.extend(rolls)
         buttons.append(
@@ -1798,8 +1874,7 @@ def render_entity_maptool(export: WorldExport, entity_id: str) -> bytes:
     notes = _rptok_notes_html(block, data)
     image_bytes, marker = _rptok_token_image(export, entity)
     if marker is not None:
-        marker_html = f"Portrait: {marker} [missing — default image used]"
-        notes = f"{notes}<br>{marker_html}" if notes else marker_html
+        notes = f"{notes}<br>{marker}" if notes else marker
     gm_notes = _rptok_gmnotes_html(data)
     buttons = _rptok_attack_macros(block, entity.id)
 

@@ -469,3 +469,9 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
   the 2024-Core stat-block text builder was deleted with it (the
   Import-Text paste path is no longer fed by the artifact). ILSA sample
   re-imported and visually approved by the owner.
+
+## Review defer 2026-09-14 (5-4 MapTool export, review loop 1)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-4-maptool-rpgtoken-export.md`
+  summary: shared damage_parts_sentence emits "damage damage" for damage parts lacking a `type`.
+  evidence: a part without `type` renders "... damage damage" in the fg/owlbear/maptool notes sentence builder; pre-dates 5-4 (shared helper), surfaced by the review; 5-4 tests use typed parts so visible notes read correctly.

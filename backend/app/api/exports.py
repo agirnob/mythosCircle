@@ -10,11 +10,12 @@ revision, no event, no store write (AR18, AD-1):
   refs) plus the latest revision's id+created_at; Markdown as the
   Obsidian-complete document, HTML as a self-contained styled document
   (story 5.1: no embedded binaries at world level — paths + availability).
-- ``GET /api/campaigns/{id}/entities/{eid}/export?format=json|markdown|html``
+- ``GET /api/campaigns/{id}/entities/{eid}/export?format=json|markdown|html|owlbear|fg|maptool``
   — the single-entity projection (the engine Epic 5's VTT targets build
-  on): the entity with its touching edges and the revision head; the
-  HTML sheet embeds the available portrait as a data URI and converts to
-  PDF via the browser.
+  on): the entity with its touching edges and the revision head; the HTML
+  sheet embeds the available portrait as a data URI and converts to PDF
+  via the browser, and the owlbear/fg/maptool adapters emit the VTT
+  artifacts (spec-5.1, spec-5-2, spec-5-3, spec-5-4).
 
 The renderers live in ``export_sheets`` — pure functions of the fetched
 snapshot. A renderer raising is a commit-path regression, not a validation
