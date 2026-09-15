@@ -1,7 +1,10 @@
 """The generate runner (spec-3.1): a plain-language ask -> 2-3 candidates.
 
-One job, one provider call plus at most one bounded stat-repair pass
-(AR25). The prompt is a pure function of the campaign seed (AR27), the
+One job, one provider call plus at most three bounded stat-repair passes
+(AR25; the 2026-09-11/12 owner verdicts stepped build-in's single pass to
+three, and generate mirrors the same ceiling — each pass targets only the
+violations that survived the previous one). The prompt is a pure function
+of the campaign seed (AR27), the
 ask, and the rowid-ordered retrieved neighborhood (AR6: ``seed_ids=None``
 — the full committed world, bounded by the entity cap; AD-16) —
 byte-identical for the same world state and ask, pinned by test.
@@ -12,8 +15,8 @@ triple, an AR25-valid 5e stat block, >=1 typed edge whose far endpoint
 is an existing committed entity) and staged as ``ProposedCandidate``
 rows — committed nothing (the runner never calls ``commit_subgraph``;
 AR7). Stat-block validation reuses the build-in machinery (spec-2.4)
-with its canonical ``E<position>`` refs; exactly one bounded repair pass
-runs under the job's ``CallBudget`` (AR21).
+with its canonical ``E<position>`` refs; the bounded repair passes run
+under the job's ``CallBudget`` (AR21).
 
 Fewer than 2 candidates surviving validation fails the job with a
 structured error naming the count — the "2-3 candidates" contract is
@@ -95,8 +98,8 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
     """Run one generate job to a terminal state (complete_job/fail_job).
 
     Deterministic prompt -> provider call -> fenced parse -> AR19 shape
-    validation -> AR25 stat validation with exactly one bounded repair
-    pass -> stage the 2-3 surviving candidates as ``ProposedCandidate``
+    validation -> AR25 stat validation with bounded repair passes (up to
+    three) -> stage the 2-3 surviving candidates as ``ProposedCandidate``
     rows (one transaction, all-or-nothing) -> ``complete_job`` naming the
     staged ids plus a ``dropped`` summary. Any failure (provider, budget,
     malformed output, fewer than 2 valid candidates, a staging race)
@@ -165,10 +168,10 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
         else:
             valid.append((index, _candidate_payload(raw, context_entities)))
 
-    # Stat-block enforcement (AR25): one bounded repair pass, budget-gated
-    # like every provider call. ``inputs`` mirrors the parsed list 1:1 —
-    # shape-valid candidates as characters, shape-invalid ones as
-    # faction placeholders the stat machinery skips — so the repair
+    # Stat-block enforcement (AR25): bounded repair passes (up to three),
+    # budget-gated like every provider call. ``inputs`` mirrors the parsed
+    # list 1:1 — shape-valid candidates as characters, shape-invalid ones
+    # as faction placeholders the stat machinery skips — so the repair
     # machinery's E<position> refs ARE the parsed indices above.
     valid_map = dict(valid)
     inputs = [
@@ -189,12 +192,24 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
         for index, raw in enumerate(parsed)
     ]
     still_bad: set[int] = set()
+    # Stat-block enforcement (AR25): bounded repair passes (up to three,
+    # mirroring build-in's repair-sequence ceiling — owner verdict
+    # 2026-09-11/2026-09-12), budget-gated like every provider call. Each
+    # pass targets only the issues that SURVIVED the previous one, and
+    # ``attempt=N`` makes the prompt show the block the previous repair
+    # produced plus exactly what is still wrong (build_stat_repair_prompt).
+    # A candidate still invalid after the ceiling drops (generate's
+    # contract is drop-not-fail — never stage an AR25-invalid block).
     stat_issues = collect_stat_issues(inputs)
-    if stat_issues:
+    for attempt in (1, 2, 3):
+        if not stat_issues:
+            break
         if not _job_still_running(job):
             return
         repair_text = budget.call(
-            lambda: provider(build_stat_repair_prompt(stat_issues), settings=settings)
+            lambda issues=stat_issues, attempt=attempt: provider(
+                build_stat_repair_prompt(issues, attempt=attempt), settings=settings
+            )
         )
         repaired = parse_stat_repair_output(repair_text, [issue.position for issue in stat_issues])
         if repaired is None:
@@ -203,38 +218,38 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
             # is drop-not-fail — never stage an AR25-invalid block).
             repaired = {}
         inputs = apply_stat_repairs(inputs, repaired)
-        remaining = collect_stat_issues(inputs)
-        if remaining:
-            # Still-invalid candidates are DROPPED (not fatal): the
-            # "2-3 candidates" contract governs (INVALID_STATS row).
-            for issue in remaining:
-                still_bad.add(issue.position)
-                # The job.error names the violations; the WARNING line
-                # carries the reproducible evidence — the exact block the
-                # repair pass was shown and the exact reply it made, so a
-                # stuck shape (a non-string trait description, a repair
-                # that re-echoes it) is diagnosable from the log alone
-                # (2026-09-15: traits entries with dict descriptions).
-                block = issue.entity.data.get("stat_block")
-                logger.warning(
-                    "generate E%s %r still invalid after the repair pass (%s) — "
-                    "block: %s; repair reply: %s",
+        stat_issues = collect_stat_issues(inputs)
+    if stat_issues:
+        # Still-invalid candidates are DROPPED (not fatal): the
+        # "2-3 candidates" contract governs (INVALID_STATS row).
+        for issue in stat_issues:
+            still_bad.add(issue.position)
+            # The job.error names the violations; the WARNING line
+            # carries the reproducible evidence — the exact block the
+            # final repair pass was shown and the exact reply it made, so
+            # a stuck shape (a non-string trait description, a repair
+            # that re-echoes it) is diagnosable from the log alone
+            # (2026-09-15: traits entries with dict descriptions).
+            block = issue.entity.data.get("stat_block")
+            logger.warning(
+                "generate E%s %r still invalid after the repair passes (%s) — "
+                "block: %s; repair reply: %s",
+                issue.position,
+                issue.entity.name,
+                "; ".join(issue.violations),
+                json.dumps(block, sort_keys=True, separators=(",", ":"))
+                if block is not None
+                else "MISSING",
+                repair_text[:2000],
+            )
+            drops.append(
+                (
                     issue.position,
                     issue.entity.name,
-                    "; ".join(issue.violations),
-                    json.dumps(block, sort_keys=True, separators=(",", ":"))
-                    if block is not None
-                    else "MISSING",
-                    repair_text[:2000],
+                    "stat block(s) still invalid after the repair passes: "
+                    + "; ".join(issue.violations),
                 )
-                drops.append(
-                    (
-                        issue.position,
-                        issue.entity.name,
-                        "stat block(s) still invalid after the repair pass: "
-                        + "; ".join(issue.violations),
-                    )
-                )
+            )
     # The staged payloads carry the (possibly repaired) stat blocks: the
     # repair merges into the EntityInput mirror, so sync it back before
     # dropping still-invalid candidates — an AR25-valid block is never

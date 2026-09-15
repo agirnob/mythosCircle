@@ -938,9 +938,9 @@ def test_malformed_output_fails_zero_staged(world: str) -> None:
 
 def test_malformed_repair_output_drops_candidate(world: str) -> None:
     """A repair response that is not parseable stat blocks repairs nothing
-    — the flagged candidate is DROPPED (generate's 2-3 contract is
-    drop-not-fail: an AR25-invalid block never stages; a malformed repair
-    is not a job-level failure)."""
+    on any of the bounded passes — the flagged candidate is DROPPED
+    (generate's 2-3 contract is drop-not-fail: an AR25-invalid block never
+    stages; a malformed repair is not a job-level failure)."""
     _commit_world(world)
     output = _generate_output()
     bad_block = json.loads(json.dumps(_VALID_STAT_BLOCK))
@@ -953,20 +953,20 @@ def test_malformed_repair_output_drops_candidate(world: str) -> None:
         return json.dumps(output) if len(calls) == 1 else "garbage"
 
     job_id = _run(world, provider)
-    assert len(calls) == 2
+    assert len(calls) == 4  # generate + the three bounded repair passes
     job, _position = job_status(job_id)
     # 2 of 3 candidates survive; the still-invalid E0 drops.
     assert job.state == "succeeded"
     assert job.result is not None and job.result["candidate_count"] == 2
     dropped = job.result["dropped"]
-    assert len(dropped) == 1 and "still invalid after the repair pass" in dropped[0]["reason"]
+    assert len(dropped) == 1 and "still invalid after the repair passes" in dropped[0]["reason"]
     staged = _staged(world)
     assert len(staged) == 2
     assert all(row.payload["name"] != "Corvin Ashe" for row in staged)
 
 
 # ---------------------------------------------------------------------------
-# INVALID_STATS (one bounded repair pass) + BUDGET_EXCEEDED
+# INVALID_STATS (up to three bounded repair passes) + BUDGET_EXCEEDED
 # ---------------------------------------------------------------------------
 
 
@@ -987,7 +987,7 @@ def test_invalid_stat_block_repaired_in_one_pass(world: str) -> None:
         return json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": _VALID_STAT_BLOCK}]})
 
     job_id = _run(world, provider)
-    assert len(calls) == 2  # generate + exactly one bounded repair pass
+    assert len(calls) == 2  # generate + the repair pass (fixed on attempt 1)
     assert "VIOLATIONS TO FIX" in calls[1]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
@@ -1014,7 +1014,10 @@ def test_still_invalid_stats_dropped_two_survive(world: str) -> None:
         return json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": bad_block}]})
 
     job_id = _run(world, provider)
-    assert len(calls) == 2
+    assert len(calls) == 4  # generate + three bounded repair passes
+    assert "VIOLATIONS TO FIX" in calls[1]
+    assert "SECOND REPAIR PASS" in calls[2]
+    assert "THIRD REPAIR PASS" in calls[3]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     rows = _staged(world)
@@ -1050,17 +1053,52 @@ def test_still_invalid_stats_below_two_fails(world: str) -> None:
         )
 
     job_id = _run(world, provider)
-    assert len(calls) == 2
+    assert len(calls) == 4  # generate + three bounded repair passes
     job, _position = job_status(job_id)
     assert job.state == "failed"
     assert "1 valid candidate(s) survived validation, need 2" in (job.error or "")
-    assert "stat block(s) still invalid after the repair pass" in (job.error or "")
+    assert "stat block(s) still invalid after the repair passes" in (job.error or "")
     assert _staged(world) == []
+
+
+def test_second_repair_pass_rescues_candidate(world: str) -> None:
+    """The 2026-09-15 extension: when pass 1 fails to fix a violation, a
+    SECOND bounded pass re-reads the block pass 1 produced plus the
+    surviving violations (build_stat_repair_prompt attempt=2) and the
+    candidate stages instead of dropping — previously generate made one
+    repair call and dropped on the first miss (deferred-work second
+    stat-repair pass entry)."""
+    _commit_world(world)
+    output = _generate_output()
+    bad_block = json.loads(json.dumps(_VALID_STAT_BLOCK))
+    bad_block["attributes"]["str"] = 40
+    output["candidates"][0]["stat_block"] = bad_block
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return json.dumps(output)
+        if len(calls) == 2:
+            # Pass 1 re-echoes the out-of-range STR: nothing fixed.
+            return json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": bad_block}]})
+        # Pass 2 fixes it — the rescue path that used to drop E0.
+        return json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": _VALID_STAT_BLOCK}]})
+
+    job_id = _run(world, provider)
+    assert len(calls) == 3  # generate + pass 1 + pass 2 (no third pass needed)
+    assert "SECOND REPAIR PASS" in calls[2]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    rows = _staged(world)
+    assert len(rows) == 3
+    assert rows[0].payload["name"] == "Corvin Ashe"
+    assert rows[0].payload["stat_block"]["attributes"]["str"] == 14
 
 
 def test_missing_stat_block_repaired(world: str) -> None:
     """A candidate without a stat_block at all is a repairable violation:
-    the one bounded pass fills it in and the candidate stages."""
+    the first bounded pass fills it in and the candidate stages."""
     _commit_world(world)
     output = _generate_output()
     del output["candidates"][2]["stat_block"]
@@ -1538,14 +1576,14 @@ def test_drop_reasons_carry_names_and_one_numbering(world: str) -> None:
         return json.dumps({"stat_blocks": [{"ref": "E1", "stat_block": bad_block}]})
 
     job_id = _run(world, provider)
-    assert len(calls) == 2
+    assert len(calls) == 4  # generate + three bounded repair passes
     assert "E1" in calls[1]  # the repair prompt flags the parsed index
     job, _position = job_status(job_id)
     assert job.state == "failed"  # only E2 survives: 1 < 2
     error = job.error or ""
     assert "1 valid candidate(s) survived validation, need 2" in error
     assert "E0 ('Corvin Ashe'): secret must be a non-blank string" in error
-    assert "E1 ('Sister Yeva'): stat block(s) still invalid after the repair pass" in error
+    assert "E1 ('Sister Yeva'): stat block(s) still invalid after the repair passes" in error
     assert _staged(world) == []
 
 
@@ -1575,7 +1613,7 @@ def test_dropped_summary_on_partial_success(world: str) -> None:
     assert len(dropped) == 1
     assert dropped[0]["ref"] == "E0"
     assert dropped[0]["name"] == "Corvin Ashe"
-    assert "stat block(s) still invalid after the repair pass" in dropped[0]["reason"]
+    assert "stat block(s) still invalid after the repair passes" in dropped[0]["reason"]
 
 
 def test_dropped_summary_absent_when_all_valid(world: str) -> None:
@@ -1782,7 +1820,7 @@ def test_stage_candidates_rejects_foreign_job(world: str) -> None:
 
 def test_repair_prompt_carries_record_dpr_target(world: str) -> None:
     """The generate-path mirror carries the staged record role/level_cr, so
-    the one bounded repair pass names the DPR target band (round-2 patch:
+    the bounded repair passes name the DPR target band (round-2 patch:
     the mirror used to strip everything but the stat block, and the target
     line never rendered on this path). Monster role since the NPC oracle
     (owner verdict 2026-09-12): NPC/BBEG records never quote the monster
@@ -1818,7 +1856,7 @@ def test_repair_prompt_carries_record_dpr_target(world: str) -> None:
         return json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": healed}]})
 
     job_id = _run(world, provider)
-    assert len(calls) == 2  # generate + exactly one bounded repair pass
+    assert len(calls) == 2  # generate + the repair pass (fixed on attempt 1)
     assert "record target: CR 5 -> hit DPR band 33-38" in calls[1]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"

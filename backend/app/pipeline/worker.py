@@ -15,9 +15,9 @@ compensating undo.
 Budget (AR21): every LLM call goes through ``CallBudget``
 (``app.pipeline.budget``), which checks the per-job counter against
 ``job.max_llm_calls`` BEFORE the HTTP request and fails the job when
-exceeded — the build-in runner's waves and stat-repair pass, and the
-generate runner's call plus its one bounded repair pass, all reuse
-the same guard.
+exceeded — the build-in runner's waves and bounded stat-repair
+passes, and the generate runner's call plus its bounded stat-repair
+passes, all reuse the same guard.
 
 """
 

@@ -475,3 +475,64 @@ Findings routed to `defer` during reviews, kept for future planning and story tr
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-4-maptool-rpgtoken-export.md`
   summary: shared damage_parts_sentence emits "damage damage" for damage parts lacking a `type`.
   evidence: a part without `type` renders "... damage damage" in the fg/owlbear/maptool notes sentence builder; pre-dates 5-4 (shared helper), surfaced by the review; 5-4 tests use typed parts so visible notes read correctly.
+## Owner roadmap notes 2026-09-15 (build-in authoring, retries, logging, UX)
+
+Owner session notes on build-in generation; mockups shown (three "LORE WEAVER"
+screenshots) are UX INSPIRATION ONLY — explicitly NOT to replicate. Each note
+maps to a proposed story; none implemented yet.
+
+- note 1: entity input UX — today every build-in section is a free-form
+  textarea, one entity per line (`BuildInView.vue` `splitEntries`). Request:
+  an explicit "add entity" button adding ONE entity at a time (typed fields),
+  while the one-per-line textarea stays as the BULK paste path. Story:
+  "entity-list authoring UX"; frontend-only, small.
+- note 2a: role choice per key figure — the model decides role (NPC/BBEG/
+  Monster) from the one-line seed; the DM cannot determine what the character
+  WILL be. Request: per-figure role selection in the input; the seed pins the
+  role in the record (knowledge.ROLES is the closed vocabulary). Story:
+  "guided key-figure seeding".
+- note 2b: hybrid authorship — the DM may fill ANY subsection of the profile
+  (Basic Information / Personality / Character Details / World Integration /
+  Stat Block / Actions / Relations — the exact AR24 sections the regenerate
+  path already re-rolls per-section) and the LLM fills only the blanks; a
+  fully-DM-authored figure commits without the LLM touching it. Owner showed
+  a fully-generated example (Fatso Larry) and a mostly-filled example
+  (Seraphine Voss, blank Factions/Relationships left for the generator).
+  Backend contract: partial record in → prompt treats present fields as
+  ground truth, missing fields generated; validation unchanged (non-blank
+  after the merge). Biggest story of the set; prompt contract + input UI +
+  validation interplay.
+- note 2c: key places and factions get the same guided/hybrid authoring as
+  key figures (not characters-only).
+- note 3: one-time characters without a world — a standalone single-character
+  flow not requiring (nor committing into) a full world build. Design
+  decision needed: where candidates live (existing ask->accept machinery
+  wants >=1 edge to a committed entity), edge-less candidates, and where the
+  result persists (scratch pool vs direct record). Precedent: the wave-1
+  orphan verdict (edgeless commits, DM prunes).
+- note 4: build-in transparency — owner question: does a second build-in
+  influence the first's world? YES by design: every build-in's wave-2
+  context/anchors include the committed world, generate's retrieval seeds
+  with the FULL committed world (generate.py seed_ids=None, AR6), and
+  re-submits merge by (kind, normalized name) (`_merge_with_world`). The UI
+  shows none of this. Story: surface what the job sees (context counts by
+  kind, existing-name matches) and what it changed (the merge audit already
+  rides the job result as `merge` per wave — render it).
+- note 5: UX/UI plan for scale — after ~20 entities the current world/accept
+  screens are hard to use; owner wants an explicit plan (epic-3 retro item 2
+  AR24 shared profile component, world browsing/search, CandidatesView/
+  WorldView split) before more polish. Story: "world-scale UX" design pass
+  (plan artifact first, owner gate at spec).
+- note 6: several retries on LLM-caused failures — today generate's wave call
+  has NO retry (a malformed wave fails the job; the shape folds of 2026-09-15
+  shrank but did not eliminate the class); build-in already has the bounded
+  retry taxonomy (_WaveJsonError one re-emit + truncation retry). Story:
+  "generate wave retry taxonomy" mirroring build-in (one bounded re-emit
+  quoting the JSON error + truncation retry). Separate from the stat-repair
+  pass ceiling shipped same-day (up to three bounded passes now).
+- note 7: LLM call journal — every try must be logged and checkable: full
+  prompt + response per call (with attempt number, duration, retry cause);
+  today only job events and a 2000-char repair-reply warning are logged
+  (app.jsonl); the repair-session spec kept per-call artifacts in scratch
+  dirs. Story: "LLM call journal" (file-per-job under the log/media dir or a
+  store table; queryable by job id).
