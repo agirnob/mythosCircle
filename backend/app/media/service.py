@@ -159,12 +159,22 @@ _STYLE_DIRECTIVES: dict[str, str] = {
     "illustration": "style: painted fantasy illustration — painterly, rich saturated color",
 }
 _FRAMING_DIRECTIVES: dict[str, str] = {
-    "portrait": "framing: waist-up portrait, subject centered, no other characters",
-    "headshot": (
-        "framing: close head-and-shoulders portrait, the face filling the upper half "
-        "of the frame, subject centered"
+    "portrait": (
+        "portrait of the character's face, straight at the viewer: the entire head "
+        "and hair inside the frame with air above the hair, both eyes clearly "
+        "visible, face centered in the upper third; waist-up body below, belt near "
+        "the bottom edge, single subject, the head never cropped"
     ),
-    "full_body": "framing: full body, subject centered, headroom above and feet visible",
+    "headshot": (
+        "head-and-shoulders portrait: the face filling the upper half of the frame, "
+        "both eyes clearly visible, the head inside with slight air above the hair, "
+        "single subject, the head never cropped"
+    ),
+    "full_body": (
+        "full-body portrait: the entire body inside the frame, the head and face "
+        "clearly visible and detailed with air above the head, both eyes visible, "
+        "feet near the bottom edge, single subject, nothing cropped"
+    ),
 }
 _BACKGROUND_DIRECTIVES: dict[str, str] = {
     "scene": "background: a detailed surrounding scene",
@@ -237,23 +247,28 @@ def portrait_prompt(
     (the run-fail / enqueue-422 condition, identical to
     ``appearance_prompt``).
 
-    The appearance projection stays the authoritative base (spec-4.1);
-    each present knob appends ONE directive line the Krea2 refiner is
-    asked to honor. ``background="transparent"`` also selects the rembg
-    workflow upstream — here it only steers the prompt.
+    The appearance projection joins VERBATIM (spec-4.1), but the framing
+    directive LEADS the prompt: a portrait is a picture of the face, and
+    when the appearance text is body/torso-heavy ("waistcoat, belt laden
+    with trinkets") a trailing framing line lets the model crop the head
+    off (live-verified 2026-09-15 — face-anchored composition keeps the
+    head in frame; trailing composition cropped it at nose/chin level).
+    ``background="transparent"`` also selects the rembg workflow
+    upstream — here it only steers the prompt.
     """
     base = appearance_prompt(appearance)
     if base is None:
         return None
-    parts = [base]
+    parts: list[str] = []
+    if framing is not None:
+        parts.append(_FRAMING_DIRECTIVES[framing])
+    parts.append(base)
     if style is not None and style != "custom":
         # ``custom`` has no preset directive — its styling line IS the
         # DM's text below (closed vocab: any other style has an entry).
         parts.append(_STYLE_DIRECTIVES[style])
     if custom_style is not None:
         parts.append(f"styling: {custom_style}")
-    if framing is not None:
-        parts.append(_FRAMING_DIRECTIVES[framing])
     if background is not None:
         parts.append(_BACKGROUND_DIRECTIVES[background])
     return "\n".join(parts)

@@ -261,8 +261,9 @@ def test_portrait_options_rejects_malformed(payload: object) -> None:
 
 
 def test_portrait_prompt_composes_directives() -> None:
-    """The appearance projection stays the base; each present knob appends
-    ONE directive line, in fixed order (style, custom, framing, background)."""
+    """The framing directive LEADS (the face anchor), then the appearance
+    projection verbatim, then the remaining knobs in fixed order — one
+    directive line per present knob (style, custom, background)."""
     prompt = portrait_prompt(
         {"face": "sharp"},
         style="photorealistic",
@@ -270,10 +271,11 @@ def test_portrait_prompt_composes_directives() -> None:
         background="transparent",
     )
     assert prompt == (
+        "head-and-shoulders portrait: the face filling the upper half of the frame, "
+        "both eyes clearly visible, the head inside with slight air above the hair, "
+        "single subject, the head never cropped\n"
         "face: sharp\n"
         "style: photorealistic — photographic realism, natural skin and lighting\n"
-        "framing: close head-and-shoulders portrait, "
-        "the face filling the upper half of the frame, subject centered\n"
         "background: none — the lone subject only, isolated, no environment"
     )
 
@@ -453,10 +455,10 @@ def test_run_portrait_options_compose_prompt_and_use_rembg(world: str, tmp_path:
     assert len(seen) == 1
     prompt, use_rembg = seen[0]
     assert use_rembg is True
+    assert prompt.startswith("head-and-shoulders portrait:")
     assert "styling: art nouveau" in prompt
-    assert "head-and-shoulders" in prompt
+    assert "sharp\n" in prompt  # the verbatim appearance still joins complete
     assert "background: none" in prompt
-    assert prompt.startswith("sharp\n")  # the verbatim string appearance is the base
     done, _position = job_status(transparent.id)
     assert done.state == "succeeded"
 
