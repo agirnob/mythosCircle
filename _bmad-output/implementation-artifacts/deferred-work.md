@@ -503,7 +503,25 @@ maps to a proposed story; none implemented yet.
   after the merge). Biggest story of the set; prompt contract + input UI +
   validation interplay.
 - note 2c: key places and factions get the same guided/hybrid authoring as
-  key figures (not characters-only).
+  key figures (not characters-only). CLARIFIED 2026-09-15 by the owner with
+  the City of Ferdinand example: a place's generated fields are exactly
+  name + small description + relations, and the DM may author ANY of them
+  at build-in time (blanks are generated). The load-bearing new rule: a
+  DECLARED relation whose target is not seeded and not committed requires
+  the pipeline to GENERATE the endpoint entity (inventing name/lore when
+  the DM gave only a kind/description) — never drop, never retype. Gate:
+  after wave 1, every declared relation must resolve; missing endpoints get
+  ONE bounded re-emit naming them (the _orphan_reemit shape), second miss
+  fails loud. Distinguisher from the 2026-09-11 edgeless-commit verdict:
+  DM-demanded endpoints are mandatory (like wave-2 anchors), model-
+  volunteered orphans commit+prune. Wire contract today cannot carry this:
+  SECTION_NAMES payload sections are validated "must be a list of strings"
+  (build_in.py _check_sections) and rendered as name-only lines; the seed
+  entry must grow to {name, description?, relations?: [{type, target,
+  counter?}]} with plain strings staying legal (name-only). Same 2b/2c
+  feature: "author any generated field, any kind; declared relations
+  mandate their endpoints" — one spec, one prompt-contract change, one UI
+  surface.
 - note 3: one-time characters without a world — a standalone single-character
   flow not requiring (nor committing into) a full world build. Design
   decision needed: where candidates live (existing ask->accept machinery
