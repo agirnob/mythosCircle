@@ -154,6 +154,62 @@ async function submit() {
 function stateLabel(job: Job): string {
   return job.state === 'queued' ? `Queued (position ${job.queue_position ?? '…'})` : job.state
 }
+
+interface ContextSummary {
+  entities: number
+  by_kind?: Record<string, number>
+  retrieval_cap?: number
+  truncated?: boolean
+}
+
+/** What the build saw: the committed world it arrived at (owner note 4). */
+function contextLabel(result: unknown): string | null {
+  const ctx = (result as { context?: ContextSummary } | null)?.context
+  if (!ctx || typeof ctx.entities !== 'number') return null
+  const kinds = Object.entries(ctx.by_kind ?? {})
+    .map(([kind, n]) => `${n} ${kind}${n === 1 ? '' : 's'}`)
+    .join(', ')
+  const seen = `${ctx.entities} ${ctx.entities === 1 ? 'entity' : 'entities'}${
+    kinds ? ` (${kinds})` : ''
+  }`
+  return ctx.truncated
+    ? `${seen} — retrieval cap ${ctx.retrieval_cap ?? '?'} reached, the model saw a neighborhood`
+    : `${seen} — full retrieval (cap ${ctx.retrieval_cap ?? '?'})`
+}
+
+interface MergeAudit {
+  merged?: unknown[] | number
+  unchanged?: unknown[] | number
+  dropped_edges?: unknown[] | number
+  twins_dropped?: unknown[] | number
+  edge_kind_dropped?: unknown[] | number
+}
+
+/** What the build changed: the per-wave upsert audit (merged/unchanged…). */
+function mergeLabel(wave: 'wave1' | 'wave2', audit: unknown): string | null {
+  const a = (audit ?? null) as MergeAudit | null
+  if (!a) return null
+  const count = (value: unknown[] | number | undefined): number =>
+    Array.isArray(value) ? value.length : typeof value === 'number' ? value : 0
+  const bits = [
+    `merged ${count(a.merged)}`,
+    `unchanged ${count(a.unchanged)}`,
+    `dropped edges ${count(a.dropped_edges)}`,
+  ]
+  const twins = count(a.twins_dropped)
+  if (twins) bits.push(`twins dropped ${twins}`)
+  const kindDrops = count(a.edge_kind_dropped)
+  if (kindDrops) bits.push(`kind-rule drops ${kindDrops}`)
+  return `${wave === 'wave1' ? 'Wave 1' : 'Wave 2'}: ${bits.join(' · ')}`
+}
+
+function mergeLines(result: unknown): string[] {
+  const merge = (result as { merge?: Record<'wave1' | 'wave2', unknown> } | null)?.merge
+  if (!merge) return []
+  return (['wave1', 'wave2'] as const)
+    .map((wave) => mergeLabel(wave, merge[wave]))
+    .filter((line): line is string => line !== null)
+}
 </script>
 
 <template>
@@ -222,6 +278,17 @@ function stateLabel(job: Job): string {
           <dd v-if="job.state === 'running'">{{ Math.round(job.progress * 100) }}%</dd>
           <dt v-if="job.error">Error</dt>
           <dd v-if="job.error" class="error">{{ job.error }}</dd>
+          <template v-if="job.state === 'succeeded' && job.result">
+            <dt>World at build</dt>
+            <dd v-if="contextLabel(job.result)">{{ contextLabel(job.result) }}</dd>
+            <dt v-if="mergeLines(job.result).length > 0">What changed</dt>
+            <dd v-if="mergeLines(job.result).length > 0">
+              <span v-for="line in mergeLines(job.result)" :key="line">{{ line }}<br /></span>
+              <span class="muted small"
+                >Same-name entities merge into the existing world — nothing is duplicated.</span
+              >
+            </dd>
+          </template>
         </dl>
       </article>
       <p class="muted small">

@@ -57,7 +57,11 @@ from app.pipeline.budget import BudgetExceededError, CallBudget
 from app.pipeline.fencing import json_error, parse_json_object
 from app.pipeline.fencing import strip_fence as _strip_fence
 from app.pipeline.knowledge import ROLES, identity_field_allowed, identity_field_ok
-from app.pipeline.retrieval import retrieve_neighborhood, serialize_context
+from app.pipeline.retrieval import (
+    context_summary,
+    retrieve_neighborhood,
+    serialize_context,
+)
 from app.pipeline.statblocks import (
     StatIssue,
     apply_stat_repairs,
@@ -74,6 +78,7 @@ from app.pipeline.statblocks import (
     stat_failure_message,
     strip_noncharacter_stat_blocks,
 )
+from app.pipeline.wave import WaveJsonError, call_wave, repair_retry_prompt
 from app.pipeline.worker import JobPayloadError
 from app.providers.llm import ProviderError
 from app.store import (
@@ -87,6 +92,7 @@ from app.store import (
     job_status,
     models,
     report_progress,
+    world_state,
 )
 from app.store.candidates import (
     BOSS_FIELDS,
@@ -208,44 +214,6 @@ WAVE2_MAX_ENTITIES = 24
 WAVE2_MAX_EDGES = 256
 
 
-def _repair_retry_prompt(
-    base_prompt: str, bad_text: str, retry_note: str, decode_error: str | None = None
-) -> str:
-    """The one bounded retry when a repair response is not parseable JSON:
-    the same base prompt plus the invalid text, explicit JSON rules, the
-    decoder's error line, and one gate-specific shape note (dogfood
-    2026-09-09: gemma's record-repair response embedded an excluded
-    stat_block whose traits/actions members were bare strings — invalid
-    JSON — and the whole wave failed over it). The note is per-gate: the
-    record gate excludes the stat block, the stat gate requires it — one
-    shared text mis-instructs both. The error line (chunking spec
-    2026-09-10: ``JSON error: <str(exc)>`` after the rules) names the exact
-    decode failure so the model can fix that spot instead of re-emitting
-    the same giant output; omitted only when no decode error is known."""
-    lines = [
-        base_prompt,
-        "",
-        "YOUR PREVIOUS RESPONSE COULD NOT BE PARSED AS JSON. Correct it:",
-        "return the SAME entries listed above as ONE valid JSON object — nothing else.",
-        'JSON rules: every object member is "key": value — a bare string',
-        'as an object member is INVALID (e.g. {"A: title"} must become',
-        '{"A: title": "..."} or an array of objects); escape any literal',
-        'double quote inside a value as \\"; no prose before or after the',
-        "object.",
-    ]
-    if decode_error is not None:
-        lines.append(f"JSON error: {decode_error}")
-    lines.extend(
-        [
-            retry_note,
-            "",
-            "YOUR PREVIOUS INVALID RESPONSE:",
-            bad_text.strip(),
-        ]
-    )
-    return "\n".join(lines)
-
-
 def _run_repair[R: Mapping[int, Any]](
     *,
     budget: CallBudget,
@@ -276,7 +244,7 @@ def _run_repair[R: Mapping[int, Any]](
     decode_error = json_error(repair_text)
     retry_text = budget.call(
         lambda: provider(
-            _repair_retry_prompt(prompt, repair_text, retry_note, decode_error),
+            repair_retry_prompt(prompt, repair_text, retry_note, decode_error),
             settings=_repair_sampling(settings, attempt=attempt + 1),
         ),
         label=f"{label}_json_retry",
@@ -289,16 +257,6 @@ def _run_repair[R: Mapping[int, Any]](
             f"(last output starts: {snippet!r})"
         )
     return repaired
-
-
-class _WaveJsonError(JobPayloadError):
-    """The structural retry signal (C, the retry taxonomy): a wave-class
-    response that is not parseable JSON AT ALL. ``_call_wave`` gives exactly
-    this class one bounded re-elicitation with a rolled seed; semantic
-    rejections (bad refs, kinds, edge types — contract shapes inside
-    well-formed JSON) stay plain ``JobPayloadError`` and stay terminal:
-    they are deterministic, not noise. Subclasses ``JobPayloadError``, so
-    every existing handler and fail-event path keeps working unchanged."""
 
 
 class ContextRef(NamedTuple):
@@ -768,7 +726,7 @@ def _clean_edge_kinds(
         rejected=violations,
     )
     try:
-        repaired = _call_wave(
+        repaired = call_wave(
             budget,
             provider,
             repair_settings,
@@ -820,16 +778,6 @@ def _clean_edge_kinds(
     return merged, []
 
 
-def _rolled_seed(settings: LLMSettings, attempt: int) -> LLMSettings:
-    """The retry's variance roll (C): when the operator pinned a seed, the
-    retry carries seed+attempt so a deterministic profile never re-calls
-    the identical failing sample; with no pinned seed the sampling
-    temperature already varies and the body stays untouched."""
-    if settings.seed is None:
-        return settings
-    return dataclasses.replace(settings, seed=settings.seed + attempt)
-
-
 #: Repair sampling preset (K, owner verdict 2026-09-12): a repair is a rule
 #: fix, not creative work — cold and seeded so every patch is reproducible
 #: from the tee'd calls and the ledger. Wave-class calls stay warm (the
@@ -869,81 +817,6 @@ def _wave_max_tokens(entity_count: int, ceiling: int) -> int:
     of burning the full ceiling."""
     wanted = TOKENS_PER_ENTITY * entity_count + WAVE_CALL_TOKEN_HEADROOM
     return max(WAVE_CALL_MIN_TOKENS, min(ceiling, wanted))
-
-
-def _call_with_truncation_retry(
-    budget: CallBudget,
-    provider: Callable[..., str],
-    settings: LLMSettings,
-    prompt: str,
-    *,
-    label: str,
-    ceiling: int,
-) -> str:
-    """One provider call under the truncation class of the retry taxonomy
-    (B/C): ``finish_reason == "length"`` means the WINDOW was too small for
-    this roster — the one retry doubles it inside the operator's cap (a
-    plain re-call would deterministically truncate again, which is what
-    made the naive retry wrong). Every other ``ProviderError`` propagates
-    exactly as before (spec-1.4: connection/http failures are terminal)."""
-    try:
-        return budget.call(lambda: provider(prompt, settings=settings), label=label)
-    except ProviderError as exc:
-        doubled = min(settings.max_tokens * 2, ceiling)
-        if exc.kind != "truncated" or doubled <= settings.max_tokens:
-            raise
-        logger.info(
-            "%s truncated at max_tokens=%s; retrying once at %s",
-            label,
-            settings.max_tokens,
-            doubled,
-        )
-        widened = dataclasses.replace(settings, max_tokens=doubled)
-        return budget.call(lambda: provider(prompt, settings=widened), label=f"{label}_trunc_retry")
-
-
-def _call_wave[P](
-    budget: CallBudget,
-    provider: Callable[..., str],
-    settings: LLMSettings,
-    prompt: str,
-    *,
-    label: str,
-    parse: Callable[[str], P],
-    retry_note: str,
-    ceiling: int,
-) -> P:
-    """One wave-class call under the full bounded retry taxonomy (C):
-
-    * malformed JSON (``_WaveJsonError``) -> exactly ONE re-elicitation
-      quoting the decoder error (the repair gates' proven
-      ``_repair_retry_prompt`` shape) with a rolled seed — never an
-      identical re-call;
-    * truncation -> one doubled-window retry per call (inside
-      ``_call_with_truncation_retry``, so the JSON retry gets its own);
-    * semantic rejection, budget, connection, HTTP -> terminal, unchanged.
-
-    On grammar-enforcing backends the structural classes are near-dead
-    code (the ladder measured 4/4 first-try parses under ``json_schema``);
-    on backends without enforcement they are the difference between a lost
-    multi-minute wave and a recovered one.
-    """
-    text = _call_with_truncation_retry(
-        budget, provider, settings, prompt, label=label, ceiling=ceiling
-    )
-    try:
-        return parse(text)
-    except _WaveJsonError:
-        retry_prompt = _repair_retry_prompt(prompt, text, retry_note, json_error(text))
-        text = _call_with_truncation_retry(
-            budget,
-            provider,
-            _rolled_seed(settings, 1),
-            retry_prompt,
-            label=f"{label}_json_retry",
-            ceiling=ceiling,
-        )
-        return parse(text)
 
 
 def _wave1_roster(payload: dict[str, Any]) -> list[tuple[str, str]]:
@@ -1871,7 +1744,7 @@ def _run_wave1_chunks(
     Each chunk call is pinned to its slice (count AND ref enums over its
     GLOBAL positions), carries the full DM notes, and validates its
     entities independently — a chunk's malformed output retries once
-    inside ``_call_wave`` and then fails the job with ZERO commits, exactly
+    inside ``call_wave`` and then fails the job with ZERO commits, exactly
     like the single call it replaces, but the blast radius is one bounded
     call instead of a 15-minute monolith. Chunks merge in fixed positional
     order (AD-16: same model outputs, same committed graph). The wiring
@@ -1898,7 +1771,7 @@ def _run_wave1_chunks(
             max_tokens=_wave_max_tokens(len(chunk), ceiling),
         )
         prompt = build_wave1_chunk_prompt(seed, notes, chunk, chunk_index=index, chunk_total=total)
-        parsed = _call_wave(
+        parsed = call_wave(
             budget,
             provider,
             chunk_settings,
@@ -1932,7 +1805,7 @@ def _run_wave1_chunks(
         max_tokens=min(ceiling, EDGES_CALL_MAX_TOKENS),
     )
     try:
-        wiring_rows = _call_wave(
+        wiring_rows = call_wave(
             budget,
             provider,
             wiring_settings,
@@ -2108,7 +1981,7 @@ def _run_wave2(
             max_entities=WAVE2_MAX_ENTITIES, max_edges=WAVE2_MAX_EDGES
         ),
     )
-    parsed_2 = _call_wave(
+    parsed_2 = call_wave(
         budget,
         provider,
         wave_settings,
@@ -2264,14 +2137,19 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     the worker fails the job. Structure keeps its one bounded pass on
     wave 2 only (anchor repair); wave 1 commits edgeless (owner verdict
     2026-09-11) — the DM prunes. The job result carries the call
-    telemetry (J): ``llm_calls`` per label, and the upsert audit:
-    ``merge`` per wave (merged/unchanged/dropped_edges/twins_dropped).
+    telemetry (J): ``llm_calls`` per label, the upsert audit:
+    ``merge`` per wave (merged/unchanged/dropped_edges/twins_dropped), and
+    ``context`` (the committed world this build arrived at — what later
+    builds inherit and merge into, owner note 4).
     """
     with session_scope() as session:
         seed = campaign_seed(session, job.campaign_id)
         if seed is None:
             raise JobPayloadError(f"build_in: campaign {job.campaign_id} does not exist")
         head = latest_revision(session, job.campaign_id)
+        # Transparency (owner note 4, 2026-09-15): the world this job
+        # ARRIVES AT — successive build-ins inherit and merge into it.
+        world_before, _edges_before = world_state(session, job.campaign_id)
     wave1_base = head.id if head is not None else None
 
     payload = job.payload
@@ -2323,7 +2201,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             max_tokens=_wave_max_tokens(len(roster), ceiling),
         )
         prompt_1 = build_wave1_prompt(seed, payload)
-        parsed_1 = _call_wave(
+        parsed_1 = call_wave(
             budget,
             provider,
             wave1_settings,
@@ -2500,6 +2378,10 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             "edge_count": edge_count,
             "llm_calls": budget.snapshot(),
             "merge": merge_reports,
+            # Transparency (owner note 4): the committed world this job
+            # arrived at — a later build-in inherits it as context and
+            # merges into it by (kind, normalized name).
+            "context": context_summary(world_before, cap=RETRIEVAL_ENTITY_CAP),
             "edge_histogram": dict(sorted(edge_histogram.items())),
             "edge_acceptance": {
                 "relationship_share": round(relationship_share, 3),
@@ -3104,7 +2986,7 @@ def parse_build_output(text: str, wave: int = 1) -> dict[str, Any]:
     ``_strip_fence``); the result must be an object with ``entities`` and
     ``edges`` lists. Malformed output raises ``JobPayloadError`` naming
     the wave — the job fails, never a partial commit. A JSON-DECODE
-    failure raises the ``_WaveJsonError`` subclass: ``_call_wave`` gives
+    failure raises the ``WaveJsonError`` subclass: ``call_wave`` gives
     exactly that class one bounded re-elicitation (C, the retry taxonomy);
     semantic rejections inside well-formed JSON stay terminal.
     """
@@ -3112,7 +2994,7 @@ def parse_build_output(text: str, wave: int = 1) -> dict[str, Any]:
     try:
         parsed = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise _WaveJsonError(f"wave {wave}: output is not valid JSON ({exc})") from exc
+        raise WaveJsonError(f"wave {wave}: output is not valid JSON ({exc})") from exc
     if not isinstance(parsed, dict):
         raise JobPayloadError(f"wave {wave}: output must be a JSON object")
     entities = parsed.get("entities")
@@ -3218,8 +3100,8 @@ def _build_anchor_repair_prompt(
 def _parse_edges_only_output(text: str, *, what: str) -> list[Any]:
     """Parse an edges-only response (``{"edges": [...]}``) — the shape the
     wave-1 wiring pass and the wave-2 anchor repair share. ``what`` names
-    the call in failures. A JSON-decode failure raises ``_WaveJsonError``
-    (``_call_wave``'s one bounded structural retry — the anchor repair had
+    the call in failures. A JSON-decode failure raises ``WaveJsonError``
+    (``call_wave``'s one bounded structural retry — the anchor repair had
     ZERO retries before the taxonomy cut); a contract violation inside
     well-formed JSON stays terminal ``JobPayloadError``. An ``entities``
     key, if present, is ignored: both callers freeze the entities, so a
@@ -3229,7 +3111,7 @@ def _parse_edges_only_output(text: str, *, what: str) -> list[Any]:
     try:
         parsed = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise _WaveJsonError(f"{what}: output is not valid JSON ({exc})") from exc
+        raise WaveJsonError(f"{what}: output is not valid JSON ({exc})") from exc
     if not isinstance(parsed, dict):
         raise JobPayloadError(f"{what}: output must be a JSON object with an 'edges' list")
     edges = parsed.get("edges")
@@ -3311,7 +3193,7 @@ def _anchor_repair(
             max_tokens=min(settings.max_tokens, EDGES_CALL_MAX_TOKENS),
         )
     )
-    repair_edges = _call_wave(
+    repair_edges = call_wave(
         budget,
         provider,
         repair_settings,

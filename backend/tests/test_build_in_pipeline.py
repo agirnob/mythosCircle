@@ -36,7 +36,6 @@ from app.pipeline.build_in import (
     _log_stat_repair_scope_breaches,
     _normalize_edge_directions,
     _OrphanRetryError,
-    _repair_retry_prompt,
     _validate_subgraph,
     _wave1_chunks,
     _wave1_roster,
@@ -61,6 +60,7 @@ from app.pipeline.statblocks import (
     spells_reference_text,
     stat_block_rules_text,
 )
+from app.pipeline.wave import repair_retry_prompt
 from app.pipeline.worker import run_next_job
 from app.providers.llm import ProviderError
 from app.store import (
@@ -263,6 +263,48 @@ def _wave2_output_orphan() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # WAVE1_ONLY / TWO_WAVES
 # ---------------------------------------------------------------------------
+
+
+def test_build_in_result_carries_world_context(world: str) -> None:
+    """Transparency (owner note 4, 2026-09-15): result.context is the
+    committed world the build ARRIVED at — the first build into an empty
+    world reports zero; a second build reports the first build's entities,
+    proving successive build-ins inherit and merge into the growing
+    world (the owner's 'does one influence the other' question, answered
+    in the data itself)."""
+    responses = [
+        json.dumps(_wave1_output()),
+        json.dumps(_wave2_output()),
+        json.dumps(_wave1_output()),
+        json.dumps(_wave2_output()),
+    ]
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        return responses.pop(0)
+
+    job1 = _enqueue(world, notes="the docks teem with the Drowned Rat and Captain Harlow")
+    assert run_next_job(provider=provider, settings=SETTINGS) == job1
+    row1, _position = job_status(job1)
+    assert row1.state == "succeeded"
+    assert row1.result is not None
+    assert row1.result["context"] == {
+        "entities": 0,
+        "by_kind": {},
+        "retrieval_cap": 24,
+        "truncated": False,
+    }
+    job2 = _enqueue(world, notes="round two — the same seed, a bigger world")
+    assert run_next_job(provider=provider, settings=SETTINGS) == job2
+    row2, _position = job_status(job2)
+    assert row2.state == "succeeded"
+    assert row2.result is not None
+    assert row2.result["context"]["entities"] == 4
+    assert row2.result["context"]["by_kind"] == {
+        "faction": 1,
+        "character": 2,
+        "place": 1,
+    }
+    assert row2.result["context"]["truncated"] is False
 
 
 def test_wave1_only_commits_core_and_succeeds(world: str) -> None:
@@ -3163,11 +3205,11 @@ def test_repair_retry_prompt_names_json_error() -> None:
     assert json_error(json.dumps([1, 2])) == "not a JSON object"
     err = json_error('{"records": [{"ref": "E1", "data": {"role": "NPC"')
     assert err is not None and "JSON error:" not in err  # raw decoder text
-    prompt = _repair_retry_prompt("BASE", "BAD", "NOTE", err)
+    prompt = repair_retry_prompt("BASE", "BAD", "NOTE", err)
     assert f"JSON error: {err}" in prompt
     assert prompt.index(f"JSON error: {err}") > prompt.index("no prose before or after")
     assert "YOUR PREVIOUS INVALID RESPONSE" in prompt
-    assert "JSON error:" not in _repair_retry_prompt("BASE", "BAD", "NOTE")
+    assert "JSON error:" not in repair_retry_prompt("BASE", "BAD", "NOTE")
 
 
 def test_record_repair_chunk_prompts_deterministic() -> None:

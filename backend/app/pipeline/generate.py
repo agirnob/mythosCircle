@@ -42,6 +42,7 @@ never dangle on a rejected one — the staging contract in
 import json
 import logging
 from collections.abc import Callable, Sequence
+from functools import partial
 from typing import Any
 
 import app.store as store
@@ -49,8 +50,14 @@ from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
 from app.pipeline.fencing import strip_fence, strip_trailing_commas
 from app.pipeline.knowledge import ROLES
-from app.pipeline.retrieval import DEFAULT_ENTITY_CAP, retrieve_neighborhood, serialize_context
+from app.pipeline.retrieval import (
+    DEFAULT_ENTITY_CAP,
+    context_summary,
+    retrieve_neighborhood,
+    serialize_context,
+)
 from app.pipeline.statblocks import (
+    StatIssue,
     apply_stat_repairs,
     build_stat_repair_prompt,
     canonicalize_stat_block,
@@ -58,6 +65,7 @@ from app.pipeline.statblocks import (
     parse_stat_repair_output,
     stat_block_rules_text,
 )
+from app.pipeline.wave import WaveJsonError, call_wave
 from app.pipeline.worker import JobPayloadError
 from app.store import (
     EDGE_TYPES,
@@ -144,8 +152,17 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
         job.campaign_id, seed_ids=None, entity_cap=DEFAULT_ENTITY_CAP
     )
     prompt = build_generate_prompt(seed, ask, (context_entities, context_edges))
-    text = budget.call(lambda: provider(prompt, settings=settings))
-    parsed = _parse_candidates(text)[:MAX_CANDIDATES]
+    parsed = call_wave(
+        budget,
+        provider,
+        settings,
+        prompt,
+        label="generate",
+        parse=_parse_candidates,
+        retry_note='Return ONLY the one JSON object: {"candidates": [...]} — valid '
+        "JSON, no prose, no fences, no trailing commas.",
+        ceiling=settings.max_tokens,
+    )[:MAX_CANDIDATES]
     # Dogfood 2026-09-09: the compact model renders
     # ``world_integration.reaction_matrix`` as a ``{"C<i>": "<reaction>"}``
     # mapping (all 3 candidates were dropped -> the job hard-failed);
@@ -207,8 +224,12 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
         if not _job_still_running(job):
             return
         repair_text = budget.call(
-            lambda issues=stat_issues, attempt=attempt: provider(
-                build_stat_repair_prompt(issues, attempt=attempt), settings=settings
+            partial(
+                _call_stat_repair,
+                provider=provider,
+                settings=settings,
+                issues=stat_issues,
+                attempt=attempt,
             )
         )
         repaired = parse_stat_repair_output(repair_text, [issue.position for issue in stat_issues])
@@ -330,6 +351,17 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
                     {"ref": f"E{index}", "name": name, "reason": reason}
                     for index, name, reason in drops
                 ],
+                # Per-call telemetry (J, same shape as build-in): the label
+                # split shows the wave call and any bounded JSON retry —
+                # the retry taxonomy's paper trail (owner notes 6/7).
+                "llm_calls": budget.snapshot(),
+                # Transparency (owner note 4, 2026-09-15): what the ask
+                # SAW — the committed-world retrieval the prompt embedded.
+                # Shows why an ask in an empty world yields nothing and how
+                # later asks inherit earlier builds; `truncated` means the
+                # world outgrew the retrieval cap, so the model's context
+                # is a neighborhood, not the whole world.
+                "context": context_summary(context_entities),
             },
         )
     except JobStateConflictError:
@@ -352,6 +384,18 @@ def context_ref_pin(context_count: int) -> str:
         f"CONTEXT REFS: the committed entities above are {label} in the order shown"
         " (context entry entity[<i>] = C<i>) — edge endpoints reference them as C<index>."
     )
+
+
+def _call_stat_repair(
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    issues: Sequence[StatIssue],
+    attempt: int,
+) -> str:
+    """One bounded stat-repair pass call. Bound via ``functools.partial``
+    (no lambda default args — ruff B023 / mypy-clean), so each pass call
+    carries its own attempt's issues snapshot."""
+    return provider(build_stat_repair_prompt(issues, attempt=attempt), settings=settings)
 
 
 def _display_name(raw: Any, index: int) -> str:
@@ -481,12 +525,16 @@ def _parse_candidates(text: str) -> list[Any]:
     a ``candidates`` list (the AR19 output contract's envelope). Dangling
     commas before closers are cleaned first (measured 2026-09-15: the
     wave wrote ``"slots": [4, 3, 3, ]`` and the whole job died with
-    "Expecting value" at the comma)."""
+    "Expecting value" at the comma). A decode failure raises
+    ``WaveJsonError`` — the wave-class retry signal: the runner's
+    ``call_wave`` gives exactly that class one bounded re-elicitation
+    (2026-09-15: the generate wave had NO retry, only the repair gates
+    did; a transient malformation failed the whole ask)."""
     stripped = strip_trailing_commas(strip_fence(text))
     try:
         parsed = json.loads(stripped)
     except (json.JSONDecodeError, RecursionError) as exc:
-        raise JobPayloadError(f"generate: output is not valid JSON ({exc})") from exc
+        raise WaveJsonError(f"generate: output is not valid JSON ({exc})") from exc
     if not isinstance(parsed, dict):
         raise JobPayloadError("generate: output must be a JSON object")
     raw = parsed.get("candidates")

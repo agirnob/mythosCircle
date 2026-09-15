@@ -194,4 +194,41 @@ describe('BuildInView seed form', () => {
     expect(field(wrapper, 'Key figures').element.value).toBe('the mayor')
     expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
   })
+
+  it('shows what a succeeded build saw and changed (transparency, note 4)', async () => {
+    const created = job({
+      state: 'succeeded',
+      progress: 1,
+      queue_position: null,
+      result: {
+        context: {
+          entities: 4,
+          by_kind: { faction: 1, character: 2, place: 1 },
+          retrieval_cap: 24,
+          truncated: false,
+        },
+        merge: {
+          wave1: { merged: ['The Gilded Bar'], unchanged: ['Mira Vane'], dropped_edges: [] },
+          wave2: {
+            merged: ['The Drowned Rat', 'Captain Harlow'],
+            unchanged: [],
+            dropped_edges: [{ src: 'N0', dst: 'C0' }],
+            twins_dropped: ['Captain Harlow'],
+          },
+        },
+      },
+    })
+    mockApi({ created })
+    const wrapper = await mountView()
+    jobList = [created]
+    socketCalls.at(-1)!.onMessage({ type: 'job_done', job_id: created.id, state: 'succeeded' })
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('4 entities (1 faction, 2 characters, 1 place)')
+    expect(text).toContain('full retrieval (cap 24)')
+    expect(text).toContain('Wave 1: merged 1 · unchanged 1 · dropped edges 0')
+    expect(text).toContain('Wave 2: merged 2 · unchanged 0 · dropped edges 1 · twins dropped 1')
+    expect(text).toContain('Same-name entities merge into the existing world')
+  })
 })

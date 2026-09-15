@@ -9,6 +9,7 @@ backstop), pagination, and AR7 invisibility (world reads and the
 revision chain never see a staged candidate).
 """
 
+import dataclasses
 import json
 import sqlite3
 from collections.abc import Callable, Iterator
@@ -850,6 +851,89 @@ def test_dangling_comma_wave_parses(world: str) -> None:
     job, _position = job_status(job_id)
     assert job.state == "succeeded", job.error
     assert len(_staged(world)) == 3
+
+
+def test_wave_malformed_json_retries_once_and_recovers(world: str) -> None:
+    """C (owner note 6, 2026-09-15): a generate wave whose first response
+    is not parseable JSON gets exactly ONE bounded re-elicitation quoting
+    the decoder error (the build-in taxonomy, now shared via
+    app.pipeline.wave) — a transient malformation recovers instead of
+    killing the ask."""
+    _commit_world(world)
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return "{candidates: [oops"
+        return json.dumps(_generate_output())
+
+    job_id = _run(world, provider)
+    assert len(calls) == 2  # the malformed wave + exactly one re-elicitation
+    assert "COULD NOT BE PARSED" in calls[1]
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert len(_staged(world)) == 3
+    assert job.result is not None
+    assert job.result["llm_calls"]["by_label"]["generate"]["calls"] == 1
+    assert job.result["llm_calls"]["by_label"]["generate_json_retry"]["calls"] == 1
+
+
+def test_generate_json_retry_rolls_the_pinned_seed(world: str) -> None:
+    """C+G: with an operator-pinned seed the bounded JSON retry carries
+    seed+1 — a deterministic profile never re-calls the identical failing
+    sample; the wave call keeps the pinned seed."""
+    _commit_world(world)
+    seeded = dataclasses.replace(SETTINGS, seed=7)
+    seen_seeds: list[int | None] = []
+    responses = ["{candidates: [oops", json.dumps(_generate_output())]
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        seen_seeds.append(settings.seed)
+        return responses.pop(0)
+
+    job_id = enqueue_job(world, "generate", {"ask": "a rival for Mira"}, max_llm_calls=None).id
+    assert run_next_job(provider=provider, settings=seeded) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert seen_seeds == [7, 8]
+
+
+def test_wave_second_malformed_fails_loud(world: str) -> None:
+    """C: two malformed waves exhaust the ONE bounded re-elicitation and
+    the ask fails with the decoder error named — never an unbounded retry
+    loop (owner note 6: retries are bounded; a systematic failure must
+    surface with evidence, and the shape folds fix the cause)."""
+    _commit_world(world)
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return "{candidates: [oops"
+
+    job_id = _run(world, provider)
+    assert len(calls) == 2  # wave + one retry, then terminal
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "output is not valid JSON" in (job.error or "")
+    assert _staged(world) == []
+
+
+def test_generate_result_carries_context_summary(world: str) -> None:
+    """Transparency (owner note 4): result.context says what the ask saw —
+    the committed-world retrieval counts by kind plus the cap fact. An ask
+    in a 2-entity world reports exactly those two and no truncation."""
+    _commit_world(world)
+    job_id = _run(world, lambda prompt, settings: json.dumps(_generate_output()))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None
+    assert job.result["context"] == {
+        "entities": 2,
+        "by_kind": {"faction": 1, "character": 1},
+        "retrieval_cap": 24,
+        "truncated": False,
+    }
 
 
 def test_null_prose_fields_folded_to_none(world: str) -> None:

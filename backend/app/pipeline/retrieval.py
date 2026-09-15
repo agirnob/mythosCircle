@@ -25,6 +25,25 @@ DEFAULT_DEPTH = 1
 DEFAULT_ENTITY_CAP = 24
 
 
+def context_summary(
+    entities: Sequence[models.Entity], *, cap: int = DEFAULT_ENTITY_CAP
+) -> dict[str, int | bool | dict[str, int]]:
+    """What a job saw: retrieval counts by kind plus the cap fact (owner
+    note 4, 2026-09-15 — build-in transparency). ``truncated`` is True
+    when the world is at/over the retrieval cap: the prompt then embeds a
+    neighborhood, not the whole world, so later builds/asks live in the
+    shadow of earlier ones without seeing everything."""
+    by_kind: dict[str, int] = {}
+    for entity in entities:
+        by_kind[entity.kind] = by_kind.get(entity.kind, 0) + 1
+    return {
+        "entities": len(entities),
+        "by_kind": by_kind,
+        "retrieval_cap": cap,
+        "truncated": len(entities) >= cap,
+    }
+
+
 def retrieve_neighborhood(
     campaign_id: str,
     seed_ids: Sequence[str] | None = None,
