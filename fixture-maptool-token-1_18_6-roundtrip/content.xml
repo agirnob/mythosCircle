@@ -1,0 +1,196 @@
+<net.rptools.maptool.model.Token>
+  <id>
+    <baGUID>mHwoNaP1RPOQ+LDpO1/Uww==</baGUID>
+  </id>
+  <beingImpersonated>false</beingImpersonated>
+  <exposedAreaGUID>
+    <baGUID>9maH6b4tRVGCP61AXNzjpA==</baGUID>
+  </exposedAreaGUID>
+  <imageAssetMap>
+    <entry>
+      <null/>
+      <net.rptools.lib.MD5Key>
+        <id>2ad46974d2f9b942ddc1c075e0e2e09e</id>
+      </net.rptools.lib.MD5Key>
+    </entry>
+  </imageAssetMap>
+  <x>200</x>
+  <y>100</y>
+  <z>2</z>
+  <lastX>400</lastX>
+  <lastY>300</lastY>
+  <anchorX>0</anchorX>
+  <anchorY>0</anchorY>
+  <sizeScale>1.0</sizeScale>
+  <scaleX>1.0</scaleX>
+  <scaleY>1.0</scaleY>
+  <snapToScale>true</snapToScale>
+  <width>200</width>
+  <height>200</height>
+  <isoWidth>200</isoWidth>
+  <isoHeight>200</isoHeight>
+  <sizeMap>
+    <entry>
+      <string>net.rptools.maptool.model.SquareGrid</string>
+      <net.rptools.maptool.model.GUID>
+        <baGUID>fwABAc9lFSoFAAAAKgABAQ==</baGUID>
+      </net.rptools.maptool.model.GUID>
+    </entry>
+  </sizeMap>
+  <snapToGrid>true</snapToGrid>
+  <isVisible>true</isVisible>
+  <visibleOnlyToOwner>false</visibleOnlyToOwner>
+  <vblColorSensitivity>-1</vblColorSensitivity>
+  <alwaysVisibleTolerance>2</alwaysVisibleTolerance>
+  <isAlwaysVisible>false</isAlwaysVisible>
+  <name>Fatso Larry 2</name>
+  <ownerList/>
+  <ownerType>0</ownerType>
+  <tokenShape>CIRCLE</tokenShape>
+  <tokenType>NPC</tokenType>
+  <layer>TOKEN</layer>
+  <propertyType>Basic</propertyType>
+  <tokenOpacity>1.0</tokenOpacity>
+  <speechName></speechName>
+  <terrainModifier>0.0</terrainModifier>
+  <terrainModifierOperation>NONE</terrainModifierOperation>
+  <terrainModifiersIgnored>
+    <net.rptools.maptool.model.Token_-TerrainModifierOperation>NONE</net.rptools.maptool.model.Token_-TerrainModifierOperation>
+  </terrainModifiersIgnored>
+  <isFlippedX>false</isFlippedX>
+  <isFlippedY>false</isFlippedY>
+  <isFlippedIso>false</isFlippedIso>
+  <uniqueLightSources class="linked-hash-map"/>
+  <lightSourceList/>
+  <sightType>Normal</sightType>
+  <hasSight>false</hasSight>
+  <hasImageTable>false</hasImageTable>
+  <notes>&lt;b&gt;Human, CN&lt;/b&gt;&lt;br&gt;AC 14&lt;br&gt;HP 24&lt;br&gt;MOD SAVE MOD SAVE MOD SAVE&lt;br&gt;Str 10 +0 Dex 15 +2 Con 14 +2&lt;br&gt;Int 12 +1 Wis 8 -1 Cha 14 +2&lt;br&gt;Skills Deception +5, Sleight of Hand +5&lt;br&gt;CR 3&lt;br&gt;Actions&lt;br&gt;&lt;b&gt;Rusty Dagger.&lt;/b&gt; Melee Weapon Attack: +5 to hit, reach 5 ft., one target. Hit: 4 (1d4 + 2) piercing damage.</notes>
+  <notesType>text/html</notesType>
+  <gmNotes>&lt;p&gt;&lt;b&gt;Appearance&lt;/b&gt;&lt;br&gt;A rotund man with sweat-slicked skin, wearing stained silk waistcoats and a belt laden with stolen trinkets.&lt;/p&gt;&lt;p&gt;&lt;b&gt;Personality&lt;/b&gt;&lt;br&gt;Gleefully nihilistic, always snacking even amidst the apocalypse.&lt;/p&gt;&lt;p&gt;&lt;b&gt;Background&lt;/b&gt;&lt;br&gt;A former merchant who realized that when the world ends, debt becomes irrelevant.&lt;/p&gt;&lt;p&gt;&lt;b&gt;Goals&lt;/b&gt;&lt;br&gt;To find the finest delicacies in the Shattered Coast before the sky falls.&lt;/p&gt;&lt;p&gt;&lt;b&gt;Relationships&lt;/b&gt;&lt;br&gt;He owes a debt to the cult but finds them too loud.&lt;/p&gt;&lt;p&gt;&lt;b&gt;Secret&lt;/b&gt;&lt;br&gt;He actually stole the cult&apos;s sacred relic and replaced it with a dried ham.&lt;/p&gt;&lt;p&gt;&lt;b&gt;Rumor&lt;/b&gt;&lt;br&gt;They say he can predict when the next wave of madness hits by the way his belly rumbles.&lt;/p&gt;&lt;p&gt;&lt;b&gt;Party hook&lt;/b&gt;&lt;br&gt;Larry has information on a way to bypass the City&apos;s collapsing gates, but he wants a crate of fine wine first.&lt;/p&gt;&lt;p&gt;&lt;b&gt;Voice style&lt;/b&gt;&lt;br&gt;Breathless, wheezing, punctuated by chewing sounds.&lt;/p&gt;&lt;p&gt;&lt;b&gt;Catchphrases&lt;/b&gt;&lt;br&gt;Don&apos;t worry, it&apos;s all downhill from here!&lt;/p&gt;</gmNotes>
+  <gmNotesType>text/html</gmNotesType>
+  <state/>
+  <propertyMapCI>
+    <store>
+      <entry>
+        <string>dexterity</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>Dexterity</key>
+          <value class="string">15</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>elevation</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>Elevation</key>
+          <value class="string">-</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>ac</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>AC</key>
+          <value class="string">14</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>constitution</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>Constitution</key>
+          <value class="string">14</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>strength</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>Strength</key>
+          <value class="string">10</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>defense</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>Defense</key>
+          <value class="string">-</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>hp</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>HP</key>
+          <value class="string">24</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>description</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>Description</key>
+          <value class="string">-</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>movement</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>Movement</key>
+          <value class="string">-</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>charisma</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>Charisma</key>
+          <value class="string">14</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>intelligence</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>Intelligence</key>
+          <value class="string">12</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+      <entry>
+        <string>wisdom</string>
+        <net.rptools.CaseInsensitiveHashMap_-KeyValue>
+          <key>Wisdom</key>
+          <value class="string">8</value>
+        </net.rptools.CaseInsensitiveHashMap_-KeyValue>
+      </entry>
+    </store>
+  </propertyMapCI>
+  <macroPropertiesMap>
+    <entry>
+      <int>1</int>
+      <net.rptools.maptool.model.MacroButtonProperties>
+        <macroUUID>78768701-7615-4f9c-af24-f19ac18bed39</macroUUID>
+        <saveLocation>Token</saveLocation>
+        <index>1</index>
+        <colorKey>default</colorKey>
+        <hotKey>None</hotKey>
+        <command>[1d20+5] [1d4+2]</command>
+        <label>Rusty Dagger</label>
+        <group></group>
+        <sortby></sortby>
+        <autoExecute>true</autoExecute>
+        <includeLabel>false</includeLabel>
+        <applyToTokens>false</applyToTokens>
+        <fontColorKey>default</fontColorKey>
+        <fontSize>1.00em</fontSize>
+        <minWidth></minWidth>
+        <maxWidth></maxWidth>
+        <allowPlayerEdits>true</allowPlayerEdits>
+        <toolTip></toolTip>
+        <displayHotKey>true</displayHotKey>
+        <commonMacro>false</commonMacro>
+        <compareGroup>true</compareGroup>
+        <compareSortPrefix>true</compareSortPrefix>
+        <compareCommand>true</compareCommand>
+        <compareIncludeLabel>true</compareIncludeLabel>
+        <compareAutoExecute>true</compareAutoExecute>
+        <compareApplyToSelectedTokens>true</compareApplyToSelectedTokens>
+      </net.rptools.maptool.model.MacroButtonProperties>
+    </entry>
+  </macroPropertiesMap>
+  <speechMap/>
+  <allowURIAccess>false</allowURIAccess>
+</net.rptools.maptool.model.Token>
