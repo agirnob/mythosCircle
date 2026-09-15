@@ -537,10 +537,13 @@ maps to a proposed story; none implemented yet.
   kind, existing-name matches) and what it changed (the merge audit already
   rides the job result as `merge` per wave — render it).
 - note 5: UX/UI plan for scale — after ~20 entities the current world/accept
-  screens are hard to use; owner wants an explicit plan (epic-3 retro item 2
-  AR24 shared profile component, world browsing/search, CandidatesView/
-  WorldView split) before more polish. Story: "world-scale UX" design pass
-  (plan artifact first, owner gate at spec).
+  screens are hard to use. DEFERRED 2026-09-15 (owner decision): no plan
+  now; the critique is recorded, the redesign is not a priority and lands
+  AFTER the relationship-web visualization (epic-7 story 7-1 graph
+  visualizer) exists — the viz informs the world-navigation redesign.
+  Epic-3 retro item 2 (shared AR24 profile component) still applies before
+  any polish. Story: "world-scale UX" design pass (plan artifact first,
+  owner gate at spec).
 - note 6: several retries on LLM-caused failures — today generate's wave call
   has NO retry (a malformed wave fails the job; the shape folds of 2026-09-15
   shrank but did not eliminate the class); build-in already has the bounded
