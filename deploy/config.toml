@@ -20,11 +20,11 @@ media_dir = "/var/lib/mythoscircle/media"
 log_file = "/var/log/mythoscircle/app.jsonl"
 
 [llm]
-# OpenAI-compatible endpoint (AD-14): Unsloth Studio on the dev box
-# (127.0.0.1:8888 — loopback, so no Bearer wall). The deployed stack
-# overrides via MYTHOSCIRCLE_LLM_ENDPOINT (env > config); the key, if
-# any, is an environment variable.
-endpoint = "http://127.0.0.1:8888/v1"
+# OpenAI-compatible endpoint (AD-14): the owner-hosted llama-server on
+# the dev box (127.0.0.1:8889 — plain HTTP, no Bearer wall). The
+# deployed stack overrides via MYTHOSCIRCLE_LLM_ENDPOINT (env > config);
+# the key, if any, is an environment variable.
+endpoint = "http://127.0.0.1:8889/v1"
 # Owner verdict 2026-09-12 (ladder d4/d5, rung 100): gemma-4-26B-A4B wins
 # wall-clock 2.5x on the local server (9.8 min vs Qwen3.8-27B's 24.7 min);
 # Qwen3.8-27B-GGUF stays the metered-route model (half the billed calls).
