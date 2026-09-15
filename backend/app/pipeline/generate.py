@@ -596,9 +596,11 @@ def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[st
         return None
     edge_type = edge.get("type")
     direction = edge.get("direction")
-    if (not isinstance(edge_type, str) or not edge_type.strip()) and isinstance(
-        direction, str
-    ) and direction in EDGE_TYPES:
+    if (
+        (not isinstance(edge_type, str) or not edge_type.strip())
+        and isinstance(direction, str)
+        and direction in EDGE_TYPES
+    ):
         edge_type = direction
         direction = "outbound"
     # The isinstance guard keeps a non-string JSON value (list/dict —
