@@ -44,7 +44,7 @@ from typing import Any
 import app.store as store
 from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
-from app.pipeline.fencing import strip_fence
+from app.pipeline.fencing import strip_fence, strip_trailing_commas
 from app.pipeline.knowledge import ROLES
 from app.pipeline.retrieval import DEFAULT_ENTITY_CAP, retrieve_neighborhood, serialize_context
 from app.pipeline.statblocks import (
@@ -463,8 +463,11 @@ def build_generate_prompt(
 
 def _parse_candidates(text: str) -> list[Any]:
     """Parse the LLM output: fence-strip, then require a JSON object with
-    a ``candidates`` list (the AR19 output contract's envelope)."""
-    stripped = strip_fence(text)
+    a ``candidates`` list (the AR19 output contract's envelope). Dangling
+    commas before closers are cleaned first (measured 2026-09-15: the
+    wave wrote ``"slots": [4, 3, 3, ]`` and the whole job died with
+    "Expecting value" at the comma)."""
+    stripped = strip_trailing_commas(strip_fence(text))
     try:
         parsed = json.loads(stripped)
     except (json.JSONDecodeError, RecursionError) as exc:

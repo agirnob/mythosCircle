@@ -3189,14 +3189,52 @@ def test_record_repair_chunk_prompts_deterministic() -> None:
 def test_json_error_prefers_inner_candidate() -> None:
     """JSON_ERROR_INNER: a fenced truncated object reports the same error
     as the bare inner text, and a prose-wrapped object with an inner typo
-    quotes the inner defect — never the backticks or the prose."""
+    quotes the inner defect — never the backticks or the prose. A bare
+    trailing comma is NOT a defect anymore (``strip_trailing_commas``
+    cleans it before decode), so the wrapper uses a real typo."""
     inner = '{"records": [{"ref": "E1", "data": {"role": "NPC"'
     fenced = "```json\n" + inner + "\n```"
     assert json_error(fenced) == json_error(inner)
-    typo_inner = '{"records": {"a": 1,}}'  # balanced braces, trailing comma
+    typo_inner = '{"records": {"a": }}'  # empty value: a real decoder error
     wrapped = "Here is the completed record:\n" + typo_inner + "\nHope this helps!"
     assert json_error(wrapped) == json_error(typo_inner)
     assert "Here is the completed record" not in (json_error(wrapped) or "")
+    # The old fixture's defect is gone: a dangling comma now parses clean.
+    assert json_error('{"records": {"a": 1,}}') is None
+
+
+def test_strip_trailing_commas_cleans_dangling_commas() -> None:
+    """The measured 2026-09-15 wave defect: lists and objects end with a
+    dangling comma (``"slots": [4, 3, 3, ]``) and the whole generate job
+    dies with "Expecting value" at the comma. The cleaner removes only
+    commas directly in front of a closer — a comma followed by more
+    content stays, a literal ``",]`` inside a string is untouched, and
+    clean text comes back byte-identical."""
+    from app.pipeline.fencing import strip_trailing_commas
+
+    assert strip_trailing_commas('{"slots": [4, 3, 3, ]}') == '{"slots": [4, 3, 3]}'
+    assert strip_trailing_commas('{"a": 1, "b": [2, 3,],}') == '{"a": 1, "b": [2, 3]}'
+    assert strip_trailing_commas("") == ""
+
+    # The real decoder still rejects the raw dangling-comma text; the
+    # cleaner's output parses.
+    with pytest.raises(json.JSONDecodeError):
+        json.loads('{"slots": [4, 3, ]}')
+    cleaned = strip_trailing_commas('{"slots": [4, 3, ]}')
+    assert json.loads(cleaned) == {"slots": [4, 3]}
+    # A string containing the byte pattern is prose, not JSON structure.
+    tricky = '{"catchphrases": "Order is the only prayer, ]", "extra": [1, ]}'
+    assert json.loads(strip_trailing_commas(tricky)) == {
+        "catchphrases": "Order is the only prayer, ]",
+        "extra": [1],
+    }
+    # Escaped quote inside a string does not open a new string state.
+    escaped = '{"voice": "say \\",]", "count": 2,}'
+    assert json.loads(strip_trailing_commas(escaped)) == {
+        "voice": 'say ",]',
+        "count": 2,
+    }
+    assert strip_trailing_commas('{"fine": "already clean"}') == '{"fine": "already clean"}'
 
 
 def test_record_repair_cancel_between_chunks(world: str) -> None:

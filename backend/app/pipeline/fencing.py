@@ -64,6 +64,55 @@ def extract_json_object(text: str) -> str | None:
     return None
 
 
+def strip_trailing_commas(text: str) -> str:
+    """Remove JSON commas that dangle in front of a closing bracket.
+
+    gemma's wave output ends lists and objects with a trailing comma
+    (measured 2026-09-15: ``"slots": [4, 3, 3, ]`` fails the whole
+    generate job with "Expecting value" at the comma — the exact
+    ``line <n> column 11`` error the owners hit). A comma before a
+    closer is never legal JSON, so removing it cannot change the
+    document's meaning. The scan is string-aware: a literal ``",]``
+    inside prose is untouched, and an escaped quote mid-string does not
+    open the JSON-string state. Returns the input unchanged when
+    nothing was removed (byte-identical text for clean output).
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_string = False
+    escaped = False
+    while i < n:
+        char = text[i]
+        if in_string:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            i += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            i += 1
+            continue
+        if char == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "]}":
+                i = j
+                continue
+        out.append(char)
+        i += 1
+    if len(out) == n:
+        return text
+    return "".join(out)
+
+
 def parse_json_object(text: str) -> dict[str, Any] | None:
     """The JSON object inside ``text``, or None.
 
@@ -73,14 +122,15 @@ def parse_json_object(text: str) -> dict[str, Any] | None:
     malformed JSON) is None so the caller decides whether to retry. A
     JSON-decode failure is NOT a contract violation: callers that can
     re-elicit (the bounded repair gates) retry once; the wave parse keeps
-    failing the job.
+    failing the job. Both candidates are cleaned of dangling commas
+    (``strip_trailing_commas``) before decoding.
     """
     candidates: list[str | None] = [strip_fence(text), extract_json_object(text)]
     for candidate in candidates:
         if candidate is None:
             continue
         try:
-            parsed = json.loads(candidate)
+            parsed = json.loads(strip_trailing_commas(candidate))
         except (json.JSONDecodeError, RecursionError):
             continue
         if isinstance(parsed, dict):
@@ -108,7 +158,7 @@ def json_error(text: str) -> str | None:
         if candidate is None:
             continue
         try:
-            parsed = json.loads(candidate)
+            parsed = json.loads(strip_trailing_commas(candidate))
         except json.JSONDecodeError as exc:
             error = str(exc) if "{" in candidate else "not a JSON object"
         except RecursionError as exc:

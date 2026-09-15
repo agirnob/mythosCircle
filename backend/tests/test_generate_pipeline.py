@@ -829,6 +829,29 @@ def test_edge_type_in_direction_slot_folded(world: str) -> None:
     assert edges["member_of"]["direction"] == "outbound"
 
 
+def test_dangling_comma_wave_parses(world: str) -> None:
+    """The measured 2026-09-15 residual: the wave ends lists and objects
+    with a dangling comma (``"slots": [4, 3, 3, ]``) and the whole job
+    died "output is not valid JSON (Expecting value…)" — the exact error
+    the owners hit on a retry. The wave parse cleans dangling commas
+    before decoding, so the malformed wave stages normally."""
+    _commit_world(world)
+    output = _generate_output()
+    text = json.dumps(output)
+    # A comma before the stat_block's closing brace and one before the
+    # edges list's closing bracket — the measured object/array shapes.
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text.replace('"hp": 66}', '"hp": 66,}', 1))
+    text = text.replace('"hp": 66}', '"hp": 66,}', 1)
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text.replace('"type": "member_of"}]', '"type": "member_of",}]', 1))
+    text = text.replace('"type": "member_of"}]', '"type": "member_of",}]', 1)
+    job_id = _run(world, lambda prompt, settings: text)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    assert len(_staged(world)) == 3
+
+
 def test_null_prose_fields_folded_to_none(world: str) -> None:
     """The measured 2026-09-15 slip: a mindless creature's record leaves
     class_profession/catchphrases blank (or omits them) and the whole
