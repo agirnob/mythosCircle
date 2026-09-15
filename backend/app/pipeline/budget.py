@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from app.core.journal import label_context
 from app.store import models
 
 
@@ -77,7 +78,8 @@ class CallBudget:
             self._used += 1
         started = time.monotonic()
         try:
-            return provider_call()
+            with label_context(label):
+                return provider_call()
         finally:
             elapsed = time.monotonic() - started
             with self._lock:

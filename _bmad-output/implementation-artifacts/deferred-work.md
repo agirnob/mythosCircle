@@ -557,3 +557,16 @@ maps to a proposed story; none implemented yet.
   (app.jsonl); the repair-session spec kept per-call artifacts in scratch
   dirs. Story: "LLM call journal" (file-per-job under the log/media dir or a
   store table; queryable by job id).
+  resolved: 2026-09-15 — shipped (app/core/journal.py + provider-boundary
+  recording): every physical provider attempt transcribes to
+  <journal-dir>/<job-id>.jsonl — prompt, response, settings snapshot
+  (model/endpoint/max_tokens/sampling/seed/thinking/schema), finish_reason,
+  token usage when the server reports it, error kind (connection/http/
+  truncated), duration_ms, and the budget call-site label
+  (wave1_json_retry …) via a contextvar. Files live BESIDE THE DB by
+  default (<db-dir>/llm-journal — the prompt embeds the world's secrets,
+  so the journal inherits the DB's permissions/backup story, never /tmp
+  or a web path); MYTHOSCIRCLE_JOURNAL_DIR overrides, ENABLED=0 opts out,
+  RETENTION_DAYS=30 prunes once per job open. Write failures are logged
+  and swallowed — a full disk never fails a job that already spent the
+  call. Label pin: test_worker_opened_journal_round_trips_the_attempts.

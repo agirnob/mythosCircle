@@ -26,6 +26,7 @@ import contextlib
 import logging
 from typing import Any
 
+from app.core.journal import journal_context
 from app.core.settings import (
     ComfyUIImageSettings,
     ComfyUIVideoSettings,
@@ -132,19 +133,23 @@ def run_next_job(
     if job is None:
         return None
     try:
-        _run_job(
-            job,
-            provider,
-            settings,
-            image_provider,
-            image_settings,
-            video_provider,
-            video_settings,
-            comfyui_image_provider,
-            comfyui_image_settings,
-            comfyui_video_provider,
-            comfyui_video_settings,
-        )
+        # The per-job LLM call journal (owner note 7): every provider
+        # attempt inside this run transcribes to <journal-dir>/<job-id>.
+        # Cost: one mkdir + prune per job; failures are swallowed.
+        with journal_context(job.id):
+            _run_job(
+                job,
+                provider,
+                settings,
+                image_provider,
+                image_settings,
+                video_provider,
+                video_settings,
+                comfyui_image_provider,
+                comfyui_image_settings,
+                comfyui_video_provider,
+                comfyui_video_settings,
+            )
     except JobStateConflictError:
         # The job is terminal (cancelled) mid-run. The generate runner
         # has already discarded its ghost staged rows by the time it

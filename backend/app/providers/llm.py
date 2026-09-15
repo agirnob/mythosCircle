@@ -11,11 +11,13 @@ providers. No vendor SDK — httpx keeps the OpenAI-compatible contract
 literal.
 """
 
+import time
 from collections.abc import Callable
 from typing import Any
 
 import httpx
 
+from app.core.journal import record
 from app.core.settings import LLMSettings
 
 #: A provider call: one user prompt in, assistant text out. ``...``
@@ -60,38 +62,52 @@ class ProviderError(Exception):
         super().__init__(message)
 
 
-def chat_completion(
+class _CallOutcome:
+    """One provider attempt's raw result — what the journal transcribes.
+
+    ``error`` is the failure kind (connection/http/truncated) or None on
+    success; ``content``/``finish_reason``/``usage`` carry whatever the
+    server actually returned even on a failed attempt, so a truncated
+    fragment or an HTTP error page is checkable, not swallowed."""
+
+    __slots__ = ("content", "finish_reason", "error", "status_code", "usage")
+
+    def __init__(
+        self,
+        content: str | None,
+        finish_reason: str | None,
+        error: str | None,
+        status_code: int | None,
+        usage: dict[str, Any] | None,
+    ) -> None:
+        self.content = content
+        self.finish_reason = finish_reason
+        self.error = error
+        self.status_code = status_code
+        self.usage = usage
+
+
+def _complete(
     user_prompt: str,
     *,
     settings: LLMSettings,
-    transport: httpx.BaseTransport | None = None,
-) -> str:
-    """Call the configured endpoint and return the assistant's text.
-
-    POSTs ``{model, max_tokens, messages:[{system}, {user}]}`` to
-    ``{endpoint}/chat/completions``, plus ``chat_template_kwargs`` when a
-    reasoning mode is configured, ``temperature``/``top_p``/``seed`` when
-    the matching sampling control is configured (improvement plan G —
-    each tri-state, omitted when ``None``), and ``response_format`` when
-    ``settings.response_format`` carries a per-call schema (all absent by
-    default, so default-settings bodies stay byte-identical). Bare ``httpx``
-    transport failures
-    (DNS, refused, timeout) -> ``ProviderError("connection")``; non-2xx
-    -> ``ProviderError("http", status_code=...)``; an answer cut off at
-    the generation ceiling -> ``ProviderError("truncated")``, which is a
-    named failure rather than a downstream "not valid JSON". The transport
-    is injectable for deterministic tests (``httpx.MockTransport``).
-    """
+    transport: httpx.BaseTransport | None,
+) -> _CallOutcome:
+    """The raw OpenAI-compatible exchange, mapped to a ``_CallOutcome``
+    (never raises): a malformed URL, transport failure, non-2xx, unparsable
+    body, cut-off answer, and empty content are outcome ``error`` kinds —
+    the caller decides the raise, so the journal sees every attempt's
+    transcript exactly once."""
     try:
         client = httpx.Client(
             base_url=settings.endpoint,
             timeout=settings.timeout,
             transport=transport,
         )
-    except (httpx.InvalidURL, ValueError) as exc:
+    except (httpx.InvalidURL, ValueError):
         # An unparseable configured endpoint (missing scheme, garbage) is a
         # connection-class failure, never a raw exception escaping.
-        raise ProviderError("connection") from exc
+        return _CallOutcome(None, None, "connection", None, None)
     headers = (
         {"Authorization": f"Bearer {settings.api_key}"} if settings.api_key is not None else {}
     )
@@ -128,26 +144,78 @@ def chat_completion(
     with client:
         try:
             response = client.post(_CHAT_COMPLETIONS_PATH, json=body, headers=headers)
-        except (httpx.RequestError, httpx.InvalidURL, ValueError) as exc:
+        except (httpx.RequestError, httpx.InvalidURL, ValueError):
             # Request-time URL join failures (missing scheme, garbage
             # endpoint) are connection-class failures, never raw escapes.
-            raise ProviderError("connection") from exc
+            return _CallOutcome(None, None, "connection", None, None)
     if response.status_code != 200:
-        raise ProviderError("http", status_code=response.status_code)
+        return _CallOutcome(None, None, "http", response.status_code, None)
     try:
         payload = response.json()
         choice = payload["choices"][0]
         content = choice["message"]["content"]
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
+    except (KeyError, IndexError, TypeError, ValueError):
         # A 200 with a non-JSON body (HTML error page, empty) or a
         # malformed payload is still a provider error, never a raw
         # JSONDecodeError escaping the provider's contract.
-        raise ProviderError("http", status_code=response.status_code) from exc
-    if choice.get("finish_reason") == "length":
+        return _CallOutcome(None, None, "http", response.status_code, None)
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
         # The ceiling was reached: whatever came back is a fragment. Say so
         # here — downstream this would surface as a baffling "not valid JSON
         # (Unterminated string)" in the middle of a JSON document.
-        raise ProviderError("truncated", status_code=response.status_code)
+        return _CallOutcome(
+            content if isinstance(content, str) else None,
+            finish_reason,
+            "truncated",
+            response.status_code,
+            usage,
+        )
     if not isinstance(content, str) or not content.strip():
-        raise ProviderError("http", status_code=response.status_code)
-    return content
+        return _CallOutcome(None, finish_reason, "http", response.status_code, usage)
+    return _CallOutcome(content, finish_reason, None, None, usage)
+
+
+def chat_completion(
+    user_prompt: str,
+    *,
+    settings: LLMSettings,
+    transport: httpx.BaseTransport | None = None,
+) -> str:
+    """Call the configured endpoint and return the assistant's text.
+
+    POSTs ``{model, max_tokens, messages:[{system}, {user}]}`` to
+    ``{endpoint}/chat/completions``, plus ``chat_template_kwargs`` when a
+    reasoning mode is configured, ``temperature``/``top_p``/``seed`` when
+    the matching sampling control is configured (improvement plan G —
+    each tri-state, omitted when ``None``), and ``response_format`` when
+    ``settings.response_format`` carries a per-call schema (all absent by
+    default, so default-settings bodies stay byte-identical). Bare ``httpx``
+    transport failures
+    (DNS, refused, timeout) -> ``ProviderError("connection")``; non-2xx
+    -> ``ProviderError("http", status_code=...)``; an answer cut off at
+    the generation ceiling -> ``ProviderError("truncated")``, which is a
+    named failure rather than a downstream "not valid JSON". The transport
+    is injectable for deterministic tests (``httpx.MockTransport``).
+
+    Every attempt — success AND failure — is transcribed to the per-job
+    LLM call journal (app.core.journal, owner note 7) BEFORE the raise:
+    one record per physical call, written where the prompt, response,
+    finish reason, and usage all exist.
+    """
+    started = time.monotonic()
+    outcome = _complete(user_prompt, settings=settings, transport=transport)
+    record(
+        prompt=user_prompt,
+        settings=settings,
+        response=outcome.content,
+        finish_reason=outcome.finish_reason,
+        error=outcome.error,
+        usage=outcome.usage,
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    if outcome.error is not None:
+        raise ProviderError(outcome.error, status_code=outcome.status_code)
+    assert outcome.content is not None
+    return outcome.content

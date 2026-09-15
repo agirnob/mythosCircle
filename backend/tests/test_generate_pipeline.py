@@ -936,6 +936,40 @@ def test_generate_result_carries_context_summary(world: str) -> None:
     }
 
 
+def test_worker_opened_journal_round_trips_the_attempts(
+    world: str, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Worker wiring (owner note 7): run_next_job opens the per-job
+    journal around the run, so a provider attempt transcribes even when
+    the job then fails — with the budget call-site labels
+    (generate / generate_json_retry) on each record."""
+    import app.core.journal as journal
+
+    monkeypatch.setenv("MYTHOSCIRCLE_JOURNAL_DIR", str(tmp_path / "journal"))
+    _commit_world(world)
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        journal.record(
+            prompt=prompt,
+            settings=settings,
+            response="<fragment>",
+            finish_reason="stop",
+            error=None,
+            usage=None,
+            duration_ms=1,
+        )
+        return "{candidates: [oops"
+
+    job_id = _run(world, provider)
+    file = tmp_path / "journal" / f"{job_id}.jsonl"
+    assert file.exists()
+    entries = [json.loads(line) for line in file.open(encoding="utf-8")]
+    assert [entry["job_id"] for entry in entries] == [job_id, job_id]
+    assert [entry["label"] for entry in entries] == ["generate", "generate_json_retry"]
+
+
 def test_null_prose_fields_folded_to_none(world: str) -> None:
     """The measured 2026-09-15 slip: a mindless creature's record leaves
     class_profession/catchphrases blank (or omits them) and the whole
