@@ -149,7 +149,7 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # canonicalize every candidate BEFORE validation so the mapping's
     # entries land in the contract's single-string form and validation
     # sees exactly what will stage. A string matrix passes through.
-    parsed = [canonicalize_reaction_matrix(raw) for raw in parsed]
+    parsed = [canonicalize_null_prose(canonicalize_reaction_matrix(raw)) for raw in parsed]
 
     # Shape validation (AR19): drop candidates that violate the contract.
     # E-refs are the PARSED indices throughout — one numbering for the
@@ -481,6 +481,40 @@ def _non_blank_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+#: Required free-text AR24 fields the model leaves BLANK for creatures
+#: that have none — a cosmic maw has no profession and no catchphrases.
+#: (Measured 2026-09-15, "cthullu ender of worlds": 'The Abyssal Maw' hit
+#: "class_profession must be a non-blank string; catchphrases must be a
+#: non-blank string" and the whole wave dropped.) Other identity/lore
+#: fields are NOT covered: level_cr/race_type/alignment are closed or
+#: referenced shapes, and the narrative-lore prose is always written —
+#: only these two were measured blank.
+_NULLABLE_PROSE_FIELDS: tuple[str, ...] = ("class_profession", "catchphrases")
+
+
+def canonicalize_null_prose(record: Any) -> Any:
+    """Fold a blank/absent ``class_profession``/``catchphrases`` to the
+    literal ``"None"`` the model itself writes when it does fill them.
+
+    The fields are required non-blank strings in the AR19/AR24 contract,
+    and the model's own honest answer for a mindless creature is
+    ``"None"`` (measured in every healthy wave) — so a blank is folded
+    to that same marker instead of dropping the candidate. Nothing is
+    invented (a blank names no prose to write); the DM sees "None" on
+    the accept screen, exactly like every other fill. A non-dict record,
+    a non-blank string, and any other field pass through unchanged.
+    """
+    if not isinstance(record, dict):
+        return record
+    changed = False
+    out = dict(record)
+    for field in _NULLABLE_PROSE_FIELDS:
+        if not _non_blank_str(out.get(field)):
+            out[field] = "None"
+            changed = True
+    return out if changed else record
+
+
 def _parse_context_ref(ref: Any, context_entities: Sequence[models.Entity]) -> int | None:
     """Parse a canonical ``C<index>`` endpoint ref into its context
     position, or None when malformed/out of range (BAD_EDGE)."""
@@ -544,19 +578,34 @@ def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[st
     ``C<index>`` ref in range, whose type is in the closed vocabulary,
     whose direction is outbound/inbound, and whose counter (when given)
     is an int. Returns the staged edge record with the resolved committed
-    endpoint id, or None."""
+    endpoint id, or None.
+
+    Measured fold (2026-09-15, "cthullu ender of worlds"): the wave
+    wrote the edge TYPE into the ``direction`` slot and omitted ``type``
+    (``{"endpoint": "C0", "direction": "protects", "counter": 5}``) —
+    three candidates dropped with BAD_EDGE. A direction holding a
+    vocabulary type is unambiguous (the closed set never overlaps
+    outbound/inbound): the type moves to ``type`` and the direction
+    defaults to ``outbound`` (the candidate-to-committed link the prompt
+    asks for). The staged record carries the corrected shape, so the
+    accept screen and the accept-time override re-validation agree."""
     if not isinstance(edge, dict):
         return None
     position = _parse_context_ref(edge.get("endpoint"), context_entities)
     if position is None:
         return None
     edge_type = edge.get("type")
+    direction = edge.get("direction")
+    if (not isinstance(edge_type, str) or not edge_type.strip()) and isinstance(
+        direction, str
+    ) and direction in EDGE_TYPES:
+        edge_type = direction
+        direction = "outbound"
     # The isinstance guard keeps a non-string JSON value (list/dict —
     # unhashable) a clean None, never a TypeError from the frozenset
     # membership test.
     if not isinstance(edge_type, str) or edge_type not in EDGE_TYPES:
         return None
-    direction = edge.get("direction")
     if not isinstance(direction, str) or direction not in _DIRECTIONS:
         return None
     counter = edge.get("counter", 1)

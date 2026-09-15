@@ -804,6 +804,52 @@ def test_bad_edge_candidate_dropped_two_staged(world: str) -> None:
     assert "BAD_EDGE" in dropped[0]["reason"]
 
 
+def test_edge_type_in_direction_slot_folded(world: str) -> None:
+    """The measured 2026-09-15 slip: the wave writes the edge TYPE into
+    ``direction`` and omits ``type`` ({"endpoint": "C0", "direction":
+    "rival_of"}). A direction holding a vocabulary type is unambiguous —
+    the closed type set never overlaps outbound/inbound — so the fold
+    moves it to ``type`` with direction ``outbound``, and the anchored
+    candidate stages (the user's wave dropped every candidate BAD_EDGE
+    on exactly this shape)."""
+    _commit_world(world)
+    output = _generate_output()
+    output["candidates"][1]["edges"] = [
+        {"endpoint": "C0", "direction": "rival_of", "counter": 1},
+        {"endpoint": "C1", "direction": "member_of"},
+    ]
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    assert len(_staged(world)) == 3  # no candidate dropped for BAD_EDGE
+    staged = {candidate.payload["name"]: candidate.payload for candidate in _staged(world)}
+    edges = {e["type"]: e for e in staged["Sister Yeva"]["edges"]}
+    assert edges["rival_of"]["direction"] == "outbound"
+    assert edges["rival_of"]["counter"] == 1
+    assert edges["member_of"]["direction"] == "outbound"
+
+
+def test_null_prose_fields_folded_to_none(world: str) -> None:
+    """The measured 2026-09-15 slip: a mindless creature's record leaves
+    class_profession/catchphrases blank (or omits them) and the whole
+    wave dropped on "class_profession must be a non-blank string;
+    catchphrases must be a non-blank string". The model's own honest
+    fill for such creatures is the literal "None" — a blank folds to that
+    same marker and the candidate stages with it."""
+    _commit_world(world)
+    output = _generate_output()
+    for candidate in output["candidates"]:
+        candidate["class_profession"] = ""
+        del candidate["catchphrases"]
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    staged = {candidate.payload["name"]: candidate.payload for candidate in _staged(world)}
+    for candidate in staged.values():
+        assert candidate["class_profession"] == "None"
+        assert candidate["catchphrases"] == "None"
+
+
 def test_bad_edge_all_candidates_fails(world: str) -> None:
     """BAD_EDGE with < 2 survivors: every candidate's edges are bad ->
     job fails with a structured error; nothing staged."""
