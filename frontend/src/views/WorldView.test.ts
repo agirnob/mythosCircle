@@ -1407,8 +1407,8 @@ describe('WorldView', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('pending jobs at the cap')
 
-    // A terminal image job arrives (e.g. the auto-enqueue from the accept
-    // screen, or a later retry): the stale red text clears.
+    // A terminal image job arrives (a later manual retry): the stale red
+    // text clears.
     const jobs = useJobsStore()
     jobs.upsert(imageJob('JI1', 'E1', { state: 'succeeded', result: { filename: 'x.png' } }))
     await flushPromises()

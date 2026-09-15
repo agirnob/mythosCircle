@@ -5,10 +5,11 @@
  * `appearance` — never free text — and the backend enqueues an image
  * job only when a non-blank appearance exists
  * (store.jobs._validate_image_payload). THE frontend mirrors that gate
- * through ONE helper so the WorldView button and the CandidatesView
- * accept path can never diagree about what "has an appearance" means.
- * The backend keeps its own copy
- * (app.media.service.appearance_prompt) with the identical shape —
+ * through ONE helper so the WorldView's Generate portrait button and
+ * the backend can never disagree about what "has an appearance" means
+ * (2026-09-15: the portrait is DM-triggered per entity — accepting a
+ * candidate no longer auto-enqueues one). The backend keeps its own
+ * copy (app.media.service.appearance_prompt) with the identical shape —
  * dict-known-keys-join | verbatim string | blank -> no portrait.
  */
 

@@ -362,8 +362,8 @@ const portraitErrors = ref<Record<string, string>>({})
 // for the manual Generate portrait button — style theme, framing, and
 // background. Drafts persist across generations (the DM-typed-generation
 // lesson: what was configured stays until the DM changes it — a failing
-// job must not reset the picks). The auto-enqueue-after-accept path
-// sends NO options (backend defaults).
+// job must not reset the picks). The portrait is DM-triggered per entity
+// (2026-09-15: accepting a candidate no longer auto-enqueues one).
 // ---------------------------------------------------------------------------
 
 interface PortraitDraft {

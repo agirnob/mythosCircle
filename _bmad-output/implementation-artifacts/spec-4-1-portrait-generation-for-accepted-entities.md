@@ -8,6 +8,13 @@ context: []
 baseline_commit: 30c5a0b81c292b139a677fd0b83ddb93a3c83fd3
 ---
 
+> **Owner renegotiation (2026-09-15):** the portrait is DM-triggered only.
+> Accepting a candidate no longer auto-enqueues an image job — the
+> WorldView's Generate portrait button (with its per-entity options) is
+> the single trigger. `frontend/src/views/CandidatesView.vue` lost the
+> `enqueuePortraitAfterAccept` path and its five tests (commit after
+> eb9a27f). Everything else in this spec stands.
+
 <frozen-after-approval reason="human-owned intent — do not modify unless human renegotiates">
 
 ## Intent
@@ -59,11 +66,11 @@ baseline_commit: 30c5a0b81c292b139a677fd0b83ddb93a3c83fd3
 - `backend/app/core/settings.py` + `config.py` + `deploy/config.toml` -- `LLMSettings` pattern; add `ImageSettings` + `[image]` section (endpoint/model/timeout, `MYTHOSCIRCLE_IMAGE_*` env); `config.toml` already has `[world] media_dir = "/var/lib/mythoscircle/media"` — plumb `RuntimeConfig.media_dir` + `MYTHOSCIRCLE_MEDIA_DIR` override.
 - `backend/app/store/read.py` -- `world_entities` (rowid order) — the runner reads the committed entity + its `data.appearance` at run time.
 - `backend/app/api/jobs.py` -- `JobCreate.kind` already unions `'image'`; wire the image payload validator; `store_error_as_http` in `api/common.py` maps store errors.
-- `backend/app/api/candidates.py` -- accept route (`accept_candidate`) — the DM accept is the portrait trigger point (client-side enqueue after 201).
+- `backend/app/api/candidates.py` -- accept route (`accept_candidate`) — accepts commit the entity only; it never enqueues media (2026-09-15 owner decision).
 - `backend/app/main.py` -- router include list; no static media mount — media served via authenticated route (session cookie path is `/api`, same-origin `<img>` works).
 - `backend/app/core/ids.py` -- `new_id()` for filenames + media row ids.
 - `frontend/src/views/WorldView.vue` -- entity card ~line 619-845; `LORE_FIELDS` includes `appearance` (~line 333); add portrait `<img>` + "Generate portrait" button + job status.
-- `frontend/src/views/CandidatesView.vue` -- accept handler — after successful accept, enqueue the portrait job when the accepted payload has a non-blank appearance.
+- `frontend/src/views/CandidatesView.vue` -- accept handler — the portrait is NOT auto-enqueued (2026-09-15 owner decision); the WorldView Generate portrait button is the single trigger.
 - `frontend/src/stores/jobs.ts` -- `submitBuildIn`/`submitRegenerate` pattern; add `submitPortrait(campaignId, entityId)`; WS dispatch (`handleWsMessage`) already re-syncs on `job_done` — extend the sync to re-fetch media on image jobs.
 - `frontend/src/api/schema.ts` -- regenerate via `npm run gen:api` (only against a current api on :8000); `JobCreate.kind` already includes `'image'`; new `MediaResponse` types arrive.
 - `frontend/src/stores/world.ts` -- `fetchSnapshot` pulls `/export` JSON; media fetched separately (new media list endpoint), not woven into `WorldExport`.
@@ -78,12 +85,12 @@ baseline_commit: 30c5a0b81c292b139a677fd0b83ddb93a3c83fd3
 - [x] `frontend/src/stores/jobs.ts` -- `submitPortrait` (+ portrait-in-flight discipline mirroring `regenerateInFlight`); WS sync re-fetches media on image `job_done`.
 - [x] `backend/app/api/media.py` -- `GET /api/campaigns/{id}/media` (manifest list) + `GET /api/campaigns/{id}/media/{entity_id}/{filename}` (FileResponse, ownership + row + file checks → 404); `main.py` include router.
 - [x] `frontend/src/views/WorldView.vue` -- portrait `<img>`, generate button (gated on non-blank appearance), job status line; media list fetch.
-- [x] `frontend/src/views/CandidatesView.vue` -- auto-enqueue portrait after successful accept when payload has appearance.
+- [x] `frontend/src/views/CandidatesView.vue` -- auto-enqueue portrait after successful accept when payload has appearance (REMOVED 2026-09-15 owner decision — DM-triggered only).
 - [x] `backend/tests/` -- store media write/read invariants; service runner (prompt build, file+row ordering, budget, missing entity, provider failure, atomic write); adapter httpx mock; API routes (ownership 404, missing file 404, happy 200); worker image dispatch; budget variant.
 - [x] `frontend` tests -- jobs store `submitPortrait` + WorldView portrait rendering/status; keep conventions of existing `WorldView.test.ts`.
 
 **Acceptance Criteria:**
-- Given an accepted entity with an AR24 appearance section, when portrait generation runs (auto on accept or via button), then the image lands at `media/{campaign_id}/{entity_id}/` and a manifest row exists (FR12, AR24, AR12).
+- Given an accepted entity with an AR24 appearance section, when the DM triggers portrait generation via the entity card's Generate portrait button, then the image lands
 - Given a completed portrait job, then the manifest row renders the image on the entity's card with no manual refresh, and the job's queue position was visible while pending (AR12, AD-3).
 - Given an entity without an appearance section, then no portrait is enqueued and the card states "No portrait".
 - Given a failed image job (provider error, budget, missing entity), then the job ends `failed` with a user-facing message and the DM can re-trigger via the button.
@@ -92,7 +99,7 @@ baseline_commit: 30c5a0b81c292b139a677fd0b83ddb93a3c83fd3
 
 Appearance normalization: committed AR24 `appearance` is either a dict (`face`/`body`/`clothing`/`scars`/`marks`, unknown keys tolerated) or a plain string. The prompt builder joins known dict keys (`face: …\nbody: …`) or uses the string verbatim — blank/whitespace-only in either shape is the enqueue 422 / run-fail condition. Already-present job scaffolding means zero migration: `image` is a legal `JobCreate` kind today and the worker's "media service lands in Epic 4" branch is the single dispatch to replace.
 
-Golden flow: accept candidate → `POST /api/jobs {kind:'image', payload:{entity_id}}` → `_validate_image_payload` → FIFO → worker claims → run_portrait reads entity (`world_entities`), builds prompt, budget-guarded `images/generations` call, writes `{media_dir}/{campaign}/{entity}/{ulid}.png` via temp+rename, `add_media` row, `complete_job({entity_id, filename})` → WS `job_done` → WorldView re-fetches media → `<img src="/api/campaigns/{id}/media/{entity_id}/{filename}">` renders (same-origin session cookie covers auth).
+Golden flow: DM clicks Generate portrait on the entity card → `POST /api/jobs {kind:'image', payload:{entity_id}}` → `_validate_image_payload` → FIFO → worker claims → run_portrait reads entity (`world_entities`), builds prompt, budget-guarded `images/generations` call, writes `{media_dir}/{campaign}/{entity}/{ulid}.png` via temp+rename, `add_media` row, `complete_job({entity_id, filename})` → WS `job_done` → WorldView re-fetches media → `<img src="/api/campaigns/{id}/media/{entity_id}/{filename}">` renders (same-origin session cookie covers auth).
 
 ## Verification
 
@@ -164,8 +171,8 @@ Golden flow: accept candidate → `POST /api/jobs {kind:'image', payload:{entity
   [`WorldView.vue:741`](../../frontend/src/views/WorldView.vue#L741)
 - Failed re-generation renders over an existing portrait (criterion 4); stale errors cleared on terminal/media change
   [`WorldView.vue:789`](../../frontend/src/views/WorldView.vue#L789)
-- Accept-triggered auto-enqueue: accepted_entity_id + appearance gate + in-flight guard, best-effort (never fails the accept)
-  [`CandidatesView.vue:663`](../../frontend/src/views/CandidatesView.vue#L663)
+- DM-triggered portrait (2026-09-15 owner decision — the accept auto-enqueue was removed): appearance gate + in-flight guard on the WorldView button
+  [`WorldView.vue:741`](../../frontend/src/views/WorldView.vue#L741)
 
 **Tests & supporting**
 
@@ -175,7 +182,7 @@ Golden flow: accept candidate → `POST /api/jobs {kind:'image', payload:{entity
   [`test_image_provider.py:1`](../../backend/tests/test_image_provider.py#L1)
 - API contract: auth/ownership/traversal/file-serve pins
   [`test_media_api.py:1`](../../backend/tests/test_media_api.py#L1)
-- Frontend pins: WS media re-fetch, accept auto-enqueue, portrait render/status
+- Frontend pins: WS media re-fetch, portrait render/status (accept auto-enqueue removed 2026-09-15)
   [`world.test.ts:1`](../../frontend/src/stores/world.test.ts#L1)
   [`WorldView.test.ts:1`](../../frontend/src/views/WorldView.test.ts#L1)
   [`CandidatesView.test.ts:1`](../../frontend/src/views/CandidatesView.test.ts#L1)
