@@ -91,6 +91,14 @@ workflow_path = "workflows/image_krea2_turbo_t2i_int8 (2).json"
 # Turbo: the "Text String (User Prompt)" widget — node 30:19, NOT the
 # 30:28 switch). Operator-specific; must match the workflow JSON.
 prompt_node_id = "30:19"
+# P1 (2026-09-15): the transparent-background portrait variant — the base
+# Krea2 workflow plus a BiRefNet background-removal + alpha-join stage.
+# Jobs with payload background = "transparent" route here; the SaveImage
+# node carrying the transparent PNG is "70" (the alpha-joined output — the
+# variant also has the base workflow's plain SaveImage at "29", which the
+# provider must NOT return).
+rembg_workflow_path = "workflows/image_krea2_turbo_t2i_int8_with_background_removal.json"
+rembg_output_node_id = "70"
 # Documented generation shape — fixed per workflow, no per-job knobs
 # (one job = one image).
 aspect_ratio = "1:1 (Square)"

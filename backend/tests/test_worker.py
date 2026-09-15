@@ -374,7 +374,7 @@ def test_run_image_job_runs_portrait_runner(
     monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
     seen_prompts: list[str] = []
 
-    def image_provider(prompt: str, settings: ImageSettings) -> bytes:
+    def image_provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
         seen_prompts.append(prompt)
         return b"\x89PNG\r\n\x1a\n" + b"portrait-payload"
 
@@ -734,7 +734,9 @@ def test_run_image_job_provider_failure_fails_job_cleanly(
     )
     monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
 
-    def failing_image_provider(prompt: str, settings: ImageSettings) -> bytes:
+    def failing_image_provider(
+        prompt: str, settings: ImageSettings, use_rembg: bool = False
+    ) -> bytes:
         assert "face" in prompt
         raise ProviderError("http", status_code=502)
 
@@ -788,7 +790,9 @@ def test_run_image_job_comfyui_backend_dispatch(
         COMFYUI_SETTINGS = ComfyUIImageSettings(endpoint="http://comfy.test:7896")
         seen_prompts: list[str] = []
 
-        def comfyui_provider(prompt: str, settings: ComfyUIImageSettings) -> bytes:
+        def comfyui_provider(
+            prompt: str, settings: ComfyUIImageSettings, use_rembg: bool = False
+        ) -> bytes:
             assert settings is COMFYUI_SETTINGS
             seen_prompts.append(prompt)
             return b"\x89PNG\r\n\x1a\ncomfyui-payload"

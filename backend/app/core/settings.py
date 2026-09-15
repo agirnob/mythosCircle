@@ -192,6 +192,8 @@ COMFYUI_IMAGE_PROMPT_NODE_ID = config_mod.COMFYUI_IMAGE_PROMPT_NODE_ID_ENV
 COMFYUI_IMAGE_ASPECT_RATIO = config_mod.COMFYUI_IMAGE_ASPECT_RATIO_ENV
 COMFYUI_IMAGE_MEGAPIXELS = config_mod.COMFYUI_IMAGE_MEGAPIXELS_ENV
 COMFYUI_IMAGE_TIMEOUT = config_mod.COMFYUI_IMAGE_TIMEOUT_ENV
+COMFYUI_IMAGE_REMBG_WORKFLOW_PATH = config_mod.COMFYUI_IMAGE_REMBG_WORKFLOW_PATH_ENV
+COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID = config_mod.COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID_ENV
 COMFYUI_IMAGE_API_KEY = "MYTHOSCIRCLE_COMFYUI_IMAGE_API_KEY"
 
 #: Code defaults (spec-4.4; config.toml [comfyui_image] overrides in 1.7).
@@ -201,6 +203,8 @@ DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID = config_mod.DEFAULT_COMFYUI_IMAGE_PROMPT_N
 DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO = config_mod.DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO
 DEFAULT_COMFYUI_IMAGE_MEGAPIXELS = config_mod.DEFAULT_COMFYUI_IMAGE_MEGAPIXELS
 DEFAULT_COMFYUI_IMAGE_TIMEOUT = config_mod.DEFAULT_COMFYUI_IMAGE_TIMEOUT
+DEFAULT_COMFYUI_IMAGE_REMBG_WORKFLOW_PATH = config_mod.DEFAULT_COMFYUI_IMAGE_REMBG_WORKFLOW_PATH
+DEFAULT_COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID = config_mod.DEFAULT_COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID
 
 
 @dataclass(frozen=True)
@@ -219,6 +223,13 @@ class ComfyUIImageSettings:
     endpoint: str = DEFAULT_COMFYUI_IMAGE_ENDPOINT
     workflow_path: str = DEFAULT_COMFYUI_IMAGE_WORKFLOW_PATH
     prompt_node_id: str = DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID
+    #: The P1 transparent-background variant (2026-09-15): its workflow
+    #: file and the SaveImage node that carries the transparent PNG.
+    #: ``background="transparent"`` jobs route here (run_portrait's
+    #: ``use_rembg`` flag); an empty path fails the job cleanly when the
+    #: operator has not configured one.
+    rembg_workflow_path: str = DEFAULT_COMFYUI_IMAGE_REMBG_WORKFLOW_PATH
+    rembg_output_node_id: str = DEFAULT_COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID
     aspect_ratio: str = DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO
     megapixels: float = DEFAULT_COMFYUI_IMAGE_MEGAPIXELS
     timeout: float = DEFAULT_COMFYUI_IMAGE_TIMEOUT
@@ -235,6 +246,8 @@ def comfyui_image_settings() -> ComfyUIImageSettings:
     workflow_env = os.environ.get(COMFYUI_IMAGE_WORKFLOW_PATH)
     node_env = os.environ.get(COMFYUI_IMAGE_PROMPT_NODE_ID)
     aspect_env = os.environ.get(COMFYUI_IMAGE_ASPECT_RATIO)
+    rembg_path_env = os.environ.get(COMFYUI_IMAGE_REMBG_WORKFLOW_PATH)
+    rembg_node_env = os.environ.get(COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID)
     return ComfyUIImageSettings(
         # A set-but-empty env value is treated as unset (falls through to
         # config) — precedence is env > config > default (spec-1.7).
@@ -246,6 +259,14 @@ def comfyui_image_settings() -> ComfyUIImageSettings:
         or resolved.comfyui_image_workflow_path,
         prompt_node_id=(node_env if node_env else resolved.comfyui_image_prompt_node_id).strip()
         or resolved.comfyui_image_prompt_node_id,
+        rembg_workflow_path=(
+            rembg_path_env if rembg_path_env else resolved.comfyui_image_rembg_workflow_path
+        ).strip()
+        or resolved.comfyui_image_rembg_workflow_path,
+        rembg_output_node_id=(
+            rembg_node_env if rembg_node_env else resolved.comfyui_image_rembg_output_node_id
+        ).strip()
+        or resolved.comfyui_image_rembg_output_node_id,
         aspect_ratio=(aspect_env if aspect_env else resolved.comfyui_image_aspect_ratio).strip()
         or resolved.comfyui_image_aspect_ratio,
         # The numeric fields get the same empty-env fallthrough BEFORE

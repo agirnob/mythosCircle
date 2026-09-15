@@ -36,6 +36,7 @@ def image_generation(
     *,
     settings: ImageSettings,
     transport: httpx.BaseTransport | None = None,
+    use_rembg: bool = False,
 ) -> bytes:
     """Call the configured endpoint and return the image bytes (PNG).
 
@@ -44,6 +45,11 @@ def image_generation(
     the OpenAI-compatible contract a local image server implements.
     ``response_format="b64_json"`` keeps the response self-contained (no
     second URL fetch, no URL-validation surface).
+
+    ``use_rembg`` is the run_portrait passthrough (P1, 2026-09-15): the
+    OpenAI-compatible contract has no background-removal stage, so the
+    flag is accepted and ignored — the run_video ``first_frame``
+    precedent keeps the two backends on one call shape.
 
     Bare ``httpx`` transport failures (DNS, refused, timeout) ->
     ``ProviderError("connection")``; non-2xx ->

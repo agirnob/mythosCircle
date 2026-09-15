@@ -42,6 +42,24 @@ def test_image_generation_returns_decoded_bytes() -> None:
     assert data == b"\x89PNG\r\n\x1a\npayload"
 
 
+def test_image_generation_accepts_and_ignores_use_rembg() -> None:
+    """P1 passthrough: run_portrait always passes use_rembg on the call
+    shape; the OpenAI-compatible contract has no background-removal
+    stage, so the flag must be accepted and ignored (the run_video
+    first_frame precedent — one call shape for both backends)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"b64_json": _png_b64()}]})
+
+    data = image_generation(
+        "a sharp face",
+        settings=DEFAULT,
+        transport=httpx.MockTransport(handler),
+        use_rembg=True,
+    )
+    assert data == b"\x89PNG\r\n\x1a\npayload"
+
+
 def test_image_generation_sends_bearer_key_when_configured() -> None:
     seen: dict[str, str] = {}
 

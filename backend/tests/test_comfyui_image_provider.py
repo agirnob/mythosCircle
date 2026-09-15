@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 from app.core.settings import ComfyUIImageSettings
-from app.providers.comfyui import comfyui_image_generation
+from app.providers.comfyui import _save_image_output, comfyui_image_generation
 from app.providers.llm import ProviderError
 
 #: A minimal complete PNG (signature + one empty chunk + the IEND chunk
@@ -393,6 +393,159 @@ def test_comfyui_empty_view_bytes_rejected(tmp_path: Path) -> None:
             "x",
             settings=_settings(_write_workflow(tmp_path / "k.json")),
             transport=httpx.MockTransport(handler),
+        )
+    assert excinfo.value.kind == "http"
+    assert excinfo.value.status_code == 200
+
+
+def test_save_image_output_targets_named_node() -> None:
+    """P1: with a node id, ONLY that node's SaveImage output counts —
+    the rembg workflow's alpha twin (node 70) must win over the plain
+    twin (node 29); without a node id the first SaveImage wins (the
+    base behavior); an absent node yields None."""
+    outputs: dict[str, Any] = {
+        "29": {"images": [{"filename": "plain.png", "subfolder": "", "type": "output"}]},
+        "70": {"images": [{"filename": "alpha.png", "subfolder": "", "type": "output"}]},
+    }
+    assert _save_image_output(outputs, "70") == {
+        "filename": "alpha.png",
+        "subfolder": "",
+        "type": "output",
+    }
+    assert _save_image_output(outputs) == {
+        "filename": "plain.png",
+        "subfolder": "",
+        "type": "output",
+    }
+    assert _save_image_output(outputs, "99") is None
+    assert _save_image_output(None, "70") is None
+
+
+def test_comfyui_use_rembg_loads_rembg_workflow_and_targets_alpha_node(
+    tmp_path: Path,
+) -> None:
+    """P1 use_rembg: the call loads the rembg workflow file, injects the
+    prompt into the SAME prompt node, and fetches the alpha SaveImage's
+    output (node 70) — never the plain twin (node 29) the rembg
+    workflow also carries."""
+    base = _write_workflow(
+        tmp_path / "base.json",
+        {"30:19": {"class_type": "CLIPTextEncode", "inputs": {"value": "base"}}},
+    )
+    rembg = _write_workflow(
+        tmp_path / "rembg.json",
+        {
+            "30:19": {"class_type": "CLIPTextEncode", "inputs": {"value": "rembg"}},
+            "29": {"class_type": "SaveImage", "inputs": {}},
+            "70": {"class_type": "SaveImage", "inputs": {}},
+        },
+    )
+    submitted: dict[str, Any] = {}
+    view_params: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/prompt":
+            submitted["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"prompt_id": "p-1"})
+        if request.url.path == "/history/p-1":
+            return httpx.Response(
+                200,
+                json={
+                    "p-1": {
+                        "outputs": {
+                            "29": {
+                                "images": [
+                                    {"filename": "plain.png", "subfolder": "", "type": "output"}
+                                ]
+                            },
+                            "70": {
+                                "images": [
+                                    {"filename": "alpha.png", "subfolder": "", "type": "output"}
+                                ]
+                            },
+                        }
+                    }
+                },
+            )
+        view_params["filename"] = str(dict(request.url.params).get("filename"))
+        return httpx.Response(200, content=PNG)
+
+    data = comfyui_image_generation(
+        "x",
+        settings=ComfyUIImageSettings(
+            endpoint="http://127.0.0.1:7896",
+            workflow_path=str(base),
+            rembg_workflow_path=str(rembg),
+            rembg_output_node_id="70",
+        ),
+        transport=httpx.MockTransport(handler),
+        use_rembg=True,
+    )
+    assert data == PNG
+    assert view_params["filename"] == "alpha.png"  # the alpha twin, never plain.png
+    assert "70" in submitted["body"]["prompt"]  # the rembg workflow was the one loaded
+    assert submitted["body"]["prompt"]["30:19"]["inputs"]["value"] == "x"
+
+
+def test_comfyui_use_rembg_without_configured_path_raises_connection(
+    tmp_path: Path,
+) -> None:
+    """use_rembg with an EMPTY rembg workflow path is operator misconfig
+    — the same connection class as a missing base workflow, no HTTP
+    request (P1: transparent backgrounds cannot run without the
+    variant's workflow)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no HTTP request may happen without a workflow")
+
+    with pytest.raises(ProviderError) as excinfo:
+        comfyui_image_generation(
+            "x",
+            settings=_settings(_write_workflow(tmp_path / "k.json"), rembg_workflow_path=""),
+            transport=httpx.MockTransport(handler),
+            use_rembg=True,
+        )
+    assert excinfo.value.kind == "connection"
+
+
+def test_comfyui_use_rembg_missing_alpha_output_raises(tmp_path: Path) -> None:
+    """NO_OUTPUT_NODE for the rembg variant: the prompt finished but the
+    alpha SaveImage node produced nothing (or is absent) — fail
+    immediately, never return the plain twin."""
+    base = _write_workflow(tmp_path / "base.json", WORKFLOW)
+    rembg = _write_workflow(tmp_path / "rembg.json", WORKFLOW)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/prompt":
+            return httpx.Response(200, json={"prompt_id": "p-1"})
+        if request.url.path == "/history/p-1":
+            return httpx.Response(
+                200,
+                json={
+                    "p-1": {
+                        "outputs": {
+                            "29": {
+                                "images": [
+                                    {"filename": "plain.png", "subfolder": "", "type": "output"}
+                                ]
+                            }
+                        }
+                    }
+                },
+            )
+        raise AssertionError("no /view fetch may happen without the alpha output")
+
+    with pytest.raises(ProviderError) as excinfo:
+        comfyui_image_generation(
+            "x",
+            settings=ComfyUIImageSettings(
+                endpoint="http://127.0.0.1:7896",
+                workflow_path=str(base),
+                rembg_workflow_path=str(rembg),
+                rembg_output_node_id="70",
+            ),
+            transport=httpx.MockTransport(handler),
+            use_rembg=True,
         )
     assert excinfo.value.kind == "http"
     assert excinfo.value.status_code == 200

@@ -7,6 +7,17 @@ import { ApiError, apiFetch } from '../api/client'
 import StatBlock from '../components/StatBlock.vue'
 import { useAuthStore } from '../stores/auth'
 import { hasNonBlankAppearance } from '../lib/appearance'
+import {
+  PORTRAIT_BACKGROUNDS,
+  PORTRAIT_BACKGROUND_LABELS,
+  PORTRAIT_FRAMINGS,
+  PORTRAIT_FRAMING_LABELS,
+  PORTRAIT_STYLES,
+  PORTRAIT_STYLE_LABELS,
+  type PortraitBackground,
+  type PortraitFraming,
+  type PortraitStyle,
+} from '../lib/portrait'
 import { useJobsStore } from '../stores/jobs'
 import { useWorldStore } from '../stores/world'
 import { connectJobSocket } from '../ws'
@@ -259,7 +270,10 @@ const regenerateErrors = ref<Record<string, string>>({})
  * that produced it — i.e. once the DM has accepted something.
  */
 const regenerateNotices = computed(() => {
-  const out: Record<string, { kind: 'running' | 'ready' | 'failed'; label: string; error: string }> = {}
+  const out: Record<
+    string,
+    { kind: 'running' | 'ready' | 'failed'; label: string; error: string }
+  > = {}
   const committedAt = revision.value?.created_at ?? ''
   const regenJobs = jobs
     .forCampaign(campaignId)
@@ -342,6 +356,38 @@ async function regenerateEntity(entityId: string) {
 // ---------------------------------------------------------------------------
 
 const portraitErrors = ref<Record<string, string>>({})
+
+// ---------------------------------------------------------------------------
+// P1 portrait generation options (2026-09-15): per-entity draft settings
+// for the manual Generate portrait button — style theme, framing, and
+// background. Drafts persist across generations (the DM-typed-generation
+// lesson: what was configured stays until the DM changes it — a failing
+// job must not reset the picks). The auto-enqueue-after-accept path
+// sends NO options (backend defaults).
+// ---------------------------------------------------------------------------
+
+interface PortraitDraft {
+  style: PortraitStyle
+  framing: PortraitFraming
+  background: PortraitBackground
+  customStyle: string
+}
+
+const PORTRAIT_DRAFT_DEFAULTS: PortraitDraft = {
+  style: 'illustration',
+  framing: 'headshot',
+  background: 'scene',
+  customStyle: '',
+}
+const portraitDrafts = ref<Record<string, PortraitDraft>>({})
+
+function portraitDraft(entityId: string): PortraitDraft {
+  const existing = portraitDrafts.value[entityId]
+  if (existing) return existing
+  const draft = { ...PORTRAIT_DRAFT_DEFAULTS }
+  portraitDrafts.value[entityId] = draft
+  return draft
+}
 
 /** Terminal image-job states (the jobs store's TERMINAL_STATES, mirrored
  * locally — the store does not export it). */
@@ -489,7 +535,15 @@ async function generatePortrait(entity: EntityExport) {
   if (!entityHasAppearance(entity)) return // the backend gate, mirrored
   portraitErrors.value[entity.id] = ''
   try {
-    await jobs.submitPortrait(campaignId, entity.id)
+    const draft = portraitDraft(entity.id)
+    await jobs.submitPortrait(campaignId, entity.id, {
+      style: draft.style,
+      framing: draft.framing,
+      background: draft.background,
+      // The DM-owned free text rides only under style=custom — the
+      // backend's canonicalization (custom_style requires style=custom).
+      customStyle: draft.style === 'custom' ? draft.customStyle : undefined,
+    })
     await jobs.syncList(campaignId)
   } catch (err) {
     portraitErrors.value[entity.id] =
@@ -1273,7 +1327,8 @@ function additionalDataBlock(entity: EntityExport): string {
                 MapTool (rptok)
               </a>
               <span class="muted small">
-                Forge: file → Import paste · link → portrait override · MapTool: download → drag onto map
+                Forge: file → Import paste · link → portrait override · MapTool: download → drag
+                onto map
               </span>
               <!-- Destructive, so last in the row and labelled to disambiguate
                    it from the relation/portrait deletes below. The DELETE
@@ -1342,6 +1397,42 @@ function additionalDataBlock(entity: EntityExport): string {
                 >
                   {{ deletingId === entity.id ? 'Deleting…' : 'Delete portrait' }}
                 </button>
+              </p>
+              <p class="portrait-options" :aria-disabled="!entityHasAppearance(entity)">
+                <select
+                  v-model="portraitDraft(entity.id).style"
+                  aria-label="Portrait style"
+                  :disabled="!entityHasAppearance(entity)"
+                >
+                  <option v-for="s in PORTRAIT_STYLES" :key="s" :value="s">
+                    {{ PORTRAIT_STYLE_LABELS[s] }}
+                  </option>
+                </select>
+                <input
+                  v-if="portraitDraft(entity.id).style === 'custom'"
+                  v-model="portraitDraft(entity.id).customStyle"
+                  class="portrait-custom"
+                  placeholder="Describe the style…"
+                  :disabled="!entityHasAppearance(entity)"
+                />
+                <select
+                  v-model="portraitDraft(entity.id).framing"
+                  aria-label="Portrait framing"
+                  :disabled="!entityHasAppearance(entity)"
+                >
+                  <option v-for="f in PORTRAIT_FRAMINGS" :key="f" :value="f">
+                    {{ PORTRAIT_FRAMING_LABELS[f] }}
+                  </option>
+                </select>
+                <select
+                  v-model="portraitDraft(entity.id).background"
+                  aria-label="Portrait background"
+                  :disabled="!entityHasAppearance(entity)"
+                >
+                  <option v-for="b in PORTRAIT_BACKGROUNDS" :key="b" :value="b">
+                    {{ PORTRAIT_BACKGROUND_LABELS[b] }}
+                  </option>
+                </select>
               </p>
               <!-- The failed-generation message renders REGARDLESS of an
                    existing portrait (a failed re-generation must not hide
@@ -1471,9 +1562,7 @@ function additionalDataBlock(entity: EntityExport): string {
                 Re-roll of {{ regenerateNotices[entity.id].label }} failed:
                 {{ regenerateNotices[entity.id].error }}
               </template>
-              <template v-else>
-                Re-rolling {{ regenerateNotices[entity.id].label }}…
-              </template>
+              <template v-else> Re-rolling {{ regenerateNotices[entity.id].label }}… </template>
             </p>
             <p v-if="deleteErrors[entity.id]" class="error">{{ deleteErrors[entity.id] }}</p>
             <div
@@ -1714,6 +1803,21 @@ function additionalDataBlock(entity: EntityExport): string {
 .portrait-actions .link:disabled {
   color: #484f58;
   cursor: default;
+}
+.portrait-options {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+}
+.portrait-options select,
+.portrait-options input {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.25rem;
+  max-width: 10rem;
+}
+.portrait-custom {
+  flex: 1 1 100%;
 }
 .portrait-link {
   display: block;

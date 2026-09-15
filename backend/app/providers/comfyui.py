@@ -81,18 +81,26 @@ def comfyui_image_generation(
     *,
     settings: ComfyUIImageSettings,
     transport: httpx.BaseTransport | None = None,
+    use_rembg: bool = False,
 ) -> bytes:
     """Submit one generation to ComfyUI and return the PNG bytes.
 
     Loads the operator's workflow JSON from ``settings.workflow_path``
-    (reloaded from disk on EVERY call — a stale workflow must never be
-    served), deep-copies it, injects ``prompt`` into the configured
-    prompt node's ``inputs.value`` and the configured generation shape
+    (``settings.rembg_workflow_path`` instead when ``use_rembg`` — the
+    P1 transparent-background variant, 2026-09-15), reloaded from disk
+    on EVERY call (a stale workflow must never be served), deep-copies
+    it, injects ``prompt`` into the configured prompt node's
+    ``inputs.value`` and the configured generation shape
     (``aspect_ratio`` / ``megapixels``) into the workflow's resolution
     node if it has one, POSTs to ``{endpoint}/prompt``, polls
     ``{endpoint}/history/{prompt_id}`` every ``_POLL_INTERVAL`` seconds
-    until a SaveImage node has output — or ``settings.timeout`` elapses
-    — then GETs the image bytes from ``{endpoint}/view``.
+    until the output SaveImage node has output — or ``settings.timeout``
+    elapses — then GETs the image bytes from ``{endpoint}/view``.
+
+    The rembg workflow carries TWO SaveImage nodes (the plain PNG and
+    the alpha-joined transparent one); when ``use_rembg`` the provider
+    targets ``settings.rembg_output_node_id`` so it always returns the
+    transparent PNG, never the plain twin.
 
     ``settings.timeout`` bounds the ENTIRE call (submit + poll + fetch):
     every request carries a per-request httpx timeout capped at the
@@ -115,8 +123,14 @@ def comfyui_image_generation(
     # shipped in the repo — spec-4.4 Never list). Missing or malformed
     # is a connection-class failure at first call, surfacing operator
     # misconfig (matrix rows WORKFLOW_PATH_MISSING / INVALID_WORKFLOW_JSON).
+    # An unconfigured rembg variant (use_rembg with no path) is the same
+    # class: the operator asked for a transparent background without
+    # wiring the second workflow.
+    path = settings.rembg_workflow_path if use_rembg else settings.workflow_path
+    if not path:
+        raise ProviderError("connection")
     try:
-        workflow = json.loads(Path(settings.workflow_path).read_text(encoding="utf-8"))
+        workflow = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ProviderError("connection") from exc
     node = workflow.get(settings.prompt_node_id) if isinstance(workflow, dict) else None
@@ -219,7 +233,10 @@ def comfyui_image_generation(
             # The entry exists: the prompt FINISHED. A completed prompt
             # without a SaveImage output is NO_OUTPUT_NODE — fail, never
             # poll forever (matrix row NO_OUTPUT_NODE).
-            image = _save_image_output(entry.get("outputs"))
+            image = _save_image_output(
+                entry.get("outputs"),
+                settings.rembg_output_node_id if use_rembg else None,
+            )
             if image is None:
                 raise ProviderError("http", status_code=response.status_code)
             break
@@ -296,8 +313,8 @@ def _apply_resolution(workflow: dict[str, Any], settings: ComfyUIImageSettings) 
             return
 
 
-def _save_image_output(outputs: Any) -> dict[str, str] | None:
-    """The first SaveImage output ``{filename, type, subfolder}`` in a
+def _save_image_output(outputs: Any, node_id: str | None = None) -> dict[str, str] | None:
+    """The SaveImage output ``{filename, type, subfolder}`` for a
     history entry's ``outputs`` — or None when no SaveImage node
     produced an image.
 
@@ -305,10 +322,17 @@ def _save_image_output(outputs: Any) -> dict[str, str] | None:
     [{"filename": ..., "type": "output", "subfolder": ...}]}}`` — a
     node whose output carries an ``images`` list is the SaveImage
     marker.
+
+    With ``node_id`` given, ONLY that node's output counts: the rembg
+    workflow has two SaveImage nodes (the plain PNG and the alpha-joined
+    transparent one) and the caller names the alpha node so the provider
+    never returns the wrong twin. Without it, the first SaveImage output
+    wins (the base workflow's single SaveImage — existing behavior).
     """
     if not isinstance(outputs, dict):
         return None
-    for output in outputs.values():
+    candidates = [outputs.get(node_id)] if node_id is not None else list(outputs.values())
+    for output in candidates:
         if not isinstance(output, dict):
             continue
         images = output.get("images")

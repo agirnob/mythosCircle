@@ -139,6 +139,126 @@ def appearance_prompt(appearance: Any) -> str | None:
     return None
 
 
+#: The P1 portrait option vocabularies (2026-09-15) — closed lists, so
+#: an in-band option can only name something the prompt composition can
+#: build AND the enqueue gate can reject. An absent option means "the
+#: spec-4.1 default": no directive, the refiner's own taste (existing
+#: behavior preserved for clients that send only ``entity_id``).
+PORTRAIT_STYLES: frozenset[str] = frozenset(
+    {"photorealistic", "cartoonish", "illustration", "custom"}
+)
+PORTRAIT_FRAMINGS: frozenset[str] = frozenset({"portrait", "headshot", "full_body"})
+PORTRAIT_BACKGROUNDS: frozenset[str] = frozenset({"scene", "plain", "dark", "transparent"})
+
+#: The prompt directive per preset — plain descriptive phrasing the
+#: Krea2 refiner echoes rather than re-styles. ``custom`` has no table
+#: entry: its directive IS the DM's owned ``custom_style`` text.
+_STYLE_DIRECTIVES: dict[str, str] = {
+    "photorealistic": "style: photorealistic — photographic realism, natural skin and lighting",
+    "cartoonish": "style: cartoon — bold outlines, flat colors, animated-series look",
+    "illustration": "style: painted fantasy illustration — painterly, rich saturated color",
+}
+_FRAMING_DIRECTIVES: dict[str, str] = {
+    "portrait": "framing: waist-up portrait, subject centered, no other characters",
+    "headshot": (
+        "framing: close head-and-shoulders portrait, the face filling the upper half "
+        "of the frame, subject centered"
+    ),
+    "full_body": "framing: full body, subject centered, headroom above and feet visible",
+}
+_BACKGROUND_DIRECTIVES: dict[str, str] = {
+    "scene": "background: a detailed surrounding scene",
+    "plain": "background: a plain, clean, uncluttered light backdrop",
+    "dark": "background: a plain dark backdrop, moody",
+    "transparent": "background: none — the lone subject only, isolated, no environment",
+}
+
+
+def portrait_options(payload: Any) -> dict[str, str]:
+    """Validate the optional P1 portrait knobs of an image job payload
+    and return the present ones as plain strings.
+
+    Raises ``ValueError`` on any malformed option — the caller maps it
+    to its own error type (store.jobs' ``InvalidJobInputError``, the
+    runner's ``JobPayloadError``), so the enqueue gate and the run-time
+    check can never disagree. The canonicalization rule: a
+    ``custom_style`` is ONLY meaningful under ``style=custom`` — a
+    custom style on any other preset would be a silently dropped
+    directive (the wrong-data-wrong-place lesson), so it is rejected.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("image payload must be a JSON object")
+    allowed = frozenset({"entity_id", "style", "framing", "background", "custom_style"})
+    unknown = set(payload) - allowed
+    if unknown:
+        raise ValueError(f"image payload has unknown key(s): {', '.join(sorted(unknown))}")
+    if not isinstance(payload.get("entity_id"), str) or not payload["entity_id"]:
+        raise ValueError("image payload must carry a non-blank string entity_id")
+    options: dict[str, str] = {}
+    style = payload.get("style")
+    if style is not None:
+        if style not in PORTRAIT_STYLES:
+            raise ValueError(f"image payload style must be one of {sorted(PORTRAIT_STYLES)}")
+        options["style"] = style
+    framing = payload.get("framing")
+    if framing is not None:
+        if framing not in PORTRAIT_FRAMINGS:
+            raise ValueError(f"image payload framing must be one of {sorted(PORTRAIT_FRAMINGS)}")
+        options["framing"] = framing
+    background = payload.get("background")
+    if background is not None:
+        if background not in PORTRAIT_BACKGROUNDS:
+            raise ValueError(
+                f"image payload background must be one of {sorted(PORTRAIT_BACKGROUNDS)}"
+            )
+        options["background"] = background
+    custom = payload.get("custom_style")
+    if custom is not None:
+        if not isinstance(custom, str) or not custom.strip():
+            raise ValueError("image payload custom_style must be a non-blank string")
+        if style != "custom":
+            raise ValueError("image payload custom_style requires style=custom")
+        options["custom_style"] = custom.strip()
+    if style == "custom" and "custom_style" not in options:
+        raise ValueError("image payload style=custom requires a non-blank custom_style")
+    return options
+
+
+def portrait_prompt(
+    appearance: Any,
+    *,
+    style: str | None = None,
+    framing: str | None = None,
+    background: str | None = None,
+    custom_style: str | None = None,
+) -> str | None:
+    """The portrait prompt for a committed AR24 ``appearance`` plus the
+    optional P1 knobs — or None when the appearance cannot produce one
+    (the run-fail / enqueue-422 condition, identical to
+    ``appearance_prompt``).
+
+    The appearance projection stays the authoritative base (spec-4.1);
+    each present knob appends ONE directive line the Krea2 refiner is
+    asked to honor. ``background="transparent"`` also selects the rembg
+    workflow upstream — here it only steers the prompt.
+    """
+    base = appearance_prompt(appearance)
+    if base is None:
+        return None
+    parts = [base]
+    if style is not None and style != "custom":
+        # ``custom`` has no preset directive — its styling line IS the
+        # DM's text below (closed vocab: any other style has an entry).
+        parts.append(_STYLE_DIRECTIVES[style])
+    if custom_style is not None:
+        parts.append(f"styling: {custom_style}")
+    if framing is not None:
+        parts.append(_FRAMING_DIRECTIVES[framing])
+    if background is not None:
+        parts.append(_BACKGROUND_DIRECTIVES[background])
+    return "\n".join(parts)
+
+
 def bbeg_video_prompt(data: Any) -> str | None:
     """The reveal-video prompt for a committed boss-tier entity — or None
     when it cannot produce one (the run-fail / enqueue-422 condition).
@@ -186,19 +306,21 @@ def run_portrait(
     """Run one image job to a terminal state (complete_job/fail_job).
 
     Deterministic per committed entity: payload contract
-    (``{"entity_id": <ULID>}``) -> run-time entity re-read -> prompt from
-    ``data.appearance`` -> budget-guarded provider all -> atomic file
-    write -> ``add_media`` row -> ``complete_job`` with
-    ``{entity_id, filename}``. Every failure propagates so the worker
-    fails the job; no file/row is left behind by a failing run.
+    (``{"entity_id": <ULID>}`` plus the optional P1 knobs ``style`` /
+    ``framing`` / ``background`` / ``custom_style``) -> run-time entity
+    re-read -> prompt from ``data.appearance`` + the knobs -> budget-
+    guarded provider call (``background="transparent"`` routes through
+    the rembg workflow by passing ``use_rembg`` on the call — the video
+    runner's ``first_frame`` pattern) -> atomic file write ->
+    ``add_media`` row -> ``complete_job`` with ``{entity_id, filename}``.
+    Every failure propagates so the worker fails the job; no file/row is
+    left behind by a failing run.
     """
     payload = job.payload
-    if (
-        not isinstance(payload, dict)
-        or set(payload) != {"entity_id"}
-        or not isinstance(payload.get("entity_id"), str)
-    ):
-        raise JobPayloadError("image: job payload must be exactly {'entity_id': <ULID>}")
+    try:
+        options = portrait_options(payload)
+    except ValueError as exc:
+        raise JobPayloadError(f"image: {exc}") from exc
     entity_id = payload["entity_id"]
 
     # Run-time re-read of the COMMITTED entity: the job may have queued
@@ -209,7 +331,13 @@ def run_portrait(
         if entity is None or entity.campaign_id != job.campaign_id:
             raise JobPayloadError(f"image: entity {entity_id} does not exist in this campaign")
         appearance = (entity.data or {}).get("appearance")
-    prompt = appearance_prompt(appearance)
+    prompt = portrait_prompt(
+        appearance,
+        style=options.get("style"),
+        framing=options.get("framing"),
+        background=options.get("background"),
+        custom_style=options.get("custom_style"),
+    )
     if prompt is None:
         raise JobPayloadError(
             f"image: entity {entity_id} has no non-blank AR24 appearance — a portrait needs one"
@@ -222,7 +350,12 @@ def run_portrait(
     if not _job_still_running(job):
         return
     try:
-        data = budget.call(lambda: provider(prompt, settings=settings))
+        # ``background="transparent"`` routes through the rembg workflow:
+        # the flag is passed on the call (the run_video ``first_frame``
+        # pattern — providers accept and the openai path ignores it), so
+        # the provider can load the second workflow + its alpha SaveImage.
+        use_rembg = options.get("background") == "transparent"
+        data = budget.call(lambda: provider(prompt, settings=settings, use_rembg=use_rembg))
     except BudgetExceededError:
         raise
     except ProviderError as exc:

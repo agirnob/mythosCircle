@@ -58,6 +58,12 @@ COMFYUI_IMAGE_PROMPT_NODE_ID_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_PROMPT_NODE_ID"
 COMFYUI_IMAGE_ASPECT_RATIO_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_ASPECT_RATIO"
 COMFYUI_IMAGE_MEGAPIXELS_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_MEGAPIXELS"
 COMFYUI_IMAGE_TIMEOUT_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_TIMEOUT"
+#: P1 (2026-09-15): the transparent-background portrait variant — a
+#: second Krea2 workflow (BiRefNet removal + alpha join) selected when
+#: an image job asks ``background = "transparent"``, plus the SaveImage
+#: node in that workflow that carries the transparent PNG.
+COMFYUI_IMAGE_REMBG_WORKFLOW_PATH_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_REMBG_WORKFLOW_PATH"
+COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID_ENV = "MYTHOSCIRCLE_COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID"
 
 
 def env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -236,6 +242,19 @@ DEFAULT_COMFYUI_IMAGE_PROMPT_NODE_ID = "30:19"
 DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO = "1:1 (Square)"
 DEFAULT_COMFYUI_IMAGE_MEGAPIXELS = 1.0
 DEFAULT_COMFYUI_IMAGE_TIMEOUT = 1800.0
+#: The P1 transparent-background variant (2026-09-15): the base Krea2
+#: Turbo workflow plus a BiRefNet background-removal + alpha-join stage.
+#: Ships in the repo like the base (repo = single home, spec-4.5), so
+#: the default path is COMPUTED relative to deploy/; the output node id
+#: is a workflow property (the alpha SaveImage, node 70 — the base
+#: workflow keeps its single SaveImage), the prompt_node_id twin.
+DEFAULT_COMFYUI_IMAGE_REMBG_WORKFLOW_PATH = str(
+    Path(__file__).resolve().parents[3]
+    / "deploy"
+    / "workflows"
+    / "image_krea2_turbo_t2i_int8_with_background_removal.json"
+)
+DEFAULT_COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID = "70"
 #: The reveal-video backend switch (spec-4.5): ``"openai"`` (default —
 #: spec-4.2 preserved) or ``"comfyui"`` (opt-in local-dev MiniMax
 #: i2v alternative).
@@ -293,6 +312,8 @@ class RuntimeConfig:
     comfyui_image_aspect_ratio: str = DEFAULT_COMFYUI_IMAGE_ASPECT_RATIO
     comfyui_image_megapixels: float = DEFAULT_COMFYUI_IMAGE_MEGAPIXELS
     comfyui_image_timeout: float = DEFAULT_COMFYUI_IMAGE_TIMEOUT
+    comfyui_image_rembg_workflow_path: str = DEFAULT_COMFYUI_IMAGE_REMBG_WORKFLOW_PATH
+    comfyui_image_rembg_output_node_id: str = DEFAULT_COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID
     video_endpoint: str = DEFAULT_VIDEO_ENDPOINT
     video_model: str = DEFAULT_VIDEO_MODEL
     video_timeout: float = DEFAULT_VIDEO_TIMEOUT
@@ -516,6 +537,13 @@ def runtime_config() -> RuntimeConfig:
         if comfyui_timeout_env
         else comfyui_timeout_config
     )
+    comfyui_image_rembg_workflow_path = _resolve_workflow_path(
+        os.environ.get(COMFYUI_IMAGE_REMBG_WORKFLOW_PATH_ENV)
+        or str(comfyui_image.get("rembg_workflow_path", DEFAULT_COMFYUI_IMAGE_REMBG_WORKFLOW_PATH))
+    )
+    comfyui_image_rembg_output_node_id = os.environ.get(
+        COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID_ENV
+    ) or str(comfyui_image.get("rembg_output_node_id", DEFAULT_COMFYUI_IMAGE_REMBG_OUTPUT_NODE_ID))
     video_endpoint = os.environ.get(VIDEO_ENDPOINT_ENV) or str(
         video.get("endpoint", DEFAULT_VIDEO_ENDPOINT)
     )
@@ -606,6 +634,8 @@ def runtime_config() -> RuntimeConfig:
         comfyui_image_aspect_ratio=comfyui_image_aspect_ratio,
         comfyui_image_megapixels=comfyui_image_megapixels,
         comfyui_image_timeout=comfyui_image_timeout,
+        comfyui_image_rembg_workflow_path=comfyui_image_rembg_workflow_path,
+        comfyui_image_rembg_output_node_id=comfyui_image_rembg_output_node_id,
         video_endpoint=video_endpoint,
         video_model=video_model,
         video_timeout=video_timeout,

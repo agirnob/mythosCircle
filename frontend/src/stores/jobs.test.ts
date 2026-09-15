@@ -263,22 +263,20 @@ describe('jobs store', () => {
   })
 
   it('submitPortrait posts an image job naming the entity and upserts it', async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify(
-            job('JP1', {
-              id: 'JP1',
-              kind: 'image',
-              state: 'queued',
-              payload: { entity_id: 'E1' },
-              queue_position: 1,
-            }),
-          ),
-          { status: 201, headers: { 'Content-Type': 'application/json' } },
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          job('JP1', {
+            id: 'JP1',
+            kind: 'image',
+            state: 'queued',
+            payload: { entity_id: 'E1' },
+            queue_position: 1,
+          }),
         ),
-      )
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
     const jobs = useJobsStore()
     await jobs.submitPortrait('C1', 'E1')
     const [url, init] = fetchMock.mock.calls[0]
@@ -291,13 +289,74 @@ describe('jobs store', () => {
     expect(jobs.byId['JP1']?.kind).toBe('image')
   })
 
+  it('submitPortrait posts the P1 options snake_cased and omits blanks', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(job('JP1', {})), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(job('JP2', {})), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    const jobs = useJobsStore()
+    await jobs.submitPortrait('C1', 'E1', {
+      style: 'custom',
+      framing: 'headshot',
+      background: 'transparent',
+      customStyle: 'art nouveau',
+    })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe('/api/jobs')
+    expect(JSON.parse(init?.body as string)).toEqual({
+      campaign_id: 'C1',
+      kind: 'image',
+      payload: {
+        entity_id: 'E1',
+        style: 'custom',
+        framing: 'headshot',
+        background: 'transparent',
+        custom_style: 'art nouveau',
+      },
+    })
+    // Blank/absent options never enter the payload (backend defaults win).
+    fetchMock.mockClear()
+    await jobs.submitPortrait('C1', 'E1', {
+      style: 'illustration',
+      framing: 'portrait',
+      background: 'scene',
+      customStyle: '  ',
+    })
+    const [, init2] = fetchMock.mock.calls[0]
+    expect(JSON.parse(init2?.body as string)).toEqual({
+      campaign_id: 'C1',
+      kind: 'image',
+      payload: { entity_id: 'E1', style: 'illustration', framing: 'portrait', background: 'scene' },
+    })
+  })
+
   it('portraitInFlight is true while the entity image job is pending and releases on terminal state', () => {
     const jobs = useJobsStore()
-    jobs.upsert(job('JP1', { id: 'JP1', kind: 'image', payload: { entity_id: 'E1' }, state: 'queued' }))
+    jobs.upsert(
+      job('JP1', { id: 'JP1', kind: 'image', payload: { entity_id: 'E1' }, state: 'queued' }),
+    )
     expect(jobs.portraitInFlight('C1', 'E1')).toBe(true)
     expect(jobs.portraitInFlight('C1', 'E2')).toBe(false) // another entity is free
     expect(jobs.portraitInFlight('C1', 'E1')).toBe(true) // still queued
-    jobs.upsert(job('JP1', { id: 'JP1', kind: 'image', payload: { entity_id: 'E1' }, state: 'failed', error: 'boom' }))
+    jobs.upsert(
+      job('JP1', {
+        id: 'JP1',
+        kind: 'image',
+        payload: { entity_id: 'E1' },
+        state: 'failed',
+        error: 'boom',
+      }),
+    )
     expect(jobs.portraitInFlight('C1', 'E1')).toBe(false) // failed releases the button
   })
 })

@@ -258,6 +258,73 @@ def test_enqueue_image_dict_appearance_accepted(world: str) -> None:
     assert job.kind == "image" and job.state == "queued"
 
 
+def _commit_with_appearance(world: str, appearance: str) -> str:
+    """One committed character with a non-blank string appearance (the
+    P1 option tests' shared entity)."""
+    entity_id, anchor_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="Anchor", id=anchor_id),
+            models.EntityInput(
+                kind="character",
+                name="P1 Subject",
+                data={"appearance": appearance},
+                id=entity_id,
+            ),
+        ],
+        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+    )
+    return entity_id
+
+
+def test_enqueue_image_accepts_p1_options(world: str) -> None:
+    """P1: an image payload carrying legal option values enqueues — the
+    payload is no longer exactly {entity_id}."""
+    entity_id = _commit_with_appearance(world, "sharp")
+    job = enqueue_job(
+        world,
+        "image",
+        {
+            "entity_id": entity_id,
+            "style": "illustration",
+            "framing": "headshot",
+            "background": "transparent",
+        },
+    )
+    assert job.kind == "image" and job.state == "queued"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"style": "anime"},
+        {"framing": "closeup"},
+        {"background": "checkerboard"},
+        {"style": "illustration", "custom_style": "x"},
+        {"style": "custom"},
+        {"style": "custom", "custom_style": " "},
+        {"mode": "night"},
+    ],
+    ids=[
+        "off-vocab-style",
+        "off-vocab-framing",
+        "off-vocab-background",
+        "custom-without-style-custom",
+        "custom-empty-text",
+        "custom-blank-text",
+        "unknown-key",
+    ],
+)
+def test_enqueue_image_rejects_malformed_p1_options(world: str, payload: dict) -> None:
+    """Every malformed P1 option is a 422 at enqueue, zero rows (the
+    gate canonicalizes, never silently drops)."""
+    entity_id = _commit_with_appearance(world, "sharp")
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "image", {"entity_id": entity_id, **payload})
+    assert _count_jobs() == 0
+
+
 # ---------------------------------------------------------------------------
 # Spec-4.2 video payload contract (the reveal-video enqueue gate)
 # ---------------------------------------------------------------------------

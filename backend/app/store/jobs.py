@@ -628,22 +628,26 @@ def _validate_generate_payload(payload: dict[str, Any]) -> None:
 def _validate_image_payload(payload: dict[str, Any], session: Session, campaign_id: str) -> None:
     """Enforce the spec-4.1 image payload contract (422/404, zero rows).
 
-    The payload is exactly ``{"entity_id": <ULID>}`` — the committed
-    entity whose AR24 ``appearance`` is the portrait prompt source (FR12;
-    a portrait is a projection of the committed character, never free
-    text). The entity must exist in this campaign (404
-    ``UnknownEntityError``) and its committed ``appearance`` must be
-    non-blank (422 ``InvalidJobInputError`` — the NO_APPEARANCE matrix
-    row: a forced enqueue for an appearance-less entity is a 422, never
-    a queued job). The blank check runs the SAME ``appearance_prompt``
+    The payload is ``{"entity_id": <ULID>}`` plus the optional P1 knobs
+    (``style`` / ``framing`` / ``background`` / ``custom_style``) — the
+    committed entity whose AR24 ``appearance`` is the portrait prompt
+    source (FR12; a portrait is a projection of the committed
+    character, never free text). The entity must exist in this campaign
+    (404 ``UnknownEntityError``) and its committed ``appearance`` must
+    be non-blank (422 ``InvalidJobInputError`` — the NO_APPEARANCE
+    matrix row: a forced enqueue for an appearance-less entity is a
+    422, never a queued job). The option values run the SAME
+    ``portrait_options`` and the blank check the SAME ``appearance_prompt``
     the runner uses, so the enqueue gate and the run-time fail
     condition can never disagree (function-local import: the media
     service imports this package).
     """
-    from app.media.service import appearance_prompt
+    from app.media.service import appearance_prompt, portrait_options
 
-    if not isinstance(payload, dict) or set(payload) != {"entity_id"}:
-        raise InvalidJobInputError("image payload must be exactly {'entity_id': <ULID>}")
+    try:
+        portrait_options(payload)
+    except ValueError as exc:
+        raise InvalidJobInputError(str(exc)) from exc
     entity_id = payload["entity_id"]
     if not isinstance(entity_id, str) or not ids.is_valid_ulid(entity_id):
         raise InvalidJobInputError(f"image payload entity_id is not a ULID: {entity_id!r}")

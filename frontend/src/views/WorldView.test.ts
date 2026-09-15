@@ -606,7 +606,8 @@ describe('WorldView', () => {
 
     apiFetchMock.mockImplementation(async (path: string) => {
       const url = String(path)
-      if (url.includes('/api/jobs')) return jobsFor('failed', 'regenerate: output is not valid JSON')
+      if (url.includes('/api/jobs'))
+        return jobsFor('failed', 'regenerate: output is not valid JSON')
       return world
     })
     const failed = mountView()
@@ -1215,6 +1216,95 @@ describe('WorldView', () => {
     wrapper.unmount()
   })
 
+  it('portrait: the P1 pickers render with defaults; the custom style input appears only for style=custom', async () => {
+    stubPortraitApi(portraitWorld({ face: 'sharp features' }), { media: [] })
+    const wrapper = mountView()
+    await flushPromises()
+    const style = wrapper.find('select[aria-label="Portrait style"]')
+    const framing = wrapper.find('select[aria-label="Portrait framing"]')
+    const background = wrapper.find('select[aria-label="Portrait background"]')
+    expect(style.exists()).toBe(true)
+    expect(framing.exists()).toBe(true)
+    expect(background.exists()).toBe(true)
+    // Defaults: illustration / headshot (token-friendly) / scene.
+    expect((style.element as HTMLSelectElement).value).toBe('illustration')
+    expect((framing.element as HTMLSelectElement).value).toBe('headshot')
+    expect((background.element as HTMLSelectElement).value).toBe('scene')
+    // No custom-text box until the DM picks the custom theme.
+    expect(wrapper.find('input.portrait-custom').exists()).toBe(false)
+    await style.setValue('custom')
+    await flushPromises()
+    expect(wrapper.find('input.portrait-custom').exists()).toBe(true)
+    // The pickers follow the appearance gate: disabled without one.
+    wrapper.unmount()
+
+    stubPortraitApi(portraitWorld(''), { media: [] })
+    const wrapper2 = mountView()
+    await flushPromises()
+    expect(
+      wrapper2.find('select[aria-label="Portrait style"]').attributes('disabled'),
+    ).toBeDefined()
+    expect(
+      wrapper2.find('select[aria-label="Portrait framing"]').attributes('disabled'),
+    ).toBeDefined()
+    expect(
+      wrapper2.find('select[aria-label="Portrait background"]').attributes('disabled'),
+    ).toBeDefined()
+    wrapper2.unmount()
+  })
+
+  it('portrait: Generate portrait posts the draft options; the custom text rides under style=custom', async () => {
+    const posted: Array<{ kind: string; payload: Record<string, unknown> }> = []
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      const url = String(path)
+      if (url.includes('/media')) return { media: [] }
+      if (url === '/api/jobs' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as {
+          kind: string
+          payload: Record<string, unknown>
+        }
+        posted.push(body)
+        // A terminal job releases the in-flight button so the second
+        // enqueue (with the custom draft) can go through.
+        return imageJob('JP1', 'E1', { state: 'succeeded', progress: 1, queue_position: null })
+      }
+      return portraitWorld({ face: 'sharp' })
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    // Defaults first: illustration / headshot / scene, no custom text.
+    await generatePortraitButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(posted).toHaveLength(1)
+    expect(posted[0].payload).toEqual({
+      entity_id: 'E1',
+      style: 'illustration',
+      framing: 'headshot',
+      background: 'scene',
+    })
+
+    // style=custom adds the DM text; the payload carries custom_style and
+    // DROPS nothing (the second enqueue's draft persists — a previous
+    // generation must not reset the picks).
+    const style = wrapper.find('select[aria-label="Portrait style"]')
+    await style.setValue('custom')
+    await wrapper.find('input.portrait-custom').setValue('dark oil painting')
+    await wrapper
+      .findAll('button')
+      .filter((b) => b.text().startsWith('Generate portrait'))[0]
+      .trigger('click')
+    await flushPromises()
+    expect(posted).toHaveLength(2)
+    expect(posted[1].payload).toEqual({
+      entity_id: 'E1',
+      style: 'custom',
+      framing: 'headshot',
+      background: 'scene',
+      custom_style: 'dark oil painting',
+    })
+    wrapper.unmount()
+  })
+
   it('portrait: an entity without an appearance gets a disabled button and a hint (enqueue gate mirrored)', async () => {
     stubPortraitApi(portraitWorld(''), { media: [] })
     const wrapper = mountView()
@@ -1742,9 +1832,7 @@ describe('WorldView', () => {
     apiFetchMock.mockResolvedValue(populatedWorld())
     const wrapper = mountView()
     await flushPromises()
-    const fg = wrapper
-      .findAll('a')
-      .filter((anchor) => anchor.text().trim() === 'Fantasy Grounds')
+    const fg = wrapper.findAll('a').filter((anchor) => anchor.text().trim() === 'Fantasy Grounds')
     expect(fg.map((anchor) => anchor.attributes('href'))).toEqual([
       '/api/campaigns/C1/entities/E1/export?format=fg',
       '/api/campaigns/C1/entities/E2/export?format=fg',

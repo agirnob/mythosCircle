@@ -23,6 +23,96 @@
       "title": "Resolution Selector"
     }
   },
+  "52": {
+    "inputs": {
+      "bg_removal_model": [
+        "53",
+        0
+      ],
+      "image": [
+        "30:8",
+        0
+      ]
+    },
+    "class_type": "RemoveBackground",
+    "_meta": {
+      "title": "Remove Background"
+    }
+  },
+  "53": {
+    "inputs": {
+      "bg_removal_name": "birefnet.safetensors"
+    },
+    "class_type": "LoadBackgroundRemovalModel",
+    "_meta": {
+      "title": "Load Background Removal Model"
+    }
+  },
+  "55": {
+    "inputs": {
+      "images": [
+        "69",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "56": {
+    "inputs": {
+      "mask": [
+        "68",
+        0
+      ]
+    },
+    "class_type": "MaskPreview",
+    "_meta": {
+      "title": "Preview Mask"
+    }
+  },
+  "68": {
+    "inputs": {
+      "mask": [
+        "52",
+        0
+      ]
+    },
+    "class_type": "InvertMask",
+    "_meta": {
+      "title": "Invert Mask"
+    }
+  },
+  "69": {
+    "inputs": {
+      "image": [
+        "30:8",
+        0
+      ],
+      "alpha": [
+        "56",
+        0
+      ]
+    },
+    "class_type": "JoinImageWithAlpha",
+    "_meta": {
+      "title": "Join Image with Alpha"
+    }
+  },
+  "70": {
+    "inputs": {
+      "filename_prefix": "Background_removed_krea_turbo",
+      "images": [
+        "55",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
   "30:6": {
     "inputs": {
       "text": [
@@ -58,7 +148,7 @@
   },
   "30:3": {
     "inputs": {
-      "seed": 58942045735271,
+      "seed": 93227495388794,
       "steps": 8,
       "cfg": 1,
       "sampler_name": "euler",

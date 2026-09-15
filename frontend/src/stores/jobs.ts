@@ -3,6 +3,8 @@ import { defineStore } from 'pinia'
 import type { components } from '../api/schema'
 import { apiFetch } from '../api/client'
 import type { WsMessage } from '../ws'
+import type { PortraitOptions } from '../lib/portrait'
+import { toPortraitPayload } from '../lib/portrait'
 
 type Job = components['schemas']['JobResponse']
 
@@ -192,15 +194,17 @@ export const useJobsStore = defineStore('jobs', {
      * Spec-4.1 portrait: one image job whose payload names the committed
      * entity — the portrait is a projection of the entity's committed
      * AR24 appearance, never free text (the backend validates the
-     * payload + appearance at enqueue).
+     * payload + appearance at enqueue). The optional P1 knobs (style /
+     * framing / background / custom_style) steer the generation; an
+     * absent knob is the backend default.
      */
-    async submitPortrait(campaignId: string, entityId: string) {
+    async submitPortrait(campaignId: string, entityId: string, options?: PortraitOptions) {
       const job = await apiFetch<Job>('/api/jobs', {
         method: 'POST',
         body: JSON.stringify({
           campaign_id: campaignId,
           kind: 'image',
-          payload: { entity_id: entityId },
+          payload: { entity_id: entityId, ...(options ? toPortraitPayload(options) : {}) },
         }),
       })
       this.upsert(job)
@@ -243,7 +247,9 @@ export const useJobsStore = defineStore('jobs', {
         body: JSON.stringify({
           campaign_id: campaignId,
           kind: 'video',
-          payload: promptValue ? { entity_id: entityId, prompt: promptValue } : { entity_id: entityId },
+          payload: promptValue
+            ? { entity_id: entityId, prompt: promptValue }
+            : { entity_id: entityId },
         }),
       })
       this.upsert(job)

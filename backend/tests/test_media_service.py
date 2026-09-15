@@ -17,6 +17,8 @@ from app.core import ids
 from app.core.settings import ImageSettings
 from app.media.service import (
     appearance_prompt,
+    portrait_options,
+    portrait_prompt,
     reclaim_campaign_media,
     reclaim_entity_media,
     run_portrait,
@@ -98,6 +100,33 @@ def _claim_direct_image_job(world: str, entity_id: str) -> models.Job:
     return claimed
 
 
+def _claim_direct_image_job_payload(world: str, payload: dict[str, object]) -> models.Job:
+    """The P1 twin: a hand-written image job row carrying a custom payload
+    (options included) — for the runner's option-path tests."""
+    from app.store.db import session_scope
+
+    with session_scope() as session:
+        row = models.Job(
+            id=ids.new_id(),
+            campaign_id=world,
+            kind="image",
+            payload=dict(payload),
+            state="queued",
+            progress=0.0,
+            max_llm_calls=1,
+            max_media_calls=1,
+            error=None,
+            created_at="2026-09-06T00:00:00Z",
+            started_at=None,
+            finished_at=None,
+        )
+        session.add(row)
+        job_id = row.id
+    claimed = claim_next_job()
+    assert claimed is not None and claimed.id == job_id
+    return claimed
+
+
 def _commit_with_appearance(world: str, appearance: object, name: str = "Mira Vane") -> str:
     """One committed character with the given appearance (FR2: a new
     entity needs an edge, so the subgraph carries a small anchor pair)."""
@@ -125,7 +154,7 @@ def _commit_with_appearance(world: str, appearance: object, name: str = "Mira Va
     return entity_id
 
 
-def _png_provider(prompt: str, settings: ImageSettings) -> bytes:
+def _png_provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
     assert settings is SETTINGS
     return PNG_BYTES
 
@@ -168,6 +197,106 @@ def test_appearance_prompt_blank_shapes_yield_none(appearance: object) -> None:
 
 
 # ---------------------------------------------------------------------------
+# P1 portrait options (portrait_options / portrait_prompt)
+# ---------------------------------------------------------------------------
+
+
+def test_portrait_options_accepts_presets() -> None:
+    """A payload with legal preset values parses to exactly those knobs —
+    the closed vocabularies pass through as strings."""
+    assert portrait_options(
+        {
+            "entity_id": "01JZZZZZZZZZZZZZZZZZZZZZZX",
+            "style": "cartoonish",
+            "framing": "full_body",
+            "background": "dark",
+        }
+    ) == {"style": "cartoonish", "framing": "full_body", "background": "dark"}
+
+
+def test_portrait_options_accepts_custom_style_under_style_custom() -> None:
+    """The DM-owned free text rides only with ``style=custom`` — the only
+    combination where a custom style has meaning."""
+    assert portrait_options(
+        {
+            "entity_id": "01JZZZZZZZZZZZZZZZZZZZZZZX",
+            "style": "custom",
+            "custom_style": "  watercolor washes  ",
+        }
+    ) == {"style": "custom", "custom_style": "watercolor washes"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"entity_id": "01JZZZZZZZZZZZZZZZZZZZZZZX", "style": "anime"},
+        {"entity_id": "01JZZZZZZZZZZZZZZZZZZZZZZX", "framing": "closeup"},
+        {"entity_id": "01JZZZZZZZZZZZZZZZZZZZZZZX", "background": "checkerboard"},
+        {"entity_id": "01JZZZZZZZZZZZZZZZZZZZZZZX", "prompt": "a tavern at dusk"},
+        {"entity_id": "01JZZZZZZZZZZZZZZZZZZZZZZX", "extra": 1},
+        {"entity_id": "01JZZZZZZZZZZZZZZZZZZZZZZX", "style": "illustration", "custom_style": "x"},
+        {"entity_id": "01JZZZZZZZZZZZZZZZZZZZZZZX", "style": "custom"},
+        {"entity_id": "01JZZZZZZZZZZZZZZZZZZZZZZX", "style": "custom", "custom_style": "   "},
+        {"entity_id": "", "style": "custom", "custom_style": "x"},
+        {"entity_id": 42},
+    ],
+    ids=[
+        "off-vocab-style",
+        "off-vocab-framing",
+        "off-vocab-background",
+        "unknown-key",
+        "extra-key",
+        "custom-without-style-custom",
+        "custom-style-without-text",
+        "blank-custom-text",
+        "blank-entity-id",
+        "non-string-entity-id",
+    ],
+)
+def test_portrait_options_rejects_malformed(payload: object) -> None:
+    """Every malformed option shape raises ValueError — the enqueue gate
+    and the run-time check both map it to their 422-class error."""
+    with pytest.raises(ValueError):
+        portrait_options(payload)
+
+
+def test_portrait_prompt_composes_directives() -> None:
+    """The appearance projection stays the base; each present knob appends
+    ONE directive line, in fixed order (style, custom, framing, background)."""
+    prompt = portrait_prompt(
+        {"face": "sharp"},
+        style="photorealistic",
+        framing="headshot",
+        background="transparent",
+    )
+    assert prompt == (
+        "face: sharp\n"
+        "style: photorealistic — photographic realism, natural skin and lighting\n"
+        "framing: close head-and-shoulders portrait, "
+        "the face filling the upper half of the frame, subject centered\n"
+        "background: none — the lone subject only, isolated, no environment"
+    )
+
+
+def test_portrait_prompt_custom_style_supplants_style_directive() -> None:
+    """style=custom emits the DM's text as the styling line — there is no
+    preset directive for it."""
+    prompt = portrait_prompt(
+        "gaunt", style="custom", custom_style="art nouveau poster", background="plain"
+    )
+    assert "styling: art nouveau poster" in prompt
+    assert "style:" not in prompt.replace("styling:", "")
+    assert "background: a plain, clean, uncluttered light backdrop" in prompt
+
+
+def test_portrait_prompt_blank_appearance_yields_none() -> None:
+    """The P1 knobs never rescue a blank appearance — the gate is
+    appearance_prompt's, exactly (the enqueue 422 mirror)."""
+    assert portrait_prompt("   ", style="photorealistic", framing="headshot") is None
+    assert portrait_prompt({"clothing": " "}, background="transparent") is None
+
+
+# ---------------------------------------------------------------------------
 # HAPPY_PATH: file + row + completion
 # ---------------------------------------------------------------------------
 
@@ -205,7 +334,7 @@ def test_run_portrait_verbatim_string_appearance(world: str, tmp_path: Path) -> 
     entity_id = _commit_with_appearance(world, "gaunt, ink-stained fingers")
     seen: list[str] = []
 
-    def provider(prompt: str, settings: ImageSettings) -> bytes:
+    def provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
         seen.append(prompt)
         return PNG_BYTES
 
@@ -222,7 +351,7 @@ def test_run_portrait_blank_appearance_fails_cleanly(world: str, tmp_path: Path)
     job = _claim_direct_image_job(world, entity_id)
     called: list[str] = []
 
-    def provider(prompt: str, settings: ImageSettings) -> bytes:
+    def provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
         called.append(prompt)
         return PNG_BYTES
 
@@ -273,9 +402,73 @@ def test_run_portrait_bad_payload_fails(world: str, tmp_path: Path) -> None:
         job_id = row.id
     claimed = claim_next_job()
     assert claimed is not None and claimed.id == job_id
-    with pytest.raises(JobPayloadError, match="entity_id"):
+    with pytest.raises(JobPayloadError, match="unknown key"):
         run_portrait(claimed, _png_provider, SETTINGS, media_dir=tmp_path)
     assert list_media(world) == []
+
+
+def test_run_portrait_off_vocab_option_fails_before_provider(world: str, tmp_path: Path) -> None:
+    """A hand-written row naming an off-vocab option fails at run time
+    with a stable message BEFORE any provider call; no file, no row (the
+    enqueue-422 mirror at the runner's own re-check)."""
+    entity_id = _commit_with_appearance(world, "sharp")
+    claimed = _claim_direct_image_job_payload(world, {"entity_id": entity_id, "style": "anime"})
+    called = []
+
+    def provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
+        called.append(prompt)
+        return PNG_BYTES
+
+    with pytest.raises(JobPayloadError, match="style"):
+        run_portrait(claimed, provider, SETTINGS, media_dir=tmp_path)
+    assert called == []
+    assert list_media(world) == []
+    assert not (tmp_path / world / entity_id).exists()
+
+
+def test_run_portrait_options_compose_prompt_and_use_rembg(world: str, tmp_path: Path) -> None:
+    """P1: the options land in the provider call — the composed prompt
+    carries the directive lines, and background=transparent routes the
+    call with use_rembg=True (the rembg workflow selector); the plain
+    preset run routes with use_rembg=False. Both complete as before:
+    file + row + succeeded."""
+    entity_id = _commit_with_appearance(world, "sharp")
+    seen: list[tuple[str, bool]] = []
+
+    def provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
+        seen.append((prompt, use_rembg))
+        return PNG_BYTES
+
+    transparent = _claim_direct_image_job_payload(
+        world,
+        {
+            "entity_id": entity_id,
+            "style": "custom",
+            "custom_style": "art nouveau",
+            "framing": "headshot",
+            "background": "transparent",
+        },
+    )
+    run_portrait(transparent, provider, SETTINGS, media_dir=tmp_path)
+    assert len(seen) == 1
+    prompt, use_rembg = seen[0]
+    assert use_rembg is True
+    assert "styling: art nouveau" in prompt
+    assert "head-and-shoulders" in prompt
+    assert "background: none" in prompt
+    assert prompt.startswith("sharp\n")  # the verbatim string appearance is the base
+    done, _position = job_status(transparent.id)
+    assert done.state == "succeeded"
+
+    plain = _claim_direct_image_job_payload(
+        world, {"entity_id": entity_id, "style": "illustration", "background": "scene"}
+    )
+    run_portrait(plain, provider, SETTINGS, media_dir=tmp_path)
+    prompt, use_rembg = seen[1]
+    assert use_rembg is False
+    assert "painted fantasy illustration" in prompt
+    assert "background: a detailed surrounding scene" in prompt
+    assert len(list_media(world)) == 2 and len(seen) == 2
 
 
 def test_run_portrait_provider_failure_fails_job_cleanly(world: str, tmp_path: Path) -> None:
@@ -283,7 +476,7 @@ def test_run_portrait_provider_failure_fails_job_cleanly(world: str, tmp_path: P
     image-flavored message; no file, no row."""
     entity_id = _commit_with_appearance(world, "sharp")
 
-    def failing_provider(prompt: str, settings: ImageSettings) -> bytes:
+    def failing_provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
         raise ProviderError("http", status_code=502)
 
     job = _claim_image_job(world, entity_id)
@@ -296,7 +489,7 @@ def test_run_portrait_provider_failure_fails_job_cleanly(world: str, tmp_path: P
 def test_run_portrait_connection_failure_fails_cleanly(world: str, tmp_path: Path) -> None:
     entity_id = _commit_with_appearance(world, "sharp")
 
-    def refusing_provider(prompt: str, settings: ImageSettings) -> bytes:
+    def refusing_provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
         raise ProviderError("connection")
 
     job = _claim_image_job(world, entity_id)
@@ -312,7 +505,7 @@ def test_run_portrait_empty_provider_bytes_fails(world: str, tmp_path: Path) -> 
     entity_id = _commit_with_appearance(world, "sharp")
     job = _claim_image_job(world, entity_id)
 
-    def empty_provider(prompt: str, settings: ImageSettings) -> bytes:
+    def empty_provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
         return b""
 
     with pytest.raises(JobPayloadError, match="no image data"):
@@ -328,7 +521,7 @@ def test_run_portrait_non_png_bytes_fails_cleanly(world: str, tmp_path: Path) ->
     entity_id = _commit_with_appearance(world, "sharp")
     job = _claim_image_job(world, entity_id)
 
-    def jpeg_provider(prompt: str, settings: ImageSettings) -> bytes:
+    def jpeg_provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
         # A real JPEG magic — the exact class of mislabeled content.
         return b"\xff\xd8\xff\xe0" + b"jpeg-body"
 
@@ -391,7 +584,7 @@ def test_run_portrait_budget_zero_fails_before_provider(world: str, tmp_path: Pa
     assert claimed is not None and claimed.id == job_row.id
     called: list[str] = []
 
-    def provider(prompt: str, settings: ImageSettings) -> bytes:
+    def provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
         called.append(prompt)
         return PNG_BYTES
 
@@ -430,7 +623,7 @@ def test_run_portrait_entity_deleted_mid_run_no_dangling(world: str, tmp_path: P
     job = _claim_image_job(world, entity_id)
     original = run_portrait
 
-    def deleting_provider(prompt: str, settings: ImageSettings) -> bytes:
+    def deleting_provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
         # Delete the entity mid-run: the file lands, then add_media
         # re-checks existence and rejects.
         from app.store import delete_entity

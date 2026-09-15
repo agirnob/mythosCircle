@@ -96,7 +96,7 @@ def _run_portrait_job() -> None:
     """Drive the FIFO one step with the injected mock image provider —
     the deterministic stand-in for the app's background worker."""
 
-    def provider(prompt: str, settings: ImageSettings) -> bytes:
+    def provider(prompt: str, settings: ImageSettings, use_rembg: bool = False) -> bytes:
         assert "face" in prompt
         return PNG_BYTES
 
