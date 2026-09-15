@@ -1297,7 +1297,11 @@ def canonicalize_stat_block(block: dict[str, Any]) -> dict[str, Any]:
     completed = _complete_damage_parts(folded)
     emptied = _fold_empty_damage_lists(completed)
     aligned = _fold_alignment_long_forms(emptied)
-    stamped = _fold_string_damage(aligned)
+    described = _fold_entry_descriptions(aligned)
+    named = _fold_name_only_entries(described)
+    skilled = _fold_skills_shapes(named)
+    spelled = _fold_spells_mechanics(skilled)
+    stamped = _fold_string_damage(spelled)
     return _stamp_power(stamped)
 
 
@@ -1548,6 +1552,221 @@ def _fold_alignment_long_forms(block: dict[str, Any]) -> dict[str, Any]:
     if canonical is None or identity.get("alignment") == canonical:
         return block
     return {**block, "identity": {**identity, "alignment": canonical}}
+
+
+#: Keys a dict-typed entry ``description`` folds from, in preference
+#: order — the prose keys a model wraps a description in. The first key
+#: with a STRING value wins; ``description`` itself first (a model that
+#: nests the canonical key needs no guessing).
+_DESCRIPTION_TEXT_KEYS: tuple[str, ...] = (
+    "description",
+    "desc",
+    "text",
+    "value",
+    "effect",
+    "effects",
+    "summary",
+    "detail",
+    "details",
+    "flavor",
+    "flavor_text",
+    "prose",
+    "body",
+    "note",
+    "notes",
+)
+
+
+def _fold_entry_descriptions(block: dict[str, Any]) -> dict[str, Any]:
+    """Fold a non-string ``description`` on actions/traits entries to a
+    string.
+
+    Measured 2026-09-15 (generate, "cthullu ender of worlds"): the wave
+    landed traits entries whose ``description`` was an OBJECT — the AR25
+    contract demands a string, and the one bounded repair pass re-echoed
+    the same shape, so every candidate dropped and the job failed with
+    "traits entries must have a string 'description'". The entry
+    description IS a forced string slot (the DM reads it as prose), so a
+    dict carrying prose folds deterministically: the value of the first
+    known text key (``_DESCRIPTION_TEXT_KEYS``); a list of strings joins
+    with a space. A dict whose known keys carry no string names is left
+    for the repair pass — folding the first string ANYWHERE would invent
+    a description out of a property like ``dice`` the model typed for
+    another purpose. Unknown inner keys are consumed with the dict (the
+    dict was never a legal value); string descriptions and absent keys
+    are untouched.
+    """
+    changed = False
+    new_blocks: dict[str, list[Any]] = {}
+    for section in ("actions", "traits"):
+        entries = block.get(section)
+        if not isinstance(entries, list):
+            continue
+        new_entries: list[Any] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                new_entries.append(entry)
+                continue
+            description = entry.get("description")
+            folded: str | None = None
+            if isinstance(description, dict):
+                for key in _DESCRIPTION_TEXT_KEYS:
+                    value = description.get(key)
+                    if isinstance(value, str):
+                        folded = value
+                        break
+            elif (
+                isinstance(description, list)
+                and description
+                and all(isinstance(item, str) for item in description)
+            ):
+                folded = " ".join(item.strip() for item in description).strip()
+            if folded is None:
+                new_entries.append(entry)
+                continue
+            new_entries.append({**entry, "description": folded})
+            changed = True
+        if new_entries != entries:
+            new_blocks[section] = new_entries
+    if not changed:
+        return block
+    return {**block, **new_blocks}
+
+
+def _fold_name_only_entries(block: dict[str, Any]) -> dict[str, Any]:
+    """Move traits entries with NO readable description to ``features``.
+
+    Measured 2026-09-15 (generate, "cthullu ender of worlds"): the wave
+    shipped traits as BARE NAME LISTS -- ``["Magic Resistance",
+    "Legendary Resistance (3/Day)"]`` -- and as name-only dicts
+    (``[{"name": "Amorphous"}]``). The AR25 traits shape is
+    ``{name, description}`` objects; a bare name or a name-only dict is
+    exactly what ``features`` holds (a list of names), so the entry moves
+    there -- the DM still sees the name, no prose is invented, and the
+    traits list keeps only legal entries. The description fold runs first,
+    so entries that WERE readable (a dict with a text key) already left
+    this branch. Valid traits entries and absent keys are untouched.
+    """
+    entries = block.get("traits")
+    if not isinstance(entries, list) or not entries:
+        return block
+    features = block.get("features")
+    base = (
+        list(features)
+        if isinstance(features, list)
+        and all(isinstance(item, str) and item.strip() for item in features)
+        else []
+    )
+    carried: list[str] = []
+    new_entries: list[Any] = []
+    for entry in entries:
+        name: Any = None
+        if isinstance(entry, str):
+            name = entry.strip()
+        elif isinstance(entry, dict) and not isinstance(entry.get("description"), str):
+            value = entry.get("name")
+            if isinstance(value, str):
+                name = value.strip()
+        if name:
+            carried.append(name)
+        else:
+            new_entries.append(entry)
+    if not carried:
+        return block
+    merged = base + [name for name in carried if name not in base]
+    out: dict[str, Any] = {**block, "features": merged}
+    if new_entries:
+        out["traits"] = new_entries
+    else:
+        del out["traits"]
+    return out
+
+
+def _fold_skills_shapes(block: dict[str, Any]) -> dict[str, Any]:
+    """Fold non-standard ``skills`` shapes into the entry list.
+
+    Measured 2026-09-15 (generate): the wave shipped skills as a
+    name->bonus MAPPING (``{"Arcana": 15, "Intimidation": 17}``) and as a
+    FLAT ``["Religion", 8]`` list — name and bonus as sibling elements.
+    Both are unambiguous single-record contracts (an SRD skill name plus
+    its integer bonus), so both fold to the canonical ``{"name": ...,
+    "bonus": int}`` entry. The flat form folds ONLY when the whole list
+    alternates str/int (an odd element or a mismatch names nothing legal
+    and stays for the repair pass); nested ``[name, bonus]`` pairs fold
+    per-entry. A mapping is folded only when EVERY value is an integer.
+    """
+    skills = block.get("skills")
+    if isinstance(skills, dict):
+        if not skills:
+            return block
+        if all(type(bonus) is int for bonus in skills.values()):
+            return {
+                **block,
+                "skills": [{"name": name, "bonus": bonus} for name, bonus in skills.items()],
+            }
+        return block
+    if not isinstance(skills, list):
+        return block
+    if (
+        len(skills) >= 2
+        and len(skills) % 2 == 0
+        and all(isinstance(skills[offset], str) for offset in range(0, len(skills), 2))
+        and all(type(skills[offset]) is int for offset in range(1, len(skills), 2))
+    ):
+        return {
+            **block,
+            "skills": [
+                {"name": skills[offset].strip(), "bonus": skills[offset + 1]}
+                for offset in range(0, len(skills), 2)
+            ],
+        }
+    changed = False
+    new_skills: list[Any] = []
+    for entry in skills:
+        if (
+            isinstance(entry, list)
+            and len(entry) == 2
+            and isinstance(entry[0], str)
+            and type(entry[1]) is int
+        ):
+            new_skills.append({"name": entry[0].strip(), "bonus": entry[1]})
+            changed = True
+        else:
+            new_skills.append(entry)
+    if not changed:
+        return block
+    return {**block, "skills": new_skills}
+
+
+def _fold_spells_mechanics(block: dict[str, Any]) -> dict[str, Any]:
+    """Fold the spellcasting MECHANICS object out of the ``spells`` slot.
+
+    Measured 2026-09-15 (generate, every spell-casting candidate): the
+    wave wrote ``"spells": {"dc": 22, "attack_bonus": 16, "slots":
+    [...]}`` — the AR25 ``spellcasting`` object in the spells slot, and
+    once the spell NAMES landed in a sibling ``spells_list`` key. The
+    dict has none of the shapes a spell list can take, so the mechanics
+    move to ``spellcasting`` (filling only an absent slot), the sibling
+    name list becomes ``spells`` when present, and a dict with no names
+    anywhere leaves ``spells`` absent — legal, since spells are optional.
+    The spell names the model wrote beside the field land in the field.
+    """
+    spells = block.get("spells")
+    if not isinstance(spells, dict):
+        return block
+    if not any(key in spells for key in ("dc", "attack_bonus", "slots")):
+        return block
+    out: dict[str, Any] = dict(block)
+    spellcasting = block.get("spellcasting")
+    if not (isinstance(spellcasting, dict) and spellcasting):
+        out["spellcasting"] = spells
+    names = block.get("spells_list")
+    if isinstance(names, list) and all(isinstance(name, str) for name in names):
+        out["spells"] = [name.strip() for name in names if name.strip()]
+        out.pop("spells_list", None)
+    else:
+        out.pop("spells", None)
+    return out
 
 
 def canonicalize_action_damage(

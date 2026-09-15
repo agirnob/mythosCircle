@@ -1460,6 +1460,180 @@ def test_canonicalize_string_damage_folds_and_keeps_parts() -> None:
     assert structured["actions"][0]["description"] == STRUCTURED["actions"][0]["description"]
 
 
+def test_canonicalize_folds_dict_trait_descriptions() -> None:
+    """A traits entry whose description is an object folds to its prose
+    string — the measured 2026-09-15 generate failure ("cthullu ender of
+    worlds") shipped exactly this shape and the repair pass re-echoed it,
+    dropping every candidate. A known prose key wins in preference order
+    (``effect`` before ``flavor``); the fold is deterministic and the
+    result validates."""
+    from app.pipeline.statblocks import canonicalize_stat_block
+
+    nested_text = {
+        **VALID,
+        "traits": [
+            {
+                "name": "Amphibious",
+                "description": {"text": "Breathes air and water, and swims at full speed."},
+            },
+            {
+                "name": "Kraken's Reach",
+                "description": {"effect": "Tentacles", "flavor": "Grasps two foes each turn."},
+            },
+        ],
+    }
+    canonical = canonicalize_stat_block(nested_text)
+    assert canonical["traits"][0]["description"] == (
+        "Breathes air and water, and swims at full speed."
+    )
+    assert canonical["traits"][1]["description"] == "Tentacles"
+    assert validate_stat_block(canonical) == []
+
+
+def test_canonicalize_folds_list_and_nested_description_keys() -> None:
+    """A list of string fragments joins with a space; a canonical
+    ``description`` key nested inside the dict wins over ``text``. A
+    traits entry whose description carries no prose key at all moves to
+    ``features`` — its name is its meaning, and the traits list stays
+    legal."""
+    from app.pipeline.statblocks import canonicalize_stat_block
+
+    fragmented = {
+        **VALID,
+        "traits": [
+            {
+                "name": "Siren's Call",
+                "description": ["Warbles a hypnotic tune.", "DC 15 Wis save or Charmed."],
+            },
+            {
+                "name": "Void Sight",
+                "description": {"description": "Sees through dim light.", "text": 4},
+            },
+            # ``dice``/``td`` are no prose key — the description is
+            # unreadable, so the NAME carries the entry into features.
+            {"name": "Unreadable", "description": {"dice": "4d10", "td": None}},
+        ],
+        "actions": [
+            {
+                "name": "Tentacle Sweep",
+                "description": {"text": "Sweeps a 10-ft. cone."},
+            }
+        ],
+    }
+    canonical = canonicalize_stat_block(fragmented)
+    assert canonical["traits"][0]["description"] == (
+        "Warbles a hypnotic tune. DC 15 Wis save or Charmed."
+    )
+    assert canonical["traits"][1]["description"] == "Sees through dim light."
+    assert canonical["actions"][0]["description"] == "Sweeps a 10-ft. cone."
+    assert canonical["features"] == ["Unreadable"]
+    assert validate_stat_block(canonical) == []
+    # Already-string descriptions leave the block byte-identical.
+    complete = {**VALID, "traits": [{"name": "Fine", "description": "Already prose."}]}
+    assert canonicalize_stat_block(complete) is complete
+
+
+def test_canonicalize_folds_name_only_trait_shapes() -> None:
+    """The measured 2026-09-15 generate failure: the wave shipped traits
+    as name-only dicts and as bare name lists — both fold into
+    ``features`` (names the model certainly meant), leaving a legal
+    traits list and a valid block. The drop-and-retry the user hit —
+    "traits entries must have a string 'description'" — never fires."""
+    from app.pipeline.statblocks import canonicalize_stat_block
+
+    name_only = {
+        **VALID,
+        "traits": [
+            {"name": "Amorphous"},
+            {"name": "Ethereal Sight", "description": "Sees into the Ethereal Plane."},
+            "Legendary Resistance (3/Day)",
+        ],
+        "features": ["Magic Resistance"],
+    }
+    canonical = canonicalize_stat_block(name_only)
+    assert canonical["traits"] == [
+        {"name": "Ethereal Sight", "description": "Sees into the Ethereal Plane."}
+    ]
+    # Existing features first, then the carried names, deduplicated.
+    assert canonical["features"] == [
+        "Magic Resistance",
+        "Amorphous",
+        "Legendary Resistance (3/Day)",
+    ]
+    assert validate_stat_block(canonical) == []
+
+
+def test_canonicalize_folds_skills_shapes() -> None:
+    """Measured skills slips fold to the entry list: a name->bonus mapping
+    and a FLAT ``["Religion", 8]`` list (name and bonus as sibling
+    elements) are both unambiguous single-record contracts. A mapping
+    with a non-integer value names no legal bonus and stays for the
+    repair pass."""
+    from app.pipeline.statblocks import canonicalize_stat_block
+
+    mapping = {
+        **VALID,
+        "skills": {"Arcana": 14, "Intimidation": 17},
+    }
+    canonical = canonicalize_stat_block(mapping)
+    assert canonical["skills"] == [
+        {"name": "Arcana", "bonus": 14},
+        {"name": "Intimidation", "bonus": 17},
+    ]
+    assert validate_stat_block(canonical) == []
+
+    paired = {**VALID, "skills": ["Religion", 8]}
+    canonical = canonicalize_stat_block(paired)
+    assert canonical["skills"] == [{"name": "Religion", "bonus": 8}]
+    assert validate_stat_block(canonical) == []
+
+    unmapped = {**VALID, "skills": {"Arcana": "proficient"}}
+    assert canonicalize_stat_block(unmapped)["skills"] == {"Arcana": "proficient"}
+    odd = {**VALID, "skills": ["Religion", 8, "bare"]}
+    assert canonicalize_stat_block(odd)["skills"] == ["Religion", 8, "bare"]
+
+
+def test_canonicalize_folds_spells_mechanics_object() -> None:
+    """Measured 2026-09-15: every spell-casting candidate wrote the AR25
+    ``spellcasting`` object into the ``spells`` slot. The mechanics move
+    to ``spellcasting``; a sibling ``spells_list`` (the names the model
+    wrote beside the field) becomes ``spells``; without names, ``spells``
+    stays absent — legal, spells are optional."""
+    from app.pipeline.statblocks import canonicalize_stat_block
+
+    cleric = {**VALID, "identity": {**VALID["identity"], "class": "Cleric"}}
+    with_names = {
+        **cleric,
+        "spells": {"dc": 22, "attack_bonus": 16, "slots": [4, 3, 3, 3, 1]},
+        "spells_list": ["Bless", "Cure Wounds", "Guiding Bolt"],
+    }
+    canonical = canonicalize_stat_block(with_names)
+    assert canonical["spells"] == ["Bless", "Cure Wounds", "Guiding Bolt"]
+    assert canonical["spellcasting"] == {"dc": 22, "attack_bonus": 16, "slots": [4, 3, 3, 3, 1]}
+    assert "spells_list" not in canonical
+    assert validate_stat_block(canonical) == []
+
+    no_names = {
+        **cleric,
+        "spells": {"dc": 15, "attack_bonus": 7, "slots": [4, 3, 3, 1]},
+    }
+    canonical = canonicalize_stat_block(no_names)
+    assert "spells" not in canonical
+    assert canonical["spellcasting"] == {"dc": 15, "attack_bonus": 7, "slots": [4, 3, 3, 1]}
+    assert validate_stat_block(canonical) == []
+
+    # An existing spellcasting block wins; the mechanics are never
+    # dropped, only re-homed when the slot is empty.
+    existing = {
+        **cleric,
+        "spells": {"dc": 22, "attack_bonus": 16, "slots": [4, 3, 3, 3, 1]},
+        "spellcasting": {"dc": 18, "attack_bonus": 9, "slots": [2]},
+    }
+    canonical = canonicalize_stat_block(existing)
+    assert canonical["spellcasting"] == {"dc": 18, "attack_bonus": 9, "slots": [2]}
+    assert "spells" not in canonical
+
+
 def test_rules_text_asks_for_the_structured_shape() -> None:
     """The prompt is where the shape comes from: it must name the damage
     list and every optional aspect, or the model never writes them."""

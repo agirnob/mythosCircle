@@ -209,6 +209,24 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
             # "2-3 candidates" contract governs (INVALID_STATS row).
             for issue in remaining:
                 still_bad.add(issue.position)
+                # The job.error names the violations; the WARNING line
+                # carries the reproducible evidence — the exact block the
+                # repair pass was shown and the exact reply it made, so a
+                # stuck shape (a non-string trait description, a repair
+                # that re-echoes it) is diagnosable from the log alone
+                # (2026-09-15: traits entries with dict descriptions).
+                block = issue.entity.data.get("stat_block")
+                logger.warning(
+                    "generate E%s %r still invalid after the repair pass (%s) — "
+                    "block: %s; repair reply: %s",
+                    issue.position,
+                    issue.entity.name,
+                    "; ".join(issue.violations),
+                    json.dumps(block, sort_keys=True, separators=(",", ":"))
+                    if block is not None
+                    else "MISSING",
+                    repair_text[:2000],
+                )
                 drops.append(
                     (
                         issue.position,
