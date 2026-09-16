@@ -3671,19 +3671,25 @@ def test_wave1_roster_trims_in_section_order() -> None:
     roster = _wave1_roster(
         {"places": [" P1 ", "", 42, "P2"], "factions": [], "key_figures": ["F1", "   "]}
     )
-    assert roster == [("places", "P1"), ("places", "P2"), ("key_figures", "F1")]
+    # The hybrid path's roster rows carry the seed entry (None for a
+    # legacy plain string) — the (section, entry) prefix is unchanged.
+    assert roster == [
+        ("places", "P1", None),
+        ("places", "P2", None),
+        ("key_figures", "F1", None),
+    ]
 
 
 def test_wave1_chunks_slice_by_weight_and_cap() -> None:
     """M1 slicing: characters weigh 1.0 (budget 12), flats 0.35, the hard
     cap binds at 16 — global positions stay contiguous, so refs and the
     merge order are a pure function of the roster (AD-16)."""
-    chunks = _wave1_chunks([("places", f"P{i}") for i in range(20)])
+    chunks = _wave1_chunks([("places", f"P{i}", None) for i in range(20)])
     assert [len(chunk) for chunk in chunks] == [16, 4]  # the hard cap binds
-    assert [pos for chunk in chunks for pos, _s, _e in chunk] == list(range(20))
-    chunks = _wave1_chunks([("key_figures", f"F{i}") for i in range(13)])
+    assert [pos for chunk in chunks for pos, _s, _e, _seed in chunk] == list(range(20))
+    chunks = _wave1_chunks([("key_figures", f"F{i}", None) for i in range(13)])
     assert [len(chunk) for chunk in chunks] == [12, 1]  # the weight binds
-    mixed = [("places", "P")] * 3 + [("key_figures", "F")] * 12
+    mixed = [("places", "P", None)] * 3 + [("key_figures", "F", None)] * 12
     chunks = _wave1_chunks(mixed)
     # 3 x 0.35 + 10 x 1.0 = 11.05; the 11th figure would cross 12 → [13, 2].
     assert [len(chunk) for chunk in chunks] == [13, 2]
@@ -4014,10 +4020,11 @@ def test_wave2_all_twins_commit_nothing(world: str) -> None:
 
 
 def test_upsert_resubmit_updates_rows_not_twins(world: str) -> None:
-    """UPSERT (owner decision 2026-09-12): re-submitting the same lists
-    updates the committed rows in place — no twins, no duplicate edges, no
-    second wave-1 revision — and wave 2 still wires into the ORIGINAL rows
-    (the final-ID roster), not into ghosts."""
+    """F4 rework of the 2026-09-12 upsert pin: a re-submitted FACTION
+    updates the committed row in place (unchanged, byte-equal skip) while
+    a re-submitted CHARACTER commits a FRESH ULID — same-name characters
+    coexist, the audit shows 0 merged, and wave 2 still wires into the
+    final-ID roster."""
     responses1 = [json.dumps(_wave1_output())]
     _enqueue(world, places=["Greymarch"], notes="")
     run_next_job(provider=lambda prompt, settings: responses1.pop(0), settings=SETTINGS)
@@ -4031,32 +4038,37 @@ def test_upsert_resubmit_updates_rows_not_twins(world: str) -> None:
     job2, _position = job_status(job_id2)
     assert job2.state == "succeeded"
     merge = (job2.result or {})["merge"]
-    assert [n["name"] for n in merge["wave1"]["unchanged"]] == [
-        "The Gilded Bar",
-        "Mira Vane",
-    ]
+    # The faction upserts (byte-equal -> unchanged); the character NEVER
+    # merges (F4): the audit shows 0 merged characters.
+    assert [n["name"] for n in merge["wave1"]["unchanged"]] == ["The Gilded Bar"]
     assert merge["wave1"]["merged"] == []
     assert merge["wave2"]["twins_dropped"] == []
     with session_scope() as session:
-        rows = {e.name: e.id for e in world_entities(session, world)}
+        rows = list(world_entities(session, world))
         edges = world_edges(session, world)
         revisions = list(revision_chain(session, world))
-    assert set(rows) == {
-        "The Gilded Bar",
-        "Mira Vane",
-        "The Drowned Rat",
-        "Captain Harlow",
-    }
-    assert rows["The Gilded Bar"] == first["The Gilded Bar"]  # updated in place
-    assert len(edges) == 5  # wave 1's two + wave 2's three, zero duplicates
-    assert len(revisions) == 2  # job1 wave 1 + job2 wave 2; job2 wave 1 no-op
-    rat, bar = rows["The Drowned Rat"], rows["The Gilded Bar"]
+    by_name: dict[str, list[str]] = {}
+    for row in rows:
+        by_name.setdefault(row.name, []).append(row.id)
+    assert set(by_name) == {"The Gilded Bar", "Mira Vane", "The Drowned Rat", "Captain Harlow"}
+    # CHAR_FRESH_ULID: TWO distinct Mira Vane rows — the old one untouched.
+    assert len(by_name["Mira Vane"]) == 2
+    assert first["Mira Vane"] in by_name["Mira Vane"]
+    assert by_name["The Gilded Bar"] == [first["The Gilded Bar"]]  # in place
+    assert len(edges) == 7  # 2 + the re-seeded character's 2 + wave 2's three
+    assert len(revisions) == 3  # job1 wave 1, job2 wave 1 (fresh char), job2 wave 2
+    rat, bar = (
+        next(r.id for r in rows if r.name == "The Drowned Rat"),
+        first["The Gilded Bar"],
+    )
     assert any(e.src == rat and e.dst == bar for e in edges)
 
 
 def test_upsert_grown_resubmit_adds_only_new(world: str) -> None:
-    """The spec's growth workflow: a grown list keeps the unchanged rows and
-    creates only the new ones."""
+    """F4 rework of the growth-workflow pin: the grown list keeps the
+    unchanged faction rows, adds the new places/factions, and the
+    re-seeded CHARACTER is additive — a fresh ULID, audit shows 0 merged
+    characters (SAME_NAME_TWO_BUILDS)."""
     responses1 = [json.dumps(_wave1_output())]
     _enqueue(world, places=["Greymarch"], notes="")
     run_next_job(provider=lambda prompt, settings: responses1.pop(0), settings=SETTINGS)
@@ -4066,33 +4078,59 @@ def test_upsert_grown_resubmit_adds_only_new(world: str) -> None:
     job2, _position = job_status(job_id2)
     assert job2.state == "succeeded"
     merge = (job2.result or {})["merge"]["wave1"]
-    assert [n["name"] for n in merge["unchanged"]] == ["The Gilded Bar", "Mira Vane"]
-    assert merge["merged"] == []
+    assert [n["name"] for n in merge["unchanged"]] == ["The Gilded Bar"]
+    assert merge["merged"] == []  # 0 merged: the character commits fresh (F4)
     with session_scope() as session:
-        names = {e.name for e in world_entities(session, world)}
+        rows = world_entities(session, world)
+        names = {e.name for e in rows}
     assert names == {"The Gilded Bar", "Mira Vane", "Myconid Colony", "Grymforge"}
+    assert sum(1 for row in rows if row.name == "Mira Vane") == 2  # fresh ULID, additive
 
 
 def test_upsert_drops_duplicate_relationships(world: str) -> None:
-    """A re-submit whose edges duplicate live relationships drops them (the
-    store would reject them as duplicates) and keeps the ORIGINAL counters
-    — a merge is not a counter update."""
-    responses1 = [json.dumps(_wave1_output())]
+    """A re-submit whose edges duplicate live place/faction relationships
+    drops them (the store would reject them as duplicates) and keeps the
+    ORIGINAL counters — a merge is not a counter update. (F4: a character
+    re-submit can no longer hit this branch — its fresh ULID makes every
+    declared endpoint new — so both endpoints here are factions.)"""
+
+    def _two_factions(*edges: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "entities": [
+                {
+                    "ref": "E0",
+                    "kind": "faction",
+                    "name": "The Gilded Bar",
+                    "text": "smoke and coin",
+                },
+                {"ref": "E1", "kind": "faction", "name": "The Salt Guild", "text": "brine ledgers"},
+            ],
+            "edges": list(edges),
+        }
+
+    responses1 = [
+        json.dumps(_two_factions({"src": "E0", "dst": "E1", "type": "member_of", "counter": 1}))
+    ]
     _enqueue(world, places=["Greymarch"], notes="")
     run_next_job(provider=lambda prompt, settings: responses1.pop(0), settings=SETTINGS)
-    changed = _wave1_output()
-    changed["edges"][0]["counter"] = 9
-    responses2 = [json.dumps(changed)]
+    responses2 = [
+        json.dumps(
+            _two_factions(
+                {"src": "E0", "dst": "E1", "type": "member_of", "counter": 9},
+                {"src": "E1", "dst": "E0", "type": "rival_of", "counter": 2},
+            )
+        )
+    ]
     job_id2 = _enqueue(world, places=["Greymarch"], notes="")
     run_next_job(provider=lambda prompt, settings: responses2.pop(0), settings=SETTINGS)
     job2, _position = job_status(job_id2)
     assert job2.state == "succeeded"
     merge = (job2.result or {})["merge"]["wave1"]
     assert {d["why"] for d in merge["dropped_edges"]} == {"duplicate relationship"}
-    assert len(merge["dropped_edges"]) == 2
+    assert len(merge["dropped_edges"]) == 1
     with session_scope() as session:
         edges = world_edges(session, world)
-    assert sorted(e.counter for e in edges) == [1, 3]  # originals intact
+    assert sorted(e.counter for e in edges) == [1, 2]  # original member_of kept
 
 
 def test_repair_calls_are_cold_and_seeded(world: str) -> None:

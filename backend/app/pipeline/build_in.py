@@ -17,13 +17,16 @@ a still-orphan repair fails the job. Wave 1 commits edgeless (owner verdict 2026
 reversing the 2026-09-11 wave-1 re-emit — wiring the model will not invent is not worth a lost
 build; the DM prunes).
 
-Identity (owner rule 2026-09-12): both waves commit through an upsert
-merge — an incoming entity whose (kind, normalized name) matches a
-committed row of this campaign updates that row instead of creating a
-twin, so re-submitting a grown list grows the world rather than doubling
-it; wave 2 additionally drops exact twins of its own wave-1 roster before
-validation (the prompt says the same). The job result carries the merge
-audit.
+Identity (owner rule 2026-09-12, amended by the hybrid-authorship
+spec's F4 ruling): places and factions commit through an upsert merge —
+an incoming entity whose (kind, normalized name) matches a committed row
+of this campaign updates that row instead of creating a twin, so
+re-submitting a grown list grows the world rather than doubling it.
+CHARACTERS never merge (F4): every character commits a fresh ULID and
+same-name characters coexist. Wave 2 additionally drops exact twins of
+its own wave-1 roster before validation (the prompt says the same). The
+job result carries the merge audit (merged/unchanged count place/faction
+rows only).
 
 Wave ref schemes: wave 1's entities are ``E<index>`` (positional), wave
 2's new entities are ``N<index>`` (positional) so the model never reuses
@@ -102,7 +105,9 @@ from app.store.candidates import (
     canonicalize_reaction_matrix,
     payload_section_violations,
 )
+from app.store.commit import EDGE_KIND_RULES, edge_kind_ok  # noqa: F401 - re-exported
 from app.store.db import session_scope
+from app.store.direct import normalize_entity_name  # noqa: F401 - re-exported
 from app.store.read import campaign_seed, latest_revision
 
 logger = logging.getLogger(__name__)
@@ -275,52 +280,6 @@ def _context_refs(entities: Sequence[models.Entity]) -> list[ContextRef]:
     return [ContextRef(entity.id, entity.name, entity.kind) for entity in entities]
 
 
-# ---------------------------------------------------------------------------
-# Edge kind contract (owner decision 2026-09-12)
-# ---------------------------------------------------------------------------
-
-#: Kind compatibility for the closed edge vocabulary. ONE table feeds BOTH
-#: the prompt guidance (layer 1 — ``edge_guidance_lines``) and the
-#: validator + bounded repair (layer 2 — ``_edge_kind_rows``,
-#: ``_clean_edge_kinds``), so the text and the enforcement cannot drift.
-#: ``None`` = any kind; an absent type is unrestricted. Audit d5
-#: (rung-100 world, 2026-09-12): 39/153 edges violated these rules —
-#: 14 member_of edges with a place, 3 reversed located_in, 22 mutual
-#: member_of (11 pairs) — plus 87 catch-all ``relationship`` edges the
-#: guidance counters. The anti-pattern no per-edge rule captures —
-#: membership is hierarchical, never both directions — is enforced as a
-#: graph rule by the same layer 2.
-EDGE_KIND_RULES: Mapping[str, tuple[frozenset[str] | None, frozenset[str] | None]] = (
-    MappingProxyType(
-        {
-            "located_in": (None, frozenset({"place"})),
-            "member_of": (
-                frozenset({"character", "faction"}),
-                frozenset({"character", "faction"}),
-            ),
-            "loyalty": (
-                frozenset({"character", "faction"}),
-                frozenset({"character", "faction"}),
-            ),
-            "bases_at": (frozenset({"character", "faction"}), frozenset({"place"})),
-            "hails_from": (frozenset({"character", "faction"}), frozenset({"place"})),
-            "controls": (
-                frozenset({"character", "faction"}),
-                frozenset({"place", "faction"}),
-            ),
-            "employs": (
-                frozenset({"character", "faction"}),
-                frozenset({"character", "faction"}),
-            ),
-            "worships": (
-                frozenset({"character", "faction"}),
-                frozenset({"character", "faction"}),
-            ),
-            "protects": (frozenset({"character", "faction"}), None),
-        }
-    )
-)
-
 #: The prompt-side surplus for specific types (layer 1). Kept out of the
 #: machine-readable table so guidance prose stays prose.
 _EDGE_GUIDANCE: Mapping[str, str] = MappingProxyType(
@@ -347,13 +306,6 @@ _EDGE_GUIDANCE: Mapping[str, str] = MappingProxyType(
         "relationship": "LAST RESORT — prefer the specific type that fits",
     }
 )
-
-
-def edge_kind_ok(edge_type: str, src_kind: str, dst_kind: str) -> bool:
-    """The kind-compatibility rule for one edge (layer 2 enforces, layer 1
-    prints). Unrestricted types accept any kind pair."""
-    src, dst = EDGE_KIND_RULES.get(edge_type, (None, None))
-    return (src is None or src_kind in src) and (dst is None or dst_kind in dst)
 
 
 def _kind_pattern(kinds: frozenset[str] | None) -> str:
@@ -819,40 +771,519 @@ def _wave_max_tokens(entity_count: int, ceiling: int) -> int:
     return max(WAVE_CALL_MIN_TOKENS, min(ceiling, wanted))
 
 
-def _wave1_roster(payload: dict[str, Any]) -> list[tuple[str, str]]:
-    """The trimmed wave-1 roster: ``(section, entry)`` pairs in fixed prompt
-    order — the same trimming the count pin and the enqueue budget share
-    (``jobs._build_in_budget``). Pure function of the payload."""
-    roster: list[tuple[str, str]] = []
+def _wave1_roster(payload: dict[str, Any]) -> list[tuple[str, str, dict[str, Any] | None]]:
+    """The trimmed wave-1 roster: ``(section, entry, seed)`` rows in fixed
+    prompt order — the same trimming the count pin and the enqueue budget
+    share (``jobs._build_in_budget``). Pure function of the payload.
+
+    ``entry`` is the legacy trimmed TEXT of a plain-string entry, or the
+    SeedEntry's ``name`` for a structured one; ``seed`` is the structured
+    entry dict (``None`` for a plain string). The hybrid path appends its
+    mandated relation targets as ``section="mandate"`` rows (see
+    ``_mandated_targets``) — they generate like roster entries because the
+    wave schema pins the count.
+    """
+    roster: list[tuple[str, str, dict[str, Any] | None]] = []
     for section in SECTION_NAMES:
         for entry in payload.get(section, []):
-            if isinstance(entry, str) and entry.strip():
-                roster.append((section, entry.strip()))
+            if isinstance(entry, str):
+                if entry.strip():
+                    roster.append((section, entry.strip(), None))
+            elif (
+                isinstance(entry, dict)
+                and isinstance(entry.get("name"), str)
+                and entry["name"].strip()
+            ):
+                roster.append((section, entry["name"].strip(), entry))
     return roster
 
 
-def _wave1_chunks(roster: Sequence[tuple[str, str]]) -> list[list[tuple[int, str, str]]]:
+def _wave1_chunks(
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+) -> list[list[tuple[int, str, str, dict[str, Any] | None]]]:
     """Slice the roster into weighted generation chunks (M1): each item is
-    ``(global_position, section, entry)`` — the position fixes the entity's
-    canonical E-ref, so chunks merge in one deterministic order and edges
-    resolve against the assembled roster. Greedy and pure: a chunk closes
-    when the next entry would cross the weight budget or the hard cap."""
-    chunks: list[list[tuple[int, str, str]]] = []
-    current: list[tuple[int, str, str]] = []
+    ``(global_position, section, entry, seed)`` — the position fixes the
+    entity's canonical E-ref, so chunks merge in one deterministic order
+    and edges resolve against the assembled roster. Greedy and pure: a
+    chunk closes when the next entry would cross the weight budget or the
+    hard cap. A mandated figure weighs like a key figure; a mandated
+    place/faction like a flat entry."""
+    chunks: list[list[tuple[int, str, str, dict[str, Any] | None]]] = []
+    current: list[tuple[int, str, str, dict[str, Any] | None]] = []
     weight = 0.0
-    for position, (section, entry) in enumerate(roster):
-        entry_weight = _WEIGHT_CHARACTER if section == "key_figures" else _WEIGHT_FLAT
+    for position, (section, entry, seed) in enumerate(roster):
+        flat = seed is not None and seed.get("kind") in ("place", "faction")
+        weighted = section in ("key_figures", "mandate") and not flat
+        entry_weight = _WEIGHT_CHARACTER if weighted else _WEIGHT_FLAT
         if current and (
             weight + entry_weight > WAVE1_CHUNK_WEIGHT or len(current) >= WAVE1_CHUNK_HARD_CAP
         ):
             chunks.append(current)
             current = []
             weight = 0.0
-        current.append((position, section, entry))
+        current.append((position, section, entry, seed))
         weight += entry_weight
     if current:
         chunks.append(current)
     return chunks
+
+
+def _seed_entry_names(payload: dict[str, Any]) -> set[str]:
+    """The normalized names the payload's seed entries already carry — a
+    declared target naming one of them is staged (Tier-2-style intra-
+    payload), never mandated."""
+    from app.store.direct import normalize_entity_name  # noqa: PLC0415 - import cycle
+
+    names: set[str] = set()
+    for section in SECTION_NAMES:
+        for entry in payload.get(section) or []:
+            if isinstance(entry, str):
+                if entry.strip():
+                    names.add(normalize_entity_name(entry))
+            elif (
+                isinstance(entry, dict)
+                and isinstance(entry.get("name"), str)
+                and entry["name"].strip()
+            ):
+                names.add(normalize_entity_name(entry["name"]))
+    return names
+
+
+def _mandated_targets(payload: dict[str, Any], committed_names: set[str]) -> list[tuple[str, str]]:
+    """The declared relation targets the world cannot resolve YET (spec:
+    the mandate): every SeedEntry relation's ``target_name`` whose
+    normalized name matches NO seed entry and NO committed entity.
+
+    Each demand carries its inferred KIND (``store.direct.declared_target_kinds``
+    intersects the edge-kind table over every relation naming the target —
+    a ``located_in`` demand can only be a place; an unconstrained demand
+    defaults to a character). The mandated names become roster entries
+    (the wave schema pins the count, so the mandate MUST generate inside
+    the wave); the post-generation mandate check runs on the ASSEMBLED
+    roster. Pure function of payload + the committed-name set (AD-16).
+    """
+    from app.store.direct import declared_target_kinds, normalize_entity_name  # noqa: PLC0415
+
+    seed_names = _seed_entry_names(payload)
+    demanded: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name, kinds in sorted(declared_target_kinds(_all_relations(payload)).items()):
+        normalized = normalize_entity_name(name)
+        if normalized in seed_names or normalized in committed_names or normalized in seen:
+            continue
+        seen.add(normalized)
+        # The DECLARED spelling generates (the DM's words are ground
+        # truth); only the resolution matches normalized.
+        demanded.append((name, sorted(kinds)[0] if kinds else "character"))
+    return demanded
+
+
+def _all_relations(payload: dict[str, Any]) -> list[Any]:
+    """Every declared relation row across all seed entries, in payload
+    order — the mandate's demand set and the declared-edge resolver's
+    input."""
+    relations: list[Any] = []
+    for section in SECTION_NAMES:
+        for entry in payload.get(section) or []:
+            if isinstance(entry, dict) and isinstance(entry.get("relations"), list):
+                relations.extend(entry["relations"])
+    return relations
+
+
+def _mandated_roster_rows(
+    mandated: Sequence[tuple[str, str]],
+) -> list[tuple[str, str, dict[str, Any] | None]]:
+    """The mandate's roster rows: ``("mandate", name, {kind})`` pseudo-
+    seeds appended after the seed entries (positions continue the E-ref
+    scheme). The kind hint rides the pseudo-seed so chunk weighting and
+    the prompt can name the demanded kind."""
+    return [
+        ("mandate", name, {"name": name, "kind": kind, "mandate": True}) for name, kind in mandated
+    ]
+
+
+def _authored_positions(roster: Sequence[tuple[str, str, dict[str, Any] | None]]) -> set[int]:
+    """The roster positions whose entry is a structured SeedEntry — the
+    positions whose authored fields are ground truth."""
+    return {position for position, (_s, _e, seed) in enumerate(roster) if seed is not None}
+
+
+def _backfill_authored(
+    entities: list[models.EntityInput],
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+    *,
+    which: str = "all",
+) -> list[models.EntityInput]:
+    """Re-apply the authored fields (ground truth) after a gate pass —
+    the DM's words commit VERBATIM, so a repair that drifted an authored
+    field is reverted deterministically here, never repaired by the LLM.
+
+    ``which`` narrows the re-application after the stat gate
+    (``"stat"``) or the record gates (``"record"``); the default
+    re-applies everything (names, description→text, record fields incl.
+    the pinned role, the authored stat_block byte-identical). Mandate
+    rows (seed ``None``) are untouched.
+    """
+    out: list[models.EntityInput] = []
+    for position, entity in enumerate(entities):
+        _section, _entry, seed = roster[position] if position < len(roster) else ("", "", None)
+        if seed is None or seed.get("mandate"):
+            out.append(entity)
+            continue
+        data = dict(entity.data)
+        name = entity.name
+        text = entity.text
+        seed_name = seed.get("name")
+        if isinstance(seed_name, str) and seed_name.strip() and which in ("all", "record"):
+            name = seed_name.strip()
+            data["name"] = name
+        description = seed.get("description")
+        if isinstance(description, str) and description.strip() and which in ("all", "record"):
+            text = description
+        if which in ("all", "record"):
+            role = seed.get("role")
+            if isinstance(role, str) and role.strip():
+                data["role"] = role.strip()
+            record = seed.get("record")
+            if isinstance(record, dict):
+                for key, value in record.items():
+                    if key != "stat_block":
+                        data[key] = value
+        if which in ("all", "stat"):
+            record = seed.get("record")
+            if isinstance(record, dict) and record.get("stat_block") is not None:
+                # BYTE-IDENTICAL: the authored block is restored exactly —
+                # no stamp, no fold, no repair residue.
+                data["stat_block"] = record["stat_block"]
+        out.append(dataclasses.replace(entity, name=name, text=text, data=data))
+    return out
+
+
+def _check_authored_stat_blocks(
+    entities: Sequence[models.EntityInput],
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+) -> None:
+    """The hybrid path's REJECT-ONLY authored-stat verdict (spec:
+    HYBRID_AUTHORED_BLOCK_INVALID): an authored block that fails the
+    canonical validation — or whose identity.role breaks the pinned role
+    — fails the job naming the entry + violations BEFORE any repair call
+    is offered. A valid authored block commits byte-identical with ZERO
+    repairs (the caller freezes these positions out of the repair gates).
+    """
+    from app.pipeline.knowledge import stat_block_role  # noqa: PLC0415 - local import fine
+    from app.store.direct import stat_block_violations  # noqa: PLC0415 - import cycle
+
+    violations: list[str] = []
+    for position, entity in enumerate(entities):
+        _section, _entry, seed = roster[position] if position < len(roster) else ("", "", None)
+        if seed is None or seed.get("mandate") or entity.kind != "character":
+            continue
+        record = seed.get("record")
+        block = record.get("stat_block") if isinstance(record, dict) else None
+        if block is None:
+            continue  # nothing authored — the generated gate owns the block
+        entry_violations = stat_block_violations(block, "stat_block")
+        pinned_role = seed.get("role") or (record.get("role") if isinstance(record, dict) else None)
+        block_role = stat_block_role(block)
+        if (
+            isinstance(pinned_role, str)
+            and pinned_role.strip()
+            and (block_role is None or block_role != pinned_role.strip())
+        ):
+            entry_violations.append(
+                f"stat_block.identity.role {block_role!r} must equal the pinned role "
+                f"{pinned_role.strip()!r}"
+            )
+        if entry_violations:
+            name = seed.get("name") or entity.name
+            violations.append(
+                f"authored stat block for {name!r} (E{position}): " + "; ".join(entry_violations)
+            )
+    if violations:
+        raise JobPayloadError(
+            "wave 1: authored stat block validation failed (reject-only — no repair "
+            "pass is offered for DM-authored blocks): " + " | ".join(violations)
+        )
+
+
+def _check_role_pins(
+    entities: Sequence[models.EntityInput],
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+) -> None:
+    """ROLE_PIN (spec: hybrid authorship): a seed's pinned role is ground
+    truth for the stat gate — ``stat_block.identity.role`` must equal it
+    (authored and GENERATED blocks alike; the record role was already
+    backfilled to the pin). Reject-only: the violation fails the job
+    naming the entry, before any repair call is offered."""
+    from app.pipeline.knowledge import stat_block_role  # noqa: PLC0415 - local import fine
+
+    violations: list[str] = []
+    for position, entity in enumerate(entities):
+        _section, _entry, seed = roster[position] if position < len(roster) else ("", "", None)
+        if seed is None or seed.get("mandate") or entity.kind != "character":
+            continue
+        pinned = seed.get("role") or (
+            seed["record"].get("role") if isinstance(seed.get("record"), dict) else None
+        )
+        if not (isinstance(pinned, str) and pinned.strip()):
+            continue
+        block = entity.data.get("stat_block")
+        if block is None:
+            continue  # the stat gate owns the missing-block verdict
+        block_role = stat_block_role(block)
+        if block_role is None or block_role != pinned.strip():
+            name = seed.get("name") or entity.name
+            violations.append(
+                f"role pin for {name!r} (E{position}): stat_block.identity.role "
+                f"{block_role!r} must equal the pinned role {pinned.strip()!r}"
+            )
+    if violations:
+        raise JobPayloadError("wave 1: role pin violated (reject-only): " + " | ".join(violations))
+
+
+def _authored_stat_frozen(
+    entities: Sequence[models.EntityInput],
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+) -> frozenset[int]:
+    """The positions whose stat blocks are DM-authored — frozen out of
+    canonicalize/conform/repair (a valid authored block commits
+    byte-identical; the generated gates never touch it)."""
+    frozen: set[int] = set()
+    for position, entity in enumerate(entities):
+        _section, _entry, seed = roster[position] if position < len(roster) else ("", "", None)
+        if seed is None or seed.get("mandate") or entity.kind != "character":
+            continue
+        record = seed.get("record")
+        if isinstance(record, dict) and record.get("stat_block") is not None:
+            frozen.add(position)
+    return frozenset(frozen)
+
+
+def _mandate_block_lines(mandated: Sequence[tuple[str, str]]) -> list[str]:
+    """The declared-relations/mandate demand block that rides EVERY chunk
+    (spec: the mandate check runs on the ASSEMBLED roster, so every
+    part's prompt carries the full demand even though it generates only
+    its slice)."""
+    if not mandated:
+        return []
+    return [
+        "MANDATORY ENTITIES (declared relation targets — one part of this build",
+        "creates each one EXACTLY as named, with the kind demanded; the pipeline",
+        "wires the declared edges to them afterwards):",
+        *(f"- {name} — kind: {kind}" for name, kind in mandated),
+    ]
+
+
+def _run_mandate_reemit(
+    job: models.Job,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    seed: models.Campaign,
+    entities: list[models.EntityInput],
+    missing: Sequence[tuple[str, str]],
+    *,
+    ceiling: int,
+) -> list[models.EntityInput]:
+    """The mandate's ONE bounded re-emit (spec: gate 2 — named-only, one
+    re-emit, second miss -> zero commits), in the ``_anchor_repair``
+    shape: the ASSEMBLED roster frozen as E-ref+name+kind rows, the exact
+    missing demands, cold+seeded sampling, the count-and-ref-pinned wave
+    schema, and ``call_wave``'s one JSON retry. Emitted entities are
+    validated positionally (their refs continue the assembled roster) and
+    APPENDED — the caller re-runs the record/stat gates over the full
+    roster so a mandated figure leaves with a valid record + block. A
+    second miss raises: the DM-demanded endpoints are load-bearing."""
+    offset = len(entities)
+    refs = [f"E{offset + index}" for index in range(len(missing))]
+    roster_lines = [
+        f"- E{position}: {entity.name} ({entity.kind})" for position, entity in enumerate(entities)
+    ]
+    demand_lines = [
+        f"- E{offset + index}: {name} — kind: {kind} (MANDATORY: a declared relation "
+        "names this entity)"
+        for index, (name, kind) in enumerate(missing)
+    ]
+    lines = [
+        "You are completing a TTRPG world-build-in: the roster below was already",
+        "generated, but declared relation targets are MISSING from it.",
+        "Respond with exactly one JSON object — nothing else.",
+        "",
+        "CAMPAIGN SEED",
+        f"title: {seed.title}",
+        f"description: {seed.description}",
+        f"theme: {seed.theme}",
+        f"custom lore: {seed.custom_lore}",
+        "",
+        "FROZEN ROSTER (already generated — do NOT re-emit these):",
+        *roster_lines,
+        "",
+        "MISSING MANDATORY TARGETS (emit EXACTLY these, IN THIS ORDER):",
+        *demand_lines,
+        "",
+        "STAT BLOCKS",
+        stat_block_rules_text(),
+        "",
+        *_character_record_lines(),
+        "",
+        "OUTPUT CONTRACT",
+        'Respond with one JSON object: {"entities": [...], "edges": [...]}.',
+        "The refs are FIXED: your first entity is E" + str(offset) + ", and so on.",
+        "Edges must be EMPTY ([]) — the pipeline wires the declared relations itself.",
+    ]
+    call_settings = _repair_sampling(
+        dataclasses.replace(
+            settings,
+            response_format=build_wave_schema(len(missing), refs=refs),
+            max_tokens=_wave_max_tokens(len(missing), ceiling),
+        )
+    )
+    parsed = call_wave(
+        budget,
+        provider,
+        call_settings,
+        "\n".join(lines),
+        label="mandate_reemit",
+        parse=lambda text: parse_build_output(text, wave=1),
+        retry_note='Return ONLY the one JSON object: {"entities": [...], "edges": [...]}.',
+        ceiling=ceiling,
+    )
+    raw_entities = parsed.get("entities") or []
+    emitted, _ids = _validate_entities(1, raw_entities, ref_offset=offset)
+    return [*entities, *emitted]
+
+
+def _missing_mandated(
+    entities: Sequence[models.EntityInput], mandated: Sequence[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """The mandated demands the ASSEMBLED roster still lacks (normalized
+    name match — the model may re-case or re-article a name)."""
+    from app.store.direct import normalize_entity_name  # noqa: PLC0415 - import cycle
+
+    present = {normalize_entity_name(entity.name) for entity in entities}
+    return [(name, kind) for name, kind in mandated if normalize_entity_name(name) not in present]
+
+
+def _declared_edges(
+    payload: dict[str, Any],
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+    entities: Sequence[models.EntityInput],
+    world: Sequence[models.Entity],
+) -> list[models.EdgeInput]:
+    """The declared relations as pipeline-built edges (spec: never sent
+    through the LLM for interpretation or re-typing) — the THREE-TIER
+    target contract:
+
+    - ``target_id`` (Tier 1): direct ULID binding — the matcher never
+      runs; the target must be a committed entity of this campaign.
+    - ``target_key`` (Tier 2): intra-payload resolution to the staged
+      seed entry's fresh ULID — both entities commit fresh and the edge
+      wires atomically in the one revision.
+    - ``target_name`` (Tier 3): normalized EXACT-name matching — exactly
+      one committed entity resolves to it (no generation); >=2 matches
+      rejects naming them (the DM targets by ULID); zero matches resolves
+      against the assembled roster (the mandate's row — the caller has
+      already failed the job if the re-emit missed).
+
+    Kind pairs validate against the edge-kind table (declared edges are
+    load-bearing, unlike best-effort wave-1 rows); duplicates collapse
+    first-wins; a self-declared loop is a payload error.
+    """
+    from app.store.direct import normalize_entity_name  # noqa: PLC0415 - import cycle
+
+    committed_by_name: dict[str, list[models.Entity]] = {}
+    committed_by_id: dict[str, models.Entity] = {}
+    for row in world:
+        committed_by_id[row.id] = row
+        committed_by_name.setdefault(normalize_entity_name(row.name), []).append(row)
+    key_positions: dict[str, int] = {}
+    for position, (_section, _entry, seed) in enumerate(roster):
+        if isinstance(seed, dict) and isinstance(seed.get("key"), str) and seed["key"].strip():
+            key_positions[seed["key"]] = position
+
+    edges: list[models.EdgeInput] = []
+    staged: set[tuple[str, str, str]] = set()
+    for position, (_section, _entry, seed) in enumerate(roster):
+        if not isinstance(seed, dict) or not isinstance(seed.get("relations"), list):
+            continue
+        src = entities[position].id
+        assert src is not None
+        for r_index, raw in enumerate(seed["relations"]):
+            if not isinstance(raw, dict):
+                raise JobPayloadError(
+                    f"wave 1: declared relation {r_index} of E{position} is not an object"
+                )
+            edge_type = raw.get("type")
+            if edge_type not in EDGE_TYPES:
+                raise JobPayloadError(
+                    f"wave 1: declared relation {r_index} of E{position} type "
+                    f"{edge_type!r} not in the vocabulary: {sorted(EDGE_TYPES)}"
+                )
+            where = f"declared relation {r_index} of E{position} ({edge_type})"
+            counter = raw.get("counter", 1)
+            if type(counter) is not int:
+                raise JobPayloadError(f"wave 1: {where} counter must be an integer")
+            if "target_id" in raw:
+                target_id = raw["target_id"]
+                committed_row = committed_by_id.get(target_id)
+                if committed_row is None:
+                    raise JobPayloadError(
+                        f"wave 1: {where} target_id {target_id} names no committed entity"
+                    )
+                dst, dst_kind = target_id, committed_row.kind
+            elif "target_key" in raw:
+                target_position = key_positions.get(raw["target_key"])
+                if target_position is None or target_position == position:
+                    raise JobPayloadError(
+                        f"wave 1: {where} target_key {raw['target_key']!r} names no "
+                        "other staged seed entry in this payload"
+                    )
+                target = entities[target_position]
+                dst, dst_kind = cast(str, target.id), target.kind
+            else:
+                target_name = raw.get("target_name")
+                if not isinstance(target_name, str) or not target_name.strip():
+                    raise JobPayloadError(
+                        f"wave 1: {where} carries no usable target "
+                        "(blank/description-only targets are payload errors)"
+                    )
+                normalized = normalize_entity_name(target_name)
+                matches = committed_by_name.get(normalized, [])
+                if len(matches) > 1:
+                    named = ", ".join(sorted(f"{m.name!r} ({m.id})" for m in matches))
+                    raise JobPayloadError(
+                        f"wave 1: {where} target_name {target_name!r} matches "
+                        f"{len(matches)} committed entities — target by ULID: {named}"
+                    )
+                if len(matches) == 1:
+                    dst, dst_kind = matches[0].id, matches[0].kind
+                else:
+                    roster_match = next(
+                        (
+                            entity
+                            for entity in entities
+                            if normalize_entity_name(entity.name) == normalized
+                        ),
+                        None,
+                    )
+                    if roster_match is None or roster_match.id is None:
+                        raise JobPayloadError(
+                            f"wave 1: {where} target_name {target_name!r} matches nothing "
+                            "in the world or the assembled roster"
+                        )
+                    dst, dst_kind = roster_match.id, roster_match.kind
+            if not edge_kind_ok(edge_type, entities[position].kind, dst_kind):
+                raise JobPayloadError(
+                    f"wave 1: {where} cannot run from a {entities[position].kind} to a {dst_kind}"
+                )
+            if dst == src:
+                raise JobPayloadError(f"wave 1: {where} is a self-edge")
+            relationship = (src, dst, edge_type)
+            if relationship in staged:
+                continue  # duplicate collapse: first declared row wins
+            staged.add(relationship)
+            edges.append(models.EdgeInput(src=src, dst=dst, type=edge_type, counter=counter))
+    return edges
 
 
 def _enforce_stat_blocks(
@@ -864,6 +1295,7 @@ def _enforce_stat_blocks(
     *,
     repair_response_format: dict[str, Any] | None = None,
     wave: int | None = None,
+    frozen: frozenset[int] = frozenset(),
 ) -> tuple[list[models.EntityInput], bool]:
     """The stat-block gate shared by both waves and the regenerate path:
     collect issues, run up to THREE bounded repair passes, re-check, then the
@@ -907,8 +1339,11 @@ def _enforce_stat_blocks(
     # same pass folds the prototype-2 near-misses (``features`` -> ``traits``,
     # a ``stats`` object's members) and completes structured damage parts
     # (spec: structured attack damage and the missing stat aspects).
-    entities = canonicalize_stat_blocks(entities)
-    issues = collect_stat_issues(entities)
+    # FROZEN positions (DM-authored blocks, hybrid path) skip the folds and
+    # the issue collection entirely: they are pre-validated reject-only and
+    # commit byte-identical — the repair machinery never touches them.
+    entities = _canonicalize_skipping(entities, frozen)
+    issues = [issue for issue in collect_stat_issues(entities) if issue.position not in frozen]
     # Conform-first (see the docstring): Monster power-only misses go
     # straight to the deterministic conform before any LLM pass; NPC/BBEG
     # power misses are no longer violations at all (the NPC oracle,
@@ -916,8 +1351,8 @@ def _enforce_stat_blocks(
     first = conform_first_targets(issues)
     if first:
         entities = conform_stat_power(entities, first)
-        entities = canonicalize_stat_blocks(entities)
-        issues = collect_stat_issues(entities)
+        entities = _canonicalize_skipping(entities, frozen)
+        issues = [issue for issue in collect_stat_issues(entities) if issue.position not in frozen]
     # Repair calls carry the strict repair-response schema via a settings
     # copy (spec: edgeless repair scope) — the wave calls keep the wave
     # envelope, the record/name gates keep plain settings (Never list).
@@ -1019,8 +1454,8 @@ def _enforce_stat_blocks(
         # the canonical one. Measured live 2026-09-11: a repair shipped
         # ``2d6 + 13`` with ``average: 16``, and the auditor trusts the
         # stated average — the parts and the dice must agree.
-        entities = canonicalize_stat_blocks(entities)
-        issues = collect_stat_issues(entities)
+        entities = _canonicalize_skipping(entities, frozen)
+        issues = [issue for issue in collect_stat_issues(entities) if issue.position not in frozen]
     if issues:
         # The repair passes are LLM shots at arithmetic a model cannot do:
         # before failing the job, give each block one deterministic chance
@@ -1032,6 +1467,20 @@ def _enforce_stat_blocks(
     if issues:
         raise JobPayloadError(stat_failure_message(issues))
     return entities, False
+
+
+def _canonicalize_skipping(
+    entities: list[models.EntityInput], frozen: frozenset[int]
+) -> list[models.EntityInput]:
+    """``canonicalize_stat_blocks`` over the generated blocks only — a
+    frozen (DM-authored) block passes through byte-identical."""
+    if not frozen:
+        return canonicalize_stat_blocks(entities)
+    folded = canonicalize_stat_blocks(entities)
+    return [
+        entities[position] if position in frozen else folded[position]
+        for position in range(len(entities))
+    ]
 
 
 def _changed_paths(old: Any, new: Any, path: str = "") -> list[str]:
@@ -1481,20 +1930,6 @@ class _Wave2StaleEndpoints(Exception):
     new head; a second loss is an actively-rewritten world and fails loud."""
 
 
-def normalize_entity_name(name: str) -> str:
-    """The dedup identity key (owner rule 2026-09-12): casefolded, leading
-    article stripped, whitespace collapsed, trailing punctuation dropped.
-    EXACT-name matching on purpose — epithet variants ("Sim (The Drowned)")
-    are not merged; the wave-2 prompt rule deters them and the DM prunes
-    survivors. A fuzzy merge is the two-Jorahs hazard the ledger warned
-    about and stays out of scope."""
-    normalized = " ".join(name.casefold().split()).strip(".!?,;:")
-    for article in ("the ", "a ", "an "):
-        if normalized.startswith(article):
-            return normalized[len(article) :]
-    return normalized
-
-
 def _merge_with_world(
     campaign_id: str,
     entities: Sequence[models.EntityInput],
@@ -1506,21 +1941,26 @@ def _merge_with_world(
     list[models.EdgeInput],
     dict[str, Any],
 ]:
-    """The upsert rule (owner decision 2026-09-12, resolving the 2.3
-    re-submit entry): an incoming entity whose (kind, normalized name)
-    matches a committed entity of this campaign UPDATES that row instead
-    of creating a twin — the store's explicit-id update contract (AD-2:
-    inbound edges and media survive) does the work, so the commit path
-    itself is untouched. Edges follow: endpoints remap to the surviving
-    row, self-loops and relationships the world already has are dropped
-    (the store would reject them as duplicates anyway). An update whose
-    content is byte-equal to the row is skipped entirely — a re-submit of
-    the same lists writes zero events. Twins WITHIN one wave merge the
-    same way (first occurrence wins). Returns ``(staged_entities,
-    staged_edges, roster, remapped_edges, report)``: what the store
-    should write, the FINAL-ID roster the wave represents (wave 2 seeds
-    its retrieval from it, so merged waves stay wirable), the wave's
-    wiring view, and the audit report."""
+    """The merge rule (owner decision 2026-09-12, reworked by the
+    hybrid-authorship spec's F4 ruling): a place or faction whose (kind,
+    normalized name) matches a committed entity of this campaign UPDATES
+    that row instead of creating a twin — the store's explicit-id update
+    contract (AD-2: inbound edges and media survive) does the work, so
+    the commit path itself is untouched. CHARACTERS never merge (F4):
+    every character — seed, re-seed, or model-generated — commits a FRESH
+    ULID (same-name characters coexist; re-seeding is additive;
+    regenerate and hand-editing remain the deliberate replace tools), so
+    the merge audit's merged/unchanged counts place/faction rows only.
+    Edges follow: endpoints remap to the surviving row, self-loops and
+    relationships the world already has are dropped (the store would
+    reject them as duplicates anyway). An update whose content is
+    byte-equal to the row is skipped entirely — a re-submit of the same
+    lists writes zero events. Twins WITHIN one wave merge the same way
+    for places/factions (first occurrence wins). Returns
+    ``(staged_entities, staged_edges, roster, remapped_edges, report)``:
+    what the store should write, the FINAL-ID roster the wave represents
+    (wave 2 seeds its retrieval from it, so merged waves stay wirable),
+    the wave's wiring view, and the audit report."""
     with session_scope() as session:
         world = [
             (row.id, row.kind, row.name, row.text, row.data)
@@ -1547,9 +1987,19 @@ def _merge_with_world(
     unchanged: list[dict[str, Any]] = []
     for entity in entities:
         staged_id = entity.id or ids.new_id()
-        key = (entity.kind, normalize_entity_name(entity.name))
-        target = index.get(key) or seen_keys.get(key) or staged_id
-        seen_keys.setdefault(key, target)
+        # F4 (owner ruling, hybrid-authorship spec): a CHARACTER never
+        # merges — not against the committed world, not against a batch
+        # twin. Every character commits a FRESH ULID (same-name
+        # characters coexist; re-seeding is additive; regenerate is the
+        # blessed update tool). Places and factions keep the (kind,
+        # normalized-name) upsert (delta for structured entries, gate 3),
+        # so the merge audit counts place/faction rows only.
+        if entity.kind == "character":
+            target = staged_id
+        else:
+            key = (entity.kind, normalize_entity_name(entity.name))
+            target = index.get(key) or seen_keys.get(key) or staged_id
+            seen_keys.setdefault(key, target)
         resolution[staged_id] = target
         if target in taken:
             continue  # in-batch twin: folded into the first occurrence
@@ -1734,10 +2184,11 @@ def _run_wave1_chunks(
     settings: LLMSettings,
     seed: models.Campaign,
     notes: str,
-    chunks: Sequence[Sequence[tuple[int, str, str]]],
+    chunks: Sequence[Sequence[tuple[int, str, str, dict[str, Any] | None]]],
     *,
     ceiling: int,
     progress: Callable[[float], None],
+    mandate_block: Sequence[str] = (),
 ) -> tuple[list[models.EntityInput], list[models.EdgeInput], bool, list[dict[str, Any]]]:
     """Chunked wave-1 generation plus the edges-only wiring pass (M1).
 
@@ -1764,13 +2215,20 @@ def _run_wave1_chunks(
     for index, chunk in enumerate(chunks):
         if not _job_still_running(job):
             return entities, [], True, []
-        refs = [f"E{position}" for position, _section, _entry in chunk]
+        refs = [f"E{position}" for position, _section, _entry, _seed in chunk]
         chunk_settings = dataclasses.replace(
             settings,
             response_format=build_wave_schema(len(chunk), refs=refs),
             max_tokens=_wave_max_tokens(len(chunk), ceiling),
         )
-        prompt = build_wave1_chunk_prompt(seed, notes, chunk, chunk_index=index, chunk_total=total)
+        prompt = build_wave1_chunk_prompt(
+            seed,
+            notes,
+            chunk,
+            chunk_index=index,
+            chunk_total=total,
+            mandate_block=mandate_block,
+        )
         parsed = call_wave(
             budget,
             provider,
@@ -2135,8 +2593,11 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     no-op for that wave; earlier committed waves stay. Any other failure
     (provider, budget, malformed output, invalid subgraph) propagates so
     the worker fails the job. Structure keeps its one bounded pass on
-    wave 2 only (anchor repair); wave 1 commits edgeless (owner verdict
-    2026-09-11) — the DM prunes. The job result carries the call
+    wave 2 only (spec: repair sequence step 3, anchor repair): a wave-2
+    subgraph whose ONLY defect is core-unanchored entities gets one
+    edges-only repair over frozen entities; a still-orphan repair fails
+    the job. Wave 1 commits edgeless (owner verdict 2026-09-11, the DM
+    prunes). The job result carries the call
     telemetry (J): ``llm_calls`` per label, the upsert audit:
     ``merge`` per wave (merged/unchanged/dropped_edges/twins_dropped), and
     ``context`` (the committed world this build arrived at — what later
@@ -2178,7 +2639,20 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             with contextlib.suppress(JobStateConflictError):
                 report_progress(job.id, value)
 
+    # Hybrid authorship (spec): declared relation targets that neither a
+    # seed entry nor the committed world resolves become MANDATED roster
+    # rows — they generate inside the wave (the schema pins the count)
+    # because the DM-demanded endpoints are load-bearing.
     roster = _wave1_roster(payload)
+    committed_names = {normalize_entity_name(entity.name) for entity in world_before}
+    mandated = _mandated_targets(payload, committed_names)
+    if mandated:
+        logger.info(
+            "build_in: mandated relation targets join the roster: %s (job %s)",
+            [name for name, _kind in mandated],
+            job.id,
+        )
+        roster = [*roster, *_mandated_roster_rows(mandated)]
     chunks = _wave1_chunks(roster)
     # Wave 1: the named sections -> a committed core (edgeless allowed).
     if not _job_still_running(job):
@@ -2200,7 +2674,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             response_format=build_wave_schema(len(roster), refs=refs or None),
             max_tokens=_wave_max_tokens(len(roster), ceiling),
         )
-        prompt_1 = build_wave1_prompt(seed, payload)
+        prompt_1 = build_wave1_prompt(seed, payload, mandated=mandated)
         parsed_1 = call_wave(
             budget,
             provider,
@@ -2241,12 +2715,19 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             chunks,
             ceiling=ceiling,
             progress=progress,
+            mandate_block=_mandate_block_lines(mandated),
         )
         if cancelled:
             return
     # Only characters carry stat blocks (AR24, spec-2.4 review decision): a
     # stray block from a faction/place is stripped before validation or commit.
     entities_1 = strip_noncharacter_stat_blocks(entities_1)
+    # Hybrid authorship: the authored fields are GROUND TRUTH — apply them
+    # BEFORE the gates (an authored name is never name-repaired, an
+    # authored role pins the record) and re-apply after every repair pass
+    # below (a repair that drifted an authored field is reverted
+    # deterministically, never re-repaired by the LLM).
+    entities_1 = _backfill_authored(entities_1, roster, which="record")
     # Structural-name enforcement (dogfood fix 2026-09-09): a wave entity
     # missing its name (gemma shipped a fully-detailed character with no
     # name field) gets one bounded repair pass BEFORE the record gate, so
@@ -2266,7 +2747,14 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     )
     if cancelled:
         return
+    entities_1 = _backfill_authored(entities_1, roster, which="record")
     progress(0.4)
+    # Hybrid REJECT-ONLY verdict for DM-authored stat blocks: an invalid
+    # authored block fails the job naming entry + violations BEFORE any
+    # repair call is offered (HYBRID_AUTHORED_BLOCK_INVALID); a valid one
+    # is FROZEN out of the repair machinery and commits byte-identical.
+    _check_authored_stat_blocks(entities_1, roster)
+    _check_role_pins(entities_1, roster)
     # Stat-block enforcement (AR24/AR25, spec-2.4): every character must carry
     # a valid minimal stat block before the wave commits — or up to three
     # bounded per-entity repair passes; a block still invalid after the
@@ -2279,10 +2767,72 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         entities_1,
         repair_response_format=build_stat_repair_schema(),
         wave=1,
+        frozen=_authored_stat_frozen(entities_1, roster),
     )
     if cancelled:
         return
+    entities_1 = _backfill_authored(entities_1, roster, which="stat")
+    # The mandate gate (spec: gate 2): the ASSEMBLED roster must contain
+    # every demanded target. ONE bounded re-emit (frozen roster,
+    # cold+seeded, the _anchor_repair shape); a second miss fails the job
+    # with ZERO commits — the declared edges would dangle otherwise.
+    missing = _missing_mandated(entities_1, mandated)
+    if missing:
+        logger.info(
+            "build_in: mandate re-emit for %s (job %s)",
+            [name for name, _kind in missing],
+            job.id,
+        )
+        entities_1 = _run_mandate_reemit(
+            job,
+            budget,
+            provider,
+            settings,
+            seed,
+            entities_1,
+            missing,
+            ceiling=ceiling,
+        )
+        # The re-emitted rows go through the same gates (their records and
+        # stat blocks must hold); authored fields never ride a mandate row.
+        entities_1, cancelled = _enforce_entity_names(
+            job, budget, provider, settings, entities_1, wave=1
+        )
+        if cancelled:
+            return
+        entities_1, cancelled = _enforce_character_records(
+            job, budget, provider, settings, entities_1, wave=1
+        )
+        if cancelled:
+            return
+        entities_1, cancelled = _enforce_stat_blocks(
+            job,
+            budget,
+            provider,
+            settings,
+            entities_1,
+            repair_response_format=build_stat_repair_schema(),
+            wave=1,
+            frozen=_authored_stat_frozen(entities_1, roster),
+        )
+        if cancelled:
+            return
+        entities_1 = _backfill_authored(entities_1, roster)
+        _check_role_pins(entities_1, roster)
+        missing = _missing_mandated(entities_1, mandated)
+        if missing:
+            raise JobPayloadError(
+                "wave 1: declared relation target(s) still missing after the mandated "
+                "re-emit — zero commits (the DM's declared endpoints are load-bearing): "
+                + ", ".join(name for name, _kind in missing)
+            )
     progress(0.45)
+    # Declared relation edges (three-tier contract): pipeline-built,
+    # kind-validated, duplicate-collapsed — never sent through the LLM.
+    declared = _declared_edges(payload, roster, entities_1, world_before)
+    if declared:
+        logger.info("build_in: %d declared edge(s) applied (job %s)", len(declared), job.id)
+    edges_1 = [*edges_1, *declared]
     # Edgeless wave-1 commits through the store's FR2 backstop explicitly
     # (owner verdict 2026-09-11): the pipeline no longer requires internal
     # wiring, so the commit must not either — the DM prunes. Every other
@@ -2391,21 +2941,45 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     )
 
 
-def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) -> str:
+def build_wave1_prompt(
+    campaign_seed: models.Campaign,
+    payload: dict[str, Any],
+    *,
+    mandated: Sequence[tuple[str, str]] = (),
+) -> str:
     """The wave-1 prompt: digest the named sections into a core subgraph.
 
-    Pure and byte-deterministic (AD-16): a function of the campaign seed
-    and the payload sections only — no ids, timestamps, or job state.
-    Sections are trimmed (whitespace-only entries dropped) in fixed
-    order; the closed edge vocabulary and its counter semantics are
-    embedded so the model can never invent an edge type (spec-2.2).
+    Pure and byte-deterministic (AD-16): a function of the campaign seed,
+    the payload sections, and the mandated-target list — no ids,
+    timestamps, or job state. Sections are trimmed (whitespace-only
+    entries dropped) in fixed order; the closed edge vocabulary and its
+    counter semantics are embedded so the model can never invent an edge
+    type (spec-2.2). Structured SeedEntry rows render their DM-AUTHORED
+    ground-truth blocks; ``mandated`` rows render the MANDATORY ENTITIES
+    block (the wave's E-refs continue past the seed entries, and the
+    count pin in the schema includes them).
     """
     sections: list[str] = []
     for section in SECTION_NAMES:
         entries = payload.get(section, [])
-        trimmed = [entry.strip() for entry in entries if isinstance(entry, str) and entry.strip()]
-        sections.append(f"{section} ({len(trimmed)}):")
-        sections.extend(f"- {entry}" for entry in trimmed)
+        rows = _wave1_roster({section: entries})
+        sections.append(f"{section} ({len(rows)}):")
+        for _section, entry, seed in rows:
+            sections.append(f"- {entry}")
+            if seed is not None:
+                sections.extend(_authored_seed_lines(seed))
+    mandate_lines: list[str] = []
+    if mandated:
+        offset = len(_wave1_roster(payload))
+        mandate_lines = [
+            "MANDATORY ENTITIES (declared relation targets — create each one EXACTLY",
+            "as named, with the kind demanded; a later pipeline pass wires the",
+            "declared edges to them):",
+            *(
+                f"- E{offset + index} (mandate): {name} — kind: {kind}"
+                for index, (name, kind) in enumerate(mandated)
+            ),
+        ]
     notes = payload.get("notes", "")
     notes = notes.strip() if isinstance(notes, str) else ""
     lines = [
@@ -2420,6 +2994,14 @@ def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) 
         "",
         "SUBMITTED SECTIONS",
         *sections,
+        *(
+            (
+                "",
+                *mandate_lines,
+            )
+            if mandate_lines
+            else ()
+        ),
         # Wave 1 builds the entities named above, so a DM note that fixes a
         # level, role, or power for one of them has to land HERE — a note
         # saying "sanberi is level 18" that only wave 2 ever saw is why a
@@ -2486,13 +3068,65 @@ def build_wave1_prompt(campaign_seed: models.Campaign, payload: dict[str, Any]) 
     return "\n".join(lines)
 
 
+def _chunk_roster_lines(chunk: Sequence[tuple[int, str, str, dict[str, Any] | None]]) -> list[str]:
+    """One chunk's YOUR ENTITIES rows: the legacy ``- E<pos> (section):
+    entry`` line for plain strings and mandates, the DM-AUTHORED block
+    appended for structured entries."""
+    lines: list[str] = []
+    for position, section, entry, seed in chunk:
+        lines.append(f"- E{position} ({section}): {entry}")
+        if seed is not None:
+            lines.extend(_authored_seed_lines(seed))
+    return lines
+
+
+def _authored_seed_lines(seed: dict[str, Any]) -> list[str]:
+    """The DM-AUTHORED ground-truth block for one structured seed entry:
+    every authored field rendered verbatim (the model copies, never
+    paraphrases), the pinned role flagged, the declared relations named
+    (pipeline-wired — the model never emits edges for them, and an
+    unresolvable target_name is the mandate's roster row)."""
+    lines = [
+        "  DM-AUTHORED SEED (GROUND TRUTH — copy every authored field below",
+        "  VERBATIM into the entity/record; never paraphrase, re-type, or drop one):",
+    ]
+    role = seed.get("role")
+    if isinstance(role, str) and role.strip():
+        lines.append(f"    role (PINNED): {role.strip()}")
+    description = seed.get("description")
+    if isinstance(description, str) and description.strip():
+        lines.append(f"    description: {description.strip()}")
+    record = seed.get("record")
+    if isinstance(record, dict) and record:
+        lines.append(f"    record: {json.dumps(record, ensure_ascii=False, sort_keys=False)}")
+    relations = seed.get("relations")
+    if isinstance(relations, list) and relations:
+        lines.append("  DECLARED RELATIONS (the pipeline wires these after commit — never emit")
+        lines.append("  edges for them; the named target MUST exist once this wave lands):")
+        for raw in relations:
+            if not isinstance(raw, dict):
+                continue
+            edge_type = raw.get("type", "?")
+            if "target_id" in raw:
+                target = f"committed entity {raw['target_id']}"
+            elif "target_key" in raw:
+                target = f"staged entry {raw['target_key']!r}"
+            else:
+                target = f"'{raw.get('target_name')}'"
+            counter = raw.get("counter")
+            suffix = f" (counter {counter})" if isinstance(counter, int) else ""
+            lines.append(f"    - {edge_type} -> {target}{suffix}")
+    return lines
+
+
 def build_wave1_chunk_prompt(
     campaign_seed: models.Campaign,
     notes: str,
-    chunk: Sequence[tuple[int, str, str]],
+    chunk: Sequence[tuple[int, str, str, dict[str, Any] | None]],
     *,
     chunk_index: int,
     chunk_total: int,
+    mandate_block: Sequence[str] = (),
 ) -> str:
     """One wave-1 chunk's prompt (M1): the shared rules text plus ONLY this
     chunk's roster slice, every entry named with its GLOBAL E-ref.
@@ -2520,7 +3154,7 @@ def build_wave1_chunk_prompt(
         f"YOUR ENTITIES (emit EXACTLY {len(chunk)} entities, IN THIS ORDER — the first",
         f"is E{start}, the last is E{end}; the other parts' entities are generated",
         "separately and are NOT visible here):",
-        *(f"- E{position} ({section}): {entry}" for position, section, entry in chunk),
+        *_chunk_roster_lines(chunk),
         *(
             (
                 "",
@@ -2534,6 +3168,8 @@ def build_wave1_chunk_prompt(
             else ()
         ),
         "",
+        *mandate_block,
+        *(("",) if mandate_block else ()),
         "TASK",
         "Create the entities named above: characters for key figures, places for",
         "places, factions for factions — each character with its full record and",
@@ -3623,9 +4259,9 @@ def _check_sections(payload: dict[str, Any]) -> None:
     raw type error mid-run)."""
     for section in SECTION_NAMES:
         entries = payload.get(section, [])
-        if not isinstance(entries, list) or not all(isinstance(e, str) for e in entries):
+        if not isinstance(entries, list) or not all(isinstance(e, (str, dict)) for e in entries):
             raise JobPayloadError(
-                f"build_in: payload section {section!r} must be a list of strings"
+                f"build_in: payload section {section!r} must be a list of strings or seed entries"
             )
 
 

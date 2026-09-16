@@ -199,6 +199,25 @@ def _run_job(
 
         run_build_in(job, provider, settings)
         return
+    if job.kind == "add_character":
+        # The fully-authored path (spec: hybrid authorship): the runner
+        # takes NO provider — zero-LLM is structural, not policed. Its
+        # backstop rejection is the named STRUCTURAL_VALIDATION_FAILURE
+        # code, not the generic worker error.
+        from app.pipeline.direct import (
+            STRUCTURAL_VALIDATION_FAILURE,
+            StructuralValidationError,
+            run_add_character,
+        )
+
+        try:
+            run_add_character(job)
+        except StructuralValidationError as exc:
+            fail_job(
+                job.id,
+                f"{STRUCTURAL_VALIDATION_FAILURE}: " + "; ".join(exc.violations),
+            )
+        return
     if job.kind == "generate":
         # Lazy import (same circularity as ``build_in``): the generate
         # runner stages candidates and commits nothing (spec-3.1).

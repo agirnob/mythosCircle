@@ -29,7 +29,16 @@ class JobCreate(BaseModel):
     """POST /api/jobs body — the job-submission wire contract."""
 
     campaign_id: str
-    kind: Literal["text", "image", "video", "video_prompt", "build_in", "generate", "regenerate"]
+    kind: Literal[
+        "text",
+        "image",
+        "video",
+        "video_prompt",
+        "build_in",
+        "generate",
+        "regenerate",
+        "add_character",
+    ]
     payload: dict[str, Any]
     # Idempotency key (conventions.md): retries reuse the same job_id; a
     # duplicate is rejected with 409, never double-enqueued.

@@ -55,6 +55,55 @@ EDGE_TYPES: frozenset[str] = frozenset(
     }
 )
 
+#: Kind compatibility for the closed edge vocabulary (owner decision
+#: 2026-09-12). ONE table feeds the build prompts' guidance (layer 1),
+#: the build validator + bounded repair (layer 2), and BOTH hybrid-
+#: authorship paths' declared-edge application (spec: hybrid
+#: authorship) — the text and every enforcement site cannot drift.
+#: Lives beside ``EDGE_TYPES`` because it is that vocabulary's
+#: semantics, and in the store so the enqueue gates (422, zero rows)
+#: can kind-check declared targets without importing the pipeline
+#: (dependency direction: pipeline -> store). ``None`` = any kind; an
+#: absent type is unrestricted.
+EDGE_KIND_RULES: MappingProxyType[str, tuple[frozenset[str] | None, frozenset[str] | None]] = (
+    MappingProxyType(
+        {
+            "located_in": (None, frozenset({"place"})),
+            "member_of": (
+                frozenset({"character", "faction"}),
+                frozenset({"character", "faction"}),
+            ),
+            "loyalty": (
+                frozenset({"character", "faction"}),
+                frozenset({"character", "faction"}),
+            ),
+            "bases_at": (frozenset({"character", "faction"}), frozenset({"place"})),
+            "hails_from": (frozenset({"character", "faction"}), frozenset({"place"})),
+            "controls": (
+                frozenset({"character", "faction"}),
+                frozenset({"place", "faction"}),
+            ),
+            "employs": (
+                frozenset({"character", "faction"}),
+                frozenset({"character", "faction"}),
+            ),
+            "worships": (
+                frozenset({"character", "faction"}),
+                frozenset({"character", "faction"}),
+            ),
+            "protects": (frozenset({"character", "faction"}), None),
+        }
+    )
+)
+
+
+def edge_kind_ok(edge_type: str, src_kind: str, dst_kind: str) -> bool:
+    """The kind-compatibility rule for one edge (layer 2 enforces, layer 1
+    prints). Unrestricted types accept any kind pair."""
+    src, dst = EDGE_KIND_RULES.get(edge_type, (None, None))
+    return (src is None or src_kind in src) and (dst is None or dst_kind in dst)
+
+
 #: Per-type counter semantic (AD-23): debt = amount, grudge/loyalty =
 #: score, ally/enemy = intensity. The map is the code contract the
 #: pipeline assigns counters against and Phase 3 consumes; members

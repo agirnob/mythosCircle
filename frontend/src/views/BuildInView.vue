@@ -285,7 +285,9 @@ function mergeLines(result: unknown): string[] {
             <dd v-if="mergeLines(job.result).length > 0">
               <span v-for="line in mergeLines(job.result)" :key="line">{{ line }}<br /></span>
               <span class="muted small"
-                >Same-name entities merge into the existing world — nothing is duplicated.</span
+                >Places and factions merge into the existing world — nothing is duplicated.
+                Characters never merge: every build commits them as new entries (regenerate or
+                edit an existing character to change it).</span
               >
             </dd>
           </template>

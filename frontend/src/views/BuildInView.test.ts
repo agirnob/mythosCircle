@@ -229,6 +229,7 @@ describe('BuildInView seed form', () => {
     expect(text).toContain('full retrieval (cap 24)')
     expect(text).toContain('Wave 1: merged 1 · unchanged 1 · dropped edges 0')
     expect(text).toContain('Wave 2: merged 2 · unchanged 0 · dropped edges 1 · twins dropped 1')
-    expect(text).toContain('Same-name entities merge into the existing world')
+    expect(text).toContain('Places and factions merge into the existing world')
+    expect(text).toContain('Characters never merge: every build commits them as new entries')
   })
 })

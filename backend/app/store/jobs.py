@@ -47,7 +47,16 @@ from app.store.db import session_scope
 #: proposed candidate (whole or per-section), staging/replacing zero or
 #: one proposed row and committing nothing.
 JOB_KINDS: frozenset[str] = frozenset(
-    {"text", "image", "video", "video_prompt", "build_in", "generate", "regenerate"}
+    {
+        "text",
+        "image",
+        "video",
+        "video_prompt",
+        "build_in",
+        "generate",
+        "regenerate",
+        "add_character",
+    }
 )
 
 #: Generate payload contract (spec-3.1): exactly one plain-language ask.
@@ -57,6 +66,14 @@ GENERATE_MAX_ASK_LENGTH = 2000
 BUILD_IN_MAX_ENTRIES = 100
 BUILD_IN_MAX_ENTRY_LENGTH = 2000
 BUILD_IN_MAX_NOTE_LENGTH = 2000
+
+
+#: The hybrid-authorship spec's canonical schema lives in
+#: ``store.direct``; that import is FUNCTION-LOCAL (below) because
+#: ``store.direct`` reads the candidates shape constants and
+#: ``candidates`` imports this module — a module-level import would
+#: close the candidates->jobs->direct->candidates cycle at import time.
+
 
 #: Build-in budget ladder (improvement plan D): the flat settings default
 #: starved big rosters — rung-50 attempt 5 died AT the flat 64 while the
@@ -401,6 +418,23 @@ def list_jobs(
 # ---------------------------------------------------------------------------
 
 
+def _require_running(session: Session, job_id: str) -> models.Job:
+    job = session.get(models.Job, job_id)
+    if job is None:
+        raise JobNotFoundError(job_id)
+    if job.state != "running":
+        raise JobStateConflictError(job_id, job.state)
+    return job
+
+
+def _check_ulid(ulid: str) -> None:
+    """Caller-supplied job ids must be ULIDs (conventions.md) — enforced at
+    the store boundary, like entity ids (commit._check_ulid).
+    """
+    if not ids.is_valid_ulid(ulid):
+        raise InvalidJobInputError(f"job_id is not a ULID: {ulid!r}")
+
+
 def _enqueue(
     session: Session,
     campaign_id: str,
@@ -414,6 +448,13 @@ def _enqueue(
         raise InvalidJobInputError(f"job kind must be one of {sorted(JOB_KINDS)}, got {kind!r}")
     if kind == "build_in":
         _validate_build_in_payload(payload)
+    elif kind == "add_character":
+        # The hybrid-authorship spec's fully-authored path: the sync
+        # enqueue half of the three-layer gate. Violations are the 422's
+        # schema-path details; the world-dependent checks (Tier-1 target
+        # existence/kind) run in the same transaction — the F5 race is
+        # the runner backstop's problem, not this gate's.
+        _validate_add_character_payload(payload, session, campaign_id)
     elif kind == "generate":
         _validate_generate_payload(payload)
     elif kind == "image":
@@ -441,17 +482,25 @@ def _enqueue(
     if job_id is not None:
         _check_ulid(job_id)
     settings = queue_settings()
-    if max_llm_calls is None:
-        # Build-in rosters scale their own LLM ceiling (improvement plan
-        # D) — the flat settings default starved rung-50 attempt 5
-        # mid-convergence. An explicit caller-supplied budget never
-        # reaches this branch, so it always wins. Runs after
-        # _validate_build_in_payload, so the section shape is guaranteed.
-        max_llm_calls = (
-            _build_in_budget(payload) if kind == "build_in" else settings.max_llm_calls_per_job
-        )
-    if max_media_calls is None:
-        max_media_calls = settings.max_media_calls_per_job
+    if kind == "add_character":
+        # Zero-LLM is STRUCTURAL (spec: hybrid authorship): the runner
+        # accepts no provider, and the call ceilings are forced to 0 —
+        # an explicit caller budget never overrides the definition.
+        max_llm_calls = 0
+        max_media_calls = 0
+    else:
+        if max_llm_calls is None:
+            # Build-in rosters scale their own LLM ceiling (improvement
+            # plan D) — the flat settings default starved rung-50
+            # attempt 5 mid-convergence. An explicit caller-supplied
+            # budget never reaches this branch, so it always wins. Runs
+            # after _validate_build_in_payload, so the section shape is
+            # guaranteed.
+            max_llm_calls = (
+                _build_in_budget(payload) if kind == "build_in" else settings.max_llm_calls_per_job
+            )
+        if max_media_calls is None:
+            max_media_calls = settings.max_media_calls_per_job
     if max_llm_calls < 0:
         raise InvalidJobInputError(f"max_llm_calls must be >= 0, got {max_llm_calls}")
     if max_media_calls < 0:
@@ -512,37 +561,27 @@ def _enqueue(
     return job
 
 
-def _require_running(session: Session, job_id: str) -> models.Job:
-    job = session.get(models.Job, job_id)
-    if job is None:
-        raise JobNotFoundError(job_id)
-    if job.state != "running":
-        raise JobStateConflictError(job_id, job.state)
-    return job
-
-
-def _check_ulid(ulid: str) -> None:
-    """Caller-supplied job ids must be ULIDs (conventions.md) — enforced at
-    the store boundary, like entity ids (commit._check_ulid).
-    """
-    if not ids.is_valid_ulid(ulid):
-        raise InvalidJobInputError(f"job_id is not a ULID: {ulid!r}")
-
-
 def _validate_build_in_payload(payload: dict[str, Any]) -> None:
-    """Enforce the spec-2.1 build-in payload contract (422, zero rows).
+    """Enforce the spec-2.1 build-in payload contract (422, zero rows),
+    extended by the hybrid-authorship spec: a section entry is a
+    ``str`` (STRING_LEGACY — today's semantics byte-for-byte) or a
+    SeedEntry object (``store.direct.seed_entry_violations`` owns the
+    shape: required non-blank ``name``; figures may pin ``role`` and
+    author a ``record``; places/factions may author a ``description``;
+    any entry may declare ``relations``).
 
     The free-form sections are ``places``, ``factions``, ``key_figures``
-    (each a list of 1–2000-char trimmed strings, <= 100 entries) and
-    ``notes`` (a single string, trimmed length <= 2000 chars; an explicit
+    (each a list of 1–2000-char entries, <= 100 entries) and ``notes``
+    (a single string, trimmed length <= 2000 chars; an explicit
     null/non-string is rejected). At least one non-blank entry across all
-    four is required. Unrecognized keys are ignored (the runner in 2.3
-    owns the prompt contract); only the shape that can be validated
-    up-front is rejected here.
+    four is required. Unrecognized top-level keys are ignored (the runner
+    in 2.3 owns the prompt contract); only the shape that can be
     """
     if not isinstance(payload, dict):
         raise InvalidJobInputError("build_in payload must be a JSON object")
     any_content = False
+    from app.store.direct import seed_entry_violations  # noqa: PLC0415 - import cycle
+
     for section in ("places", "factions", "key_figures"):
         entries = payload.get(section, [])
         if not isinstance(entries, list):
@@ -550,14 +589,18 @@ def _validate_build_in_payload(payload: dict[str, Any]) -> None:
         if len(entries) > BUILD_IN_MAX_ENTRIES:
             raise InvalidJobInputError(f"build_in {section} exceeds {BUILD_IN_MAX_ENTRIES} entries")
         for i, entry in enumerate(entries):
-            if not isinstance(entry, str):
-                raise InvalidJobInputError(f"build_in {section}[{i}] must be a string")
-            trimmed = entry.strip()
-            if len(trimmed) > BUILD_IN_MAX_ENTRY_LENGTH:
-                raise InvalidJobInputError(
-                    f"build_in {section}[{i}] exceeds {BUILD_IN_MAX_ENTRY_LENGTH} chars"
-                )
-            any_content = any_content or bool(trimmed)
+            if isinstance(entry, str):
+                trimmed = entry.strip()
+                if len(trimmed) > BUILD_IN_MAX_ENTRY_LENGTH:
+                    raise InvalidJobInputError(
+                        f"build_in {section}[{i}] exceeds {BUILD_IN_MAX_ENTRY_LENGTH} chars"
+                    )
+                any_content = any_content or bool(trimmed)
+            else:
+                violations = seed_entry_violations(entry, section)
+                if violations:
+                    raise InvalidJobInputError(f"build_in {section}[{i}]: " + "; ".join(violations))
+                any_content = True
     # ``notes`` is optional (absent key stays allowed), but an explicit
     # null or any non-string is rejected — the key, when present, must be
     # a string within the cap.
@@ -572,6 +615,43 @@ def _validate_build_in_payload(payload: dict[str, Any]) -> None:
         raise InvalidJobInputError("build_in requires at least one non-blank section entry")
 
 
+def _seed_entry_name(entry: str | dict[str, Any]) -> str:
+    """A section entry's roster name — the trimmed text of a legacy
+    string, the ``name`` of a SeedEntry (both already validated)."""
+    if isinstance(entry, str):
+        return entry.strip()
+    name = entry.get("name")
+    return name.strip() if isinstance(name, str) else ""
+
+
+def _declared_target_names(payload: dict[str, Any]) -> set[str]:
+    """The normalized names of every ``target_name`` a SeedEntry's
+    declared relations demand (the mandate set). Pure function of the
+    payload — the enqueue budget counts them WITHOUT a world read (a
+    committed-target demand is counted too: the ceiling only needs to be
+    an upper bound, and the runner's own mandate check owns the exact
+    semantics)."""
+    from app.store.direct import normalize_entity_name  # noqa: PLC0415 - import cycle
+
+    names: set[str] = set()
+    for section in ("places", "factions", "key_figures"):
+        for entry in payload.get(section) or []:
+            if not isinstance(entry, dict):
+                continue
+            relations = entry.get("relations")
+            if not isinstance(relations, list):
+                continue
+            for raw in relations:
+                if isinstance(raw, dict) and isinstance(raw.get("target_name"), str):
+                    names.add(normalize_entity_name(raw["target_name"]))
+    seed_names = {
+        normalize_entity_name(_seed_entry_name(entry))
+        for section in ("places", "factions", "key_figures")
+        for entry in payload.get(section) or []
+    }
+    return names - seed_names
+
+
 def _build_in_budget(payload: dict[str, Any]) -> int:
     """Roster-scaled ``max_llm_calls`` for a build_in job (improvement plan D).
 
@@ -584,24 +664,73 @@ def _build_in_budget(payload: dict[str, Any]) -> int:
 
     ``max(64, 3 * figures + ceil(total / 8) + 32)``
 
-    ``figures`` counts ``key_figures`` (each figure drives the stat-block
-    write + repair ladder); ``total`` counts all three sections. Only
-    non-blank trimmed strings count (the runner's blank-trim rule), and
-    the ``BUILD_IN_MIN_LLM_CALLS`` floor keeps small rosters at the old
-    settings default. Called from ``_enqueue`` after
-    ``_validate_build_in_payload``, so every section is a list of strings.
+    ``figures`` counts ``key_figures`` PLUS the hybrid path's mandated
+    relation targets (each declared ``target_name`` that no seed entry
+    carries — the mandate may generate a full record + stat block and
+    its repairs, so it budgets like a figure); ``total`` counts all three
+    sections plus the mandated names. Only non-blank entries count (the
+    runner's blank-trim rule), and the ``BUILD_IN_MIN_LLM_CALLS`` floor
+    keeps small rosters at the old settings default. Called from
+    ``_enqueue`` after ``_validate_build_in_payload``, so every entry is
+    a valid string-or-SeedEntry.
     """
 
-    def _non_blank(section: str) -> int:
-        return sum(1 for entry in payload.get(section) or [] if entry.strip())
+    def _count(section: str) -> int:
+        return sum(1 for entry in payload.get(section) or [] if _seed_entry_name(entry))
 
-    figures = _non_blank("key_figures")
-    total = figures + _non_blank("places") + _non_blank("factions")
+    figures = _count("key_figures")
+    total = figures + _count("places") + _count("factions")
+    mandated = _declared_target_names(payload)
+    figures += len(mandated)
+    total += len(mandated)
     chunks = -(-total // BUILD_IN_LLM_CHUNK_ENTRIES)  # ceil division
     return max(
         BUILD_IN_MIN_LLM_CALLS,
         BUILD_IN_LLM_CALLS_PER_FIGURE * figures + chunks + BUILD_IN_LLM_CALLS_OVERHEAD,
     )
+
+
+def _validate_add_character_payload(
+    payload: dict[str, Any], session: Session, campaign_id: str
+) -> None:
+    """The fully-authored character path's enqueue gate (422, zero rows).
+
+    The canonical schema (``store.direct.validate_add_character_payload``)
+    owns completeness, stat-block structure, the dice pattern, relations
+    well-formedness, unknown keys, and the ``target_name`` ban — a 422
+    whose message lists the exact schema-path violations. The two
+    world-dependent checks run HERE, inside the enqueue transaction (the
+    image-payload precedent): a Tier-1 ``target_id`` must name a
+    committed entity OF this campaign, and the relation's kind pair must
+    be legal. The run-time backstop re-resolves both against the fresh
+    world (F5) — this gate only keeps a doomed job out of the queue.
+    """
+    from app.store.commit import edge_kind_ok  # noqa: PLC0415 - import cycle
+    from app.store.direct import validate_add_character_payload  # noqa: PLC0415
+
+    violations = validate_add_character_payload(payload)
+    if violations:
+        raise InvalidJobInputError("add_character payload invalid: " + "; ".join(violations))
+    for index, sheet in enumerate(payload["characters"]):
+        relations = sheet.get("relations")
+        if not isinstance(relations, list):
+            continue
+        for r_index, raw in enumerate(relations):
+            if not isinstance(raw, dict) or "target_id" not in raw:
+                continue
+            target_id = raw["target_id"]
+            entity = session.get(models.Entity, target_id)
+            if entity is None or entity.campaign_id != campaign_id:
+                raise InvalidJobInputError(
+                    f"add_character characters[{index}].relations[{r_index}].target_id "
+                    f"{target_id} names no committed entity of this campaign"
+                )
+            edge_type = raw.get("type")
+            if isinstance(edge_type, str) and not edge_kind_ok(edge_type, "character", entity.kind):
+                raise InvalidJobInputError(
+                    f"add_character characters[{index}].relations[{r_index}]: {edge_type} "
+                    f"cannot run from a character to a committed {entity.kind}"
+                )
 
 
 def _validate_generate_payload(payload: dict[str, Any]) -> None:

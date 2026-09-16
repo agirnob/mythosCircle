@@ -15,6 +15,7 @@ from app.api import (
     auth,
     campaigns,
     candidates,
+    characters,
     edges,
     entities,
     exports,
@@ -76,6 +77,7 @@ def create_app() -> FastAPI:
     application.include_router(edges.router)
     application.include_router(exports.router)
     application.include_router(candidates.router)
+    application.include_router(characters.router)
     application.include_router(media.router)
     return application
 
