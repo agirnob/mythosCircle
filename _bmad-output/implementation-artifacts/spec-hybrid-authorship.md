@@ -93,9 +93,20 @@ PARTIALLY AUTHORED (path 1 — the build-in pipeline):
   deliberate tools for changing an existing character — the ONLY
   legitimate replace paths). Same-name merge/upsert for characters is
   REMOVED; place/faction upsert (kind, normalized name) is unchanged.
-- Relation targets: an entity **ULID** or an **unambiguous normalized
-  name**; a name matching multiple entities rejects naming the matches
-  (the DM targets by ULID — the form's entity picker supplies ids).
+- **Workflow consequence of F4 (S2/A1 round 3):** re-seeding is
+  ADDITIVE — a re-seeded figure is a new entity with no edges (the old
+  one keeps its relationships). REGENERATE is the blessed update tool
+  for characters; the build-in result audit makes "N new · 0 merged"
+  unmistakable; same-name surfacing + bulk-prune are acceptance criteria
+  of the follow-up UI story (moved out of fully-deferred).
+- **Relation targets — the three-tier contract (round 4 ruling):**
+  `{target_id} | {target_key} | {target_name}` — Tier 1 committed ULID
+  (searchable dropdown), Tier 2 staged batch key (same-payload
+  resolution, fresh ULIDs, atomic edge), Tier 3 freeform name
+  (hybrid: mandate; direct: blocked at the form). A `target_name`
+  matching one committed entity resolves to it; ≥2 → reject naming the
+  matches; 0 → hybrid generate / direct reject. `target_id`/`target_key`
+  never touch the name matcher.
 - Payload validation rejects unknown keys and malformed members at both
   gates (enqueue 422 / runner JobPayloadError) — the existing double
   gate, extended to path 2 by the dual-layer ruling F3.
@@ -129,8 +140,10 @@ PARTIALLY AUTHORED (path 1 — the build-in pipeline):
   also validates the stat block — a structurally broken character is a
   422 at submit, never an async failure (F3).
 - Declared relations must resolve to committed entities — there is no
-  generation here, so an unresolved/ambiguous target rejects naming the
-  problem.
+  generation here. The direct form accepts ONLY Tier 1 (ULID) and Tier 2
+  (staged batch) targets; a `target_name` in the `add_character` payload
+  is a schema violation (freeform is blocked at the form AND rejected by
+  the enqueue gate — path 2 has no mandate access).
 - Name collisions DO NOT reject: every submission commits a fresh ULID
   (F4) — the pre-mortem gate-4 rejection is replaced by this ruling.
 
@@ -174,8 +187,14 @@ PARTIALLY AUTHORED (path 1 — the build-in pipeline):
 | CHAR_FRESH_ULID | a key-figure name matching a committed character | commits a NEW entity with a fresh ULID — never overwrites (F4); the old character is untouched | n/a |
 | AUTHORED_DESCRIPTION / AUTHORED_RECORD / ROLE_PIN | structured entries | authored values verbatim, rest generated, repairs preserve authored (backfill) | drift reverted |
 | HYBRID_AUTHORED_BLOCK_VALID / _INVALID | valid/invalid authored stat block | valid → byte-identical, zero repairs; invalid → job fails, zero commits, NO repair call | fail loud |
-| DECLARED_TO_SEEDED / TO_COMMITTED / MANDATE_HIT / MANDATE_MISS / BLANK_TARGET / UNKNOWN_SEED_KEY / RELATION_MALFORMED / CHUNKED_MANDATE | as round 1 | as round 1 (named targets; one re-emit; second miss → zero commits) | as round 1 |
-| DECLARED_AMBIGUOUS_TARGET | target name matches 2+ committed entities | reject naming the matches (target by ULID) | reject |
+| DECLARED_MANDATE_HIT / MANDATE_MISS / BLANK_TARGET / UNKNOWN_SEED_KEY / RELATION_MALFORMED / CHUNKED_MANDATE | as round 1 | as round 1 (named targets; one re-emit; second miss → zero commits) | as round 1 |
+| TIER1_ULID_TARGET | relation `{target_id}` (committed entity) | direct ULID binding — matcher never runs; edge wires to that entity | n/a |
+| TIER2_STAGED_TARGET | relation `{target_key}` naming another staged seed (same payload) | both entities commit fresh ULIDs; the edge wires atomically in one transaction | n/a |
+| TIER3_HYBRID_MANDATE | relation `{target_name}` matching nothing | mandate generation (one re-emit; second miss → zero commits) | as round 1 |
+| TIER3_NAME_MATCHES_ONE | `{target_name}` normalized-matches exactly one committed entity | resolves to it — no generation | n/a |
+| DECLARED_AMBIGUOUS_TARGET | `{target_name}` matches 2+ committed entities | reject naming the matches — the DM targets by ULID (Tier 1); the UI's exact-match prompt surfaces "Did you mean [Name] (#ULID)?" before submission | reject |
+| SAME_NAME_SAME_BUILD | two identical-name seeds/figures in ONE payload | TWO distinct entities, fresh ULIDs, both wired (Tier-2 matched by staged key) — the roster machinery must not collapse them | pin test |
+| SAME_NAME_TWO_BUILDS | the same name re-seeded in a later build | a NEW distinct entity; the old one untouched (F4); audit shows 0 merged | pin test |
 | STRUCTURED_REBUILD | structured re-submit of a committed place/faction | field-level delta merge (gate 3) | n/a |
 | STRING_REBUILD_CHARACTER | plain-string re-submit of a committed character | NOT an update anymore — fresh ULID commit (F4); merge audit shows 0 merged characters | n/a |
 
@@ -207,6 +226,37 @@ frontend mirror AND the API gate (one definition — the schema.ts/OpenAPI
 surface or a shared module; the two can never disagree). A client bypass
 (hand-crafted JSON) hits the synchronous 422 and surfaces field-level
 errors without launching a job.
+
+## Relation Target Resolution — Three Tiers (owner ruling, round 4)
+
+Prevents runtime `AMBIGUOUS_RELATION_TARGET` rejections and unintended
+LLM entity generation by making the UI emit the least-ambiguous target
+form possible.
+
+| Tier | UI input | Payload emitted | Backend path |
+|------|----------|-----------------|--------------|
+| 1 — Existing entities (committed) | searchable dropdown of committed campaign entities | `{target_id: "01H8X…"}` | direct ULID binding — no normalization, no collision ambiguity |
+| 2 — Staged entities (same build batch) | dropdown of entities staged in the multi-card session | `{target_key: "staged_entity_02"}` (or the exact staged name) | intra-payload resolution (`SAME_NAME_SAME_BUILD`): both entities commit fresh ULIDs and the edge wires atomically in one transaction |
+| 3 — Freeform text ("+ Declare Uncreated Target") | raw text (e.g. "The Shadow Queen") | `{target_name: "The Shadow Queen"}` | **Hybrid path:** mandate generation — unseeded/uncommitted target must be generated (one bounded re-emit, second miss → zero commits). **Direct path (add_character): BLOCKED at the form** — freeform targets are disabled; the UI forces Tier 1 selection or Tier 2 staging (path 2 has zero LLM mandate access, by definition). |
+
+Payload contract for a declared relation: `{type, counter?, target_id |
+target_key | target_name}` — exactly one target key per relation;
+ambiguity is resolved at the UI, not discovered at runtime.
+
+**Frontend validation invariants:**
+- Exact-match warning: typing a freeform string that matches a committed
+  entity surfaces an autocomplete prompt — `"Did you mean [Name]
+  (#ULID)?"` — before the Tier-3 declaration is accepted.
+- Path-2 guardrail: the freeform target input is disabled on the direct
+  form; the DM must pick an existing entity or stage the target as a
+  manual sheet tab (the add_character payload cannot carry
+  `target_name` — the enqueue schema rejects it).
+
+**Backend rule (both paths):** a `target_name` that normalized-matches
+exactly ONE committed entity resolves to it (no generation — the DM
+declared an existing name); ≥2 matches → reject naming the matches (the
+DM targets by ULID — Tier 1); zero matches → hybrid: mandate; direct:
+reject. `target_id`/`target_key` bypass the matcher entirely.
 
 ## F5 — the queue-window race, explained
 
@@ -250,7 +300,10 @@ makes it a named failure instead of a raw exception.
   - ``_mandate_check`` / ``_MandatedTargetError`` / ONE bounded re-emit
     (the ``_OrphanRetryError`` 3214 shape) on the ASSEMBLED roster.
   - ``_declared_edges`` — pipeline-built, kind-validated, duplicate-
-    collapse; targets resolve by ULID-or-unambiguous-name.
+    collapse; **three-tier targets**: `target_id` binds directly;
+    `target_key` resolves intra-payload (both entities fresh-ULID, edge
+    atomic); `target_name` resolves by exactly-one normalized match
+    (0 → mandate / direct-reject; ≥2 → reject naming the matches).
   - ``_merge_with_world`` (1498): kind=character entries STOP merging —
     fresh ULID commit (characters removed from the dedup key); places/
     factions unchanged (delta for structured per gate 3); the merge
@@ -259,10 +312,14 @@ makes it a named failure instead of a raw exception.
     invalid → fail naming them BEFORE any repair call.
 - `frontend/src/` (contract only) — the template form (dropdowns/
   structured slots; prose only in description fields), the canonical
-  schema mirror validator (button state + inline violations), and the
-  entity-picker (ULID targets for relations). BuildInView's merge-audit
-  copy ("Same-name entities merge into the existing world") gets reworded
-  for the character exception.
+  schema mirror validator (button state + inline violations), the
+  three-tier relation target widget: Tier-1 searchable entity dropdown
+  (emits `target_id`), Tier-2 staged-batch dropdown (`target_key`),
+  Tier-3 freeform with the exact-match autocomplete prompt ("Did you
+  mean [Name] (#ULID)?") AND the path-2 guardrail (freeform disabled on
+  the direct form). BuildInView's merge-audit copy ("Same-name entities
+  merge into the existing world") gets reworded for the character
+  exception.
 - Tests: `backend/tests/test_direct_character.py` (new),
   `backend/tests/test_hybrid_authorship.py` (new), reworked merge pins in
   `backend/tests/test_build_in_pipeline.py`.
@@ -288,11 +345,17 @@ makes it a named failure instead of a raw exception.
 6. Mandate check + re-emit + second-miss fail + CHUNKED_MANDATE +
    DECLARED_AMBIGUOUS_TARGET.
 7. Declared-edge application (both paths) + kind validation + duplicate
-   collapse + ULID-or-unambiguous-name resolution.
+   collapse + the THREE-TIER target resolution: TIER1_ULID_TARGET,
+   TIER2_STAGED_TARGET (atomic fresh-ULID pair),
+   TIER3_HYBRID_MANDATE / TIER3_NAME_MATCHES_ONE /
+   DECLARED_AMBIGUOUS_TARGET; `target_name` on `add_character` is a
+   schema violation (form blocked + 422).
 8. **F4 merge rework:** CHAR_FRESH_ULID (hybrid + direct + candidates),
    STRING_REBUILD_CHARACTER, STRUCTURED_REBUILD (places/factions delta),
-   wave-2 roster twins-guard preserved; the pre-2026-09-12-era character
-   merge pins are reworked from "merged" to "new + audit shows 0 merged".
+   wave-2 roster twins-guard preserved, PLUS the SAME_NAME_SAME_BUILD
+   (two same-name figures in one payload → two entities) and
+   SAME_NAME_TWO_BUILDS pins; the pre-2026-09-12-era character merge
+   pins are reworked from "merged" to "new + audit shows 0 merged".
 9. Full suite: the 1319 existing backend tests stay green EXCEPT the
    character-merge pins reworked in task 8 (enumerated in the review
    order below).
@@ -302,14 +365,18 @@ makes it a named failure instead of a raw exception.
 - 2026-09-15 round 1: draft (gate-1 = trusted authored blocks).
 - 2026-09-15 round 2 (owner): two-path architecture; no stamps; hybrid
   authored blocks validated reject-only; zero-LLM acceptance mandate.
-- 2026-09-15 round 3 — CHECKPOINT 2 (this version; pre-mortem amendments
-  applied): F1-F2 template-form input (dropdowns + structured slots,
-  prose only in descriptions); F3 three-layer validation gate
-  (frontend mirror → POST /api/characters sync 422/202 → worker
-  transaction backstop with STRUCTURAL_VALIDATION_FAILURE); F4 ULID
-  character identity — never overwrite, same names coexist, character
-  merge removed (place/faction upsert unchanged); F5 queue-window race
-  explained; F6 pins folded in.
+- 2026-09-15 round 3 — CHECKPOINT 2: pre-mortem amendments (F1-F2
+  template form; F3 three-layer gate; F4 ULID identity — never
+  overwrite, character merge removed; F5 race explained; F6 pins).
+- 2026-09-15 round 4 (this version): second-order + assumption-audit
+  findings applied — workflow note (re-seed additive, regenerate is the
+  blessed update, audit makes "N new" unmistakable, same-name surfacing
+  + bulk-prune move into the follow-up UI story's acceptance) — and the
+  owner's THREE-TIER relation-target ruling: `target_id` (committed
+  ULID) / `target_key` (staged batch, atomic fresh-ULID pair) /
+  `target_name` (hybrid mandate; blocked on the direct form, schema
+  violation at its gate); exact-match autocomplete "Did you mean [Name]
+  (#ULID)?"; SAME_NAME_SAME_BUILD / SAME_NAME_TWO_BUILDS pins.
 
 ## Verification
 
@@ -349,5 +416,9 @@ makes it a named failure instead of a raw exception.
    every character commits a fresh ULID; same-name characters coexist;
    never overwrite anywhere (candidates already fresh; regenerate/edit
    remain the deliberate replace tools).
+5. **ADDED round 4 (owner ruling): the three-tier relation target
+   contract** — `target_id` / `target_key` / `target_name`, exact-match
+   autocomplete, path-2 freeform guardrail (enforced by form AND the
+   enqueue schema).
 
 **Ask First (owner):** none — UI stays contract-only in this spec.
