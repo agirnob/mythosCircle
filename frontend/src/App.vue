@@ -19,6 +19,7 @@ async function logout() {
       <RouterLink :to="{ name: 'campaigns' }" class="brand">mythosCircle</RouterLink>
       <nav v-if="auth.isAuthenticated">
         <span class="account">{{ auth.account?.email }}</span>
+        <RouterLink :to="{ name: 'forge-global' }" class="nav-link">Forge</RouterLink>
         <button type="button" @click="logout">Log out</button>
       </nav>
     </header>
@@ -60,6 +61,14 @@ nav {
   display: flex;
   gap: 1rem;
   align-items: center;
+}
+.nav-link {
+  color: inherit;
+  text-decoration: none;
+  opacity: 0.9;
+}
+.nav-link:hover {
+  text-decoration: underline;
 }
 button,
 input,

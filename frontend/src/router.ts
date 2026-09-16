@@ -31,6 +31,18 @@ const router = createRouter({
       component: () => import('./views/WorldView.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      path: '/forge',
+      name: 'forge-global',
+      component: () => import('./views/CharacterForgeView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/campaigns/:id/forge',
+      name: 'forge',
+      component: () => import('./views/CharacterForgeView.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

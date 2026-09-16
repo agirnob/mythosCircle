@@ -1249,6 +1249,9 @@ function additionalDataBlock(entity: EntityExport): string {
           >
             Open candidates
           </RouterLink>
+          <RouterLink :to="{ name: 'forge', params: { id: campaignId } }" class="cta secondary">
+            Open character forge
+          </RouterLink>
         </p>
         <p class="export-actions">
           <a class="link" :href="worldExportUrl('markdown')" download>Export Markdown</a>
@@ -1274,6 +1277,9 @@ function additionalDataBlock(entity: EntityExport): string {
         <p class="muted">This world is still empty — nothing has been built yet.</p>
         <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }" class="cta">
           Open build-in
+        </RouterLink>
+        <RouterLink :to="{ name: 'forge', params: { id: campaignId } }" class="cta secondary">
+          Open character forge
         </RouterLink>
       </div>
 
