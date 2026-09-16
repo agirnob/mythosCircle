@@ -4,18 +4,10 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { apiFetch, ApiError } from '../api/client'
 import type { components } from '../api/schema'
-import {
-  DICE_PATTERN,
-  type ActionEntry,
-  type CharacterRecord,
-  type CharacterSheet,
-  type DeclaredRelation,
-  type SkillEntry,
-  type StatBlock,
-} from '../api/characterSchema'
 import { useAuthStore } from '../stores/auth'
 import { useCampaignsStore } from '../stores/campaigns'
 import { useJobsStore } from '../stores/jobs'
+import type { AuthoredFigureSeed, AuthoredRelationSeed } from '../stores/jobs'
 import { connectJobSocket } from '../ws'
 import type { WsMessage } from '../ws'
 
@@ -37,7 +29,6 @@ const campaignId = computed(() => pickedCampaignId.value ?? '')
 const picking = ref(false)
 
 const error = ref<string | null>(null)
-const violations = ref<string[]>([])
 const submitting = ref(false)
 
 let disconnectSocket: (() => void) | null = null
@@ -97,42 +88,34 @@ onUnmounted(() => {
   disconnectSocket?.()
 })
 
-const recentJobs = computed(() => jobs.addCharacterJobs(campaignId.value).slice(0, 10))
-const inFlight = computed(() => jobs.addCharacterInFlight(campaignId.value))
+const recentJobs = computed(() => jobs.buildInJobs(campaignId.value).slice(0, 10))
+const inFlight = computed(() => jobs.buildInInFlight(campaignId.value))
 
 // ---------------------------------------------------------------------------
-// Form state — the flat AR24 record plus the stat block. Every field a
-// non-blank string by the canonical schema; the DM types it, the gate
-// verifies it (the form mirrors `characterSchema.ts`, it never re-rules it).
+// Nudge form: EVERY field is optional except the name. A filled field is
+// the DM's fact — the build commits it VERBATIM and the model fills only
+// the blanks (the regeneration per-section rule, applied to creation).
 // ---------------------------------------------------------------------------
 
-type RecordTextField = Exclude<
-  keyof CharacterRecord,
-  'role' | 'world_integration' | 'stat_block' | 'boss'
->
+type RecordTextField = 'personality' | 'secret' | 'rumor' | 'party_hook' | 'appearance' |
+  'background' | 'goals' | 'relationships' | 'voice_style' | 'catchphrases'
 
-const RECORD_FIELDS: Array<{ key: RecordTextField; label: string; long?: boolean; hint?: string }> =
-  [
-    { key: 'name', label: 'Name' },
-    { key: 'level_cr', label: 'Level / CR', hint: 'display text, e.g. "level 5" or "CR 4"' },
-    { key: 'race_type', label: 'Race / type' },
-    { key: 'class_profession', label: 'Class / profession' },
-    { key: 'alignment', label: 'Alignment' },
-    { key: 'personality', label: 'Personality', long: true },
-    { key: 'secret', label: 'Secret', long: true },
-    { key: 'rumor', label: 'Rumor', long: true },
-    { key: 'party_hook', label: 'Party hook', long: true },
-    { key: 'appearance', label: 'Appearance', long: true },
-    { key: 'background', label: 'Background', long: true },
-    { key: 'goals', label: 'Goals', long: true },
-    { key: 'relationships', label: 'Relationships', long: true },
-    { key: 'voice_style', label: 'Voice style', long: true },
-    { key: 'catchphrases', label: 'Catchphrases', long: true },
-  ]
+const RECORD_FIELDS: Array<{ key: RecordTextField; label: string }> = [
+  { key: 'personality', label: 'Personality' },
+  { key: 'secret', label: 'Secret' },
+  { key: 'rumor', label: 'Rumor' },
+  { key: 'party_hook', label: 'Party hook' },
+  { key: 'appearance', label: 'Appearance' },
+  { key: 'background', label: 'Background' },
+  { key: 'goals', label: 'Goals' },
+  { key: 'relationships', label: 'Relationships' },
+  { key: 'voice_style', label: 'Voice style' },
+  { key: 'catchphrases', label: 'Catchphrases' },
+]
 
 const ROLES = ['NPC', 'BBEG', 'Monster'] as const
 
-type WorldIntegrationField = keyof CharacterRecord['world_integration']
+type WorldIntegrationField = 'reputation' | 'factions' | 'current_location' | 'reaction_matrix' | 'on_defeat'
 
 const WORLD_INTEGRATION_FIELDS: Array<{ key: WorldIntegrationField; label: string }> = [
   { key: 'reputation', label: 'Reputation' },
@@ -142,20 +125,6 @@ const WORLD_INTEGRATION_FIELDS: Array<{ key: WorldIntegrationField; label: strin
   { key: 'on_defeat', label: 'On defeat' },
 ]
 
-type BossField = keyof NonNullable<CharacterRecord['boss']>
-
-const BOSS_FIELDS: Array<{ key: BossField; label: string }> = [
-  { key: 'lair_actions', label: 'Lair actions' },
-  { key: 'legendary_actions', label: 'Legendary actions' },
-  { key: 'immunities', label: 'Immunities' },
-  { key: 'vulnerabilities', label: 'Vulnerabilities' },
-]
-
-const ATTRIBUTES = ['str', 'dex', 'con', 'int', 'wis', 'cha'] as const
-
-/** The closed SRD vocabularies the canonical schema pins — the form
- * offers them as dropdowns so a legal value is one click (the gate's
- * violation text lists exactly these). */
 const SRD_RACES = [
   'Dragonborn',
   'Dwarf',
@@ -196,132 +165,114 @@ const ALIGNMENTS = [
   'unaligned',
 ] as const
 
-function blankRecord(): CharacterRecord {
-  return {
-    name: '',
-    role: 'NPC',
-    level_cr: '',
-    race_type: '',
-    class_profession: '',
-    alignment: '',
-    personality: '',
-    secret: '',
-    rumor: '',
-    party_hook: '',
-    appearance: '',
-    background: '',
-    goals: '',
-    relationships: '',
-    voice_style: '',
-    catchphrases: '',
-    world_integration: {
-      reputation: '',
-      factions: '',
-      current_location: '',
-      reaction_matrix: '',
-      on_defeat: '',
-    },
-    stat_block: blankStatBlock(),
-  }
-}
+const ATTRIBUTES = ['str', 'dex', 'con', 'int', 'wis', 'cha'] as const
 
-function blankStatBlock(): StatBlock {
-  return {
-    identity: { role: 'NPC', race: '' },
-    attributes: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
-    combat: { ac: 10, hp: 1 },
-    skills: [],
-    actions: [],
-    traits: [],
-    spells: [],
-  }
-}
+// --- Form state -------------------------------------------------------------
 
-const record = ref<CharacterRecord>(blankRecord())
+const name = ref('')
+const role = ref<'NPC' | 'BBEG' | 'Monster'>('NPC')
+const levelCr = ref('')
+const raceType = ref('')
+const classProfession = ref('')
+const alignment = ref('')
+const recordText = ref<Record<RecordTextField, string>>({
+  personality: '',
+  secret: '',
+  rumor: '',
+  party_hook: '',
+  appearance: '',
+  background: '',
+  goals: '',
+  relationships: '',
+  voice_style: '',
+  catchphrases: '',
+})
+const worldIntegration = ref<Record<WorldIntegrationField, string>>({
+  reputation: '',
+  factions: '',
+  current_location: '',
+  reaction_matrix: '',
+  on_defeat: '',
+})
 
-/** boss is REQUIRED iff role is BBEG/Monster and ABSENT otherwise — the
- * form mirrors the conditional by adding/removing the section. */
-const roleNeedsBoss = computed(() => record.value.role !== 'NPC')
+// --- Authored stat-block subsections (each optional independently) ----------
 
-function syncBossSection() {
-  if (roleNeedsBoss.value && !record.value.boss) {
-    record.value.boss = {
-      lair_actions: '',
-      legendary_actions: '',
-      immunities: '',
-      vulnerabilities: '',
-    }
-  } else if (!roleNeedsBoss.value) {
-    delete record.value.boss
-  }
-}
-
-// --- Stat block ------------------------------------------------------------
-
-const statOpen = ref(true)
-const statBlock = computed(() => record.value.stat_block)
-
-/** Monster carries cr, NPC/BBEG carry level — never both (AR25). */
-const powerSlot = ref<'level' | 'cr' | 'none'>('level')
+const authorIdentity = ref(false)
+const identityRace = ref('')
+const powerSlot = ref<'level' | 'cr'>('level')
 const levelValue = ref<number | null>(null)
 const crValue = ref('')
+const identityClass = ref('')
+const identityAlignment = ref('')
 
-function syncPowerSlot() {
-  const identity = statBlock.value.identity
-  delete identity.level
-  delete identity.cr
-  if (powerSlot.value === 'level' && levelValue.value !== null) {
-    identity.level = levelValue.value
-  } else if (powerSlot.value === 'cr' && crValue.value.trim()) {
-    identity.cr = crValue.value.trim()
-  }
+const authorAttributes = ref(false)
+const attributes = ref<Record<(typeof ATTRIBUTES)[number], number | null>>({
+  str: null,
+  dex: null,
+  con: null,
+  int: null,
+  wis: null,
+  cha: null,
+})
+
+const authorCombat = ref(false)
+const ac = ref<number | null>(null)
+const hp = ref<number | null>(null)
+const hitDiceCount = ref<number | null>(null)
+const hitDiceSides = ref<number | null>(null)
+const hitDiceMod = ref('')
+
+const authorSkills = ref(false)
+const skillDrafts = ref<Array<{ name: string; bonus: string; description: string }>>([])
+
+const authorActions = ref(false)
+interface ActionDraft {
+  name: string
+  description: string
+  damageCount: number | null
+  damageSides: number | null
+  damageMod: string
 }
+const actionDrafts = ref<ActionDraft[]>([])
 
-const skillDrafts = ref<SkillEntry[]>([])
-const actionDrafts = ref<ActionEntry[]>([])
+const authorTraits = ref(false)
 const traitDrafts = ref<Array<{ name: string; description: string }>>([])
+
+const authorSpells = ref(false)
 const spellText = ref('')
 
-function syncLists() {
-  statBlock.value.skills = skillDrafts.value.filter((s) => s.name.trim() && s.description.trim())
-  statBlock.value.actions = actionDrafts.value
-    .filter((a) => a.name.trim() && a.description.trim())
-    .map((a) => {
-      const damage = normalizeDamage(a.damage)
-      const entry: ActionEntry = { name: a.name.trim(), description: a.description }
-      if (damage) entry.damage = damage
-      return entry
-    })
-  statBlock.value.traits = traitDrafts.value.filter((t) => t.name.trim() && t.description.trim())
-  statBlock.value.spells = spellText.value
-    .split(/\r?\n/)
-    .map((line: string) => line.trim())
-    .filter(Boolean)
-}
-
-/** The spaced variant ('2d6 + 2') normalizes to the tight canonical
- * form before submission (the schema contract's ruling). */
-function normalizeDamage(raw: string | undefined): string {
-  const tight = (raw ?? '').replace(/\s+/g, '')
-  return DICE_PATTERN.test(tight) ? tight : ''
-}
+const authorBoss = ref(false)
+const bossFields = ref({ lair_actions: '', legendary_actions: '', immunities: '', vulnerabilities: '' })
 
 function addSkill() {
-  skillDrafts.value.push({ name: '', description: '' })
+  skillDrafts.value.push({ name: '', bonus: '', description: '' })
 }
 function addAction() {
-  actionDrafts.value.push({ name: '', description: '' })
+  actionDrafts.value.push({ name: '', description: '', damageCount: null, damageSides: null, damageMod: '' })
 }
 function addTrait() {
   traitDrafts.value.push({ name: '', description: '' })
 }
 
-// --- Declared relations (Tier-1: a committed entity ULID) -------------------
+/** The dice boxes compose the canonical formula: [count]d[sides]+[mod].
+ * Both numbers required; the modifier optional (signed integer). */
+function composeDice(count: number | null, sides: number | null, mod: string): string | null {
+  if (count === null && sides === null && mod.trim() === '') return null
+  if (count === null || sides === null) return null
+  const m = mod.trim()
+  if (m !== '' && !/^[+-]?\d+$/.test(m)) return null
+  const modStr = m === '' ? '' : m.startsWith('-') ? m : `+${m}`
+  return `${count}d${sides}${modStr}`
+}
+
+// --- Declared relations ------------------------------------------------------
 
 interface RelationDraft {
   type: string
-  counter: string
+  mode: 'existing' | 'new'
   target_id: string
+  target_name: string
+  counter: string
 }
 
 const relationDrafts = ref<RelationDraft[]>([])
@@ -367,49 +318,131 @@ async function loadWorldEntities() {
       kind: entity.kind,
     }))
   } catch {
-    // The relation picker degrades to empty when the world cannot be
-    // read; the gate re-checks target existence either way.
+    // The relation picker degrades to free-entry targets when the world
+    // cannot be read; the build re-checks target existence either way.
   }
 }
 
 function addRelation() {
-  relationDrafts.value.push({ type: 'member_of', counter: '', target_id: '' })
+  relationDrafts.value.push({ type: 'located_in', mode: 'existing', target_id: '', target_name: '', counter: '' })
 }
 
-function buildRelations(): DeclaredRelation[] | undefined {
-  const relations: DeclaredRelation[] = []
+// --- Submission --------------------------------------------------------------
+
+const hasContent = computed(() => name.value.trim().length > 0)
+
+function blankFree(values: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(values)) {
+    if (value.trim()) out[key] = value.trim()
+  }
+  return out
+}
+
+/** The seed entry: filled fields only — blanks are the generator's job. */
+function buildFigure(): AuthoredFigureSeed {
+  const entry: AuthoredFigureSeed = { name: name.value.trim(), role: role.value }
+
+  const record: Record<string, unknown> = blankFree({
+    level_cr: levelCr.value,
+    race_type: raceType.value,
+    class_profession: classProfession.value,
+    alignment: alignment.value,
+    ...recordText.value,
+  })
+  const integration = blankFree(worldIntegration.value)
+  if (Object.keys(integration).length > 0) record.world_integration = integration
+
+  const block: Record<string, unknown> = {}
+  if (authorIdentity.value) {
+    const identity: Record<string, unknown> = blankFree({
+      class: identityClass.value,
+      alignment: identityAlignment.value,
+    })
+    if (identityRace.value) identity.race = identityRace.value
+    if (powerSlot.value === 'level' && levelValue.value !== null) identity.level = levelValue.value
+    if (powerSlot.value === 'cr' && crValue.value.trim()) identity.cr = crValue.value.trim()
+    if (Object.keys(identity).length > 0) block.identity = identity
+  }
+  if (authorAttributes.value) {
+    const attrs: Record<string, number> = {}
+    for (const attr of ATTRIBUTES) {
+      const value = attributes.value[attr]
+      if (value !== null) attrs[attr] = value
+    }
+    if (Object.keys(attrs).length > 0) block.attributes = attrs
+  }
+  if (authorCombat.value) {
+    const combat: Record<string, unknown> = {}
+    if (ac.value !== null) combat.ac = ac.value
+    if (hp.value !== null) combat.hp = hp.value
+    const hitDice = composeDice(hitDiceCount.value, hitDiceSides.value, hitDiceMod.value)
+    if (hitDice) combat.hit_dice = hitDice
+    if (Object.keys(combat).length > 0) block.combat = combat
+  }
+  if (authorSkills.value) {
+    const skills = skillDrafts.value
+      .filter((s) => s.name.trim())
+      .map((s) => {
+        const skill: Record<string, unknown> = { name: s.name.trim() }
+        if (s.bonus.trim()) skill.bonus = Number.parseInt(s.bonus, 10)
+        if (s.description.trim()) skill.description = s.description.trim()
+        return skill
+      })
+    if (skills.length > 0) block.skills = skills
+  }
+  if (authorActions.value) {
+    const actions = actionDrafts.value
+      .filter((a) => a.name.trim() && a.description.trim())
+      .map((a) => {
+        const action: Record<string, unknown> = {
+          name: a.name.trim(),
+          description: a.description.trim(),
+        }
+        const damage = composeDice(a.damageCount, a.damageSides, a.damageMod)
+        if (damage) action.damage = damage
+        return action
+      })
+    if (actions.length > 0) block.actions = actions
+  }
+  if (authorTraits.value) {
+    const traits = traitDrafts.value
+      .filter((t) => t.name.trim() && t.description.trim())
+      .map((t) => ({ name: t.name.trim(), description: t.description.trim() }))
+    if (traits.length > 0) block.traits = traits
+  }
+  if (authorSpells.value) {
+    const spells = spellText.value
+      .split(/\r?\n/)
+      .map((line: string) => line.trim())
+      .filter(Boolean)
+    if (spells.length > 0) block.spells = spells
+  }
+  if (Object.keys(block).length > 0) record.stat_block = block
+
+  if (authorBoss.value && role.value !== 'NPC') {
+    const boss = blankFree(bossFields.value)
+    if (Object.keys(boss).length > 0) record.boss = boss
+  }
+
+  if (Object.keys(record).length > 0) entry.record = record
+
+  const relations: AuthoredRelationSeed[] = []
   for (const draft of relationDrafts.value) {
-    if (!draft.target_id.trim()) continue
-    const relation: DeclaredRelation = { type: draft.type, target_id: draft.target_id.trim() }
+    const target = draft.mode === 'existing' ? draft.target_id.trim() : draft.target_name.trim()
+    if (!target) continue
+    const relation: AuthoredRelationSeed =
+      draft.mode === 'existing'
+        ? { type: draft.type, target_id: target }
+        : { type: draft.type, target_name: target }
     const counter = Number.parseInt(draft.counter, 10)
     if (draft.counter.trim() && Number.isFinite(counter)) relation.counter = counter
     relations.push(relation)
   }
-  return relations.length > 0 ? relations : undefined
+  if (relations.length > 0) entry.relations = relations
+
+  return entry
 }
-
-// --- Submission -------------------------------------------------------------
-
-function formSheet(): CharacterSheet {
-  syncPowerSlot()
-  syncLists()
-  // A deep copy: the form keeps its state while the submission snapshot
-  // goes to the gate (the job commits whatever was submitted).
-  const sheet = JSON.parse(JSON.stringify(record.value)) as CharacterRecord
-  // The stat block's identity.role must match the record role — one
-  // control (the sheet's Role select) drives both, so the mismatch
-  // violation can never fire.
-  sheet.stat_block.identity.role = sheet.role
-  // An empty optional ('— none —') is an ABSENT key, never a blank string.
-  if (!sheet.stat_block.identity.class) delete sheet.stat_block.identity.class
-  if (!sheet.stat_block.identity.alignment) delete sheet.stat_block.identity.alignment
-  return {
-    record: sheet,
-    relations: buildRelations(),
-  }
-}
-
-const hasContent = computed(() => record.value.name.trim().length > 0)
 
 async function submit() {
   if (!pickedCampaignId.value) {
@@ -417,22 +450,17 @@ async function submit() {
     return
   }
   error.value = null
-  violations.value = []
   submitting.value = true
   try {
-    await jobs.submitCharacters(campaignId.value, [formSheet()])
+    await jobs.submitBuildIn(campaignId.value, {
+      places: [],
+      factions: [],
+      key_figures: [buildFigure()],
+      notes: '',
+    })
   } catch (err) {
-    if (err instanceof ApiError) {
-      error.value = err.message
-      const details = err.details as { violations?: unknown } | undefined
-      if (Array.isArray(details?.violations)) {
-        violations.value = (details.violations as unknown[]).filter(
-          (v): v is string => typeof v === 'string',
-        )
-      }
-    } else {
-      error.value = 'Could not enqueue the character.'
-    }
+    error.value =
+      err instanceof ApiError ? err.message : 'Could not enqueue the character.'
   } finally {
     submitting.value = false
   }
@@ -443,19 +471,15 @@ function stateLabel(job: Job): string {
 }
 
 function jobError(job: Job): string | null {
-  return job.state === 'failed' ? (job.error ?? 'The commit failed.') : null
+  return job.state === 'failed' ? (job.error ?? 'The build failed.') : null
 }
 
-function entityCount(job: Job): number | null {
+function resultLine(job: Job): string | null {
   if (job.state !== 'succeeded' || !job.result) return null
-  const ids = job.result['entity_ids']
-  return Array.isArray(ids) ? ids.length : null
-}
-
-function edgeCount(job: Job): number | null {
-  if (job.state !== 'succeeded' || !job.result) return null
-  const edges = job.result['edges']
-  return Array.isArray(edges) ? edges.length : null
+  const merge = (job.result as { merge?: Record<string, { merged?: unknown[] }> }).merge
+  const wave1 = merge?.wave1
+  const count = Array.isArray(wave1?.merged) ? wave1!.merged!.length : 0
+  return count > 0 ? `built (merged with ${count} existing)` : 'built'
 }
 </script>
 
@@ -463,8 +487,10 @@ function edgeCount(job: Job): number | null {
   <section>
     <h1>Character forge</h1>
     <p class="muted">
-      A fully-authored sheet goes straight into the world — no model touches it. Every field is
-      yours; the forge only checks the sheet's shape.
+      Nudge a character into the world. Fill what you know — those fields are yours and commit
+      verbatim; leave a field blank and the local model writes it. Nothing you write is ever
+      changed. A relation naming someone who doesn't exist yet (a city, a cult) makes the build
+      create them.
     </p>
 
     <div v-if="loadError" class="card">
@@ -493,26 +519,46 @@ function edgeCount(job: Job): number | null {
         </li>
       </ul>
     </div>
+
     <template v-if="!loadError">
       <form class="card" @submit.prevent="submit">
         <h2>Sheet</h2>
         <div class="grid">
           <label>
             Name
-            <input v-model="record.name" type="text" required />
+            <input v-model="name" type="text" required />
           </label>
           <label>
             Role
-            <select v-model="record.role" @change="syncBossSection">
-              <option v-for="role in ROLES" :key="role" :value="role">{{ role }}</option>
+            <select v-model="role">
+              <option v-for="r in ROLES" :key="r" :value="r">{{ r }}</option>
             </select>
+          </label>
+          <label>
+            Level / CR
+            <input v-model="levelCr" type="text" placeholder="e.g. level 5 (blank = generated)" />
+          </label>
+          <label>
+            Race / type
+            <input v-model="raceType" type="text" placeholder="blank = generated" />
+          </label>
+          <label>
+            Class / profession
+            <input v-model="classProfession" type="text" placeholder="blank = generated" />
+          </label>
+          <label>
+            Alignment
+            <input v-model="alignment" type="text" placeholder="blank = generated" />
           </label>
         </div>
         <div class="grid">
-          <label v-for="field in RECORD_FIELDS.filter((f) => f.key !== 'name')" :key="field.key">
+          <label v-for="field in RECORD_FIELDS" :key="field.key">
             {{ field.label }}
-            <textarea v-if="field.long" v-model="record[field.key]" rows="2"></textarea>
-            <input v-else v-model="record[field.key]" type="text" />
+            <textarea
+              v-model="recordText[field.key]"
+              rows="2"
+              placeholder="blank = generated"
+            ></textarea>
           </label>
         </div>
 
@@ -520,209 +566,235 @@ function edgeCount(job: Job): number | null {
         <div class="grid">
           <label v-for="field in WORLD_INTEGRATION_FIELDS" :key="field.key">
             {{ field.label }}
-            <textarea v-model="record.world_integration[field.key]" rows="2"></textarea>
+            <textarea
+              v-model="worldIntegration[field.key]"
+              rows="2"
+              placeholder="blank = generated"
+            ></textarea>
           </label>
         </div>
 
-        <div v-if="record.boss">
-          <h3>Boss section ({{ record.role }})</h3>
-          <div class="grid">
-            <label v-for="field in BOSS_FIELDS" :key="field.key">
-              {{ field.label }}
-              <textarea v-model="record.boss[field.key]" rows="2"></textarea>
-            </label>
-          </div>
-        </div>
-
-        <h2>
-          <button type="button" class="link" @click="statOpen = !statOpen">
-            {{ statOpen ? '▾' : '▸' }} Stat block
-          </button>
-        </h2>
-        <div v-if="statOpen">
-          <h3>Identity</h3>
-          <div class="grid">
-            <label>
-              Race (SRD)
-              <select v-model="statBlock.identity.race" required>
-                <option value="" disabled>pick a race…</option>
-                <option v-for="race in SRD_RACES" :key="race" :value="race">{{ race }}</option>
-              </select>
-            </label>
-            <label>
-              Power slot
-              <select v-model="powerSlot">
-                <option value="level">Level (NPC/BBEG)</option>
-                <option value="cr">CR (Monster)</option>
-                <option value="none">Leave blank</option>
-              </select>
-            </label>
-            <label v-if="powerSlot === 'level'">
-              Level (1–20)
-              <input
-                v-model.number="levelValue"
-                type="number"
-                min="1"
-                max="20"
-                @change="syncPowerSlot"
-              />
-            </label>
-            <label v-if="powerSlot === 'cr'">
-              CR (integer or '1/2')
-              <input v-model="crValue" type="text" @change="syncPowerSlot" />
-            </label>
-            <label>
-              Class (SRD)
-              <select v-model="statBlock.identity.class">
-                <option value="">— none —</option>
-                <option v-for="cls in SRD_CLASSES" :key="cls" :value="cls">{{ cls }}</option>
-              </select>
-            </label>
-            <label>
-              Alignment
-              <select v-model="statBlock.identity.alignment">
-                <option value="">— none —</option>
-                <option v-for="alignment in ALIGNMENTS" :key="alignment" :value="alignment">
-                  {{ alignment }}
-                </option>
-              </select>
-            </label>
-            <label class="muted">
-              Role (from the sheet)
-              <input :value="record.role" type="text" disabled />
-            </label>
-          </div>
-
-          <h3>Attributes &amp; combat</h3>
-          <div class="grid">
-            <label v-for="attr in ATTRIBUTES" :key="attr">
-              {{ attr.toUpperCase() }}
-              <input v-model.number="statBlock.attributes[attr]" type="number" min="1" max="30" />
-            </label>
-            <label>
-              AC
-              <input v-model.number="statBlock.combat.ac" type="number" min="0" />
-            </label>
-            <label>
-              HP
-              <input v-model.number="statBlock.combat.hp" type="number" min="1" />
-            </label>
-            <label>
-              Hit dice
-              <input
-                v-model="statBlock.combat.hit_dice"
-                type="text"
-                placeholder="e.g. 5d8+9, 2d6, 4d10+8"
-              />
-              <span class="muted small">free text — NdM[+K] shape; the gate checks the dice</span>
-            </label>
-          </div>
-
-          <h3>
-            Skills
-            <button type="button" class="link" @click="addSkill">+ add</button>
-          </h3>
-          <div v-for="(skill, i) in skillDrafts" :key="`s${i}`" class="row">
-            <input v-model="skill.name" type="text" placeholder="Religion" />
-            <input v-model="skill.description" type="text" placeholder="+7, ritual caster…" />
-            <button type="button" class="link" @click="skillDrafts.splice(i, 1)">✕</button>
-          </div>
-
-          <h3>
-            Actions
-            <button type="button" class="link" @click="addAction">+ add</button>
-          </h3>
-          <div v-for="(action, i) in actionDrafts" :key="`a${i}`" class="action-row">
-            <div class="row">
-              <input v-model="action.name" type="text" placeholder="Longsword" />
-              <input
-                v-model="action.damage"
-                type="text"
-                placeholder="1d8+2 (blank = no damage roll)"
-              />
-              <button type="button" class="link" @click="actionDrafts.splice(i, 1)">✕</button>
+        <h2>Stat block — author any part, or leave it all to the build</h2>
+        <div class="subsections">
+          <section class="subsection">
+            <h3>
+              <button type="button" class="link" @click="authorIdentity = !authorIdentity">
+                {{ authorIdentity ? '☑' : '☐' }} Identity
+              </button>
+            </h3>
+            <div v-if="authorIdentity" class="grid">
+              <label>
+                Race (SRD)
+                <select v-model="identityRace">
+                  <option value="">— generated —</option>
+                  <option v-for="race in SRD_RACES" :key="race" :value="race">{{ race }}</option>
+                </select>
+              </label>
+              <label>
+                Power slot
+                <select v-model="powerSlot">
+                  <option value="level">Level (NPC/BBEG)</option>
+                  <option value="cr">CR (Monster)</option>
+                </select>
+              </label>
+              <label v-if="powerSlot === 'level'">
+                Level (1–20)
+                <input v-model.number="levelValue" type="number" min="1" max="20" />
+              </label>
+              <label v-if="powerSlot === 'cr'">
+                CR (integer or '1/2')
+                <input v-model="crValue" type="text" />
+              </label>
+              <label>
+                Class (SRD)
+                <select v-model="identityClass">
+                  <option value="">— generated —</option>
+                  <option v-for="cls in SRD_CLASSES" :key="cls" :value="cls">{{ cls }}</option>
+                </select>
+              </label>
+              <label>
+                Alignment
+                <select v-model="identityAlignment">
+                  <option value="">— generated —</option>
+                  <option v-for="alignmentOption in ALIGNMENTS" :key="alignmentOption" :value="alignmentOption">
+                    {{ alignmentOption }}
+                  </option>
+                </select>
+              </label>
             </div>
+          </section>
+
+          <section class="subsection">
+            <h3>
+              <button type="button" class="link" @click="authorAttributes = !authorAttributes">
+                {{ authorAttributes ? '☑' : '☐' }} Attributes
+              </button>
+            </h3>
+            <div v-if="authorAttributes" class="grid">
+              <label v-for="attr in ATTRIBUTES" :key="attr">
+                {{ attr.toUpperCase() }}
+                <input v-model.number="attributes[attr]" type="number" min="1" max="30" />
+              </label>
+            </div>
+          </section>
+
+          <section class="subsection">
+            <h3>
+              <button type="button" class="link" @click="authorCombat = !authorCombat">
+                {{ authorCombat ? '☑' : '☐' }} Combat
+              </button>
+            </h3>
+            <div v-if="authorCombat" class="grid">
+              <label>
+                AC
+                <input v-model.number="ac" type="number" min="0" />
+              </label>
+              <label>
+                HP
+                <input v-model.number="hp" type="number" min="1" />
+              </label>
+            </div>
+            <div v-if="authorCombat" class="dice-row">
+              <span class="muted small">Hit dice</span>
+              <input v-model.number="hitDiceCount" type="number" min="1" placeholder="dice" />
+              <span>d</span>
+              <input v-model.number="hitDiceSides" type="number" min="1" placeholder="sides" />
+              <span>+</span>
+              <input v-model="hitDiceMod" type="text" placeholder="mod" />
+            </div>
+          </section>
+
+          <section class="subsection">
+            <h3>
+              <button type="button" class="link" @click="authorSkills = !authorSkills">
+                {{ authorSkills ? '☑' : '☐' }} Skills
+              </button>
+              <button v-if="authorSkills" type="button" class="link" @click="addSkill">+ add</button>
+            </h3>
+            <div v-for="(skill, i) in skillDrafts" :key="`s${i}`" class="row three">
+              <input v-model="skill.name" type="text" placeholder="Religion" />
+              <input v-model="skill.bonus" type="text" placeholder="bonus (optional)" />
+              <input v-model="skill.description" type="text" placeholder="notes (optional)" />
+              <button type="button" class="link" @click="skillDrafts.splice(i, 1)">✕</button>
+            </div>
+          </section>
+
+          <section class="subsection">
+            <h3>
+              <button type="button" class="link" @click="authorActions = !authorActions">
+                {{ authorActions ? '☑' : '☐' }} Actions
+              </button>
+              <button v-if="authorActions" type="button" class="link" @click="addAction">+ add</button>
+            </h3>
+            <div v-for="(action, i) in actionDrafts" :key="`a${i}`" class="action-block">
+              <div class="row three">
+                <input v-model="action.name" type="text" placeholder="Longsword" />
+                <input
+                  v-model="action.description"
+                  type="text"
+                  placeholder="Melee Weapon Attack: +5 to hit…"
+                />
+                <button type="button" class="link" @click="actionDrafts.splice(i, 1)">✕</button>
+              </div>
+              <div class="dice-row">
+                <span class="muted small">Damage</span>
+                <input v-model.number="action.damageCount" type="number" min="1" placeholder="dice" />
+                <span>d</span>
+                <input v-model.number="action.damageSides" type="number" min="1" placeholder="sides" />
+                <span>+</span>
+                <input v-model="action.damageMod" type="text" placeholder="mod" />
+              </div>
+            </div>
+          </section>
+
+          <section class="subsection">
+            <h3>
+              <button type="button" class="link" @click="authorTraits = !authorTraits">
+                {{ authorTraits ? '☑' : '☐' }} Traits
+              </button>
+              <button v-if="authorTraits" type="button" class="link" @click="addTrait">+ add</button>
+            </h3>
+            <div v-for="(trait, i) in traitDrafts" :key="`t${i}`" class="row three">
+              <input v-model="trait.name" type="text" placeholder="Magic Resistance" />
+              <input v-model="trait.description" type="text" placeholder="Advantage on saves…" />
+              <span></span>
+              <button type="button" class="link" @click="traitDrafts.splice(i, 1)">✕</button>
+            </div>
+          </section>
+
+          <section class="subsection">
+            <h3>
+              <button type="button" class="link" @click="authorSpells = !authorSpells">
+                {{ authorSpells ? '☑' : '☐' }} Spells
+              </button>
+            </h3>
             <textarea
-              v-model="action.description"
-              rows="2"
-              placeholder="Melee Weapon Attack: +5 to hit. Hit: 7 (1d8+2) slashing damage."
+              v-if="authorSpells"
+              v-model="spellText"
+              rows="3"
+              placeholder="one per line — must be on the class's spell list"
             ></textarea>
-          </div>
-
-          <h3>
-            Traits
-            <button type="button" class="link" @click="addTrait">+ add</button>
-          </h3>
-          <div v-for="(trait, i) in traitDrafts" :key="`t${i}`" class="row">
-            <input v-model="trait.name" type="text" placeholder="Magic Resistance" />
-            <input v-model="trait.description" type="text" placeholder="Advantage on saves…" />
-            <button type="button" class="link" @click="traitDrafts.splice(i, 1)">✕</button>
-          </div>
-
-          <h3>Spells (one per line)</h3>
-          <textarea v-model="spellText" rows="3"></textarea>
+          </section>
         </div>
+
 
         <h2>Relations</h2>
         <p class="muted small">
-          Wire the sheet to entities already in the world. The forge never auto-creates a target —
-          build the place first, then bind.
+          Wire the sheet to an entity already in the world, or name a NEW one — the build creates
+          it (the relation's type decides what: located in → a place, member of → faction…).
         </p>
-        <div v-for="(relation, i) in relationDrafts" :key="`r${i}`" class="row relation">
-          <select v-model="relation.type">
-            <option v-for="edgeType in EDGE_TYPES" :key="edgeType" :value="edgeType">
-              {{ edgeType.replaceAll('_', ' ') }}
-            </option>
-          </select>
-          <select v-model="relation.target_id">
-            <option value="" disabled>pick a committed entity…</option>
-            <option v-for="entity in worldEntities" :key="entity.id" :value="entity.id">
-              {{ entity.name }} ({{ entity.kind }})
-            </option>
-          </select>
-          <input v-model="relation.counter" type="text" placeholder="counter" />
-          <button type="button" class="link" @click="relationDrafts.splice(i, 1)">✕</button>
+        <div v-for="(relation, i) in relationDrafts" :key="`r${i}`" class="relation-block">
+          <div class="row four">
+            <select v-model="relation.type">
+              <option v-for="edgeType in EDGE_TYPES" :key="edgeType" :value="edgeType">
+                {{ edgeType.replaceAll('_', ' ') }}
+              </option>
+            </select>
+            <select v-model="relation.mode">
+              <option value="existing">existing</option>
+              <option value="new">create new</option>
+            </select>
+            <select v-if="relation.mode === 'existing'" v-model="relation.target_id">
+              <option value="" disabled>pick a committed entity…</option>
+              <option v-for="entity in worldEntities" :key="entity.id" :value="entity.id">
+                {{ entity.name }} ({{ entity.kind }})
+              </option>
+            </select>
+            <input
+              v-else
+              v-model="relation.target_name"
+              type="text"
+              placeholder="e.g. Vaelmoor — created if missing"
+            />
+            <button type="button" class="link" @click="relationDrafts.splice(i, 1)">✕</button>
+          </div>
         </div>
         <button type="button" class="link" @click="addRelation">+ relation</button>
 
-        <details v-if="violations.length > 0" class="violations" open>
-          <summary class="error">
-            The sheet needs fixes before it can enter the world ({{ violations.length }})
-          </summary>
-          <ul class="error">
-            <li v-for="violation in violations" :key="violation" class="mono">
-              {{ violation }}
-            </li>
-          </ul>
-        </details>
-        <p v-if="violations.length === 0 && error" class="error">{{ error }}</p>
+        <p v-if="error" class="error">{{ error }}</p>
 
         <button type="submit" :disabled="submitting || inFlight || !hasContent">
-          {{ inFlight ? 'Committing…' : submitting ? 'Enqueuing…' : 'Commit to the world' }}
+          {{ inFlight ? 'Building…' : submitting ? 'Enqueuing…' : 'Build my character' }}
         </button>
         <p v-if="!pickedCampaignId" class="muted small">
-          Pick a world above when you're ready — the commit needs somewhere to land.
+          Pick a world above when you're ready — the build needs somewhere to land.
         </p>
-        <p class="muted small">
-          Zero-model by construction: this commit makes no LLM call, and characters never merge —
-          every sheet is a fresh, distinct person even with a duplicate name.
+        <p v-else class="muted small">
+          The build runs once: your fields commit verbatim, the blanks are written by the local
+          model, and missing relation targets are created in the same wave. Characters never
+          merge — every build is a fresh, distinct person even with a duplicate name.
         </p>
       </form>
 
       <div v-if="recentJobs.length > 0" class="card job">
-        <h2>Recent commits</h2>
+        <h2>Recent builds</h2>
         <div v-for="job in recentJobs" :key="job.id" class="job-row">
           <dl>
             <dt>State</dt>
             <dd>{{ stateLabel(job) }}</dd>
-            <template v-if="entityCount(job) !== null">
-              <dt>Committed</dt>
-              <dd>
-                {{ entityCount(job) }} character{{ entityCount(job) === 1 ? '' : 's'
-                }}<template v-if="(edgeCount(job) ?? 0) > 0">
-                  + {{ edgeCount(job) }} relation{{ edgeCount(job) === 1 ? '' : 's' }}</template
-                >
-              </dd>
+            <template v-if="resultLine(job)">
+              <dt>Result</dt>
+              <dd>{{ resultLine(job) }}</dd>
             </template>
             <template v-else-if="jobError(job)">
               <dt>Error</dt>
@@ -762,29 +834,49 @@ textarea {
   display: grid;
   gap: 0.35rem;
 }
-.violations summary {
-  cursor: pointer;
-  font-weight: 600;
+.subsections {
+  display: grid;
+  gap: 0.75rem;
 }
-.violations ul {
-  margin: 0.5rem 0 0;
-  max-height: 14rem;
-  overflow-y: auto;
+.subsection {
+  border: 1px dashed #2c3038;
+  border-radius: 6px;
+  padding: 0.6rem;
 }
-textarea {
-  resize: vertical;
+.subsection h3 {
+  margin: 0 0 0.5rem;
+  display: flex;
+  gap: 1rem;
+  align-items: center;
 }
-.row {
-  grid-template-columns: 1fr 2fr auto;
+.row.three {
+  display: grid;
+  grid-template-columns: 2fr 1fr 2fr auto;
   gap: 0.5rem;
   margin-bottom: 0.4rem;
   align-items: center;
 }
-.row.relation {
-  grid-template-columns: 1fr 2fr 1fr auto;
+.row.four {
+  display: grid;
+  grid-template-columns: 1fr auto 2fr auto;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+  align-items: center;
 }
-.action-row {
-  margin-bottom: 0.5rem;
+.relation-block {
+  margin-bottom: 0.4rem;
+}
+.action-block {
+  margin-bottom: 0.6rem;
+  display: grid;
+  gap: 0.3rem;
+}
+.dice-row {
+  display: grid;
+  grid-template-columns: auto 5rem auto 5rem auto 5rem;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.5rem;
 }
 .mono {
   font-family: ui-monospace, monospace;

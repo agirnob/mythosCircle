@@ -192,6 +192,233 @@ def _stat_block_view(block: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
+#: The stat-block subsections an AUTHORED PARTIAL block may carry. Every
+#: present subsection must be structurally sound; the absent ones are the
+#: generator's job (the nudge contract). ``power`` is a computed stamp —
+#: never authored.
+STAT_SUBSECTION_KEYS: frozenset[str] = frozenset(
+    {"identity", "attributes", "combat", "skills", "actions", "traits", "spells"}
+)
+
+IDENTITY_SUBKEYS: frozenset[str] = frozenset({"role", "race", "level", "cr", "class", "alignment"})
+ATTRIBUTE_KEYS: frozenset[str] = frozenset({"str", "dex", "con", "int", "wis", "cha"})
+COMBAT_SUBKEYS: frozenset[str] = frozenset({"ac", "hp", "hit_dice"})
+
+
+def _int_violation(value: Any, where: str, low: int, high: int) -> str | None:
+    if type(value) is not int or not low <= value <= high:
+        return f"{where} must be an integer in [{low}, {high}]"
+    return None
+
+
+def _non_blank_str_violation(value: Any, where: str) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return f"{where} must be a non-blank string"
+    return None
+
+
+def stat_block_subset_violations(block: Any, where: str = "stat_block") -> list[str]:
+    """The per-subsection shape violations of one AUTHORED PARTIAL stat
+    block (``[]`` = valid) — the nudge contract's enqueue screen: every
+    PRESENT subsection must be structurally sound (the generator fills
+    the absent ones), while the full canonical verdict (cross-checks,
+    power band) stays the run-time reject-only gate.
+
+    List subsections merge BY NAME at run time (an authored entry
+    force-updates the generated entry with the same normalized name;
+    unmatched authored entries append), so their entries are screened
+    with that shape in mind.
+    """
+    if not isinstance(block, dict):
+        return [f"{where} must be an object"]
+    violations: list[str] = []
+    unknown = set(block) - STAT_SUBSECTION_KEYS
+    if unknown:
+        violations.append(
+            f"{where} has unknown key(s): {sorted(unknown)} — only "
+            f"{sorted(STAT_SUBSECTION_KEYS)} are authorable (power is a generated stamp)"
+        )
+
+    identity = block.get("identity")
+    if identity is not None:
+        if not isinstance(identity, dict):
+            violations.append(f"{where}.identity must be an object")
+        else:
+            identity_unknown = set(identity) - IDENTITY_SUBKEYS
+            if identity_unknown:
+                violations.append(
+                    f"{where}.identity has unknown key(s): {sorted(identity_unknown)}"
+                )
+            if "role" in identity:
+                role = identity["role"]
+                if not isinstance(role, str) or role.strip() not in ROLES:
+                    violations.append(f"{where}.identity.role must be one of {sorted(ROLES)}")
+            for field in ("race", "class", "alignment"):
+                if field in identity:
+                    violation = _non_blank_str_violation(
+                        identity[field], f"{where}.identity.{field}"
+                    )
+                    if violation:
+                        violations.append(violation)
+            if "level" in identity:
+                violation = _int_violation(identity["level"], f"{where}.identity.level", 1, 20)
+                if violation:
+                    violations.append(violation)
+            if "cr" in identity:
+                cr = identity["cr"]
+                if type(cr) is not int and not (
+                    isinstance(cr, str) and re.fullmatch(r"\d+(/\d+)?", cr.strip())
+                ):
+                    violations.append(
+                        f"{where}.identity.cr must be a positive integer or a fraction ('1/2')"
+                    )
+
+    attributes = block.get("attributes")
+    if attributes is not None:
+        if not isinstance(attributes, dict):
+            violations.append(f"{where}.attributes must be an object")
+        else:
+            for key, value in attributes.items():
+                if key not in ATTRIBUTE_KEYS:
+                    violations.append(f"{where}.attributes has unknown key {key!r}")
+                    continue
+                violation = _int_violation(value, f"{where}.attributes.{key}", 1, 30)
+                if violation:
+                    violations.append(violation)
+
+    combat = block.get("combat")
+    if combat is not None:
+        if not isinstance(combat, dict):
+            violations.append(f"{where}.combat must be an object")
+        else:
+            for key in ("ac", "hp"):
+                if key in combat:
+                    value = combat[key]
+                    if type(value) is not int or value <= 0:
+                        violations.append(f"{where}.combat.{key} must be a positive integer")
+            if "hit_dice" in combat:
+                violation = _non_blank_str_violation(combat["hit_dice"], f"{where}.combat.hit_dice")
+                if violation:
+                    violations.append(violation)
+
+    skills = block.get("skills")
+    if skills is not None:
+        if not isinstance(skills, list):
+            violations.append(f"{where}.skills must be a list")
+        else:
+            for index, entry in enumerate(skills):
+                if not isinstance(entry, dict):
+                    violations.append(f"{where}.skills[{index}] must be an object")
+                    continue
+                unknown_keys = set(entry) - {"name", "bonus", "description"}
+                if unknown_keys:
+                    violations.append(
+                        f"{where}.skills[{index}] has unknown key(s): {sorted(unknown_keys)}"
+                    )
+                violation = _non_blank_str_violation(
+                    entry.get("name"), f"{where}.skills[{index}].name"
+                )
+                if violation:
+                    violations.append(violation)
+                if "bonus" in entry and type(entry["bonus"]) is not int:
+                    violations.append(f"{where}.skills[{index}].bonus must be an integer")
+                if "description" in entry:
+                    violation = _non_blank_str_violation(
+                        entry["description"], f"{where}.skills[{index}].description"
+                    )
+                    if violation:
+                        violations.append(violation)
+
+    actions = block.get("actions")
+    if actions is not None:
+        if not isinstance(actions, list):
+            violations.append(f"{where}.actions must be a list")
+        else:
+            for index, entry in enumerate(actions):
+                if not isinstance(entry, dict):
+                    violations.append(f"{where}.actions[{index}] must be an object")
+                    continue
+                unknown_keys = set(entry) - {"name", "description", "damage", "to_hit"}
+                if unknown_keys:
+                    violations.append(
+                        f"{where}.actions[{index}] has unknown key(s): {sorted(unknown_keys)}"
+                    )
+                violation = _non_blank_str_violation(
+                    entry.get("name"), f"{where}.actions[{index}].name"
+                )
+                if violation:
+                    violations.append(violation)
+                violation = _non_blank_str_violation(
+                    entry.get("description"), f"{where}.actions[{index}].description"
+                )
+                if violation:
+                    violations.append(violation)
+                if "to_hit" in entry and type(entry["to_hit"]) is not int:
+                    violations.append(f"{where}.actions[{index}].to_hit must be an integer")
+                damage = entry.get("damage")
+                if isinstance(damage, str):
+                    if not DICE_RE.fullmatch(damage.strip()):
+                        violations.append(
+                            f"{where}.actions[{index}].damage {damage!r} must match the dice "
+                            f'pattern {DICE_PATTERN} (e.g. "2d6+2")'
+                        )
+                elif isinstance(damage, list):
+                    for part_index, part in enumerate(damage):
+                        if (
+                            not isinstance(part, dict)
+                            or not isinstance(part.get("dice"), str)
+                            or not part["dice"].strip()
+                        ):
+                            violations.append(
+                                f"{where}.actions[{index}].damage[{part_index}] must carry a "
+                                "non-blank 'dice' string"
+                            )
+                elif damage is not None:
+                    violations.append(
+                        f"{where}.actions[{index}].damage must be a dice string ('2d6+2')"
+                    )
+
+    traits = block.get("traits")
+    if traits is not None:
+        if not isinstance(traits, list):
+            violations.append(f"{where}.traits must be a list")
+        else:
+            for index, entry in enumerate(traits):
+                if not isinstance(entry, dict):
+                    violations.append(f"{where}.traits[{index}] must be an object")
+                    continue
+                unknown_keys = set(entry) - {"name", "description"}
+                if unknown_keys:
+                    violations.append(
+                        f"{where}.traits[{index}] has unknown key(s): {sorted(unknown_keys)}"
+                    )
+                for field in ("name", "description"):
+                    violation = _non_blank_str_violation(
+                        entry.get(field), f"{where}.traits[{index}].{field}"
+                    )
+                    if violation:
+                        violations.append(violation)
+
+    spells = block.get("spells")
+    if spells is not None:
+        if not isinstance(spells, list):
+            violations.append(f"{where}.spells must be a list")
+        else:
+            for index, spell in enumerate(spells):
+                violation = _non_blank_str_violation(spell, f"{where}.spells[{index}]")
+                if violation:
+                    violations.append(violation)
+
+    return violations
+
+
+def stat_block_is_complete(block: dict[str, Any]) -> bool:
+    """A partial authored block is complete iff every REQUIRED canonical
+    subsection (identity, attributes, combat) is present — the point
+    where whole-block byte-identical semantics apply instead of merge."""
+    return all(key in block for key in ("identity", "attributes", "combat"))
+
+
 def stat_block_violations(block: Any, where: str = "stat_block") -> list[str]:
     """The canonical stat-block violations (``[]`` = valid).
 
@@ -205,6 +432,22 @@ def stat_block_violations(block: Any, where: str = "stat_block") -> list[str]:
 
     if not isinstance(block, dict):
         return [f"{where} must be an object"]
+    # A dice-string damage slot that fails the canonical pattern names the
+    # pattern itself (the gate's 422 is the form's error message — the
+    # shared validator's "non-empty list of damage parts" is the shape
+    # verdict for the GENERATED path, not the pattern breach a DM can fix
+    # by retyping the formula).
+    if isinstance(block.get("actions"), list):
+        for index, action in enumerate(block["actions"]):
+            if not isinstance(action, dict):
+                continue
+            damage = action.get("damage")
+            if isinstance(damage, str) and not DICE_RE.fullmatch(damage.strip()):
+                return [
+                    f"{where}.actions[{index}].damage {damage!r} must match the dice "
+                    f'pattern {DICE_PATTERN} (e.g. "2d6+2"; the form normalizes '
+                    "the spaced variant)"
+                ]
     view = _stat_block_view(block)
     return [f"{where}.{violation}" for violation in validate_stat_block(view)]
 
@@ -330,8 +573,13 @@ def seed_entry_violations(entry: Any, section: str) -> list[str]:
                     violations.append(
                         f"{where}.record has unknown key(s): {sorted(record_unknown)}"
                     )
-                if not isinstance(record.get("stat_block"), (dict, type(None))):
+                block = record.get("stat_block")
+                if not isinstance(block, (dict, type(None))):
                     violations.append(f"{where}.record.stat_block must be an object")
+                elif isinstance(block, dict):
+                    violations.extend(
+                        stat_block_subset_violations(block, f"{where}.record.stat_block")
+                    )
     relations = entry.get("relations")
     if relations is not None:
         if not isinstance(relations, list):

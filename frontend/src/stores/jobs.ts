@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 
 import type { components } from '../api/schema'
-import type { CharacterSheet } from '../api/characterSchema'
 import { apiFetch } from '../api/client'
 import type { WsMessage } from '../ws'
 import type { PortraitOptions } from '../lib/portrait'
@@ -28,14 +27,20 @@ function stateOrdinal(state: string): number {
  */
 export interface AuthoredRelationSeed {
   type: string
-  target_name: string
+  /** Exactly one target tier: an existing entity's ULID, another seed's
+   * key, or a mandated name (created when missing — path 1 only). */
+  target_id?: string
+  target_key?: string
+  target_name?: string
   counter?: number
 }
 
 export interface AuthoredFigureSeed {
   name: string
   role?: string
-  record?: Record<string, string>
+  /** The authored AR24 fields — filled ones only; a partial stat_block
+   * carries object subsections, so the value type is open. */
+  record?: Record<string, unknown>
   relations?: AuthoredRelationSeed[]
   key?: string
 }
@@ -66,26 +71,6 @@ export const useJobsStore = defineStore('jobs', {
       Object.values(state.byId)
         .filter((job) => job.campaign_id === campaignId && job.kind === 'build_in')
         .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null,
-    /** add_character jobs for a campaign, newest first (the character
-     * forge's feed). */
-    addCharacterJobs: (state) => (campaignId: string) =>
-      Object.values(state.byId)
-        .filter((job) => job.campaign_id === campaignId && job.kind === 'add_character')
-        .sort((a, b) => b.created_at.localeCompare(a.created_at)),
-    /** An add_character for this campaign still queued/running — the
-     * in-flight discipline (the build-in precedent): the sheet form keeps
-     * its content after submit, so a second click must not enqueue a
-     * duplicate while the first commit is pending; a FAILED job releases
-     * the button with the form intact for the retry. */
-    addCharacterInFlight:
-      (state) =>
-      (campaignId: string): boolean =>
-        Object.values(state.byId).some(
-          (job) =>
-            job.campaign_id === campaignId &&
-            job.kind === 'add_character' &&
-            !TERMINAL_STATES.has(job.state),
-        ),
     /** A regenerate for this target (entity or candidate row) still
      * queued/running — the in-flight discipline (spec-3-6): a second
      * enqueue for the same target must not burn a second generation;
@@ -206,26 +191,6 @@ export const useJobsStore = defineStore('jobs', {
       })
       this.upsert(job)
       return job
-    },
-    /**
-     * The character forge (spec: hybrid authorship, path 2): POST
-     * /api/characters is the synchronous enqueue gate — 202
-     * ``{job_id, state, max_llm_calls}`` (never a full JobResponse row),
-     * 422 with ``details.violations`` BEFORE any job row exists. The
-     * enqueued job's ``max_llm_calls`` is 0 on the server (zero-LLM is
-     * structural); the full row recovers via the standard list sync, and
-     * WS frames keep it current from there.
-     */
-    async submitCharacters(campaignId: string, sheets: CharacterSheet[]) {
-      const gate = await apiFetch<{ job_id: string; state: string; max_llm_calls: number }>(
-        '/api/characters',
-        {
-          method: 'POST',
-          body: JSON.stringify({ campaign_id: campaignId, characters: sheets }),
-        },
-      )
-      await this.syncList(campaignId)
-      return gate
     },
     /**
      * Spec-3.5 re-roll: one regenerate job. `target` is the entity

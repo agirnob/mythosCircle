@@ -924,6 +924,8 @@ def _backfill_authored(
     the pinned role, the authored stat_block byte-identical). Mandate
     rows (seed ``None``) are untouched.
     """
+    from app.store.direct import stat_block_is_complete  # noqa: PLC0415 - import cycle
+
     out: list[models.EntityInput] = []
     for position, entity in enumerate(entities):
         _section, _entry, seed = roster[position] if position < len(roster) else ("", "", None)
@@ -951,10 +953,20 @@ def _backfill_authored(
                         data[key] = value
         if which in ("all", "stat"):
             record = seed.get("record")
-            if isinstance(record, dict) and record.get("stat_block") is not None:
-                # BYTE-IDENTICAL: the authored block is restored exactly —
-                # no stamp, no fold, no repair residue.
-                data["stat_block"] = record["stat_block"]
+            if isinstance(record, dict) and isinstance(record.get("stat_block"), dict):
+                authored_block = record["stat_block"]
+                if stat_block_is_complete(authored_block):
+                    # BYTE-IDENTICAL: a COMPLETE authored block is restored
+                    # exactly — no stamp, no fold, no repair residue.
+                    data["stat_block"] = authored_block
+                elif authored_block:
+                    # PARTIAL authored block: re-apply the authored
+                    # subsections onto the post-gate block — the merge
+                    # ran before the gates, so authored fields a fold or
+                    # repair reshaped are restored verbatim here.
+                    data["stat_block"] = _merge_authored_stat_block(
+                        authored_block, data.get("stat_block")
+                    )
         out.append(dataclasses.replace(entity, name=name, text=text, data=data))
     return out
 
@@ -971,7 +983,11 @@ def _check_authored_stat_blocks(
     repairs (the caller freezes these positions out of the repair gates).
     """
     from app.pipeline.knowledge import stat_block_role  # noqa: PLC0415 - local import fine
-    from app.store.direct import stat_block_violations  # noqa: PLC0415 - import cycle
+    from app.store.direct import (  # noqa: PLC0415 - import cycle
+        stat_block_is_complete,
+        stat_block_subset_violations,
+        stat_block_violations,
+    )
 
     violations: list[str] = []
     for position, entity in enumerate(entities):
@@ -980,15 +996,22 @@ def _check_authored_stat_blocks(
             continue
         record = seed.get("record")
         block = record.get("stat_block") if isinstance(record, dict) else None
-        if block is None:
+        if not isinstance(block, dict) or not block:
             continue  # nothing authored — the generated gate owns the block
-        entry_violations = stat_block_violations(block, "stat_block")
+        if stat_block_is_complete(block):
+            entry_violations = stat_block_violations(block, "stat_block")
+        else:
+            entry_violations = stat_block_subset_violations(block, "stat_block")
         pinned_role = seed.get("role") or (record.get("role") if isinstance(record, dict) else None)
         block_role = stat_block_role(block)
+        # A PARTIAL block may leave identity unauthored — the generator
+        # fills it; the pin is only violated when the DM AUTHORED a
+        # role that disagrees.
         if (
             isinstance(pinned_role, str)
             and pinned_role.strip()
-            and (block_role is None or block_role != pinned_role.strip())
+            and block_role is not None
+            and block_role != pinned_role.strip()
         ):
             entry_violations.append(
                 f"stat_block.identity.role {block_role!r} must equal the pinned role "
@@ -1041,6 +1064,128 @@ def _check_role_pins(
         raise JobPayloadError("wave 1: role pin violated (reject-only): " + " | ".join(violations))
 
 
+def _merge_authored_stat_block(
+    authored: dict[str, Any], generated: dict[str, Any] | None
+) -> dict[str, Any]:
+    """The nudge contract's merge: authored stat-block subsections are
+    ground truth, the generator fills ONLY the blanks.
+
+    - scalar subsections (identity, attributes, combat): per-FIELD merge
+      — an authored field replaces the generated one, generated fields
+      the DM left blank stay.
+    - list subsections (skills, actions, traits): merge BY NAME — an
+      authored entry force-updates the generated entry with the same
+      normalized name (authored bytes win), an unmatched authored entry
+      is appended, generated extras stay.
+    - spells (strings): union — generated spells kept, authored spells
+      appended when not already present (case-insensitive).
+
+    An authored dice-STRING damage slot is converted to its canonical
+    parts form in the merged block: the block the gates see must be
+    gate-clean (the auditor reads parts, never strings), and the merge
+    preserves the dice exactly — the same conversion the direct path's
+    validation view applies, applied here to the committed artifact
+    because this block is a GENERATED-CANONICAL whole with authored
+    content, not a byte-frozen authored whole.
+    """
+    import copy  # noqa: PLC0415
+
+    from app.store.direct import _damage_view  # noqa: PLC0415 - import cycle
+
+    block: dict[str, Any] = dict(generated) if isinstance(generated, dict) else {}
+    for key, value in authored.items():
+        if key in ("identity", "attributes", "combat"):
+            raw_section = block.get(key)
+            section: dict[str, Any] = dict(raw_section) if isinstance(raw_section, dict) else {}
+            if isinstance(value, dict):
+                section.update(copy.deepcopy(value))
+            block[key] = section
+        elif key in ("skills", "actions", "traits"):
+            raw_list = block.get(key)
+            generated_list: list[Any] = list(raw_list) if isinstance(raw_list, list) else []
+            authored_list = value if isinstance(value, list) else []
+
+            def _name(entry: Any) -> str:
+                name = entry.get("name") if isinstance(entry, dict) else None
+                if isinstance(name, str):
+                    return name.strip().lower()
+                return ""
+
+            by_name: dict[str, dict[str, Any]] = {}
+            for entry in generated_list:
+                if isinstance(entry, dict) and _name(entry):
+                    by_name.setdefault(_name(entry), entry)
+            for authored_entry in authored_list:
+                if not isinstance(authored_entry, dict):
+                    continue
+                authored_entry = dict(authored_entry)
+                if isinstance(authored_entry.get("damage"), str):
+                    authored_entry["damage"] = _damage_view(authored_entry["damage"])
+                match = by_name.get(_name(authored_entry))
+                if match is not None:
+                    match.update(copy.deepcopy(authored_entry))
+                else:
+                    fresh = copy.deepcopy(authored_entry)
+                    generated_list.append(fresh)
+                    if _name(fresh):
+                        by_name[_name(fresh)] = fresh
+            block[key] = generated_list
+        elif key == "spells":
+            raw_spells = block.get(key)
+            generated_list = list(raw_spells) if isinstance(raw_spells, list) else []
+            authored_list = value if isinstance(value, list) else []
+            present = {str(spell).strip().lower() for spell in generated_list}
+            for spell in authored_list:
+                if isinstance(spell, str) and spell.strip().lower() not in present:
+                    generated_list.append(spell)
+                    present.add(spell.strip().lower())
+            block[key] = generated_list
+        else:
+            block[key] = copy.deepcopy(value)
+    return block
+
+
+def _partial_authored_stat_blocks(
+    entities: Sequence[models.EntityInput],
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+) -> dict[int, dict[str, Any]]:
+    """The PARTIAL authored stat blocks by roster position (complete
+    blocks are excluded — they freeze and commit byte-identical)."""
+    from app.store.direct import stat_block_is_complete  # noqa: PLC0415 - import cycle
+
+    partial: dict[int, dict[str, Any]] = {}
+    for position, entity in enumerate(entities):
+        _section, _entry, seed = roster[position] if position < len(roster) else ("", "", None)
+        if seed is None or seed.get("mandate") or entity.kind != "character":
+            continue
+        record = seed.get("record")
+        block = record.get("stat_block") if isinstance(record, dict) else None
+        if isinstance(block, dict) and block and not stat_block_is_complete(block):
+            partial[position] = block
+    return partial
+
+
+def _merge_partial_stat_blocks(
+    entities: list[models.EntityInput],
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+) -> list[models.EntityInput]:
+    """Merge every partial authored stat block INTO its generated block
+    BEFORE the gates run — the block the gates see is whole (generated
+    skeleton + authored subsections), so the power band and the canonical
+    checks judge the character the DM actually asked for. `_backfill_authored`
+    re-applies the authored subset after every gate, restoring the authored
+    bytes any fold or repair may have reshaped."""
+    partial = _partial_authored_stat_blocks(entities, roster)
+    if not partial:
+        return entities
+    out = list(entities)
+    for position, authored in partial.items():
+        entity = out[position]
+        merged = _merge_authored_stat_block(authored, entity.data.get("stat_block"))
+        out[position] = dataclasses.replace(entity, data={**entity.data, "stat_block": merged})
+    return out
+
+
 def _authored_stat_frozen(
     entities: Sequence[models.EntityInput],
     roster: Sequence[tuple[str, str, dict[str, Any] | None]],
@@ -1048,13 +1193,19 @@ def _authored_stat_frozen(
     """The positions whose stat blocks are DM-authored — frozen out of
     canonicalize/conform/repair (a valid authored block commits
     byte-identical; the generated gates never touch it)."""
+    from app.store.direct import stat_block_is_complete  # noqa: PLC0415 - import cycle
+
     frozen: set[int] = set()
     for position, entity in enumerate(entities):
         _section, _entry, seed = roster[position] if position < len(roster) else ("", "", None)
         if seed is None or seed.get("mandate") or entity.kind != "character":
             continue
         record = seed.get("record")
-        if isinstance(record, dict) and record.get("stat_block") is not None:
+        if (
+            isinstance(record, dict)
+            and isinstance(record.get("stat_block"), dict)
+            and stat_block_is_complete(record["stat_block"])
+        ):
             frozen.add(position)
     return frozenset(frozen)
 
@@ -2748,6 +2899,12 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     if cancelled:
         return
     entities_1 = _backfill_authored(entities_1, roster, which="record")
+    # Nudge contract: a PARTIAL authored stat block is merged into the
+    # generated block BEFORE the gates, so the power band and canonical
+    # checks judge the whole character (generated skeleton + authored
+    # subsections). `_backfill_authored(which="stat")` below re-applies
+    # the authored subset after the gates.
+    entities_1 = _merge_partial_stat_blocks(entities_1, roster)
     progress(0.4)
     # Hybrid REJECT-ONLY verdict for DM-authored stat blocks: an invalid
     # authored block fails the job naming entry + violations BEFORE any

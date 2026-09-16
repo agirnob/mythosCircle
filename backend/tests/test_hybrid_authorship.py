@@ -371,12 +371,15 @@ def test_hybrid_authored_block_valid_commits_byte_identical(world: str) -> None:
 
 
 def test_hybrid_authored_block_invalid_fails_before_any_repair(world: str) -> None:
-    """HYBRID_AUTHORED_BLOCK_INVALID: the authored block breaks the dice
-    pattern — the job fails naming the entry + the schema-path violation,
-    the provider call count proves NO repair was ever offered, and zero
-    entities commit."""
+    """HYBRID_AUTHORED_BLOCK_INVALID: the authored block carries spells
+    with no identity.class — a CROSS-SUBSECTION canonical breach the
+    enqueue shape screen cannot see — so the job fails at the run-time
+    gate naming the entry + the violation, the provider call count
+    proves NO repair was ever offered, and zero entities commit.
+    (Pure shape breaches — a bad dice pattern, out-of-range ints — are
+    caught earlier: the enqueue screen 422s them with zero job rows.)"""
     authored_block = json.loads(json.dumps(_STAT_BLOCK))
-    authored_block["actions"][0]["damage"] = "1d6x+2"
+    authored_block["spells"] = ["Magic Missile"]
     seed_figure = {"name": "Ferdinand", "record": {"stat_block": authored_block}}
     payload = {"key_figures": [seed_figure], "notes": ""}
     calls: list[str] = []
@@ -392,9 +395,26 @@ def test_hybrid_authored_block_invalid_fails_before_any_repair(world: str) -> No
     assert job.error is not None
     assert "reject-only" in job.error
     assert "Ferdinand" in job.error
-    assert "actions[0].damage" in job.error
+    assert "spell" in job.error
     assert len(calls) == 1  # only the wave-1 call — the repair was never offered
     assert _rows(world) == []  # zero commits
+
+
+def test_hybrid_authored_shape_breach_is_an_enqueue_422(world: str) -> None:
+    """A pure SHAPE breach in an authored block (dice pattern) is a 422
+    at the enqueue gate — zero job rows, the direct-path precedent."""
+    import pytest as _pytest
+
+    from app.store import InvalidJobInputError, enqueue_job
+
+    authored_block = json.loads(json.dumps(_STAT_BLOCK))
+    authored_block["actions"][0]["damage"] = "1d6x+2"
+    with _pytest.raises(InvalidJobInputError, match="dice"):
+        enqueue_job(
+            world,
+            "build_in",
+            {"key_figures": [{"name": "Ferdinand", "record": {"stat_block": authored_block}}]},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -665,3 +685,153 @@ def test_relation_malformed_is_a_422(world: str) -> None:
             key_figures=[{"name": "Ferdinand", "relations": [{"type": "protects"}]}],
         )
     assert "exactly one" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# The nudge contract: PARTIAL authored stat blocks merge with the generated
+# ones (authored subsections verbatim, generator fills only the blanks)
+# ---------------------------------------------------------------------------
+
+
+def test_merge_authored_stat_block_semantics() -> None:
+    """The merge helper: scalar subsections merge per field, list
+    subsections merge BY NAME (authored bytes win on match, unmatched
+    authored append), spells union-dedupe — and the generated parts the
+    DM never authored survive untouched."""
+    from app.pipeline.build_in import _merge_authored_stat_block
+
+    generated = {
+        "identity": {"role": "NPC", "race": "Human", "level": 5},
+        "attributes": {"str": 10, "dex": 10, "con": 10, "int": 10, "wis": 10, "cha": 10},
+        "combat": {"ac": 12, "hp": 30},
+        "skills": [{"name": "Arcana", "bonus": 6}],
+        "actions": [{"name": "Longsword", "description": "Generated slash.", "to_hit": 5}],
+        "spells": ["Shield"],
+    }
+    authored = {
+        "identity": {"race": "Tiefling"},
+        "actions": [
+            # matches the generated Longsword — authored bytes win
+            {"name": "longsword ", "description": "DM-authored action.", "damage": "3d6"},
+            # no generated match — appended
+            {"name": "Acid Flask", "description": "DM thrower.", "damage": "2d6+3"},
+        ],
+        "spells": ["shield", "Magic Missile"],
+    }
+    merged = _merge_authored_stat_block(authored, generated)
+    # identity: authored race verbatim, generated role/level kept
+    assert merged["identity"]["race"] == "Tiefling"
+    assert merged["identity"]["role"] == "NPC"
+    assert merged["identity"]["level"] == 5
+    # attributes/combat: untouched by the authored subset
+    assert merged["attributes"]["str"] == 10
+    assert merged["combat"]["hp"] == 30
+    # actions: matched entry carries the authored description + damage
+    # verbatim (the generated to_hit survives); unmatched appended
+    by_name = {action["name"].strip().lower(): action for action in merged["actions"]}
+    assert by_name["longsword"]["description"] == "DM-authored action."
+    assert by_name["longsword"]["damage"] == [{"dice": "3d6", "bonus": 0}]
+    assert by_name["acid flask"]["description"] == "DM thrower."
+    assert len(merged["actions"]) == 2
+    # skills: not authored — generated list survives
+    assert merged["skills"] == [{"name": "Arcana", "bonus": 6}]
+    # spells: union, case-insensitive dedupe, generated entry kept
+    assert merged["spells"] == ["Shield", "Magic Missile"]
+    # the generated input was not mutated
+    assert generated["identity"]["race"] == "Human"
+
+
+def test_hybrid_partial_actions_merge_through_the_pipeline(world: str) -> None:
+    """NUDGE_PARTIAL_MERGE: a seed figure whose stat block authors ONLY
+    one action commits with the generated block intact (identity,
+    attributes, combat from the generator) and the authored action
+    merged verbatim over its generated namesake — the model's deliberate
+    drift of the description is reverted."""
+    authored_block = {
+        "actions": [{"name": "Longsword", "description": "DM-authored action.", "damage": "3d6"}]
+    }
+    seed_figure = {"name": "Ferdinand", "record": {"stat_block": authored_block}}
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(_fake_wave1(prompt))
+
+    job_id = _enqueue(world, key_figures=[seed_figure], notes="")
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    # no repair pass fired — the merged block is gate-clean
+    assert set((job.result or {})["llm_calls"]["by_label"]) == {"wave1"}
+    ferdinand = {row.name: row for row in _rows(world)}["Ferdinand"]
+    block = ferdinand.data["stat_block"]
+    # generated skeleton survives
+    assert block["identity"]["race"] == "Human"
+    assert block["attributes"]["con"] == 14
+    assert block["combat"]["hp"] == 66
+    # the authored action is verbatim on its generated namesake
+    longsword = next(a for a in block["actions"] if a["name"].strip().lower() == "longsword")
+    assert longsword["description"] == "DM-authored action."
+    # the committed form is the canonical parts view of the DM's dice
+    # string — same formula, gate-clean shape (this block is a
+    # generated-canonical whole with authored content)
+    assert longsword["damage"] == [{"dice": "3d6", "bonus": 0}]
+
+
+def test_hybrid_partial_stat_shape_breach_is_an_enqueue_422(world: str) -> None:
+    """A partial authored block's SHAPE breaches are enqueue 422s: a bad
+    dice pattern, an out-of-range attribute, and the generated `power`
+    stamp are all rejected before any job row exists."""
+    import pytest as _pytest
+
+    from app.store import InvalidJobInputError, enqueue_job
+
+    for bad_block, fragment in (
+        (
+            {"actions": [{"name": "X", "description": "d", "damage": "1d6x"}]},
+            "dice",
+        ),
+        ({"attributes": {"str": 40}}, "must be an integer"),
+        ({"power": {"dpr": 9.0}}, "power"),
+        ({"combat": {"hp": 0}}, "positive integer"),
+    ):
+        with _pytest.raises(InvalidJobInputError, match=re.escape(fragment)):
+            enqueue_job(
+                world,
+                "build_in",
+                {"key_figures": [{"name": "Ferdinand", "record": {"stat_block": bad_block}}]},
+            )
+
+
+def test_hybrid_partial_identity_role_pin_only_when_authored(world: str) -> None:
+    """A partial block WITHOUT identity.role never trips the pin check —
+    the generator fills the role; a partial block WITH a disagreeing
+    authored role fails the job (reject-only)."""
+    seed_figure = {
+        "name": "Ferdinand",
+        "record": {"stat_block": {"identity": {"race": "Tiefling"}}},
+    }
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        return json.dumps(_fake_wave1(prompt))
+
+    job_id = _enqueue(world, key_figures=[seed_figure], notes="")
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    ferdinand = {row.name: row for row in _rows(world)}["Ferdinand"]
+    # authored race verbatim; the generated role stands
+    assert ferdinand.data["stat_block"]["identity"]["race"] == "Tiefling"
+    assert ferdinand.data["stat_block"]["identity"]["role"] == "NPC"
+
+    disagreeing = {
+        "name": "Betrayer",
+        "role": "NPC",
+        "record": {"stat_block": {"identity": {"role": "BBEG"}}},
+    }
+    job_id = _enqueue(world, key_figures=[disagreeing], notes="")
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "pinned role" in (job.error or "")
+    assert _rows(world)  # Ferdinand committed; only the second build failed

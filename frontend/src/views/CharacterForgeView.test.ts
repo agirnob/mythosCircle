@@ -55,7 +55,6 @@ const CAMPAIGN = {
   description: 'ash and old oaths',
   theme: 'Grimdark',
   custom_lore: '',
-  created_at: '2026-09-01T00:00:00Z',
 }
 
 const WORLD = {
@@ -72,7 +71,7 @@ function job(overrides: Partial<Job> = {}): Job {
   return {
     id: 'J1',
     campaign_id: 'C1',
-    kind: 'add_character',
+    kind: 'build_in',
     payload: {},
     state: 'queued',
     progress: 0,
@@ -91,19 +90,27 @@ function job(overrides: Partial<Job> = {}): Job {
 let jobList: Job[] = []
 
 /** Scripted apiFetch: the export shape and the two write paths the view
- * uses — POST /api/characters (the gate) and the jobs list sync. */
+ * uses — POST /api/jobs (the hybrid build gate) and the jobs list sync. */
 function mockApi(options: { gateError?: ApiError } = {}) {
-  apiFetchMock.mockImplementation(async (path: string) => {
+  apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
     const url = String(path)
     if (url === '/api/campaigns/C1') return CAMPAIGN
     if (url === '/api/campaigns/C1/export') return WORLD
-    if (url === '/api/characters') {
+    if (url === '/api/jobs' && init?.method === 'POST') {
       if (options.gateError) throw options.gateError
-      return { job_id: 'J9', state: 'queued', max_llm_calls: 0 }
+      return { id: 'J9', campaign_id: 'C1', kind: 'build_in', payload: gateBodies.pop(), state: 'queued', progress: 0, max_llm_calls: 64, max_media_calls: 0, error: null, result: null, created_at: '2026-09-16T10:00:00Z', started_at: null, finished_at: null, queue_position: 1 }
     }
     if (url.startsWith('/api/jobs')) return { jobs: jobList, next_cursor: null }
     throw new Error(`unexpected fetch: ${url}`)
   })
+}
+
+const gateBodies: unknown[] = []
+
+function buildInBodies(): Array<Record<string, unknown>> {
+  return (apiFetchMock.mock.calls as Array<[string, RequestInit]>)
+    .filter(([url, init]) => url === '/api/jobs' && init?.method === 'POST')
+    .map(([, init]) => JSON.parse((init as RequestInit).body as string))
 }
 
 async function mountView(): Promise<VueWrapper> {
@@ -112,146 +119,140 @@ async function mountView(): Promise<VueWrapper> {
   return wrapper
 }
 
-function textInput(wrapper: VueWrapper, label: string) {
-  const group = wrapper
-    .findAll('label')
-    .find((entry) => entry.text().startsWith(label))
+function labeled(wrapper: VueWrapper, label: string) {
+  const group = wrapper.findAll('label').find((entry) => entry.text().startsWith(label))
   if (!group) throw new Error(`no field labelled ${label}`)
-  return group.get('input')
+  return group
 }
 
-describe('CharacterForgeView', () => {
+async function fillName(wrapper: VueWrapper, value = 'Vesper') {
+  await labeled(wrapper, 'Name').get('input').setValue(value)
+}
+
+async function toggleSubsection(wrapper: VueWrapper, label: string) {
+  const button = wrapper.findAll('button').find((b) => b.text().endsWith(label))
+  if (!button) throw new Error(`no subsection toggle ${label}`)
+  await button.trigger('click')
+}
+
+describe('CharacterForgeView (nudge contract)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     jobList = []
+    gateBodies.length = 0
     mockApi()
   })
 
-  it('submits the canonical sheet to the gate and shows the enqueued job', async () => {
-    jobList = []
+  it('submits a hybrid build with ONLY the filled fields', async () => {
     const wrapper = await mountView()
-
-    const name = textInput(wrapper, 'Name')
-    await name.setValue('Seraphine')
-    const personality = wrapper
-      .findAll('label')
-      .find((entry) => entry.text().startsWith('Personality'))
-    await personality!.get('textarea').setValue('Glass and silver.')
+    await fillName(wrapper, 'Vesper Quick')
+    await labeled(wrapper, 'Personality').get('textarea').setValue('Glass and silver.')
 
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
-    expect(apiFetchMock).toHaveBeenCalledWith(
-      '/api/characters',
-      expect.objectContaining({ method: 'POST' }),
-    )
-    const body = JSON.parse(apiFetchMock.mock.calls.find((c) => c[0] === '/api/characters')![1]!
-      .body as string)
-    expect(body.campaign_id).toBe('C1')
-    expect(body.characters).toHaveLength(1)
-    expect(body.characters[0].record.name).toBe('Seraphine')
-    expect(body.characters[0].record.stat_block.attributes.str).toBe(10)
+    const body = buildInBodies()[0]
+    expect(body.kind).toBe('build_in')
+    const figure = (body.payload as { key_figures: Array<Record<string, unknown>> })
+      .key_figures[0]
+    expect(figure.name).toBe('Vesper Quick')
+    expect(figure.role).toBe('NPC')
+    const record = figure.record as Record<string, unknown>
+    expect(record.personality).toBe('Glass and silver.')
+    // blanks are the generator's job — never sent
+    expect(record.secret).toBeUndefined()
+    expect(record.race_type).toBeUndefined()
+    expect(record.stat_block).toBeUndefined()
   })
 
-  it('normalizes the spaced damage variant to the tight canonical form', async () => {
+  it('sends only the authored stat-block subsections and composes dice boxes', async () => {
     const wrapper = await mountView()
-    await textInput(wrapper, 'Name').setValue('Broken')
+    await fillName(wrapper)
+    await toggleSubsection(wrapper, 'Identity')
+    await toggleSubsection(wrapper, 'Actions')
+    await wrapper.findAll('button').find((b) => b.text() === '+ add')!.trigger('click')
 
-    // add an action with a spaced dice string
-    // the SECOND '+ add' belongs to Actions (the first is Skills)
-    const addButtons = wrapper.findAll('button').filter((b) => b.text() === '+ add')
-    await addButtons[1]!.trigger('click')
-    const placeholders = wrapper.findAll('input[placeholder="1d8+2 (blank = no damage roll)"]')
-    await placeholders[0].setValue('2d6 + 2')
-    const actionRow = wrapper.find('.action-row')
-    await actionRow.find('input[placeholder="Longsword"]').setValue('Swipe')
-    await actionRow
-      .find('textarea')
-      .setValue('Melee Weapon Attack: +4 to hit. Hit: 7 (2d6+2) damage.')
+    await labeled(wrapper, 'Race (SRD)').get('select').setValue('Tiefling')
+    const actionName = wrapper.findAll('input[placeholder="Longsword"]')[0]!
+    await actionName.setValue('Acid Flask')
+    await wrapper
+      .findAll('input[placeholder="Melee Weapon Attack: +5 to hit…"]')[0]!
+      .setValue('Ranged Spell Attack: +6 to hit.')
+    const dice = wrapper.findAll('input[placeholder="dice"]')[0]!
+    await dice.setValue('2')
+    const sides = wrapper.findAll('input[placeholder="sides"]')[0]!
+    await sides.setValue('6')
+    const mod = wrapper.findAll('input[placeholder="mod"]')[0]!
+    await mod.setValue('3')
 
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
-    const body = JSON.parse(
-      apiFetchMock.mock.calls.find((c) => c[0] === '/api/characters')![1]!.body as string,
-    )
-    expect(body.characters[0].record.stat_block.actions[0].damage).toBe('2d6+2')
+    const figure = (buildInBodies()[0].payload as { key_figures: Array<Record<string, unknown>> })
+      .key_figures[0]
+    const block = (figure.record as Record<string, unknown>).stat_block as Record<string, unknown>
+    // only the toggled subsections ride along
+    expect(Object.keys(block)).toEqual(['identity', 'actions'])
+    expect((block.identity as Record<string, unknown>).race).toBe('Tiefling')
+    const action = (block.actions as Array<Record<string, unknown>>)[0]
+    expect(action.damage).toBe('2d6+3')
   })
 
-  it('renders the gate 422 as field-level violations and keeps the form', async () => {
-    mockApi({
-      gateError: new ApiError(422, 'validation_error', 'add_character payload invalid', {
-        violations: [
-          'characters[0].record.name must not be blank',
-          'characters[0].record.stat_block.actions[0].damage',
-        ],
-      }),
-    })
+  it('sends an existing target as target_id and a new name as target_name', async () => {
     const wrapper = await mountView()
-    await textInput(wrapper, 'Name').setValue('Broken')
-
-    await wrapper.find('form').trigger('submit')
-    await flushPromises()
-
-    const items = wrapper.findAll('li').map((li) => li.text())
-    expect(items).toContain('characters[0].record.name must not be blank')
-    expect(items).toContain('characters[0].record.stat_block.actions[0].damage')
-    expect((textInput(wrapper, 'Name').element as HTMLInputElement).value).toBe('Broken')
-  })
-
-
-  it('disables the submit button while a commit is in flight', async () => {
-    jobList = [job({ id: 'J2', state: 'running' })]
-    const wrapper = await mountView()
-    await textInput(wrapper, 'Name').setValue('Seraphine')
-
-    const button = wrapper.find('button[type="submit"]')
-    expect(button.attributes('disabled')).toBeDefined()
-  })
-
-  it('adds the boss section for Monster and removes it for NPC', async () => {
-    const wrapper = await mountView()
-    expect(wrapper.text()).not.toContain('Lair actions')
-
-    const roleSelect = wrapper.findAll('select')[0]
-    await roleSelect.setValue('Monster')
-    expect(wrapper.text()).toContain('Lair actions')
-
-    await roleSelect.setValue('NPC')
-    expect(wrapper.text()).not.toContain('Lair actions')
-  })
-
-  it('sends only relations with a chosen target and includes the counter', async () => {
-    const wrapper = await mountView()
-    await textInput(wrapper, 'Name').setValue('Seraphine')
+    await fillName(wrapper)
+    await wrapper.findAll('button').find((b) => b.text() === '+ relation')!.trigger('click')
+    let row = wrapper.find('.relation-block')
+    let selects = row.findAll('select')
+    await selects[1].setValue('existing')
+    await selects[2].setValue('E1')
 
     await wrapper.findAll('button').find((b) => b.text() === '+ relation')!.trigger('click')
-    const relationRow = wrapper.find('.row.relation')
-    const selects = relationRow.findAll('select')
-    await selects[0].setValue('located_in')
-    await selects[1].setValue('E1')
+    row = wrapper.findAll('.relation-block')[1]!
+    selects = row.findAll('select')
+    await selects[1].setValue('new')
+    await row.find('input').setValue('Vaelmoor')
 
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
-    const body = JSON.parse(
-      apiFetchMock.mock.calls.find((c) => c[0] === '/api/characters')![1]!.body as string,
-    )
-    expect(body.characters[0].relations).toEqual([{ type: 'located_in', target_id: 'E1' }])
+    const figure = (buildInBodies()[0].payload as { key_figures: Array<Record<string, unknown>> })
+      .key_figures[0]
+    expect(figure.relations).toEqual([
+      { type: 'located_in', target_id: 'E1' },
+      { type: 'located_in', target_name: 'Vaelmoor' },
+    ])
   })
 
-  it('shows what a succeeded commit produced', async () => {
+  it('renders a gate rejection and keeps the form for the retry', async () => {
+    mockApi({ gateError: new ApiError(422, 'validation_error', 'build_in payload invalid: name must be a non-blank string') })
+    const wrapper = await mountView()
+    await fillName(wrapper)
+
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.error').text()).toContain('name must be a non-blank string')
+    expect((labeled(wrapper, 'Name').get('input').element as HTMLInputElement).value).toBe('Vesper')
+  })
+
+  it('disables the submit button while a build is in flight', async () => {
+    jobList = [job({ id: 'J2', state: 'running' })]
+    const wrapper = await mountView()
+    await fillName(wrapper)
+    expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('shows what a succeeded build produced', async () => {
     jobList = [
       job({
         id: 'J3',
         state: 'succeeded',
-        result: { entity_ids: ['E10'], edges: [{ src: 'E10', dst: 'E1', type: 'located_in' }] },
+        result: { merge: { wave1: { merged: ['E9'] } } },
       }),
     ]
     const wrapper = await mountView()
-
-    expect(wrapper.text()).toContain('1 character')
-    expect(wrapper.text()).toContain('+ 1 relation')
+    expect(wrapper.text()).toContain('built (merged with 1 existing)')
   })
 })
