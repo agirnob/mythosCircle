@@ -165,9 +165,20 @@ function load(block: Record<string, unknown> | null) {
     : ''
 }
 
+/** The JSON of the last value WE emitted. The parent writes it back
+ * through v-model; reloading local state from our own echo would rebuild
+ * the rows mid-edit and DROP any incomplete damage row (emitBlock skips
+ * rows without both dice numbers) — the reported bug: type the dice,
+ * click the sides input, the row vanishes. External changes (edit-open
+ * seed, an external refetch) still reload. */
+let lastEmitted: string | null = null
+
 watch(
   () => props.modelValue,
-  (block) => load(block),
+  (block) => {
+    if (JSON.stringify(block ?? {}) === lastEmitted) return
+    load(block)
+  },
   { immediate: true, deep: false },
 )
 
@@ -278,7 +289,9 @@ function emitBlock(): Record<string, unknown> | null {
 }
 
 function emitUpdate() {
-  emit('update:modelValue', emitBlock())
+  const value = emitBlock()
+  lastEmitted = JSON.stringify(value ?? {})
+  emit('update:modelValue', value)
 }
 </script>
 

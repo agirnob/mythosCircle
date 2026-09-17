@@ -1107,7 +1107,13 @@ function isProfileEdited(entityId: string): boolean {
   const drafts = profileDrafts.value[entityId]
   const initials = profileInitials.value[entityId]
   if (!drafts || !initials) return false
-  return Object.keys(drafts).some((field) => drafts[field] !== initials[field])
+  if (Object.keys(drafts).some((field) => drafts[field] !== initials[field])) return true
+  // the structured stat-block draft counts too — a user who edits ONLY
+  // the stat block must see an enabled Save (owner bug report 2026-09-17)
+  return (
+    JSON.stringify(statBlockDrafts.value[entityId] ?? {}) !==
+    statBlockInitials.value[entityId]
+  )
 }
 
 async function saveProfile(entity: EntityExport) {
