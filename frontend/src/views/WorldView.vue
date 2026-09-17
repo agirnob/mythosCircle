@@ -1031,10 +1031,12 @@ const CORE_FIELDS = ['personality', 'secret', 'rumor', 'party_hook'] as const
 /** Editable scalar string fields (AR19 core + identity anchor + narrative lore). */
 const SCALAR_FIELDS = ['name', 'role', ...CORE_FIELDS, ...IDENTITY_FIELDS, ...LORE_FIELDS] as const
 
-/** Structured blocks edited as pretty JSON. The character stat block is
- * NOT here: it edits through the structured StatBlockEditor (owner
- * feedback 2026-09-17 — no raw JSON). */
-const JSON_FIELDS = ['world_integration', 'boss'] as const
+/** Structured blocks edited as pretty JSON. The character stat block
+ * edits through the structured StatBlockEditor and the boss section
+ * through its four text fields (owner feedback 2026-09-17 — neither is
+ * raw JSON, and extras must never re-dump them: two edit surfaces for
+ * one key silently lose edits). */
+const JSON_FIELDS = ['world_integration'] as const
 
 const editingProfileId = ref<string | null>(null)
 const profileDrafts = ref<Record<string, Record<string, string>>>({})
@@ -1053,10 +1055,22 @@ const profileBases = ref<Record<string, string | null>>({})
  * null = the block was cleared. Seeded at edit-open like the strings. */
 const statBlockDrafts = ref<Record<string, Record<string, unknown> | null>>({})
 const statBlockInitials = ref<Record<string, unknown>>({})
+/** The boss section's four text fields, same object-draft pattern. */
+const BOSS_TEXT_FIELDS = ['lair_actions', 'legendary_actions', 'immunities', 'vulnerabilities'] as const
+const bossDrafts = ref<Record<string, Record<string, string> | null>>({})
+const bossInitials = ref<Record<string, unknown>>({})
 const hasStatBlock = (entity: EntityExport): boolean =>
   entity.kind === 'character' &&
   typeof (entity.data ?? {})['stat_block'] === 'object' &&
   (entity.data as Record<string, unknown>)['stat_block'] !== null
+
+function blankedBoss(boss: Record<string, unknown>): Record<string, string> {
+  const draft: Record<string, string> = {}
+  for (const field of BOSS_TEXT_FIELDS) {
+    draft[field] = typeof boss[field] === 'string' ? boss[field] : ''
+  }
+  return draft
+}
 
 function rawString(value: unknown): string {
   if (value === null || value === undefined) return ''
@@ -1077,6 +1091,12 @@ function startProfileEdit(entity: EntityExport) {
       ? (statBlock as Record<string, unknown>)
       : null
   statBlockInitials.value[entity.id] = JSON.stringify(statBlockDrafts.value[entity.id] ?? {})
+  const boss = data['boss']
+  bossDrafts.value[entity.id] =
+    typeof boss === 'object' && boss !== null
+      ? blankedBoss(boss as Record<string, unknown>)
+      : null
+  bossInitials.value[entity.id] = JSON.stringify(bossDrafts.value[entity.id] ?? {})
   // Unknown keys edit as one "additional data" JSON object (spec-2.7
   // deferral resolution): keys added/changed land in the PATCH; keys
   // removed send null (delete).
@@ -1092,6 +1112,8 @@ function startProfileEdit(entity: EntityExport) {
 function cancelProfileEdit() {
   delete statBlockDrafts.value[editingProfileId.value ?? '']
   delete statBlockInitials.value[editingProfileId.value ?? '']
+  delete bossDrafts.value[editingProfileId.value ?? '']
+  delete bossInitials.value[editingProfileId.value ?? '']
   const id = editingProfileId.value
   editingProfileId.value = null
   if (id) {
@@ -1110,6 +1132,10 @@ function isProfileEdited(entityId: string): boolean {
   if (Object.keys(drafts).some((field) => drafts[field] !== initials[field])) return true
   // the structured stat-block draft counts too — a user who edits ONLY
   // the stat block must see an enabled Save (owner bug report 2026-09-17)
+  if (
+    JSON.stringify(bossDrafts.value[entityId] ?? {}) !== bossInitials.value[entityId]
+  )
+    return true
   return (
     JSON.stringify(statBlockDrafts.value[entityId] ?? {}) !==
     statBlockInitials.value[entityId]
@@ -1132,6 +1158,20 @@ async function saveProfile(entity: EntityExport) {
     statBlockInitials.value[entity.id]
   if (statBlockChanged) {
     patch['stat_block'] = statBlockDrafts.value[entity.id]
+  }
+  const bossChanged =
+    JSON.stringify(bossDrafts.value[entity.id] ?? {}) !== bossInitials.value[entity.id]
+  if (bossChanged) {
+    const draft = bossDrafts.value[entity.id]
+    if (draft === null) {
+      patch['boss'] = null
+    } else {
+      const boss: Record<string, string> = {}
+      for (const field of BOSS_TEXT_FIELDS) {
+        if (draft[field]?.trim()) boss[field] = draft[field].trim()
+      }
+      patch['boss'] = Object.keys(boss).length > 0 ? boss : null
+    }
   }
   for (const field of JSON_FIELDS) {
     if (drafts[field] === initials[field]) continue
@@ -1229,7 +1269,9 @@ function dataKeys(entity: EntityExport): string[] {
   // the whole profile as JSON (dogfood 2026-09-09). Structured blocks
   // render as their own sections below.
   const data = (entity.data ?? {}) as Record<string, unknown>
-  const RESERVED = new Set(['kind', 'edges', 'text', 'base_revision'])
+  // stat_block and boss are structured-editor surfaces, never extras
+  // (two surfaces for one key silently lose edits)
+  const RESERVED = new Set(['kind', 'edges', 'text', 'base_revision', 'stat_block', 'boss'])
   return Object.keys(data).filter(
     (key) =>
       !(JSON_FIELDS as readonly string[]).includes(key) &&
@@ -1753,6 +1795,22 @@ function additionalDataBlock(entity: EntityExport): string {
                   :key="`sbe-${entity.id}-${profileBases[entity.id] ?? ''}`"
                 />
               </div>
+              <div
+                v-if="(entity.data ?? {})['boss'] !== undefined || ['BBEG', 'Monster'].includes(profileDrafts[entity.id].role)"
+                class="field"
+              >
+                <span>Boss section</span>
+                <div class="boss-grid">
+                  <label v-for="field in BOSS_TEXT_FIELDS" :key="field">
+                    {{ field.replaceAll('_', ' ') }}
+                    <textarea
+                      v-model="(bossDrafts[entity.id] ?? {})[field]"
+                      rows="2"
+                      :aria-label="`boss ${field}`"
+                    ></textarea>
+                  </label>
+                </div>
+              </div>
               <label v-for="field in JSON_FIELDS" :key="field" class="field">
                 <span>{{ FIELD_LABELS[field] ?? field }} (JSON)</span>
                 <textarea
@@ -1904,6 +1962,12 @@ function additionalDataBlock(entity: EntityExport): string {
 </template>
 
 <style scoped>
+.boss-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.5rem;
+}
+
 .kind-group h2 {
   margin-top: 1.5rem;
   text-transform: capitalize;
