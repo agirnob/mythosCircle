@@ -2791,9 +2791,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             theme = job.payload.get("theme") if isinstance(job.payload, dict) else None
             defaults = THEME_DEFAULT_SEEDS.get(theme) if isinstance(theme, str) else None
             if defaults is None:
-                raise JobPayloadError(
-                    "generic build: payload theme does not carry a default seed"
-                )
+                raise JobPayloadError("generic build: payload theme does not carry a default seed")
             description, custom_lore = defaults
             wave1_seed = SimpleNamespace(
                 id=seed.id,

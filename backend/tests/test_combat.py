@@ -147,7 +147,11 @@ def test_analyze_action_save_half_and_aoe_compound() -> None:
 
 def test_expected_band_keyed_by_role() -> None:
     assert expected_band({"role": "Monster", "cr": 14}) == (87.0, 92.0)
-    assert expected_band({"role": "NPC", "level": 5}) == (33.0, 38.0)
+    # NPC/BBEG key on the class-grade envelope (owner feedback 2026-09-17):
+    # level 5 derives to (7, 23) — a caster's floor to a martial's ceiling,
+    # never the monster row.
+    assert expected_band({"role": "NPC", "level": 5}) == (7, 23)
+    assert expected_band({"role": "BBEG", "level": 20}) == (25, 84)
     assert expected_band({"role": "Monster", "cr": 99}) is None
     assert expected_band({"role": "NPC", "level": None}) is None
 
@@ -297,9 +301,13 @@ def test_audit_overpowered_level5() -> None:
         "actions": [{"name": "Slam", "description": "10d10+5 force"}],
     }
     audit = audit_stat_block(block)
-    assert audit.band == (33.0, 38.0)
+    # Class-grade band (owner feedback 2026-09-17): the 60-DPR NPC is
+    # above it, and an over-the-band character is NEVER nagged.
+    assert audit.band == (7, 23)
     assert audit.dpr == 60.0
-    assert audit.verdict == VERDICT_OVER
+    assert audit.verdict == VERDICT_ONTARGET
+    monster = audit_stat_block({**block, "identity": {"role": "Monster", "cr": 5}})
+    assert monster.band == (33.0, 38.0) and monster.verdict == VERDICT_OVER
 
 
 def test_audit_on_target_cr18() -> None:

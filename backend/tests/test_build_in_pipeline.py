@@ -1642,6 +1642,10 @@ def test_repaired_block_parts_are_canonicalized(world: str) -> None:
     part = mira.data["stat_block"]["actions"][0]["damage"][0]
     assert part["average"] == 27  # 4 * 5.5 + 5, not the model's 16
     assert part["count"] == 4 and part["sides"] == 10 and part["bonus"] == 5
+    # The prose fold reconciles parts UP to the description's own idiom:
+    # "35 (4d10 + 5) slashing" — the repair shipped average 16, the prose
+    # says 27, the committed part carries the prose numbers with bonus.
+    assert part["dice"] == "4d10"
 
 
 def test_stat_repair_budget_exceeded_fails_before_http(world: str) -> None:
@@ -2790,11 +2794,12 @@ def test_conform_power_lifts_scores_without_moving_an_in_band_blocks_damage() ->
 
 def test_authentic_npc_block_commits_stamped_without_repair(world: str) -> None:
     """NPC ORACLE (owner verdict 2026-09-12): an authentic level-5 NPC
-    block — 6.5 DPR against the monster table's 33-38, hp below the frail
-    line — is NOT a violation. Zero repair calls, the model's own numbers
-    commit, stamped under-powered for DM visibility. Pre-verdict this exact
-    shape burned 45 of 48 calls on the Qwen rung-50 ladder and committed
-    the conform's arithmetic instead of the model's."""
+    block is NOT a violation. Zero repair calls, the model's own numbers
+    commit byte for byte. Pre-verdict this exact shape burned 45 of 48
+    calls on the Qwen rung-50 ladder and committed the conform's
+    arithmetic instead of the model's. Against the class-grade band
+    (owner feedback 2026-09-17) a level-5 longsword fighter IS
+    class-grade, so it commits with no stamp at all."""
     authentic = {
         "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
@@ -2820,11 +2825,8 @@ def test_authentic_npc_block_commits_stamped_without_repair(world: str) -> None:
     assert job.state == "succeeded"
     with session_scope() as session:
         mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
-    # The model's own numbers, byte for byte, plus the DM-visible stamp.
-    assert mira.data["stat_block"] == {
-        **authentic,
-        "power": {"dpr": 6.5, "band": [33.0, 38.0], "verdict": "under-powered"},
-    }
+    # The model's own numbers, byte for byte — class-grade band, no stamp.
+    assert mira.data["stat_block"] == authentic
 
 
 def test_underpowered_monster_conforms_without_repair_calls(world: str) -> None:
@@ -2871,8 +2873,10 @@ def test_underpowered_monster_conforms_without_repair_calls(world: str) -> None:
 
 def test_overpowered_stat_block_commits_stamped_without_repair(world: str) -> None:
     """POWER_FLAG (owner verdict 2026-09-12): a 60-DPR level-5 block is not
-    a violation — no repair pass is spent on it, the job succeeds, and the
-    committed block carries the over-powered power stamp for the DM."""
+    a violation — no repair pass is spent on it and the job succeeds.
+    NPC/BBEG key on the class-grade band and an over-the-band character
+    is NEVER nagged (owner feedback 2026-09-17), so the block commits
+    byte-identical with no power stamp."""
     over_block = {
         "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
         "attributes": {"str": 14, "dex": 12, "con": 14, "int": 10, "wis": 10, "cha": 8},
@@ -2900,11 +2904,7 @@ def test_overpowered_stat_block_commits_stamped_without_repair(world: str) -> No
     assert job.state == "succeeded"
     with session_scope() as session:
         mira = next(e for e in world_entities(session, world) if e.name == "Mira Vane")
-    assert mira.data["stat_block"]["power"] == {
-        "dpr": 60.0,
-        "band": [33.0, 38.0],
-        "verdict": "over-powered",
-    }
+    assert mira.data["stat_block"] == over_block
 
 
 def test_stat_repair_dropping_class_keeps_original(world: str) -> None:

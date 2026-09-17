@@ -1220,7 +1220,9 @@ def conform_first_targets(issues: Sequence[StatIssue]) -> list[StatIssue]:
     return targets
 
 
-def _damage_part(count: int, sides: int, average: float, damage_type: str) -> dict[str, Any]:
+def _damage_part(
+    count: int, sides: int, average: float, damage_type: str, bonus: int = 0
+) -> dict[str, Any]:
     """One canonical structured damage part (spec 2026-09-11) — the shape
     the auditor, the character sheet and the export read, matching the
     ``damage[]`` entry the prompt asks the model for."""
@@ -1228,7 +1230,7 @@ def _damage_part(count: int, sides: int, average: float, damage_type: str) -> di
         "dice": f"{count}d{sides}",
         "count": count,
         "sides": sides,
-        "bonus": 0,
+        "bonus": bonus,
         "average": round(average, 2),
         "type": damage_type,
     }
@@ -1306,7 +1308,8 @@ def canonicalize_stat_block(block: dict[str, Any]) -> dict[str, Any]:
     otherwise a new block (the input is never mutated).
     """
     folded = _fold_stat_block_aliases(block)
-    completed = _complete_damage_parts(folded)
+    reconciled = _fold_prose_damage(folded)
+    completed = _complete_damage_parts(reconciled)
     emptied = _fold_empty_damage_lists(completed)
     aligned = _fold_alignment_long_forms(emptied)
     described = _fold_entry_descriptions(aligned)
@@ -1315,6 +1318,83 @@ def canonicalize_stat_block(block: dict[str, Any]) -> dict[str, Any]:
     spelled = _fold_spells_mechanics(skilled)
     stamped = _fold_string_damage(spelled)
     return _stamp_power(stamped)
+
+
+#: The 5e damage idiom in prose: a stated figure, then the dice in
+#: parens ("take 36 (8d8) necrotic damage", "Hit: 13 (1d10 + 8) force").
+_PROSE_DAMAGE_RE = re.compile(r"(\d+)\s*\(\s*(\d+)\s*d\s*(\d+)\s*(?:([+-])\s*(\d+)\s*)?\)")
+
+
+def _fold_prose_damage(block: dict[str, Any]) -> dict[str, Any]:
+    """Reconcile an action's structured damage parts UP to its own prose.
+
+    Measured 2026-09-17 (fasiha, level 20 regenerate): the model wrote
+    the honest number in the DESCRIPTION ("...take 36 (8d8) necrotic
+    damage") and a lazy one in the machine slot (``1d8``, avg 4.5) — the
+    audit reads parts, so the block under-reported its own attack by
+    8x. Same disease as every wrong-place fold: the right data in the
+    wrong place, fixed by canonicalization, never by another LLM pass.
+
+    The fold sums every ``N (XdY+Z)`` idiom in the description and, when
+    that total EXCEEDS the parts' total, rebuilds the parts from the
+    prose dice (one part per idiom, the existing part's type kept).
+    Never lowers: prose below the parts leaves the parts alone (the
+    model may state the single-hit figure beside a multi-part attack).
+    Runs on the generated path only — authored blocks skip
+    canonicalization entirely (hybrid authorship).
+    """
+    actions = block.get("actions")
+    if not isinstance(actions, list):
+        return block
+    changed = False
+    new_actions: list[Any] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            new_actions.append(action)
+            continue
+        description = action.get("description")
+        parts = action.get("damage")
+        if not isinstance(description, str) or not isinstance(parts, list) or not parts:
+            new_actions.append(action)
+            continue
+        prose_total = 0.0
+        prose_parts: list[dict[str, Any]] = []
+        first_type = "untyped"
+        for part in parts:
+            if isinstance(part, dict) and isinstance(part.get("type"), str) and part.get("type"):
+                first_type = part["type"]
+                break
+        for _figure, count_s, sides_s, sign, bonus_s in _PROSE_DAMAGE_RE.findall(description):
+            count, sides = int(count_s), int(sides_s)
+            bonus = int(bonus_s) if bonus_s else 0
+            if sign == "-":
+                bonus = -bonus
+            prose_avg = count * (sides + 1) / 2 + bonus
+            prose_total += prose_avg
+            prose_parts.append(_damage_part(count, sides, prose_avg, first_type, bonus))
+        parts_total = 0.0
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            stated = part.get("average")
+            if type(stated) is int or type(stated) is float:
+                parts_total += stated
+                continue
+            raw_count, raw_sides = part.get("count"), part.get("sides")
+            if type(raw_count) is not int or type(raw_sides) is not int:
+                continue
+            raw_bonus = part.get("bonus")
+            parts_total += raw_count * (raw_sides + 1) / 2 + (
+                raw_bonus if type(raw_bonus) is int else 0
+            )
+        if prose_total <= parts_total:
+            new_actions.append(action)
+            continue
+        changed = True
+        new_actions.append({**action, "damage": prose_parts})
+    if not changed:
+        return block
+    return {**block, "actions": new_actions}
 
 
 def _stamp_power(block: dict[str, Any]) -> dict[str, Any]:

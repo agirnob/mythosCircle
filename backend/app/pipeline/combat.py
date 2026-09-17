@@ -117,6 +117,26 @@ _CR_HP: dict[Any, tuple[int, int]] = {
 }
 CR_HP: MappingProxyType[Any, tuple[int, int]] = MappingProxyType(_CR_HP)
 
+
+#: Expected DPR band for NPC/BBEG blocks — the CLASS-GRADE envelope, keyed
+#: by ``identity.level``. Owner feedback 2026-09-17 ("still way
+#: underpowered" against the monster row): a class-grade level-20 caster
+#: with a 3-beam blast sits near 40 DPR and can NEVER honestly reach the
+#: DMG monster row (123-140), so stamping NPCs against that table made
+#: the under-powered verdict structurally un-passable. Derived from the
+#: monster table instead of a second hand-tuned table — a level's
+#: class-grade floor is a caster's routine (the anchors taught in the
+#: prompt: a full caster deals roughly half the martial figure) and its
+#: ceiling is a martial routine: low = 0.2 x monster low, high = 0.6 x
+#: monster high. Level 20 lands at (25, 84) — caster floor ~25, martial
+#: ceiling ~80 as anchored. Int keys only: NPCs key on level, and the
+#: fractional CR rows are monster keys.
+_NPC_DPR: dict[int, tuple[int, int]] = {
+    key: (round(0.2 * low), round(0.6 * high))
+    for key, (low, high) in _CR_DPR.items()
+    if type(key) is int
+}
+NPC_DPR: MappingProxyType[Any, tuple[float, float]] = MappingProxyType(_NPC_DPR)
 #: Fractional CR keys ("1/8", "1/4", "1/2") — derived from the DPR table
 #: so the band lookups share one exact-type rule (bools and floats never
 #: hit: ``True == 1`` and ``5.0 == 5`` must both abstain).
@@ -223,6 +243,22 @@ def _is_multiattack_routine(name: str) -> bool:
     Attack" counts; "Extra Attack"/"Triple Claw" deliberately do not —
     different mechanics, no evidence models emit them)."""
     return "multiattack" in name.lower().replace(" ", "")
+
+
+#: A routine the model gave a FLAVOR name ("Eldritch Torrent") with the
+#: mechanics only in the prose — measured 2026-09-17 (fasiha, level 20):
+#: "Multiattack: fasiha makes three Eldritch Blast attacks" read as a
+#: plain action, so the x3 blast multiplier never fired and the block
+#: audited at one beam's damage (13.5 instead of 40.5).
+_ROUTINE_LEAD_RE = re.compile(r"\bmultiattack\b", re.IGNORECASE)
+
+
+def _is_routine_action(name: str, text: str | None) -> bool:
+    """Whether an action is the Multiattack routine: by name, or by the
+    description carrying the mechanics the name should have had."""
+    return _is_multiattack_routine(name) or (
+        isinstance(text, str) and _ROUTINE_LEAD_RE.search(text) is not None
+    )
 
 
 def parse_multiattack_count(text: str) -> int:
@@ -361,7 +397,10 @@ def analyze_action(name: str, description: str | None, damage: Any = None) -> Ac
 
 
 def round_dpr(
-    actions: Sequence[ActionDamage], legendary: bool, multiattack_count: int = 0
+    actions: Sequence[ActionDamage],
+    legendary: bool,
+    multiattack_count: int = 0,
+    multiattack_targets: Sequence[str] = (),
 ) -> float:
     """Estimate the creature's expected Damage/Round.
 
@@ -369,11 +408,17 @@ def round_dpr(
     its attack action each round; a Multiattack routine instead contributes
     its count times the strongest *other* damaging action (0 when the
     routine names no damaging attack — the routine itself, matched by name,
-    is never its own multiplier). The DMG DPR figure also includes the
-    legendary-action budget: one extra action-equivalent when
-    ``boss.legendary_actions`` is present (see ``LEGENDARY_EXTRA_ACTIONS``).
-    Lair actions are deliberately not counted — the DMG keeps lair effects
-    out of the Damage/Round line.
+    is never its own multiplier). When the routine's prose names exactly
+    ONE other damaging action (the repeated-attack idiom — "makes three
+    Eldritch Blast attacks"), the count multiplies THAT action instead of
+    the strongest: an area effect beside the routine would otherwise
+    inflate the round into a false over-powered verdict. Routines naming
+    several actions keep the strongest-other approximation (the classic
+    "one bite, two claws" cannot be resolved from a count alone). The DMG
+    DPR figure also includes the legendary-action budget: one extra
+    action-equivalent when ``boss.legendary_actions`` is present (see
+    ``LEGENDARY_EXTRA_ACTIONS``). Lair actions are deliberately not
+    counted — the DMG keeps lair effects out of the Damage/Round line.
     """
     if not actions:
         return 0.0
@@ -381,6 +426,14 @@ def round_dpr(
     if multiattack_count:
         others = [action for action in actions if not _is_multiattack_routine(action.name)]
         others_best = max((action.expected_avg for action in others), default=0.0)
+        if multiattack_targets:
+            named = [
+                action
+                for action in others
+                if action.name in multiattack_targets and action.expected_avg > 0
+            ]
+            if len(named) == 1:
+                others_best = named[0].expected_avg
         base = multiattack_count * others_best
         extra = others_best * LEGENDARY_EXTRA_ACTIONS if legendary else 0.0
         return base + extra
@@ -423,17 +476,19 @@ class CombatAudit:
 def expected_band(identity: dict[str, Any]) -> tuple[float, float] | None:
     """The expected DPR band for a stat block's declared challenge.
 
-    Monsters key on ``identity.cr``; NPC/BBEG key on ``identity.level``
-    via a documented approximation (an NPC's level is a fair stand-in for
-    its challenge — the same scale the DMG's table spans). Returns ``None``
-    for a challenge outside the reference data (an unset or out-of-range
+    Monsters key on ``identity.cr`` against the DMG monster table;
+    NPC/BBEG key on ``identity.level`` against the CLASS-GRADE envelope
+    (``NPC_DPR`` — a caster's floor to a martial's ceiling, owner
+    feedback 2026-09-17: the monster row made the under verdict
+    structurally un-passable for characters). Returns ``None`` for a
+    challenge outside the reference data (an unset or out-of-range
     level/CR).
     """
     role = identity.get("role")
     key = identity.get("cr") if role == "Monster" else identity.get("level")
     if type(key) is not int and key not in _FRACTIONAL_CR:
         return None
-    return CR_DPR.get(key)
+    return (CR_DPR if role == "Monster" else NPC_DPR).get(key)
 
 
 def hp_band(identity: dict[str, Any]) -> tuple[int, int] | None:
@@ -473,6 +528,7 @@ def audit_stat_block(stat_block: Any) -> CombatAudit:
     raw_actions = raw_actions if isinstance(raw_actions, list) else []
     actions: list[ActionDamage] = []
     multiattack: int | None = None
+    routine_text: str | None = None
     for action in raw_actions:
         if not isinstance(action, dict):
             continue
@@ -481,8 +537,25 @@ def audit_stat_block(stat_block: Any) -> CombatAudit:
         description = action.get("description")
         text = description if isinstance(description, str) else ""
         actions.append(analyze_action(name, text, action.get("damage")))
-        if multiattack is None and _is_multiattack_routine(name):
+        if multiattack is None and _is_routine_action(name, text):
             multiattack = parse_multiattack_count(text)
+            routine_text = text
+
+    # The repeated-attack idiom: when the routine prose names exactly one
+    # other damaging action, the count multiplies THAT action (see
+    # round_dpr) instead of the blanket strongest-other.
+    targets: tuple[str, ...] = ()
+    if multiattack and routine_text:
+        scrubbed = routine_text.lower()
+        named = [
+            action.name
+            for action in actions
+            if not _is_multiattack_routine(action.name)
+            and action.expected_avg > 0
+            and action.name.lower() in scrubbed
+        ]
+        if len(named) == 1:
+            targets = (named[0],)
 
     boss = stat_block.get("boss")
     boss_legendary = (
@@ -490,7 +563,7 @@ def audit_stat_block(stat_block: Any) -> CombatAudit:
         and isinstance(boss.get("legendary_actions"), str)
         and bool(boss["legendary_actions"].strip())
     )
-    dpr = round_dpr(actions, boss_legendary, multiattack or 0)
+    dpr = round_dpr(actions, boss_legendary, multiattack or 0, targets)
 
     if band is None:
         verdict, gap = VERDICT_UNDER, 0.0
@@ -503,6 +576,12 @@ def audit_stat_block(stat_block: Any) -> CombatAudit:
         elif dpr > high * _OVER_RATIO:
             verdict = VERDICT_OVER
         else:
+            verdict = VERDICT_ONTARGET
+        if role != "Monster" and verdict == VERDICT_OVER:
+            # A strong character is never nagged: NPC/BBEG blocks key on
+            # the class-grade band, and an over-the-band character is the
+            # DM's delight, not a defect (owner direction 2026-09-17,
+            # same spirit as the 2026-09-12 over-powered-monster verdict).
             verdict = VERDICT_ONTARGET
 
     return CombatAudit(challenge, band, tuple(actions), dpr, verdict, gap)

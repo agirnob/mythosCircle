@@ -790,10 +790,12 @@ def test_underpowered_block_flagged_with_numbers() -> None:
 
 
 def test_overpowered_block_passes_with_power_stamp() -> None:
-    """OVER_FLAG (owner verdict 2026-09-12): a level 5 dealing ~60 DPR is
-    valid — over-powered commits declared, stamped for the DM."""
+    """OVER_FLAG (owner verdict 2026-09-12): a CR 5 dealing ~60 DPR is
+    valid — over-powered commits declared, stamped for the DM. An
+    NPC/BBEG block the same strength is NEVER nagged (class-grade band,
+    over clamps to on-target — owner direction 2026-09-17)."""
     block = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "identity": {"role": "Monster", "cr": 5, "race": "Human"},
         "attributes": _power_attributes(),
         "actions": [{"name": "Slam", "description": "10d10+5 force"}],
         "combat": {"ac": 16, "hp": 140},
@@ -801,6 +803,10 @@ def test_overpowered_block_passes_with_power_stamp() -> None:
     assert validate_stat_block(block) == []
     stamped = canonicalize_stat_block(block)
     assert stamped["power"] == {"dpr": 60.0, "band": [33.0, 38.0], "verdict": "over-powered"}
+    npc = canonicalize_stat_block(
+        {**block, "identity": {"role": "NPC", "level": 5, "race": "Human"}}
+    )
+    assert "power" not in npc
 
 
 def test_power_stamp_abstains_without_damage() -> None:
@@ -821,7 +827,7 @@ def test_power_stamp_overwrites_model_written_power() -> None:
     restamps from the audit (the repair schema cannot emit it and the
     strip drops it first)."""
     block = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "identity": {"role": "Monster", "cr": 5, "race": "Human"},
         "attributes": _power_attributes(),
         "actions": [{"name": "Slam", "description": "10d10+5 force"}],
         "combat": {"ac": 16, "hp": 140},
@@ -835,7 +841,7 @@ def test_power_stamp_idempotent() -> None:
     """Restamping a stamped block returns the same values (and the same
     object when nothing else folds)."""
     block = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "identity": {"role": "Monster", "cr": 5, "race": "Human"},
         "attributes": _power_attributes(),
         "actions": [{"name": "Slam", "description": "10d10+5 force"}],
         "combat": {"ac": 16, "hp": 140},
@@ -936,10 +942,11 @@ def test_bbeg_underpowered_commits_stamped_not_flagged() -> None:
 
 def test_npc_underpowered_and_frail_never_violate() -> None:
     """The Qwen3.8 rung-50 shape (ledger 2026-09-12): an authentic level-5
-    NPC — 6.5 DPR against the monster table's 33-38, hp below the frail
-    line — passes validation whole. Pre-oracle this block was flagged twice
-    and machine-inflated by the conform; now it commits as written,
-    stamped under-powered for DM visibility."""
+    NPC — a longsword routine, hp below the frail line — passes validation
+    whole. Pre-oracle this block was flagged twice and machine-inflated by
+    the conform; the oracle kept it authentic. Against the class-grade
+    band (owner feedback 2026-09-17) a level-5 longsword fighter IS
+    class-grade, so it commits byte-identical with no stamp at all."""
     block = {
         "identity": {"role": "NPC", "level": 5, "race": "Human", "class": "Fighter"},
         "attributes": _power_attributes(),
@@ -949,15 +956,13 @@ def test_npc_underpowered_and_frail_never_violate() -> None:
         "combat": {"ac": 16, "hp": 40},
     }
     assert validate_stat_block(block) == []
-    assert canonicalize_stat_block(block)["power"] == {
-        "dpr": 6.5,
-        "band": [33.0, 38.0],
-        "verdict": "under-powered",
-    }
+    assert "power" not in canonicalize_stat_block(block)
 
 
 def test_bbeg_overpowered_passes_with_power_stamp() -> None:
-    """A BBEG 5 dealing ~60 DPR is valid, stamped over-powered like an NPC."""
+    """A BBEG 5 dealing ~60 DPR is valid and passes UNSTAMPED: NPC/BBEG
+    key on the class-grade band and over clamps to on-target — the DM's
+    delight is never nagged (owner direction 2026-09-17)."""
     block = {
         "identity": {"role": "BBEG", "level": 5, "race": "Human"},
         "attributes": _power_attributes(),
@@ -965,11 +970,7 @@ def test_bbeg_overpowered_passes_with_power_stamp() -> None:
         "combat": {"ac": 16, "hp": 140},
     }
     assert validate_stat_block(block) == []
-    assert canonicalize_stat_block(block)["power"] == {
-        "dpr": 60.0,
-        "band": [33.0, 38.0],
-        "verdict": "over-powered",
-    }
+    assert "power" not in canonicalize_stat_block(block)
 
 
 def test_non_string_action_description_returns_shape_error() -> None:
@@ -988,9 +989,11 @@ def test_non_string_action_description_returns_shape_error() -> None:
 def test_legendary_budget_flips_dpr_verdict() -> None:
     """Same 27-DPR block: unstamped on-target without legendary actions,
     stamped over-powered with them (27 x 2 = 54 vs 33-38) — and valid
-    either way."""
+    either way. Monster role: the band is enforced on this side, and the
+    flip is what the legendary budget is FOR. An NPC the same shape is
+    never nagged either way (class-grade band, over clamped)."""
     base: dict[str, Any] = {
-        "identity": {"role": "NPC", "level": 5, "race": "Human"},
+        "identity": {"role": "Monster", "cr": 5, "race": "Human"},
         "attributes": _power_attributes(),
         "actions": [{"name": "Longsword", "description": "4d10+5 slashing"}],
         "combat": {"ac": 16, "hp": 140},
@@ -1004,6 +1007,10 @@ def test_legendary_budget_flips_dpr_verdict() -> None:
         "band": [33.0, 38.0],
         "verdict": "over-powered",
     }
+    npc_base = {**base, "identity": {"role": "NPC", "level": 5, "race": "Human"}}
+    npc_bossed = {**npc_base, "boss": base.get("boss")}
+    assert "power" not in canonicalize_stat_block(npc_base)
+    assert "power" not in canonicalize_stat_block(npc_bossed)
 
 
 def test_save_half_and_aoe_adjustments_enforced() -> None:
