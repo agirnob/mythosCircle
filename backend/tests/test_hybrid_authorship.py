@@ -304,10 +304,11 @@ def test_authored_description_and_record_revert_model_drift(world: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_role_pin_rejects_a_block_that_breaks_the_pin(world: str) -> None:
-    """ROLE_PIN: a seed pins role BBEG; the generated block says NPC —
-    the job fails naming the entry, reject-only, BEFORE any repair call
-    (the provider count proves it), zero commits."""
+def test_role_pin_enforced_against_a_block_that_breaks_the_pin(world: str) -> None:
+    """ROLE_PIN (nudge contract): a seed pins role BBEG; the generated
+    block says NPC — model drift on a derived slot. The pin is ENFORCED
+    deterministically: the committed block says BBEG, no repair pass was
+    needed, the job succeeds."""
     seed_figure = {"name": "The Ashen King", "role": "BBEG"}
 
     def provider(prompt: str, settings: LLMSettings) -> str:
@@ -320,11 +321,13 @@ def test_role_pin_rejects_a_block_that_breaks_the_pin(world: str) -> None:
     job_id = _enqueue(world, key_figures=[seed_figure], notes="")
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
     job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert job.error is not None
-    assert "role pin" in job.error
-    assert "The Ashen King" in job.error
-    assert _rows(world) == []  # zero commits
+    assert job.state == "succeeded"
+    ashen = {row.name: row for row in _rows(world)}["The Ashen King"]
+    # the pin WON: the committed block carries the DM's role
+    assert ashen.data["stat_block"]["identity"]["role"] == "BBEG"
+    assert ashen.data["role"] == "BBEG"
+    # no repair was needed — the fold is deterministic
+    assert set((job.result or {})["llm_calls"]["by_label"]) == {"wave1"}
 
 
 def test_role_pin_honored_when_the_model_matches(world: str) -> None:
@@ -920,9 +923,10 @@ def test_nudge_attributes_only_survives_a_blockless_generation(world: str) -> No
     }
 
 
-def test_nudge_pin_still_rejects_after_repair(world: str) -> None:
-    """A repaired block whose role STILL disagrees with the pin fails the
-    job at the post-gate verdict — the pin is deferred, not dropped."""
+def test_nudge_pin_folds_a_repaired_block_that_breaks_the_pin(world: str) -> None:
+    """A repaired block whose role STILL disagrees with the pin is folded
+    to the pin at the post-gate verdict — the pin is deterministic, not
+    dropped and not a rejection (the Role select is authored truth)."""
     authored_block = {"attributes": {"str": 20}}
     seed_figure = {"name": "fatima", "role": "NPC", "record": {"stat_block": authored_block}}
 
@@ -954,5 +958,11 @@ def test_nudge_pin_still_rejects_after_repair(world: str) -> None:
     job_id = _enqueue(world, key_figures=[seed_figure], notes="")
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
     job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert "role pin" in (job.error or "")
+    assert job.state == "succeeded", job.error
+    fatima = {row.name: row for row in _rows(world)}["fatima"]
+    # the repaired BBEG block was folded to the pinned role
+    assert fatima.data["stat_block"]["identity"]["role"] == "NPC"
+    assert fatima.data["role"] == "NPC"
+    # the authored attributes are still verbatim over the repaired block
+    assert fatima.data["stat_block"]["attributes"]["str"] == 20
+

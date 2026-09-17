@@ -1029,39 +1029,58 @@ def _check_authored_stat_blocks(
         )
 
 
-def _check_role_pins(
-    entities: Sequence[models.EntityInput],
+def _enforce_role_pins(
+    entities: list[models.EntityInput],
     roster: Sequence[tuple[str, str, dict[str, Any] | None]],
-) -> None:
-    """ROLE_PIN (spec: hybrid authorship): a seed's pinned role is ground
-    truth for the stat gate — ``stat_block.identity.role`` must equal it
-    (authored and GENERATED blocks alike; the record role was already
-    backfilled to the pin). Reject-only: the violation fails the job
-    naming the entry, before any repair call is offered."""
+) -> list[models.EntityInput]:
+    """ROLE_PIN (nudge contract): the seed's pinned role is DM-authored
+    ground truth — the sheet's Role select — so a generated (or repaired)
+    block whose ``identity.role`` disagrees is MODEL DRIFT, reverted
+    deterministically here (identity.role := pinned role), the same rule
+    every authored record field follows in ``_backfill_authored``. The
+    record side already carries the pin (the record backfill), so the
+    fold keeps the one-fact-two-slots invariant true at commit time —
+    and closes the old hole where a blockless generation could commit a
+    role the DM never picked.
+
+    Reject-only remains for the DM's OWN contradiction: an AUTHORED
+    ``identity.role`` disagreeing with the pin fails pre-repair in
+    ``_check_authored_stat_blocks``. Runs AFTER the stat gate: a pre-gate
+    merged/partial skeleton may have no identity until the gate writes it.
+    """
     from app.pipeline.knowledge import stat_block_role  # noqa: PLC0415 - local import fine
 
-    violations: list[str] = []
+    out: list[models.EntityInput] = []
     for position, entity in enumerate(entities):
         _section, _entry, seed = roster[position] if position < len(roster) else ("", "", None)
         if seed is None or seed.get("mandate") or entity.kind != "character":
+            out.append(entity)
             continue
         pinned = seed.get("role") or (
             seed["record"].get("role") if isinstance(seed.get("record"), dict) else None
         )
-        if not (isinstance(pinned, str) and pinned.strip()):
-            continue
         block = entity.data.get("stat_block")
-        if block is None:
-            continue  # the stat gate owns the missing-block verdict
+        if (
+            not (isinstance(pinned, str) and pinned.strip())
+            or not isinstance(block, dict)
+            or not isinstance(block.get("identity"), dict)
+        ):
+            out.append(entity)
+            continue
+        pinned = pinned.strip()
         block_role = stat_block_role(block)
-        if block_role is None or block_role != pinned.strip():
-            name = seed.get("name") or entity.name
-            violations.append(
-                f"role pin for {name!r} (E{position}): stat_block.identity.role "
-                f"{block_role!r} must equal the pinned role {pinned.strip()!r}"
-            )
-    if violations:
-        raise JobPayloadError("wave 1: role pin violated (reject-only): " + " | ".join(violations))
+        if block_role == pinned:
+            out.append(entity)
+            continue
+        # Model drift on a derived slot: the pin wins, deterministically.
+        data = dict(entity.data)
+        folded_block = {
+            **block,
+            "identity": {**block["identity"], "role": pinned},
+        }
+        data["stat_block"] = folded_block
+        out.append(dataclasses.replace(entity, data=data))
+    return out
 
 
 def _merge_authored_stat_block(
@@ -2954,11 +2973,12 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     if cancelled:
         return
     entities_1 = _backfill_authored(entities_1, roster, which="stat")
-    # ROLE_PIN (post-gate): the pin judges the block the gates left — a
-    # pre-gate merged/partial skeleton may have had no identity at all
-    # until the stat gate wrote one. Authored-role disagreements were
-    # already rejected pre-repair by _check_authored_stat_blocks.
-    _check_role_pins(entities_1, roster)
+    # ROLE_PIN (post-gate, deterministic fold): the pin judges the block
+    # the gates left — a pre-gate merged/partial skeleton may have had no
+    # identity at all until the stat gate wrote one. Authored-role
+    # disagreements were already rejected pre-repair by
+    # _check_authored_stat_blocks.
+    entities_1 = _enforce_role_pins(entities_1, roster)
     # The mandate gate (spec: gate 2): the ASSEMBLED roster must contain
     # every demanded target. ONE bounded re-emit (frozen roster,
     # cold+seeded, the _anchor_repair shape); a second miss fails the job
@@ -3005,7 +3025,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         if cancelled:
             return
         entities_1 = _backfill_authored(entities_1, roster)
-        _check_role_pins(entities_1, roster)
+        entities_1 = _enforce_role_pins(entities_1, roster)
         missing = _missing_mandated(entities_1, mandated)
         if missing:
             raise JobPayloadError(
