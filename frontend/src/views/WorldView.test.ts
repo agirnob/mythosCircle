@@ -2424,7 +2424,8 @@ describe('WorldView', () => {
     expect(text).toContain('Spellcasting DC 20 · Attack +12 · Slots 4/3/3')
     expect(text).toContain('Features Divine Smite, Aura of Protection')
     expect(text).toContain('Resources Lay on hands 100')
-    expect(text).toContain('Oathblade +18 — 19 (2d6+12) slashing + 16.5 (3d10) radiant')
+    expect(text).toContain('Oathblade')
+    expect(text).toContain('to-hit +18 · 19 (2d6+12) slashing + 16.5 (3d10) radiant')
     // An action without structured parts keeps today's description-only line.
     expect(text).toContain('Shield bash — Shoves the target.')
     wrapper.unmount()

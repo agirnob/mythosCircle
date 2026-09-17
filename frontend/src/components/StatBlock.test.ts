@@ -170,8 +170,15 @@ describe('StatBlock', () => {
         },
       },
     })
-    expect(wrapper.text()).toContain('Oathblade +18 — 19 (2d6+12) slashing + 16.5 (3d10) radiant')
-    expect(wrapper.text()).not.toContain('Melee weapon attack')
+    // the prose IS the line (owner feedback 2026-09-17); the structured
+    // numbers render as a secondary clause, never replacing the prose
+    expect(wrapper.text()).toContain(
+      'Oathblade — Melee weapon attack: 19 (2d6 + 12) slashing damage.',
+    )
+    expect(wrapper.text()).toContain(
+      'to-hit +18 · 19 (2d6+12) slashing + 16.5 (3d10) radiant',
+    )
+    // the prose stays — the numbers are additive, not a replacement
   })
 
   it('falls back to the description when an attack carries no readable part', () => {
@@ -204,7 +211,8 @@ describe('StatBlock', () => {
         },
       },
     })
-    expect(wrapper.text()).toContain('Bite +5 — 3.5 (1d6) piercing')
+    expect(wrapper.text()).toContain('Bite')
+    expect(wrapper.text()).toContain('to-hit +5 · 3.5 (1d6) piercing')
   })
 
   it('renders the panel for a block carrying nothing but an optional aspect', () => {

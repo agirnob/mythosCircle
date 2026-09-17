@@ -310,17 +310,23 @@ function damageText(action: NamedEntry): string | null {
   return parts.length > 0 ? parts.join(' + ') : null
 }
 
-/** Everything the action line adds after its name: the structured to-hit
- * and damage when the action carries parts, else today's description-only
- * line. Never both — the parts say what the prose said, and repeating them
- * would print the numbers twice. */
-function actionSuffix(action: NamedEntry): string {
+/** The description IS the action line — the prose is what a DM reads at
+ * the table, and the model's prose routinely carries more than the
+ * machine parts (save DCs, riders, ranges). The structured to-hit and
+ * damage render as a MUTED secondary line instead of replacing the prose
+ * (owner feedback 2026-09-17: the prose vanished whenever parts
+ * existed). */
+function actionProse(action: NamedEntry): string {
+  return action.description ? String(action.description) : ''
+}
+
+/** The machine numbers as a secondary clause, or '' when there are none
+ * (or the prose already died — a parts-only action still shows them). */
+function actionNumbers(action: NamedEntry): string {
   const damage = damageText(action)
-  if (damage !== null) {
-    const toHit = isFiniteNumber(action.to_hit) ? ` ${withSign(action.to_hit)}` : ''
-    return `${toHit} — ${damage}`
-  }
-  return action.description ? ` — ${String(action.description)}` : ''
+  if (damage === null && !isFiniteNumber(action.to_hit)) return ''
+  const toHit = isFiniteNumber(action.to_hit) ? `to-hit ${withSign(action.to_hit)}` : ''
+  return [toHit, damage].filter(Boolean).join(' · ')
 }
 
 const skillLine = (skill: NamedEntry) =>
@@ -361,7 +367,10 @@ const skillLine = (skill: NamedEntry) =>
       <dt>Actions</dt>
       <dd v-for="(action, index) in actions" :key="`${index}-${String(action.name)}`">
         <strong>{{ action.name ?? '?' }}</strong
-        ><template v-if="actionSuffix(action)">{{ actionSuffix(action) }}</template>
+        ><template v-if="actionProse(action)"> — {{ actionProse(action) }}</template>
+        <span v-if="actionNumbers(action)" class="muted mono small">
+          {{ actionNumbers(action) }}
+        </span>
       </dd>
     </dl>
     <dl v-if="traits.length > 0">
@@ -401,6 +410,16 @@ const skillLine = (skill: NamedEntry) =>
 .mono,
 .ability strong {
   font-family: ui-monospace, monospace;
+}
+.muted {
+  color: #9aa0a6;
+}
+.small {
+  font-size: 0.8rem;
+}
+dd .muted.small {
+  display: inline-block;
+  margin-left: 0.5rem;
 }
 dl {
   margin: 0.25rem 0;
