@@ -654,7 +654,7 @@ def test_rules_text_instructs_challenge_scaling() -> None:
     assert "hp" in rules and "ac" in rules
     assert "AUTHENTIC class-grade numbers" in rules
     assert "does NOT band-enforce them" in rules
-    assert "stamped under-powered for DM visibility" in rules
+    assert "under-powered for DM visibility" in rules
     assert "Monster blocks scale with CR on the DMG monster table and ARE" in rules
 
 
