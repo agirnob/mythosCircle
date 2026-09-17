@@ -1513,7 +1513,15 @@ def _complete_damage_parts(block: dict[str, Any]) -> dict[str, Any]:
             count, sides = part.get("count"), part.get("sides")
             if isinstance(dice, str):
                 found = combat._DICE_RE.findall(dice)
-                if found and not (type(count) is int and type(sides) is int):
+                if found:
+                    # The dice string is the part's identity. A stated
+                    # count/sides pair that CONTRADICTS it is a model slip,
+                    # not a derivation source: measured live 2026-09-18
+                    # (fasiha regenerate) — {"dice": "8d8", "count": 1,
+                    # "average": 36} — the model's dice and average agree,
+                    # only the count is wrong, and trusting the count
+                    # rewrote the part down to 1d8/4.5, under-reporting
+                    # the attack 8x on the committed sheet.
                     count, sides = int(found[0][0]), int(found[0][1])
             if type(count) is not int or type(sides) is not int:
                 new_parts.append(part)
