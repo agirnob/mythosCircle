@@ -171,10 +171,6 @@ const ATTRIBUTES = ['str', 'dex', 'con', 'int', 'wis', 'cha'] as const
 
 const name = ref('')
 const role = ref<'NPC' | 'BBEG' | 'Monster'>('NPC')
-const levelCr = ref('')
-const raceType = ref('')
-const classProfession = ref('')
-const alignment = ref('')
 const recordText = ref<Record<RecordTextField, string>>({
   personality: '',
   secret: '',
@@ -197,7 +193,6 @@ const worldIntegration = ref<Record<WorldIntegrationField, string>>({
 
 // --- Authored stat-block subsections (each optional independently) ----------
 
-const authorIdentity = ref(false)
 const identityRace = ref('')
 const powerSlot = ref<'level' | 'cr'>('level')
 const levelValue = ref<number | null>(null)
@@ -343,18 +338,12 @@ function blankFree(values: Record<string, string>): Record<string, string> {
 function buildFigure(): AuthoredFigureSeed {
   const entry: AuthoredFigureSeed = { name: name.value.trim(), role: role.value }
 
-  const record: Record<string, unknown> = blankFree({
-    level_cr: levelCr.value,
-    race_type: raceType.value,
-    class_profession: classProfession.value,
-    alignment: alignment.value,
-    ...recordText.value,
-  })
+  const record: Record<string, unknown> = blankFree({ ...recordText.value })
   const integration = blankFree(worldIntegration.value)
   if (Object.keys(integration).length > 0) record.world_integration = integration
 
   const block: Record<string, unknown> = {}
-  if (authorIdentity.value) {
+  {
     const identity: Record<string, unknown> = blankFree({
       class: identityClass.value,
       alignment: identityAlignment.value,
@@ -362,7 +351,25 @@ function buildFigure(): AuthoredFigureSeed {
     if (identityRace.value) identity.race = identityRace.value
     if (powerSlot.value === 'level' && levelValue.value !== null) identity.level = levelValue.value
     if (powerSlot.value === 'cr' && crValue.value.trim()) identity.cr = crValue.value.trim()
-    if (Object.keys(identity).length > 0) block.identity = identity
+    if (Object.keys(identity).length > 0) {
+      block.identity = identity
+      // ONE fact in two slots: the canonical identity the gates check AND
+      // the record's display text — both derived from these dropdowns.
+      record.race_type = identityRace.value
+      record.class_profession = identityClass.value
+      record.alignment = identityAlignment.value
+      const levelCrText =
+        powerSlot.value === 'level' && levelValue.value !== null
+          ? `level ${levelValue.value}`
+          : identity.cr
+          ? `CR ${identity.cr}`
+          : ''
+      if (levelCrText) record.level_cr = levelCrText
+      for (const key of ['race_type', 'class_profession', 'alignment'] as const) {
+        const value = record[key]
+        if (typeof value === 'string' && !value.trim()) delete record[key]
+      }
+    }
   }
   if (authorAttributes.value) {
     const attrs: Record<string, number> = {}
@@ -534,22 +541,6 @@ function resultLine(job: Job): string | null {
               <option v-for="r in ROLES" :key="r" :value="r">{{ r }}</option>
             </select>
           </label>
-          <label>
-            Level / CR
-            <input v-model="levelCr" type="text" placeholder="e.g. level 5 (blank = generated)" />
-          </label>
-          <label>
-            Race / type
-            <input v-model="raceType" type="text" placeholder="blank = generated" />
-          </label>
-          <label>
-            Class / profession
-            <input v-model="classProfession" type="text" placeholder="blank = generated" />
-          </label>
-          <label>
-            Alignment
-            <input v-model="alignment" type="text" placeholder="blank = generated" />
-          </label>
         </div>
         <div class="grid">
           <label v-for="field in RECORD_FIELDS" :key="field.key">
@@ -577,12 +568,8 @@ function resultLine(job: Job): string | null {
         <h2>Stat block — author any part, or leave it all to the build</h2>
         <div class="subsections">
           <section class="subsection">
-            <h3>
-              <button type="button" class="link" @click="authorIdentity = !authorIdentity">
-                {{ authorIdentity ? '☑' : '☐' }} Identity
-              </button>
-            </h3>
-            <div v-if="authorIdentity" class="grid">
+            <h3>Identity</h3>
+            <div class="grid">
               <label>
                 Race (SRD)
                 <select v-model="identityRace">

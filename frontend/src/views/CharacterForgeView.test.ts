@@ -169,10 +169,11 @@ describe('CharacterForgeView (nudge contract)', () => {
   it('sends only the authored stat-block subsections and composes dice boxes', async () => {
     const wrapper = await mountView()
     await fillName(wrapper)
-    await toggleSubsection(wrapper, 'Identity')
     await toggleSubsection(wrapper, 'Actions')
     await wrapper.findAll('button').find((b) => b.text() === '+ add')!.trigger('click')
 
+    // Identity has no toggle — the dropdowns ARE the authoring; filling
+    // one derives both the record display field and the stat-block slot
     await labeled(wrapper, 'Race (SRD)').get('select').setValue('Tiefling')
     const actionName = wrapper.findAll('input[placeholder="Longsword"]')[0]!
     await actionName.setValue('Acid Flask')
@@ -191,10 +192,14 @@ describe('CharacterForgeView (nudge contract)', () => {
 
     const figure = (buildInBodies()[0].payload as { key_figures: Array<Record<string, unknown>> })
       .key_figures[0]
-    const block = (figure.record as Record<string, unknown>).stat_block as Record<string, unknown>
-    // only the toggled subsections ride along
+    const recordOut = figure.record as Record<string, unknown>
+    const block = recordOut.stat_block as Record<string, unknown>
+    // only the authored subsections ride along
     expect(Object.keys(block)).toEqual(['identity', 'actions'])
     expect((block.identity as Record<string, unknown>).race).toBe('Tiefling')
+    // the identity dropdowns derive the record's display fields — one
+    // fact, one control, two slots, never contradictory
+    expect(recordOut.race_type).toBe('Tiefling')
     const action = (block.actions as Array<Record<string, unknown>>)[0]
     expect(action.damage).toBe('2d6+3')
   })
