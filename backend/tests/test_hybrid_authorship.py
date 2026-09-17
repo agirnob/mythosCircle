@@ -835,3 +835,124 @@ def test_hybrid_partial_identity_role_pin_only_when_authored(world: str) -> None
     assert job.state == "failed"
     assert "pinned role" in (job.error or "")
     assert _rows(world)  # Ferdinand committed; only the second build failed
+
+
+def test_nudge_attributes_only_survives_a_blockless_generation(world: str) -> None:
+    """The nudge contract's ordering guarantee: a figure whose authored
+    stat block is ONLY attributes, against a model that ships NO stat
+    block at all, must NOT die on the pre-gate role pin (the merged
+    skeleton has no identity yet) — the stat gate repairs the skeleton,
+    and the pin judges the block the gates left. The authored attributes
+    commit verbatim over the repaired block."""
+    authored_block = {
+        "attributes": {"str": 20, "dex": 20, "con": 20, "int": 20, "wis": 20, "cha": 20},
+    }
+    seed_figure = {"name": "fatima", "record": {"stat_block": authored_block}}
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        if "stat_blocks" in prompt:
+            # the stat repair: a complete, pin-clean block for E0
+            repaired = _record("fatima")
+            return json.dumps(
+                {"stat_blocks": [{"ref": "E0", "stat_block": repaired["stat_block"]}]}
+            )
+        if "records" in prompt and "stat_blocks" not in prompt:
+            # the record repair: the model's record, completed (key: data)
+            return json.dumps(
+                {"records": [{"ref": "E0", "data": _record("fatima")}]}
+            )
+        # wave 1: fatima with NO stat_block at all
+        rows = json.dumps(
+            {
+                "entities": [
+                    {
+                        "ref": "E0",
+                        "kind": "character",
+                        "name": "fatima",
+                        "data": {
+                            "name": "fatima",
+                            "role": "NPC",
+                            "level_cr": "level 5",
+                            "race_type": "Half-Elf",
+                            "class_profession": "Paladin",
+                            "alignment": "CG",
+                            "personality": "Generated personality.",
+                            "secret": "Generated secret.",
+                            "rumor": "Generated rumor.",
+                            "party_hook": "Generated hook.",
+                            "appearance": "Generated appearance.",
+                            "background": "Generated background.",
+                            "goals": "Generated goals.",
+                            "relationships": "Generated relationships.",
+                            "voice_style": "Generated voice.",
+                            "catchphrases": "Generated catchphrases.",
+                            "world_integration": {
+                                "reputation": "Generated reputation.",
+                                "factions": "Generated factions.",
+                                "current_location": "Generated location.",
+                                "reaction_matrix": "C0: watches.",
+                                "on_defeat": "Generated defeat.",
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+        return rows
+
+    job_id = _enqueue(world, key_figures=[seed_figure], notes="")
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    fatima = {row.name: row for row in _rows(world)}["fatima"]
+    block = fatima.data["stat_block"]
+    # the repaired skeleton carries a pin-clean identity...
+    assert block["identity"]["role"] == "NPC"
+    # ...and the authored attributes are verbatim over it
+    assert block["attributes"] == {
+        "str": 20,
+        "dex": 20,
+        "con": 20,
+        "int": 20,
+        "wis": 20,
+        "cha": 20,
+    }
+
+
+def test_nudge_pin_still_rejects_after_repair(world: str) -> None:
+    """A repaired block whose role STILL disagrees with the pin fails the
+    job at the post-gate verdict — the pin is deferred, not dropped."""
+    authored_block = {"attributes": {"str": 20}}
+    seed_figure = {"name": "fatima", "role": "NPC", "record": {"stat_block": authored_block}}
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        if "stat_blocks" in prompt:
+            repaired = _record("fatima")
+            repaired["stat_block"]["identity"]["role"] = "BBEG"  # wrong role
+            return json.dumps(
+                {"stat_blocks": [{"ref": "E0", "stat_block": repaired["stat_block"]}]}
+            )
+        if "records" in prompt and "stat_blocks" not in prompt:
+            return json.dumps(
+                {"records": [{"ref": "E0", "data": _record("fatima")}]}
+            )
+        return json.dumps(
+            {
+                "entities": [
+                    {
+                        "ref": "E0",
+                        "kind": "character",
+                        "name": "fatima",
+                        "data": {"name": "fatima", "role": "NPC"},
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+    job_id = _enqueue(world, key_figures=[seed_figure], notes="")
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "role pin" in (job.error or "")

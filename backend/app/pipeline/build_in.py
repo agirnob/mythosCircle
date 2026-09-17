@@ -2937,7 +2937,6 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # repair call is offered (HYBRID_AUTHORED_BLOCK_INVALID); a valid one
     # is FROZEN out of the repair machinery and commits byte-identical.
     _check_authored_stat_blocks(entities_1, roster)
-    _check_role_pins(entities_1, roster)
     # Stat-block enforcement (AR24/AR25, spec-2.4): every character must carry
     # a valid minimal stat block before the wave commits — or up to three
     # bounded per-entity repair passes; a block still invalid after the
@@ -2955,6 +2954,11 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     if cancelled:
         return
     entities_1 = _backfill_authored(entities_1, roster, which="stat")
+    # ROLE_PIN (post-gate): the pin judges the block the gates left — a
+    # pre-gate merged/partial skeleton may have had no identity at all
+    # until the stat gate wrote one. Authored-role disagreements were
+    # already rejected pre-repair by _check_authored_stat_blocks.
+    _check_role_pins(entities_1, roster)
     # The mandate gate (spec: gate 2): the ASSEMBLED roster must contain
     # every demanded target. ONE bounded re-emit (frozen roster,
     # cold+seeded, the _anchor_repair shape); a second miss fails the job
