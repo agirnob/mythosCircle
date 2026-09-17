@@ -81,10 +81,21 @@ function damageRows(parts: unknown): DamageRow[] {
     .map((part) => {
       const dice = typeof part['dice'] === 'string' ? part['dice'] : ''
       const match = /^(\d+)d(\d+)([+-]\d+)?$/.exec(dice.replace(/\s+/g, ''))
+      // The canonical part carries the modifier as a SEPARATE `bonus`
+      // field (dice is the bare "5d6"); older/odd rows may bake it into
+      // the dice string instead — show whichever exists, prefer the dice
+      // suffix, never invent a 0 that hides a real bonus.
+      const fromDice = match?.[3]?.replace('+', '') ?? ''
+      const bonus =
+        fromDice !== ''
+          ? fromDice
+          : typeof part['bonus'] === 'number' && part['bonus'] !== 0
+          ? String(part['bonus'])
+          : ''
       return {
         count: match?.[1] ?? '',
         sides: match?.[2] ?? '',
-        mod: match?.[3]?.replace('+', '') ?? '',
+        mod: bonus.replace(/^-/, ''),
         type: typeof part['type'] === 'string' ? part['type'] : '',
       }
     })
@@ -255,7 +266,11 @@ function emitBlock(): Record<string, unknown> | null {
         if (!Number.isFinite(count) || !Number.isFinite(sides)) continue
         const mod = row.mod.trim()
         const bonus = mod === '' || !Number.isFinite(Number.parseInt(mod, 10)) ? 0 : Number.parseInt(mod, 10)
-        const dice = `${count}d${sides}${bonus ? (bonus > 0 ? `+${bonus}` : `${bonus}`) : ''}`
+        // Canonical part: dice is the BARE formula ("5d6") and the modifier
+        // rides the separate `bonus` field — baking "+7" into dice AND
+        // setting bonus made the export render "5d6+7+7" and the auditor
+        // read the bonus twice.
+        const dice = `${count}d${sides}`
         const average = Math.round((count * (sides + 1)) / 2 + bonus)
         parts.push({
           dice,
