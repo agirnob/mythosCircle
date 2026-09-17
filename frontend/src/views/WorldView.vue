@@ -5,6 +5,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import type { components } from '../api/schema'
 import { ApiError, apiFetch } from '../api/client'
 import StatBlock from '../components/StatBlock.vue'
+import StatBlockEditor from '../components/StatBlockEditor.vue'
 import { useAuthStore } from '../stores/auth'
 import { useCampaignsStore } from '../stores/campaigns'
 import { hasNonBlankAppearance } from '../lib/appearance'
@@ -1030,8 +1031,10 @@ const CORE_FIELDS = ['personality', 'secret', 'rumor', 'party_hook'] as const
 /** Editable scalar string fields (AR19 core + identity anchor + narrative lore). */
 const SCALAR_FIELDS = ['name', 'role', ...CORE_FIELDS, ...IDENTITY_FIELDS, ...LORE_FIELDS] as const
 
-/** Structured blocks edited as pretty JSON. */
-const JSON_FIELDS = ['stat_block', 'world_integration', 'boss'] as const
+/** Structured blocks edited as pretty JSON. The character stat block is
+ * NOT here: it edits through the structured StatBlockEditor (owner
+ * feedback 2026-09-17 — no raw JSON). */
+const JSON_FIELDS = ['world_integration', 'boss'] as const
 
 const editingProfileId = ref<string | null>(null)
 const profileDrafts = ref<Record<string, Record<string, string>>>({})
@@ -1046,6 +1049,14 @@ const profileReloading = ref<Record<string, boolean>>({})
  * sending THAT would defeat the stale-base 409 — the seed-time drafts
  * would merge silently over the moved head (spec-3-6 Never list). */
 const profileBases = ref<Record<string, string | null>>({})
+/** The structured stat-block draft per entity (objects, not JSON text);
+ * null = the block was cleared. Seeded at edit-open like the strings. */
+const statBlockDrafts = ref<Record<string, Record<string, unknown> | null>>({})
+const statBlockInitials = ref<Record<string, unknown>>({})
+const hasStatBlock = (entity: EntityExport): boolean =>
+  entity.kind === 'character' &&
+  typeof (entity.data ?? {})['stat_block'] === 'object' &&
+  (entity.data as Record<string, unknown>)['stat_block'] !== null
 
 function rawString(value: unknown): string {
   if (value === null || value === undefined) return ''
@@ -1060,6 +1071,12 @@ function startProfileEdit(entity: EntityExport) {
   for (const field of SCALAR_FIELDS) drafts[field] = rawString(data[field])
   drafts['text'] = entity.text ?? ''
   for (const field of JSON_FIELDS) drafts[field] = rawString(data[field])
+  const statBlock = data['stat_block']
+  statBlockDrafts.value[entity.id] =
+    typeof statBlock === 'object' && statBlock !== null
+      ? (statBlock as Record<string, unknown>)
+      : null
+  statBlockInitials.value[entity.id] = JSON.stringify(statBlockDrafts.value[entity.id] ?? {})
   // Unknown keys edit as one "additional data" JSON object (spec-2.7
   // deferral resolution): keys added/changed land in the PATCH; keys
   // removed send null (delete).
@@ -1073,6 +1090,8 @@ function startProfileEdit(entity: EntityExport) {
 }
 
 function cancelProfileEdit() {
+  delete statBlockDrafts.value[editingProfileId.value ?? '']
+  delete statBlockInitials.value[editingProfileId.value ?? '']
   const id = editingProfileId.value
   editingProfileId.value = null
   if (id) {
@@ -1101,6 +1120,12 @@ async function saveProfile(entity: EntityExport) {
   const patch: Record<string, unknown> = {}
   for (const field of SCALAR_FIELDS) {
     if (drafts[field] !== initials[field]) patch[field] = drafts[field]
+  }
+  const statBlockChanged =
+    JSON.stringify(statBlockDrafts.value[entity.id] ?? {}) !==
+    statBlockInitials.value[entity.id]
+  if (statBlockChanged) {
+    patch['stat_block'] = statBlockDrafts.value[entity.id]
   }
   for (const field of JSON_FIELDS) {
     if (drafts[field] === initials[field]) continue
@@ -1715,6 +1740,13 @@ function additionalDataBlock(entity: EntityExport): string {
                 <span>Text</span>
                 <textarea v-model="profileDrafts[entity.id].text" aria-label="Text"></textarea>
               </label>
+              <div v-if="hasStatBlock(entity)" class="field">
+                <span>Stat block</span>
+                <StatBlockEditor
+                  v-model="statBlockDrafts[entity.id]"
+                  :key="`sbe-${entity.id}-${profileBases[entity.id] ?? ''}`"
+                />
+              </div>
               <label v-for="field in JSON_FIELDS" :key="field" class="field">
                 <span>{{ FIELD_LABELS[field] ?? field }} (JSON)</span>
                 <textarea

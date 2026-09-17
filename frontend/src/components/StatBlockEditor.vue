@@ -1,0 +1,461 @@
+<script setup lang="ts">
+// Structured stat-block editor (owner feedback 2026-09-17: committed
+// characters were edited as raw JSON — a form instead). The editor
+// round-trips the canonical block: subsections render as inputs, action
+// damage parts as dice boxes ([count]d[sides]+[mod] + damage type), and
+// the emitted value carries only filled fields — blanks are dropped,
+// never written as empty strings. `power` is a server stamp: read-only.
+import { computed } from 'vue'
+import { ref, watch } from 'vue'
+
+const props = defineProps<{ modelValue: Record<string, unknown> | null }>()
+const emit = defineEmits<{ (e: 'update:modelValue', value: Record<string, unknown> | null): void }>()
+
+const ROLES = ['NPC', 'BBEG', 'Monster'] as const
+const ATTRIBUTES = ['str', 'dex', 'con', 'int', 'wis', 'cha'] as const
+
+// --- Local editable state ----------------------------------------------------
+
+const identityRole = ref('')
+const identityRace = ref('')
+const powerSlot = ref<'level' | 'cr'>('level')
+const levelValue = ref<number | null>(null)
+const crValue = ref('')
+const identityClass = ref('')
+const identityAlignment = ref('')
+
+const attributes = ref<Record<string, number | null>>({
+  str: null,
+  dex: null,
+  con: null,
+  int: null,
+  wis: null,
+  cha: null,
+})
+
+const ac = ref<number | null>(null)
+const hp = ref<number | null>(null)
+const hitDice = ref('')
+
+const powerStamp = ref<{ dpr?: number; band?: number[]; verdict?: string } | null>(null)
+
+interface SkillRow {
+  name: string
+  bonus: string
+  description: string
+}
+const skills = ref<SkillRow[]>([])
+
+interface DamageRow {
+  count: string
+  sides: string
+  mod: string
+  type: string
+}
+interface ActionRow {
+  name: string
+  toHit: string
+  description: string
+  damages: DamageRow[]
+}
+const actions = ref<ActionRow[]>([])
+
+interface TraitRow {
+  name: string
+  description: string
+}
+const traits = ref<TraitRow[]>([])
+
+const spellText = ref('')
+
+// --- Load: canonical block -> rows --------------------------------------------
+
+function num(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function damageRows(parts: unknown): DamageRow[] {
+  if (!Array.isArray(parts) || parts.length === 0) return []
+  return parts
+    .filter((part): part is Record<string, unknown> => typeof part === 'object' && part !== null)
+    .map((part) => {
+      const dice = typeof part['dice'] === 'string' ? part['dice'] : ''
+      const match = /^(\d+)d(\d+)([+-]\d+)?$/.exec(dice.replace(/\s+/g, ''))
+      return {
+        count: match?.[1] ?? '',
+        sides: match?.[2] ?? '',
+        mod: match?.[3]?.replace('+', '') ?? '',
+        type: typeof part['type'] === 'string' ? part['type'] : '',
+      }
+    })
+}
+
+function load(block: Record<string, unknown> | null) {
+  const identity = (block?.['identity'] ?? {}) as Record<string, unknown>
+  identityRole.value = typeof identity['role'] === 'string' ? identity['role'] : ''
+  identityRace.value = typeof identity['race'] === 'string' ? identity['race'] : ''
+  identityClass.value = typeof identity['class'] === 'string' ? identity['class'] : ''
+  identityAlignment.value =
+    typeof identity['alignment'] === 'string' ? identity['alignment'] : ''
+  if (identity['cr'] !== undefined && identity['cr'] !== null) {
+    powerSlot.value = 'cr'
+    crValue.value = String(identity['cr'])
+    levelValue.value = null
+  } else {
+    powerSlot.value = 'level'
+    levelValue.value = num(identity['level'])
+    crValue.value = ''
+  }
+
+  const attrs = (block?.['attributes'] ?? {}) as Record<string, unknown>
+  for (const attr of ATTRIBUTES) attributes.value[attr] = num(attrs[attr])
+
+  const combat = (block?.['combat'] ?? {}) as Record<string, unknown>
+  ac.value = num(combat['ac'])
+  hp.value = num(combat['hp'])
+  hitDice.value = typeof combat['hit_dice'] === 'string' ? combat['hit_dice'] : ''
+
+  powerStamp.value =
+    block && typeof block['power'] === 'object' && block['power'] !== null
+      ? (block['power'] as { dpr?: number; band?: number[]; verdict?: string })
+      : null
+
+  const rawSkills = block?.['skills']
+  skills.value = Array.isArray(rawSkills)
+    ? rawSkills.map((entry) => {
+        const skill = (entry ?? {}) as Record<string, unknown>
+        return {
+          name: typeof skill['name'] === 'string' ? skill['name'] : '',
+          bonus: skill['bonus'] !== undefined ? String(skill['bonus']) : '',
+          description:
+            typeof skill['description'] === 'string' ? skill['description'] : '',
+        }
+      })
+    : []
+
+  const rawActions = block?.['actions']
+  actions.value = Array.isArray(rawActions)
+    ? rawActions.map((entry) => {
+        const action = (entry ?? {}) as Record<string, unknown>
+        return {
+          name: typeof action['name'] === 'string' ? action['name'] : '',
+          toHit: action['to_hit'] !== undefined ? String(action['to_hit']) : '',
+          description:
+            typeof action['description'] === 'string' ? action['description'] : '',
+          damages: damageRows(action['damage']),
+        }
+      })
+    : []
+
+  const rawTraits = block?.['traits']
+  traits.value = Array.isArray(rawTraits)
+    ? rawTraits.map((entry) => {
+        const trait = (entry ?? {}) as Record<string, unknown>
+        return {
+          name: typeof trait['name'] === 'string' ? trait['name'] : '',
+          description:
+            typeof trait['description'] === 'string' ? trait['description'] : '',
+        }
+      })
+    : []
+
+  const rawSpells = block?.['spells']
+  spellText.value = Array.isArray(rawSpells)
+    ? rawSpells.filter((s): s is string => typeof s === 'string').join('\n')
+    : ''
+}
+
+watch(
+  () => props.modelValue,
+  (block) => load(block),
+  { immediate: true, deep: false },
+)
+
+// --- Emit: rows -> canonical block (blanks dropped) -----------------------------
+
+function addSkill() {
+  skills.value.push({ name: '', bonus: '', description: '' })
+}
+function addAction() {
+  actions.value.push({ name: '', toHit: '', description: '', damages: [] })
+}
+function addDamage(action: ActionRow) {
+  action.damages.push({ count: '', sides: '', mod: '', type: '' })
+}
+function addTrait() {
+  traits.value.push({ name: '', description: '' })
+}
+
+const stampLine = computed(() => {
+  const stamp = powerStamp.value
+  if (!stamp || stamp.dpr === undefined) return null
+  const band = Array.isArray(stamp.band) ? `${stamp.band[0]}-${stamp.band[1]}` : '—'
+  return `${stamp.verdict ?? 'unknown'} — DPR ${stamp.dpr} vs band ${band}`
+})
+
+function emitBlock(): Record<string, unknown> | null {
+  const block: Record<string, unknown> = {}
+
+  const identity: Record<string, unknown> = {}
+  if (identityRole.value.trim()) identity.role = identityRole.value.trim()
+  if (identityRace.value.trim()) identity.race = identityRace.value.trim()
+  if (powerSlot.value === 'level' && levelValue.value !== null) identity.level = levelValue.value
+  if (powerSlot.value === 'cr' && crValue.value.trim()) identity.cr = crValue.value.trim()
+  if (identityClass.value.trim()) identity.class = identityClass.value.trim()
+  if (identityAlignment.value.trim()) identity.alignment = identityAlignment.value.trim()
+  if (Object.keys(identity).length > 0) block.identity = identity
+
+  const attrs: Record<string, number> = {}
+  for (const attr of ATTRIBUTES) {
+    const value = attributes.value[attr]
+    if (value !== null) attrs[attr] = value
+  }
+  if (Object.keys(attrs).length > 0) block.attributes = attrs
+
+  const combat: Record<string, unknown> = {}
+  if (ac.value !== null) combat.ac = ac.value
+  if (hp.value !== null) combat.hp = hp.value
+  if (hitDice.value.trim()) combat.hit_dice = hitDice.value.trim()
+  if (Object.keys(combat).length > 0) block.combat = combat
+
+  const skillList = skills.value
+    .filter((s) => s.name.trim())
+    .map((s) => {
+      const skill: Record<string, unknown> = { name: s.name.trim() }
+      const bonus = Number.parseInt(s.bonus, 10)
+      if (s.bonus.trim() && Number.isFinite(bonus)) skill.bonus = bonus
+      if (s.description.trim()) skill.description = s.description.trim()
+      return skill
+    })
+  if (skillList.length > 0) block.skills = skillList
+
+  const actionList = actions.value
+    .filter((a) => a.name.trim() || a.description.trim())
+    .map((a) => {
+      const action: Record<string, unknown> = {}
+      if (a.name.trim()) action.name = a.name.trim()
+      const toHit = Number.parseInt(a.toHit, 10)
+      if (a.toHit.trim() && Number.isFinite(toHit)) action.to_hit = toHit
+      if (a.description.trim()) action.description = a.description.trim()
+      const parts: Record<string, unknown>[] = []
+      for (const row of a.damages) {
+        const count = Number.parseInt(row.count, 10)
+        const sides = Number.parseInt(row.sides, 10)
+        if (!Number.isFinite(count) || !Number.isFinite(sides)) continue
+        const mod = row.mod.trim()
+        const bonus = mod === '' || !Number.isFinite(Number.parseInt(mod, 10)) ? 0 : Number.parseInt(mod, 10)
+        const dice = `${count}d${sides}${bonus ? (bonus > 0 ? `+${bonus}` : `${bonus}`) : ''}`
+        const average = Math.round((count * (sides + 1)) / 2 + bonus)
+        parts.push({
+          dice,
+          count,
+          sides,
+          bonus,
+          average,
+          type: row.type.trim() || 'damage',
+        })
+      }
+      if (parts.length > 0) action.damage = parts
+      return action
+    })
+  if (actionList.length > 0) block.actions = actionList
+
+  const traitList = traits.value
+    .filter((t) => t.name.trim() || t.description.trim())
+    .map((t) => ({
+      name: t.name.trim(),
+      description: t.description.trim(),
+    }))
+  if (traitList.length > 0) block.traits = traitList
+
+  const spells = spellText.value
+    .split(/\r?\n/)
+    .map((line: string) => line.trim())
+    .filter(Boolean)
+  if (spells.length > 0) block.spells = spells
+
+  return Object.keys(block).length > 0 ? block : null
+}
+
+function emitUpdate() {
+  emit('update:modelValue', emitBlock())
+}
+</script>
+
+<template>
+  <div class="sbe" @change="emitUpdate" @blur="emitUpdate">
+    <p v-if="stampLine" class="muted small mono">{{ stampLine }}</p>
+
+    <div class="grid">
+      <label>
+        Role
+        <select v-model="identityRole">
+          <option value="">—</option>
+          <option v-for="role in ROLES" :key="role" :value="role">{{ role }}</option>
+        </select>
+      </label>
+      <label>
+        Race / type
+        <input v-model="identityRace" type="text" />
+      </label>
+      <label>
+        Power slot
+        <select v-model="powerSlot">
+          <option value="level">Level</option>
+          <option value="cr">CR</option>
+        </select>
+      </label>
+      <label v-if="powerSlot === 'level'">
+        Level (1–20)
+        <input v-model.number="levelValue" type="number" min="1" max="20" />
+      </label>
+      <label v-else>
+        CR (integer or '1/2')
+        <input v-model="crValue" type="text" />
+      </label>
+      <label>
+        Class
+        <input v-model="identityClass" type="text" />
+      </label>
+      <label>
+        Alignment
+        <input v-model="identityAlignment" type="text" />
+      </label>
+    </div>
+
+    <h4>Attributes</h4>
+    <div class="grid">
+      <label v-for="attr in ATTRIBUTES" :key="attr">
+        {{ attr.toUpperCase() }}
+        <input v-model.number="attributes[attr]" type="number" min="1" max="30" />
+      </label>
+    </div>
+
+    <h4>Combat</h4>
+    <div class="grid">
+      <label>AC <input v-model.number="ac" type="number" min="0" /></label>
+      <label>HP <input v-model.number="hp" type="number" min="1" /></label>
+      <label>Hit dice <input v-model="hitDice" type="text" /></label>
+    </div>
+
+    <h4>Skills <button type="button" class="link" @click="addSkill">+ add</button></h4>
+    <div v-for="(skill, i) in skills" :key="`sk${i}`" class="row four">
+      <input v-model="skill.name" type="text" placeholder="Arcana" />
+      <input v-model="skill.bonus" type="text" placeholder="bonus" />
+      <input v-model="skill.description" type="text" placeholder="notes" />
+      <button type="button" class="link" @click="skills.splice(i, 1); emitUpdate()">✕</button>
+    </div>
+
+    <h4>Actions <button type="button" class="link" @click="addAction">+ add</button></h4>
+    <div v-for="(action, i) in actions" :key="`ac${i}`" class="action-block">
+      <div class="row four">
+        <input v-model="action.name" type="text" placeholder="Longsword" />
+        <input v-model="action.toHit" type="text" placeholder="to hit (+14)" />
+        <span></span>
+        <button type="button" class="link" @click="actions.splice(i, 1); emitUpdate()">✕</button>
+      </div>
+      <textarea
+        v-model="action.description"
+        rows="2"
+        placeholder="Melee Weapon Attack: +14 to hit. Hit: 11.5 (1d6+8) force damage."
+      ></textarea>
+      <div v-for="(damage, di) in action.damages" :key="`ac${i}d${di}`" class="dice-row">
+        <input v-model="damage.count" type="text" placeholder="dice" />
+        <span>d</span>
+        <input v-model="damage.sides" type="text" placeholder="sides" />
+        <span>+</span>
+        <input v-model="damage.mod" type="text" placeholder="mod" />
+        <input v-model="damage.type" type="text" placeholder="type" />
+        <button
+          type="button"
+          class="link"
+          @click="action.damages.splice(di, 1); emitUpdate()"
+        >
+          ✕
+        </button>
+      </div>
+      <button type="button" class="link" @click="addDamage(action)">+ damage row</button>
+    </div>
+
+    <h4>Traits <button type="button" class="link" @click="addTrait">+ add</button></h4>
+    <div v-for="(trait, i) in traits" :key="`tr${i}`" class="trait-block">
+      <input v-model="trait.name" type="text" placeholder="Unsettling Presence" />
+      <textarea
+        v-model="trait.description"
+        rows="2"
+        placeholder="Creatures starting their turn within 30 feet…"
+      ></textarea>
+      <button type="button" class="link" @click="traits.splice(i, 1); emitUpdate()">✕</button>
+    </div>
+
+    <h4>Spells (one per line)</h4>
+    <textarea v-model="spellText" rows="3"></textarea>
+  </div>
+</template>
+
+<style scoped>
+.sbe {
+  display: grid;
+  gap: 0.5rem;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0.5rem;
+}
+label {
+  display: grid;
+  gap: 0.2rem;
+}
+input,
+select,
+textarea {
+  padding: 0.3rem;
+  border-radius: 6px;
+  border: 1px solid #2c3038;
+  background: #14161a;
+  color: inherit;
+}
+.row.four {
+  display: grid;
+  grid-template-columns: 1.5fr 0.7fr 1.5fr auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+.dice-row {
+  display: grid;
+  grid-template-columns: 3.5rem auto 3.5rem auto 3.5rem 1fr auto;
+  gap: 0.3rem;
+  align-items: center;
+}
+.action-block,
+.trait-block {
+  display: grid;
+  gap: 0.3rem;
+  border: 1px dashed #2c3038;
+  border-radius: 6px;
+  padding: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+.mono {
+  font-family: ui-monospace, monospace;
+}
+.muted.small {
+  color: #9aa0a6;
+  font-size: 0.8rem;
+}
+.link {
+  background: none;
+  border: none;
+  color: #8ab4ff;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+h4 {
+  margin: 0.4rem 0 0;
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+</style>
