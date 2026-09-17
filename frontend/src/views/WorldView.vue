@@ -6,6 +6,7 @@ import type { components } from '../api/schema'
 import { ApiError, apiFetch } from '../api/client'
 import StatBlock from '../components/StatBlock.vue'
 import { useAuthStore } from '../stores/auth'
+import { useCampaignsStore } from '../stores/campaigns'
 import { hasNonBlankAppearance } from '../lib/appearance'
 import {
   PORTRAIT_BACKGROUNDS,
@@ -31,6 +32,7 @@ const router = useRouter()
 const campaignId = route.params.id as string
 
 const world = useWorldStore()
+const campaigns = useCampaignsStore()
 const jobs = useJobsStore()
 
 let disconnectSocket: (() => void) | null = null
@@ -737,6 +739,54 @@ async function generateRevealVideo(entity: EntityExport) {
 // ---------------------------------------------------------------------------
 
 /** Entity-id -> a delete is in flight for that card (one at a time). */
+// The Generic library (owner spec, 2026-09-17): characters stored here
+// move into a canon world — a fresh-ULID copy commits there and the
+// library row leaves with its library edges.
+const isGenericLibrary = computed(() => exportData.value?.campaign.is_generic ?? false)
+// The move-to-world picker needs the canon worlds — fetched only when the
+// view actually IS a generic library (never an extra fetch otherwise).
+watch(
+  isGenericLibrary,
+  (generic) => {
+    if (generic) void campaigns.list()
+  },
+  { immediate: true },
+)
+const canonWorlds = computed(() =>
+  campaigns.campaigns.filter((c: { is_generic?: boolean; id: string }) => !c.is_generic && c.id !== campaignId),
+)
+const moveTargetId = ref('')
+const movingId = ref<string | null>(null)
+const moveErrors = ref<Record<string, string>>({})
+
+async function moveCharacter(entityId: string) {
+  if (!moveTargetId.value) {
+    moveErrors.value = { ...moveErrors.value, [entityId]: 'Pick a canon world first.' }
+    return
+  }
+  movingId.value = entityId
+  const errors = { ...moveErrors.value }
+  delete errors[entityId]
+  moveErrors.value = errors
+  try {
+    await apiFetch(
+      `/api/campaigns/${encodeURIComponent(moveTargetId.value)}/move`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ source_campaign_id: campaignId, entity_id: entityId }),
+      },
+    )
+    // the world changed in both directions — the snapshot refetches below
+  } catch (err) {
+    moveErrors.value = {
+      ...moveErrors.value,
+      [entityId]: err instanceof ApiError ? err.message : 'The move failed.',
+    }
+  } finally {
+    movingId.value = null
+  }
+}
+
 const deletingId = ref<string | null>(null)
 /** Entity-id -> entity-deletion errors (the card-level error surface). */
 const deleteErrors = ref<Record<string, string>>({})
@@ -1253,6 +1303,25 @@ function additionalDataBlock(entity: EntityExport): string {
             Open character forge
           </RouterLink>
         </p>
+        <div v-if="isGenericLibrary" class="move-picker">
+          <h3>Character library</h3>
+          <p class="muted small">
+            Characters stored here are isolated from every world. Pick a canon world, then move
+            characters into it — the copy is a fresh, distinct person; the library row leaves.
+          </p>
+          <label v-if="canonWorlds.length > 0">
+            Move characters to
+            <select v-model="moveTargetId">
+              <option value="" disabled>pick a canon world…</option>
+              <option v-for="target in canonWorlds" :key="target.id" :value="target.id">
+                {{ target.title }}
+              </option>
+            </select>
+          </label>
+          <p v-else class="muted small">
+            No canon worlds yet — create one from Your worlds, then move characters into it.
+          </p>
+        </div>
         <p class="export-actions">
           <a class="link" :href="worldExportUrl('markdown')" download>Export Markdown</a>
           <a class="link" :href="worldExportUrl('html')" download>Export HTML</a>
@@ -1291,6 +1360,22 @@ function additionalDataBlock(entity: EntityExport): string {
           <article v-for="entity in group" :key="entity.id" class="card entity">
             <h3>
               {{ entity.name }}
+              <button
+                v-if="isGenericLibrary && entity.kind === 'character'"
+                type="button"
+                class="link"
+                :disabled="movingId !== null || !moveTargetId"
+                @click="moveCharacter(entity.id)"
+              >
+                {{ movingId === entity.id ? 'Moving…' : 'Move to world' }}
+              </button>
+              <span
+                v-if="moveErrors[entity.id]"
+                class="muted small"
+                style="color: #ff8c8c"
+              >
+                {{ moveErrors[entity.id] }}
+              </span>
               <button
                 v-if="isRegenerable(entity)"
                 type="button"

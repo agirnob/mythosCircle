@@ -186,6 +186,7 @@ def test_export_json_happy(client: Any) -> None:
         "theme": "High Fantasy",
         "description": "A living world",
         "custom_lore": "The old gods stir",
+        "is_generic": False,
         "created_at": campaign["created_at"],
     }
     # The 2.5 deferral closed: the latest revision's id + created_at ride along.

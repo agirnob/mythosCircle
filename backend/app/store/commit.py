@@ -1109,3 +1109,70 @@ def _add_event(
             created_at=created_at,
         )
     )
+
+
+def move_character_from_generic(
+    owner_id: str,
+    target_campaign_id: str,
+    source_campaign_id: str,
+    entity_id: str,
+) -> tuple[str, str]:
+    """Move one character out of the Generic library into a canon world
+    (owner spec, 2026-09-17): a fresh-ULID copy commits into the target
+    world and the Generic row leaves in the same call.
+
+    Ownership is checked on BOTH campaigns (AD-9: a stranger's Generic or
+    canon world is the same 404-shaped rejection); the source must be a
+    Generic library and the target must NOT be one; the entity must be a
+    character of the source campaign. The copy commits through the store's
+    single commit path (AD-1) with ``allow_orphans`` — the moved
+    character's Generic-world edges never travel (they name rows of the
+    library, not the canon world); the delete then cascades them away in
+    the source's own revision.
+
+    Returns ``(new_entity_id, new_revision_id)``.
+    """
+    import copy as copy_module  # noqa: PLC0415
+
+    from app.store.jobs import InvalidJobInputError  # noqa: PLC0415 - import cycle
+
+    with session_scope() as session:
+        source = session.get(models.Campaign, source_campaign_id)
+        target = session.get(models.Campaign, target_campaign_id)
+        if (
+            source is None
+            or source.owner_id != owner_id
+            or target is None
+            or target.owner_id != owner_id
+        ):
+            raise UnknownCampaignError(f"campaign not found: {target_campaign_id}")
+        if not source.is_generic:
+            raise InvalidJobInputError("move: the source campaign is not a Generic library")
+        if target.is_generic:
+            raise InvalidJobInputError(
+                "move: the target campaign must be a canon world, not the Generic library"
+            )
+        entity = session.get(models.Entity, entity_id)
+        if entity is None or entity.campaign_id != source_campaign_id:
+            raise UnknownEntityError(entity_id)
+        if entity.kind != "character":
+            raise InvalidJobInputError(
+                f"move: only characters move; {entity.name!r} is a {entity.kind}"
+            )
+        data = copy_module.deepcopy(entity.data)
+        name, text, kind = entity.name, entity.text, entity.kind
+
+    new_id = ids.new_id()
+    # Last-writer-wins against the target's CURRENT head: the copy carries
+    # no optimistic base from the caller, so the head is read here (None
+    # for an empty world — _check_base pairs None with None).
+    with session_scope() as session:
+        target_head = latest_revision(session, target_campaign_id)
+    revision = commit_subgraph(
+        target_campaign_id,
+        entities=[models.EntityInput(id=new_id, kind=kind, name=name, text=text, data=data)],
+        base_revision=target_head.id if target_head is not None else None,
+        allow_orphans=True,
+    )
+    delete_entity(source_campaign_id, entity_id, cascade=True)
+    return new_id, revision.id

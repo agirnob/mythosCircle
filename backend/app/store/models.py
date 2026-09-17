@@ -17,6 +17,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     Float,
     ForeignKey,
@@ -64,6 +65,11 @@ class Campaign(Base):
     description: Mapped[str] = mapped_column(Text)
     theme: Mapped[str] = mapped_column(String(100))
     custom_lore: Mapped[str] = mapped_column(Text)
+    # The Generic library flag (owner spec, 2026-09-17): a per-account
+    # storage world for characters generated without a canon world. A
+    # generic campaign's own entities and lore are NEVER generation
+    # context — the runner substitutes the payload theme's defaults.
+    is_generic: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[str] = mapped_column(String(40))
 
 

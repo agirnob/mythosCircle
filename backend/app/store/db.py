@@ -368,6 +368,7 @@ def _migrate_campaign_seed(engine: Engine) -> None:
         "description": "TEXT",
         "theme": "VARCHAR(100)",
         "custom_lore": "TEXT",
+        "is_generic": "INTEGER NOT NULL DEFAULT 0",
     }
     with engine.begin() as connection:
         for column, ddl in additions.items():

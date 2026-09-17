@@ -11,6 +11,7 @@ const CAMPAIGN = {
   description: 'A heist world.',
   theme: 'High Fantasy',
   custom_lore: 'Seed lore.',
+  is_generic: false,
   created_at: '2026-09-03T00:00:00Z',
 }
 

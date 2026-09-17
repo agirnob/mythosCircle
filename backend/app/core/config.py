@@ -282,6 +282,45 @@ DEFAULT_MEDIA_DIR = "/var/lib/mythoscircle/media"
 #: never live here (AD-22) — this is a public URL prefix only.
 DEFAULT_BASE_URL = "https://world.example.tld"
 DEFAULT_THEMES = ["High Fantasy", "Grimdark", "Steampunk", "Planar"]
+
+
+#: The Generic library's generation seed per theme (owner spec, 2026-09-17):
+#: a character generated WITHOUT a canon world is stored in the account's
+#: Generic campaign, but its generation context comes from HERE — the
+#: theme's default setting text — never from the Generic world's own
+#: entities or lore (storage context, not narrative context).
+THEME_DEFAULT_SEEDS: dict[str, tuple[str, str]] = {
+    "High Fantasy": (
+        "A classic world of kingdoms, wilds, and old magic — quest-givers, "
+        "rival houses, and ruins hiding older powers.",
+        "Magic is real but rarely trusted; oaths bind, debts outlive people, "
+        "and every road owes a toll to somebody.",
+    ),
+    "Grimdark": (
+        "A worn, violent world of failing institutions and bad bargains — "
+        "survival is the only honest ambition.",
+        "Everything costs; mercy is a debt someone collects later; the gods "
+        "are silent or worse.",
+    ),
+    "Steampunk": (
+        "A brass-and-smoke world of gaslight cities, clanking machinery, "
+        "and empires run on boilers and secrets.",
+        "Invention outruns regulation; guilds own the sky-lanes; a wrench "
+        "and a forged pass get you further than a sword.",
+    ),
+    "Planar": (
+        "A crossroads world where planar doors open into realms of order, "
+        "chaos, and elemental law.",
+        "Reality is negotiable at the seams; outsiders trade in belief, and "
+        "a door once opened is never truly closed.",
+    ),
+}
+
+
+def theme_default_seed(theme: str) -> tuple[str, str] | None:
+    """The (description, custom_lore) generation seed for one theme, or
+    None when the theme is unknown."""
+    return THEME_DEFAULT_SEEDS.get(theme)
 DEFAULT_DB_URL = "sqlite:////var/lib/mythoscircle/mythoscircle.db"
 
 

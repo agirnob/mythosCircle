@@ -39,6 +39,7 @@ function campaign(id: string, title: string): Campaign {
     description: '',
     theme: 'Grimdark',
     custom_lore: '',
+    is_generic: false,
     created_at: '2026-09-11T10:00:00Z',
   }
 }

@@ -195,3 +195,52 @@ def delete_campaign(owner_id: str, campaign_id: str) -> bool:
         session.delete(row)
         deleted = True
     return deleted
+
+
+GENERIC_CAMPAIGN_TITLE = "Generic"
+
+
+def ensure_generic_campaign(owner_id: str, theme: str) -> models.Campaign:
+    """The account's Generic library world (owner spec, 2026-09-17):
+    create-or-get the one ``is_generic`` campaign owned by ``owner_id``.
+
+    The Generic world is a STORAGE context, never a narrative one: its
+    entities and lore are excluded from generation (the build runner
+    substitutes the payload theme's default seed), and its rows exist so
+    characters generated without a canon world live somewhere queryable.
+    The campaign's own seed fields are static library text; the
+    generation context rides the job payload's theme.
+
+    Unknown theme -> ``InvalidThemeError`` (422). One generic campaign
+    per account regardless of theme — the theme rides each job.
+    """
+    normalized = normalize_theme(theme)
+    with session_scope() as session:
+        campaign = (
+            session.query(models.Campaign)
+            .filter(
+                models.Campaign.owner_id == owner_id,
+                models.Campaign.is_generic.is_(True),
+            )
+            .first()
+        )
+        if campaign is not None:
+            session.expunge(campaign)
+            return campaign
+        fresh = models.Campaign(
+            id=ids.new_id(),
+            owner_id=owner_id,
+            title=GENERIC_CAMPAIGN_TITLE,
+            description=(
+                "Character library — storage only. Characters here never "
+                "influence each other or any generation."
+            ),
+            theme=normalized,
+            custom_lore="",
+            is_generic=True,
+            created_at=time.now(),
+        )
+        session.add(fresh)
+        session.flush()
+        session.expunge(fresh)
+        return fresh

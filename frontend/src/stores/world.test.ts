@@ -41,6 +41,7 @@ function worldExport(): WorldExport {
       theme: 'frontier dread',
       description: '',
       custom_lore: '',
+      is_generic: false,
       created_at: '2026-08-30T20:00:00Z',
     },
     revision: { id: '01JZZZZZZZZZZZZZZZZZZZZZZZ', created_at: '2026-08-30T20:05:00Z' },

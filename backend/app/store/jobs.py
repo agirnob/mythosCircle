@@ -60,6 +60,7 @@ JOB_KINDS: frozenset[str] = frozenset(
 )
 
 #: Generate payload contract (spec-3.1): exactly one plain-language ask.
+GENERIC_BUILD_MAX_FIGURES = 4
 GENERATE_MAX_ASK_LENGTH = 2000
 
 #: Build-in payload contract (spec-2.1): free-form section caps.
@@ -446,8 +447,20 @@ def _enqueue(
 ) -> models.Job:
     if kind not in JOB_KINDS:
         raise InvalidJobInputError(f"job kind must be one of {sorted(JOB_KINDS)}, got {kind!r}")
+    campaign = session.get(models.Campaign, campaign_id)
+    if campaign is None:
+        raise UnknownCampaignError(campaign_id)
     if kind == "build_in":
         _validate_build_in_payload(payload)
+        if campaign.is_generic:
+            # The Generic library's gate (owner spec, 2026-09-17): a
+            # library build is CHARACTERS ONLY — the storage world's own
+            # state and lore are never generation context, so places/
+            # factions/notes (world-shaping sections) and declared
+            # relations (they demand world targets) are rejected, and the
+            # payload must name the theme whose default seed the runner
+            # substitutes for the library's.
+            _validate_generic_build_payload(payload, campaign)
     elif kind == "add_character":
         # The hybrid-authorship spec's fully-authored path: the sync
         # enqueue half of the three-layer gate. Violations are the 422's
@@ -559,6 +572,59 @@ def _enqueue(
     )
     session.add(job)
     return job
+
+
+def _validate_generic_build_payload(payload: dict[str, Any], campaign: models.Campaign) -> None:
+    """The Generic library's build-in contract (owner spec, 2026-09-17):
+    characters only, theme-seeded, storage-isolated.
+
+    The payload is exactly ``{"key_figures": [...], "theme": str}`` —
+    structured seed figures (never legacy strings: a library build is
+    always authored-shaped), at most ``GENERIC_BUILD_MAX_FIGURES``, NO
+    relations on any entry (a declared target would demand world rows the
+    library must not grow), and a theme carrying a default seed. The
+    runner substitutes the theme's default description/lore for the
+    campaign's own seed — the library's entities and lore are never
+    generation context.
+    """
+    from app.core.config import THEME_DEFAULT_SEEDS  # noqa: PLC0415 - config leaf
+    from app.store.direct import seed_entry_violations  # noqa: PLC0415 - import cycle
+
+    unknown = set(payload) - {"key_figures", "theme"}
+    if unknown:
+        raise InvalidJobInputError(
+            "generic build payload carries world-shaping section(s) "
+            f"{sorted(unknown)} — the library stores characters only"
+        )
+    figures = payload.get("key_figures")
+    if not isinstance(figures, list) or not figures:
+        raise InvalidJobInputError("generic build payload needs a non-empty key_figures list")
+    if len(figures) > GENERIC_BUILD_MAX_FIGURES:
+        raise InvalidJobInputError(
+            f"generic build exceeds {GENERIC_BUILD_MAX_FIGURES} figures"
+        )
+    for index, figure in enumerate(figures):
+        if isinstance(figure, str):
+            raise InvalidJobInputError(
+                f"generic build key_figures[{index}] must be an authored entry"
+            )
+        violations = seed_entry_violations(figure, "key_figures")
+        if violations:
+            raise InvalidJobInputError(
+                f"generic build key_figures[{index}]: " + "; ".join(violations)
+            )
+        relations = figure.get("relations") if isinstance(figure, dict) else None
+        if relations:
+            raise InvalidJobInputError(
+                f"generic build key_figures[{index}] declares relations — the library "
+                "stores characters only; wire relations when you move the character "
+                "into a canon world"
+            )
+    theme = payload.get("theme")
+    if not isinstance(theme, str) or theme.strip() not in THEME_DEFAULT_SEEDS:
+        raise InvalidJobInputError(
+            f"generic build theme must be one of {sorted(THEME_DEFAULT_SEEDS)}"
+        )
 
 
 def _validate_build_in_payload(payload: dict[str, Any]) -> None:

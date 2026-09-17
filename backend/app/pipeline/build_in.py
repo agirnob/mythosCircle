@@ -2758,6 +2758,32 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         seed = campaign_seed(session, job.campaign_id)
         if seed is None:
             raise JobPayloadError(f"build_in: campaign {job.campaign_id} does not exist")
+        wave1_seed: Any = seed
+        if seed.is_generic:
+            # The Generic library's isolation rule (owner spec, 2026-09-17):
+            # the storage world's own entities and lore are NEVER generation
+            # context. The wave-1 seed is substituted with the payload
+            # theme's default description/lore — the prompt sees the theme,
+            # never the library.
+            from types import SimpleNamespace  # noqa: PLC0415
+
+            from app.core.config import THEME_DEFAULT_SEEDS  # noqa: PLC0415
+
+            theme = job.payload.get("theme") if isinstance(job.payload, dict) else None
+            defaults = THEME_DEFAULT_SEEDS.get(theme) if isinstance(theme, str) else None
+            if defaults is None:
+                raise JobPayloadError(
+                    "generic build: payload theme does not carry a default seed"
+                )
+            description, custom_lore = defaults
+            wave1_seed = SimpleNamespace(
+                id=seed.id,
+                title=f"Generic ({theme})",
+                description=description,
+                theme=theme,
+                custom_lore=custom_lore,
+                is_generic=True,
+            )
         head = latest_revision(session, job.campaign_id)
         # Transparency (owner note 4, 2026-09-15): the world this job
         # ARRIVES AT — successive build-ins inherit and merge into it.
@@ -2825,7 +2851,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             response_format=build_wave_schema(len(roster), refs=refs or None),
             max_tokens=_wave_max_tokens(len(roster), ceiling),
         )
-        prompt_1 = build_wave1_prompt(seed, payload, mandated=mandated)
+        prompt_1 = build_wave1_prompt(wave1_seed, payload, mandated=mandated)
         parsed_1 = call_wave(
             budget,
             provider,

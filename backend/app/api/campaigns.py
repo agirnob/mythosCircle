@@ -31,6 +31,7 @@ from app.store import StoreError, models
 from app.store.campaigns import (
     create_campaign,
     delete_campaign,
+    ensure_generic_campaign,
     get_campaign,
     list_campaigns,
     seed_themes,
@@ -70,6 +71,7 @@ class CampaignResponse(BaseModel):
     description: str
     theme: str
     custom_lore: str
+    is_generic: bool
     created_at: str
 
 
@@ -94,6 +96,7 @@ def _to_response(campaign: models.Campaign) -> CampaignResponse:
         description=campaign.description,
         theme=campaign.theme,
         custom_lore=campaign.custom_lore,
+        is_generic=campaign.is_generic,
         created_at=campaign.created_at,
     )
 
@@ -280,3 +283,55 @@ async def undo(
         store_undo(campaign_id, revision_id if revision_id is not None else latest.id)
     except StoreError as exc:
         store_error_as_http(exc)
+
+
+class GenericWorldCreate(BaseModel):
+    theme: str
+
+
+@router.post("/api/campaigns/generic", status_code=201)
+def ensure_generic(
+    payload: GenericWorldCreate,
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> CampaignResponse:
+    """Create-or-get the caller's Generic library world (owner spec,
+    2026-09-17): the per-account storage context for characters generated
+    without a canon world. Idempotent — the same world returns for every
+    call regardless of theme (the theme rides each generation job)."""
+    try:
+        campaign = ensure_generic_campaign(current.id, payload.theme)
+    except StoreError as exc:
+        store_error_as_http(exc)
+    return _to_response(campaign)
+
+
+class MoveCharacterIn(BaseModel):
+    source_campaign_id: str
+    entity_id: str
+
+
+@router.post("/api/campaigns/{campaign_id}/move", status_code=200)
+def move_character(
+    campaign_id: str,
+    payload: MoveCharacterIn,
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> dict[str, str]:
+    """Move one character out of the Generic library into this canon
+    world: a fresh-ULID copy commits here and the library row leaves
+    (its library edges cascade away — they named library rows, not this
+    world). Ownership on both campaigns (AD-9); source must be the
+    Generic library, target must not be."""
+    from app.store.commit import move_character_from_generic  # noqa: PLC0415
+
+    if get_campaign(current.id, campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    try:
+        entity_id, revision_id = move_character_from_generic(
+            current.id,
+            campaign_id,
+            payload.source_campaign_id,
+            payload.entity_id,
+        )
+    except StoreError as exc:
+        store_error_as_http(exc)
+    return {"entity_id": entity_id, "revision_id": revision_id}

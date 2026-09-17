@@ -9,6 +9,7 @@ import { useCampaignsStore } from '../stores/campaigns'
 import { useJobsStore } from '../stores/jobs'
 import type { BuildInPayload } from '../stores/jobs'
 import type { AuthoredFigureSeed, AuthoredRelationSeed } from '../stores/jobs'
+import CharacterSheetEditor from '../components/CharacterSheetEditor.vue'
 import { connectJobSocket } from '../ws'
 import type { WsMessage } from '../ws'
 
@@ -31,61 +32,20 @@ type SectionKey = 'places' | 'factions' | 'key_figures'
 
 const sectionText = ref<Record<SectionKey, string>>({ places: '', factions: '', key_figures: '' })
 /**
- * An AUTHORED key figure (the hybrid seed contract, path 1): the model
- * generates the rest of the world AROUND these facts, and every authored
- * field is committed verbatim (backfilled over any drift). A figure with
- * relations naming a `target_name` the world does not have MANDATES that
- * entity: the pipeline creates it in the same wave, kind inferred from
- * the relation (`located_in` demands a place). A plain-text line in the
- * textarea stays the legacy shape — both mix freely in one build.
- */
-interface AuthoredFigure {
-  name: string
-  role: string
-  personality: string
-  secret: string
-  relations: Array<{ type: string; target_name: string; counter: string }>
+ * Authored key figures use the SAME sheet editor as the forge (one
+ * authoring surface everywhere): each entry is a full editor instance —
+ * every record field, per-subsection stat-block toggles, dice boxes,
+ * relations with existing/new target modes. */
+interface FigureEditor {
+  id: number
 }
-
-const authoredFigures = ref<AuthoredFigure[]>([])
-
-const FIGURE_ROLES = ['NPC', 'BBEG', 'Monster'] as const
-
-/** The closed EDGE_TYPES vocabulary the figure's declared relations
- * pick from (target_name is path-1-only: the mandate tier). */
-const EDGE_TYPES = [
-  'relationship',
-  'debt',
-  'grudge',
-  'loyalty',
-  'member_of',
-  'located_in',
-  'rival_of',
-  'kin_of',
-  'ally_of',
-  'enemy_of',
-  'bases_at',
-  'controls',
-  'employs',
-  'worships',
-  'hails_from',
-  'protects',
-] as const
+let figureEditorSeq = 0
+const figureEditors = ref<FigureEditor[]>([])
+const editorRefs = ref<Array<InstanceType<typeof CharacterSheetEditor> | null>>([])
 
 function addFigure() {
-  authoredFigures.value.push({
-    name: '',
-    role: 'NPC',
-    personality: '',
-    secret: '',
-    relations: [],
-  })
+  figureEditors.value.push({ id: ++figureEditorSeq })
 }
-
-function addFigureRelation(figure: AuthoredFigure) {
-  figure.relations.push({ type: 'located_in', target_name: '', counter: '' })
-}
-
 const notes = ref('')
 const error = ref<string | null>(null)
 const submitting = ref(false)
@@ -131,7 +91,8 @@ const hasContent = computed(() => {
   const anySection = sections.some(
     (section) => splitEntries(sectionText.value[section.key]).length > 0,
   )
-  return anySection || notes.value.trim().length > 0
+  const anyEditor = editorRefs.value.some((editor) => editor?.hasContent)
+  return anySection || notes.value.trim().length > 0 || anyEditor
 })
 
 function splitEntries(text: string): string[] {
@@ -143,32 +104,15 @@ function splitEntries(text: string): string[] {
 
 /** The form as the enqueue payload — what `submit` sends and what a
  * build-in job row carries. Key figures mix legacy strings (textarea
- * lines) with authored structured entries. */
+ * lines) with entries authored in the shared sheet editor. */
 function formSeed(): BuildInPayload {
   const figures: (string | AuthoredFigureSeed)[] = splitEntries(
     sectionText.value.key_figures,
   )
-  for (const figure of authoredFigures.value) {
-    if (!figure.name.trim()) continue
-    const entry: AuthoredFigureSeed = { name: figure.name.trim() }
-    if (figure.role) entry.role = figure.role
-    const record: Record<string, string> = {}
-    if (figure.personality.trim()) record.personality = figure.personality.trim()
-    if (figure.secret.trim()) record.secret = figure.secret.trim()
-    if (Object.keys(record).length > 0) entry.record = record
-    const relations: AuthoredRelationSeed[] = []
-    for (const relation of figure.relations) {
-      if (!relation.target_name.trim()) continue
-      const seed: AuthoredRelationSeed = {
-        type: relation.type,
-        target_name: relation.target_name.trim(),
-      }
-      const counter = Number.parseInt(relation.counter, 10)
-      if (relation.counter.trim() && Number.isFinite(counter)) seed.counter = counter
-      relations.push(seed)
-    }
-    if (relations.length > 0) entry.relations = relations
-    figures.push(entry)
+  for (const editor of editorRefs.value) {
+    if (!editor) continue
+    if (!editor.hasContent) continue
+    figures.push(editor.buildFigure())
   }
   return {
     places: splitEntries(sectionText.value.places),
@@ -223,10 +167,11 @@ function sameEntry(a: string | AuthoredFigureSeed, b: string | AuthoredFigureSee
 function sameSeed(a: BuildInPayload, b: BuildInPayload): boolean {
   return (
     a.notes === b.notes &&
-    (['places', 'factions', 'key_figures'] as const).every(
-      (key) =>
-        a[key].length === b[key].length && a[key].every((entry, i) => sameEntry(entry, b[key][i])),
-    )
+    (['places', 'factions', 'key_figures'] as const).every((key) => {
+      const left = a[key] ?? []
+      const right = b[key] ?? []
+      return left.length === right.length && left.every((entry, i) => sameEntry(entry, right[i]))
+    })
   )
 }
 
@@ -245,7 +190,8 @@ async function onJobMessage(message: WsMessage) {
   if (!job || job.kind !== 'build_in') return
   const built = jobSeed(job.payload)
   if (built && sameSeed(built, formSeed())) {
-    authoredFigures.value = []
+    figureEditors.value = []
+    editorRefs.value = []
     sectionText.value = { places: '', factions: '', key_figures: '' }
     notes.value = ''
   }
@@ -359,48 +305,38 @@ function mergeLines(result: unknown): string[] {
         <textarea v-model="sectionText[section.key]" :placeholder="section.hint" rows="3" />
       </label>
       <div class="authored">
-          <h2>Authored key figures</h2>
-          <p class="muted small">
-            Optional. A figure here is YOUR fact — the model builds the rest of the world around
-            it and your text commits verbatim. A relation naming someone who does not exist yet
-            (a city, a cult) makes the build create them; the relation's type decides what
-            (located in → a place). Plain lines in Key figures above stay free-form.
-          </p>
-          <article v-for="(figure, fi) in authoredFigures" :key="`f${fi}`" class="figure">
-            <div class="figure-head">
-              <input v-model="figure.name" type="text" placeholder="Name — e.g. Ferdinand" />
-              <select v-model="figure.role">
-                <option v-for="role in FIGURE_ROLES" :key="role" :value="role">{{ role }}</option>
-              </select>
-              <button type="button" class="link" @click="authoredFigures.splice(fi, 1)">✕</button>
-            </div>
-            <label>
-              <span class="muted small">Personality (authored verbatim)</span>
-              <textarea v-model="figure.personality" rows="2"></textarea>
-            </label>
-            <label>
-              <span class="muted small">Secret (authored verbatim)</span>
-              <textarea v-model="figure.secret" rows="2"></textarea>
-            </label>
-            <div v-for="(relation, ri) in figure.relations" :key="`f${fi}r${ri}`" class="row">
-              <select v-model="relation.type">
-                <option v-for="edgeType in EDGE_TYPES" :key="edgeType" :value="edgeType">
-                  {{ edgeType.replaceAll('_', ' ') }}
-                </option>
-              </select>
-              <input
-                v-model="relation.target_name"
-                type="text"
-                placeholder="target name — created if missing"
-              />
-              <button type="button" class="link" @click="figure.relations.splice(ri, 1)">✕</button>
-            </div>
-            <button type="button" class="link" @click="addFigureRelation(figure)">
-              + relation
+        <h2>Authored key figures</h2>
+        <p class="muted small">
+          Optional. A figure here is YOUR fact — the model builds the rest of the world around
+          it and your text commits verbatim. A relation naming someone who does not exist yet
+          (a city, a cult) makes the build create them; the relation's type decides what
+          (located in → a place). Plain lines in Key figures above stay free-form.
+        </p>
+        <article
+          v-for="(figure, index) in figureEditors"
+          :key="figure.id"
+          class="figure"
+        >
+          <div class="figure-head">
+            <span class="muted small">Authored figure {{ index + 1 }}</span>
+            <button
+              type="button"
+              class="link"
+              @click="
+                figureEditors.splice(index, 1);
+                editorRefs.splice(index, 1)
+              "
+            >
+              ✕ remove figure
             </button>
-          </article>
-          <button type="button" class="link" @click="addFigure">+ authored figure</button>
-        </div>
+          </div>
+          <CharacterSheetEditor
+            :ref="(el) => (editorRefs[index] = el as InstanceType<typeof CharacterSheetEditor>)"
+            :campaign-id="campaignId"
+          />
+        </article>
+        <button type="button" class="link" @click="addFigure">+ authored figure</button>
+      </div>
       <label>
         <span>Free-form notes</span>
         <textarea

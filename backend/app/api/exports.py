@@ -64,6 +64,7 @@ class CampaignMeta(BaseModel):
     theme: str
     description: str
     custom_lore: str
+    is_generic: bool
     created_at: str
 
 
@@ -181,6 +182,7 @@ def _build_export(
             theme=campaign.theme,
             description=campaign.description,
             custom_lore=campaign.custom_lore,
+            is_generic=campaign.is_generic,
             created_at=campaign.created_at,
         ),
         revision=RevisionMeta(id=revision.id, created_at=revision.created_at)

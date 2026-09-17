@@ -205,6 +205,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/generic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensure Generic
+         * @description Create-or-get the caller's Generic library world (owner spec,
+         *     2026-09-17): the per-account storage context for characters generated
+         *     without a canon world. Idempotent — the same world returns for every
+         *     call regardless of theme (the theme rides each generation job).
+         */
+        post: operations["ensure_generic_api_campaigns_generic_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move Character
+         * @description Move one character out of the Generic library into this canon
+         *     world: a fresh-ULID copy commits here and the library row leaves
+         *     (its library edges cascade away — they named library rows, not this
+         *     world). Ownership on both campaigns (AD-9); source must be the
+         *     Generic library, target must not be.
+         */
+        post: operations["move_character_api_campaigns__campaign_id__move_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -527,6 +574,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/characters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Characters
+         * @description Submit one or more fully-authored character sheets (202 + job_id).
+         *
+         *     The body is ``{"campaign_id": <ulid>, "characters": [<sheet>, ...]}``
+         *     validated against the canonical JSON Schema (``store.direct``) —
+         *     completeness, stat-block structure incl. the dice pattern, well-formed
+         *     declared relations, closed key sets, and the ``target_name`` ban
+         *     (path 2 has no mandate access). A violation is a 422 whose
+         *     ``details.violations`` carry the exact schema paths; zero job rows are
+         *     written on any failure. The enqueued job's ``max_llm_calls`` is 0 —
+         *     the zero-LLM property is structural.
+         */
+        post: operations["create_characters_api_characters_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/media": {
         parameters: {
             query?: never;
@@ -714,6 +790,8 @@ export interface components {
             description: string;
             /** Custom Lore */
             custom_lore: string;
+            /** Is Generic */
+            is_generic: boolean;
             /** Created At */
             created_at: string;
         };
@@ -731,6 +809,8 @@ export interface components {
             theme: string;
             /** Custom Lore */
             custom_lore: string;
+            /** Is Generic */
+            is_generic: boolean;
             /** Created At */
             created_at: string;
         };
@@ -841,6 +921,11 @@ export interface components {
             edges: components["schemas"]["EdgeExport"][];
             revision: components["schemas"]["RevisionMeta"] | null;
         };
+        /** GenericWorldCreate */
+        GenericWorldCreate: {
+            /** Theme */
+            theme: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -857,7 +942,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "text" | "image" | "video" | "video_prompt" | "build_in" | "generate" | "regenerate";
+            kind: "text" | "image" | "video" | "video_prompt" | "build_in" | "generate" | "regenerate" | "add_character";
             /** Payload */
             payload: {
                 [key: string]: unknown;
@@ -968,6 +1053,13 @@ export interface components {
             kind: string;
             /** Created At */
             created_at: string;
+        };
+        /** MoveCharacterIn */
+        MoveCharacterIn: {
+            /** Source Campaign Id */
+            source_campaign_id: string;
+            /** Entity Id */
+            entity_id: string;
         };
         /**
          * PortraitUrlResponse
@@ -1384,6 +1476,80 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ensure_generic_api_campaigns_generic_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenericWorldCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_character_api_campaigns__campaign_id__move_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveCharacterIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
             };
             /** @description Validation Error */
             422: {
@@ -1878,6 +2044,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CandidateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_characters_api_characters_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

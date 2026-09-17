@@ -46,10 +46,14 @@ export interface AuthoredFigureSeed {
 }
 
 export interface BuildInPayload {
-  places: string[]
-  factions: string[]
+  /** Generic-library drafts omit the world-shaping sections entirely. */
+  places?: string[]
+  factions?: string[]
   key_figures: (string | AuthoredFigureSeed)[]
-  notes: string
+  notes?: string
+  /** Generic-library builds only: the theme whose default seed the runner
+   * substitutes for the library's own (never generation context). */
+  theme?: string
 }
 
 export const useJobsStore = defineStore('jobs', {
