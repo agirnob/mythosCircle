@@ -52,9 +52,12 @@ job with a single `key_figures` entry; then WorldView portrait job):
 | Portrait — `style=photorealistic, background=transparent` (Krea2 t2i + BiRefNet rembg, node 70) | **93 s** |
 | **One table-ready character, machine time** | **2 m 15 s** (+ ~30 s DM typing) |
 
-Output verified: 1024×1024 RGBA PNG, corners alpha 0, center alpha 254,
-~57% of pixels transparent; subject is a coherent single-subject
-photorealistic waist-up render.
+Warm steady-state (measured 2026-09-18, second transparent portrait,
+ComfyUI already warm): **57 s** — the 93 s cold figure includes ComfyUI's
+model loads + cache warming. So per-character once warm ≈ **1 m 40 s**
+forge build + portrait; a multi-character session amortizes the warm-up.
+Pre-warm with one probe portrait before the clock if the demo's time budget
+matters.
 
 ### VRAM constraint (measured — read before the demo)
 
