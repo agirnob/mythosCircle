@@ -196,14 +196,20 @@ action_items:
     action: "Extract shared ComfyUI provider scaffolding (comfyui.py + comfyui_video.py
       twin pattern atoms)"
     owner: "provider-refactor story"
-    status: open
+    status: done
+    note: "DONE in sprint A (2026-09-18): providers/comfyui_common.py —
+      endpoint config, workflow build, JSON error mapping, submit/poll/
+      fetch core; image + video providers build on it."
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-09-08.md"
   - id: "epic-4-retro-item-12-extract-shared-media-write-tail-in-media"
     epic: 4
     action: "Extract shared media-write tail in media/service.py (run_portrait/run_video
       atomic-write + file-before-row + cancel-race)"
     owner: "media-service refactor story"
-    status: open
+    status: done
+    note: "DONE in sprint A (2026-09-18): _persist_media_output —
+      temp+rename file-before-row, add_media, cancel-race window shared by
+      run_portrait/run_video."
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-09-08.md"
   - id: "epic-4-retro-item-13-land-the-media-retention-pruning-ruling"
     epic: 4
@@ -211,7 +217,10 @@ action_items:
       per entity; the RULING landed with owner verdict 2026-09-09; export
       already references newest available)"
     owner: "media-retention story"
-    status: open
+    status: done
+    note: "DONE in sprint A (2026-09-18): store prune_entity_media seam
+      (5 newest rows per entity) + prune/file-reclaim in the runner write
+      tail; KEEP-5 pins green."
     ref: "_bmad-output/implementation-artifacts/epic-4-retro-2026-09-08.md"
   - id: "epic-4-retro-item-14-decide-undo-of-entity-creation-media-han"
     epic: 4
