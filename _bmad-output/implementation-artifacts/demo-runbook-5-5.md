@@ -39,6 +39,38 @@ Notes:
   fg 2024-record XML, maptool `.rptok` zip (default token disc embedded —
   no portrait on that character).
 
+## Forge-path measurement (2026-09-18, live, addendum)
+
+The owner asked for the Character Forge path with a **photorealistic +
+transparent** portrait. Measured live on the same dry-run campaign
+(CharacterForgeView wire contract: one authored sheet → `build_in`
+job with a single `key_figures` entry; then WorldView portrait job):
+
+| Leg | Measured |
+|---|---|
+| Forge build — one half-filled sheet (name/role/level penned, record + stat block model-filled) | **42 s** |
+| Portrait — `style=photorealistic, background=transparent` (Krea2 t2i + BiRefNet rembg, node 70) | **93 s** |
+| **One table-ready character, machine time** | **2 m 15 s** (+ ~30 s DM typing) |
+
+Output verified: 1024×1024 RGBA PNG, corners alpha 0, center alpha 254,
+~57% of pixels transparent; subject is a coherent single-subject
+photorealistic waist-up render.
+
+### VRAM constraint (measured — read before the demo)
+
+The transparent leg **OOMs reliably when free VRAM < ~2 GB**: BiRefNet's
+RemoveBackground node (52) allocates ~1 GB while the Krea2 t2i model
+(12.9 GB staged) is still partially resident. On this box the pinned
+consumers are the 8889 llama-server (18.9 GiB) + ComfyUI + desktop; a
+loaded Unsloth Studio model (2.1 GiB) tips it over the edge:
+`Allocation on device 0 would exceed allowed memory` → ComfyUI marks the
+prompt `error` → the provider rejects it (`provider returned HTTP 200`).
+**Fix: `POST /v1/unload {model_path, force_cancel_active:true}` on 8888
+before portrait legs** — measured: 4.7 GiB free → transparent portrait
+succeeds (93 s). The 8889 llama-server stays resident (api LLM) and is
+NOT the problem. Plain (non-transparent) portraits tolerate the tight
+state.
+
 ## Demo script (timed sequence)
 
 Clock starts when the DM clicks **Build World**. All UI surfaces live at
@@ -85,6 +117,10 @@ World used: ________  Role in the tool: DM ______ / witness ______
 ## Pre-demo checklist (T-10 min)
 
 - [ ] `mythos-api` ready, `web` (5173) ready; login `dm@example.com`.
+- [ ] VRAM for portraits: confirm ≥ 2 GB free
+      (`nvidia-smi --query-gpu=memory.free`); if Studio (8888) has a
+      model loaded, unload it (see the Forge-path section) BEFORE any
+      transparent portrait leg.
 - [ ] llama-server 127.0.0.1:8889 up and gemma-4-26B **resident**:
       `curl -s http://127.0.0.1:8889/health` → ok, `nvidia-smi` ≈ 24 GiB
       used. Cold model load is ~40 s (measured on Studio 8888 same GGUF) —
