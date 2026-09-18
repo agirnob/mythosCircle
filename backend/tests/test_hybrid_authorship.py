@@ -861,9 +861,7 @@ def test_nudge_attributes_only_survives_a_blockless_generation(world: str) -> No
             )
         if "records" in prompt and "stat_blocks" not in prompt:
             # the record repair: the model's record, completed (key: data)
-            return json.dumps(
-                {"records": [{"ref": "E0", "data": _record("fatima")}]}
-            )
+            return json.dumps({"records": [{"ref": "E0", "data": _record("fatima")}]})
         # wave 1: fatima with NO stat_block at all
         rows = json.dumps(
             {
@@ -938,9 +936,7 @@ def test_nudge_pin_folds_a_repaired_block_that_breaks_the_pin(world: str) -> Non
                 {"stat_blocks": [{"ref": "E0", "stat_block": repaired["stat_block"]}]}
             )
         if "records" in prompt and "stat_blocks" not in prompt:
-            return json.dumps(
-                {"records": [{"ref": "E0", "data": _record("fatima")}]}
-            )
+            return json.dumps({"records": [{"ref": "E0", "data": _record("fatima")}]})
         return json.dumps(
             {
                 "entities": [
@@ -965,4 +961,3 @@ def test_nudge_pin_folds_a_repaired_block_that_breaks_the_pin(world: str) -> Non
     assert fatima.data["role"] == "NPC"
     # the authored attributes are still verbatim over the repaired block
     assert fatima.data["stat_block"]["attributes"]["str"] == 20
-

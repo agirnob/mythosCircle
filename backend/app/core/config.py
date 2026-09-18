@@ -299,8 +299,7 @@ THEME_DEFAULT_SEEDS: dict[str, tuple[str, str]] = {
     "Grimdark": (
         "A worn, violent world of failing institutions and bad bargains — "
         "survival is the only honest ambition.",
-        "Everything costs; mercy is a debt someone collects later; the gods "
-        "are silent or worse.",
+        "Everything costs; mercy is a debt someone collects later; the gods are silent or worse.",
     ),
     "Steampunk": (
         "A brass-and-smoke world of gaslight cities, clanking machinery, "
@@ -321,6 +320,8 @@ def theme_default_seed(theme: str) -> tuple[str, str] | None:
     """The (description, custom_lore) generation seed for one theme, or
     None when the theme is unknown."""
     return THEME_DEFAULT_SEEDS.get(theme)
+
+
 DEFAULT_DB_URL = "sqlite:////var/lib/mythoscircle/mythoscircle.db"
 
 

@@ -600,9 +600,7 @@ def _validate_generic_build_payload(payload: dict[str, Any], campaign: models.Ca
     if not isinstance(figures, list) or not figures:
         raise InvalidJobInputError("generic build payload needs a non-empty key_figures list")
     if len(figures) > GENERIC_BUILD_MAX_FIGURES:
-        raise InvalidJobInputError(
-            f"generic build exceeds {GENERIC_BUILD_MAX_FIGURES} figures"
-        )
+        raise InvalidJobInputError(f"generic build exceeds {GENERIC_BUILD_MAX_FIGURES} figures")
     for index, figure in enumerate(figures):
         if isinstance(figure, str):
             raise InvalidJobInputError(

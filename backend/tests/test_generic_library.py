@@ -47,9 +47,7 @@ def _owner_id() -> str:
     from app.store import register_account
 
     if "id" not in _OWNER:
-        _OWNER["id"] = register_account(
-            f"generic-{new_id()}@example.com", "password123"
-        ).id
+        _OWNER["id"] = register_account(f"generic-{new_id()}@example.com", "password123").id
     return _OWNER["id"]
 
 
