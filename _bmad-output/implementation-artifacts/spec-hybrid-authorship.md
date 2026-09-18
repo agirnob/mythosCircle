@@ -2,14 +2,15 @@
 title: 'Hybrid Authorship — Two Paths: Template-Driven Direct Commit & Partially-Authored Seeds'
 type: 'feature'
 created: '2026-09-15'
-status: 'draft'
+status: 'done'
 baseline_commit: '749b81c'
 review_loop_iteration: 2
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/deferred-work.md'
 ---
 
-<!-- draft at CHECKPOINT 2 — owner decisions folded in; not frozen -->
+<!-- APPROVED 2026-09-18 (owner verdict): implementation f3632c9 + the
+     forge/library UI follow-ups shipped; status draft -> done -->
 
 ## Intent
 

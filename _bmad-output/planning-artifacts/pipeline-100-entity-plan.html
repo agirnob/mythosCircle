@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mythosCircle — Build-in Pipeline Plan: 100 Entities</title>
+<style>
+  :root{
+    --bg:#0d1017; --card:#151a23; --card2:#1a2130; --line:#2b3444;
+    --ink:#dce3ee; --dim:#8b96a8; --faint:#5c6678;
+    --blue:#4da3ff; --green:#3fb950; --amber:#d29922; --red:#f85149;
+    --purple:#bc8cff; --teal:#39c5bb; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 20px 80px}
+  header{border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:22px}
+  h1{margin:0 0 6px;font-size:26px;letter-spacing:.2px}
+  h2{margin:44px 0 14px;font-size:20px;border-bottom:1px solid var(--line);padding-bottom:8px}
+  h3{margin:26px 0 10px;font-size:16px;color:var(--teal)}
+  .sub{color:var(--dim);font-size:14px}
+  .pill{display:inline-block;padding:2px 10px;border-radius:99px;font-size:12px;font-weight:600;vertical-align:middle}
+  .pill.plan{background:#3a2a10;color:var(--amber);border:1px solid var(--amber)}
+  nav{margin:14px 0 0;font-size:14px}
+  nav a{color:var(--blue);text-decoration:none;margin-right:16px}
+  nav a:hover{text-decoration:underline}
+  code{font-family:var(--mono);font-size:.88em;background:#20293a;padding:1px 5px;border-radius:4px;color:#bcd4f5}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:5px;letter-spacing:.4px;white-space:nowrap}
+  .b-ex{background:#12301c;color:var(--green);border:1px solid #2a5c3a}
+  .b-new{background:#0f2740;color:var(--blue);border:1px solid #2a5580}
+  .b-chg{background:#33270c;color:var(--amber);border:1px solid #6b5320}
+  .b-own{background:#2a1a40;color:var(--purple);border:1px solid #5a3a85}
+  .b-term{background:#3a1518;color:var(--red);border:1px solid #7a2f35}
+  .flow{display:flex;flex-direction:column;align-items:center;gap:0;margin:18px 0}
+  .arrow{color:var(--faint);font-size:20px;line-height:1.5;user-select:none}
+  .arrow small{font-size:11px;color:var(--dim);display:block;text-align:center;margin-top:-4px}
+  .stage{width:100%;max-width:880px;background:var(--card);border:1px solid var(--line);
+         border-radius:10px;padding:14px 18px;position:relative}
+  .stage.hl{border-color:#33507a;box-shadow:0 0 0 1px #22385a}
+  .stage .t{font-weight:700;font-size:15px;margin-bottom:6px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .stage ul{margin:6px 0 2px;padding-left:20px}
+  .stage li{margin:3px 0}
+  .stage .note{color:var(--dim);font-size:13px;margin-top:6px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;width:100%;max-width:880px}
+  .grid2 .stage{max-width:none}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .decision{width:100%;max-width:880px;background:#1c2333;border:1px dashed #4a5a78;border-radius:10px;
+            padding:12px 18px;text-align:center;font-weight:600}
+  .merge{width:100%;max-width:880px;text-align:center;color:var(--dim);font-size:13px;padding:4px 0}
+  .branchlbl{font-size:12px;font-weight:700;color:var(--dim);text-align:center;margin-bottom:6px;letter-spacing:.5px}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#1b2231;color:var(--teal);font-weight:600}
+  tr:nth-child(even) td{background:#131824}
+  pre{background:#10141d;border:1px solid var(--line);border-radius:10px;padding:16px;
+      overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.5}
+  .k{color:#7cb7ff}.s{color:#a8d08d}.n{color:#e3b341}.c{color:#5c6678;font-style:italic}.b{color:#dce3ee}
+  details{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin:10px 0;width:100%;max-width:880px}
+  details summary{cursor:pointer;font-weight:600;font-size:13.5px;color:var(--teal)}
+  details[open] summary{margin-bottom:8px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+  .chip{background:#20293a;border:1px solid var(--line);border-radius:6px;padding:2px 9px;font-size:12.5px;font-family:var(--mono)}
+  .ok{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}.inf{color:var(--blue)}.own{color:var(--purple)}
+  footer{margin-top:60px;border-top:1px solid var(--line);padding-top:14px;color:var(--faint);font-size:12.5px}
+  .ev{color:var(--faint);font-size:12px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>mythosCircle — Build-in Pipeline Plan <span class="pill plan">PLANNING ONLY · NOT IMPLEMENTED</span></h1>
+  <div class="sub">Target: reliable builds up to <b>100 entities</b> (legal payload max 300) on Qwen3.8-27B / gemma-4-26B-A4B via llama.cpp.
+  Baseline: ladder rungs 10/25/50 green on both models (runlog 2026-09-12). Prepared 2026-09-12 · supersedes architect Cut-1 response with 100-scale corrections.</div>
+  <nav>
+    <a href="#workflow">1 · Workflow</a>
+    <a href="#failures">2 · Failure semantics</a>
+    <a href="#schema">3 · Entity schema</a>
+    <a href="#regen">4 · Regeneration</a>
+    <a href="#cuts">5 · Cuts &amp; sequencing</a>
+    <a href="#decisions">6 · Owner decisions</a>
+    <a href="#validation">7 · Validation ladder</a>
+  </nav>
+  <div class="legend">
+    <span class="badge b-ex">EXISTING</span><span class="sub">shipped code, unchanged</span>
+    <span class="badge b-chg">CHANGED</span><span class="sub">existing stage, modified</span>
+    <span class="badge b-new">NEW</span><span class="sub">added by this plan (item letter)</span>
+    <span class="badge b-own">OWNER</span><span class="sub">decision needed before code</span>
+    <span class="badge b-term">TERMINAL</span><span class="sub">job fails here by design</span>
+  </div>
+</header>
+
+<!-- ============================================================ WORKFLOW -->
+<h2 id="workflow">1 · Planned workflow — one <code>build_in</code> job, end to end</h2>
+
+<div class="flow">
+
+  <div class="stage">
+    <div class="t">⓪ Enqueue — <code>POST /api/jobs</code> kind <code>build_in</code> <span class="badge b-ex">EXISTING</span><span class="badge b-new">NEW D</span><span class="badge b-new">NEW L1</span><span class="badge b-own">OWNER</span></div>
+    <ul>
+      <li><b>Payload contract</b> <span class="badge b-ex">EXISTING</span>: sections <code>places / factions / key_figures</code> — each ≤ <b>100</b> entries of ≤ 2000 chars; <code>notes</code> ≤ 2000 chars; ≥ 1 non-blank entry. <span class="ev">jobs.py:514 · BUILD_IN_MAX_ENTRIES=100 jobs.py:57</span></li>
+      <li><b>Dynamic budget</b> <span class="badge b-new">NEW D</span>: <code>max_llm_calls = max(64, 3×key_figures + ⌈total/8⌉ + 32)</code> computed at enqueue; explicit payload override still wins. Today prod enqueues flat 64 — the measured rung-50 killer (attempt 5 died at 64 while converging). <span class="ev">jobs.py:433 · run_rung.py:80 · runlog:414-423</span></li>
+      <li><b>Idempotency</b> <span class="badge b-new">NEW L1</span> <span class="badge b-own">OWNER</span>: server derives <code>job_id</code> = ULID from content hash (campaign + trimmed sections + notes) → a re-submit of identical lists is a 409 pointing at the existing job, never a second world. The hook already exists (caller-supplied <code>job_id</code> is idempotent, <code>DuplicateJobError</code>). <span class="ev">jobs.py:21-22,446-447</span></li>
+    </ul>
+  </div>
+
+  <div class="arrow">▼<small>worker claims (AD-3 global FIFO, single writer)</small></div>
+
+  <div class="stage">
+    <div class="t">① Run start <span class="badge b-ex">EXISTING</span></div>
+    <ul>
+      <li>Read campaign seed + head revision (<code>wave1_base</code>); <code>CallBudget</code> armed — <b>lock + atomic check-increment</b> <span class="badge b-new">NEW 0.4</span> (today check-then-increment is unguarded; required the moment any pool &gt; 1 exists). <span class="ev">build_in.py:855-871 · budget.py:34-39</span></li>
+      <li>Roster <code>N</code> = trimmed places+factions+key_figures, fixed order; global positional refs <code>E0..E(N-1)</code>.</li>
+    </ul>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="decision">② Wave 1 — generation shape: &nbsp;N ≤ CHUNK_SIZE (default 12, knob 8–25)?</div>
+
+  <div class="arrow" style="padding:4px 0">▼</div>
+
+  <div class="grid2">
+    <div>
+      <div class="branchlbl">YES — small roster (rungs 10/25 stay byte-identical)</div>
+      <div class="stage">
+        <div class="t">Single wave-1 call <span class="badge b-ex">EXISTING</span><span class="badge b-chg">CHANGED E1/B</span></div>
+        <ul>
+          <li>Today's exact path: one prompt (seed + notes + full roster + rules), count-pinned strict <code>json_schema</code> (<code>minItems=maxItems=N</code>). <span class="ev">build_in.py:877-893,1227-1291</span></li>
+          <li><span class="badge b-chg">E1</span> schema tightening: <code>kind</code> enum, <code>name minLength:1</code>, <code>ref</code> enum E0..E(N-1).</li>
+          <li><span class="badge b-chg">B</span> per-call <code>max_tokens</code> = tok/entity (corpora: Qwen ≈ 530, gemma ≈ 390) × N + 50% headroom.</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <div class="branchlbl">NO — chunked generation (the 100-entity construction)</div>
+      <div class="stage hl">
+        <div class="t">Chunked wave-1 <span class="badge b-new">NEW M1</span></div>
+        <ul>
+          <li><b>Slicing</b>: deterministic token-budgeted slices of the roster (count cap 12–16), pure function of payload → AD-16 holds. Chunk <i>k</i> owns a contiguous global ref range (e.g. E24..E35).</li>
+          <li><b>Per chunk call</b>: campaign seed + <b>full DM notes</b> (≤ 2000 ch — a "sanberi is level 18" directive lands in whichever chunk owns Sanberi) + roster slice + rules text (~19K-char static prefix identical across chunks → llama.cpp slot prefix-cache reuse).</li>
+          <li><b>Schema per chunk</b>: <code>minItems=maxItems=</code>slice size, <code>ref</code> enum = slice refs, <code>kind</code> enum → ref-discipline + count deaths unemittable on grammar backends (att-2 died on refs at N=10; pin held 4/4 at 50).</li>
+          <li><b>Per-call max_tokens</b> ≈ 12–16K → truncation structurally impossible (vs ~53–56K for a monolithic 100-call against the 65,536 ceiling).</li>
+          <li><b>Retry classes</b> <span class="badge b-new">NEW C</span>: malformed → 1 retry, fresh seed (needs G); truncated → 1 retry, bigger window; semantic → <span class="badge b-term">TERMINAL</span> (zero commits, today's wave-1 contract).</li>
+          <li><b>Pool</b>: chunks independent → bounded pool (default 1 = sequential; &gt;1 opt-in after <code>n_parallel</code>/KV measured on the 3090 — Cut 3).</li>
+        </ul>
+        <div class="note">Wall-clock at 100 (from measured rates): Qwen seq ≈ 15 min → pool 4 ≈ 4 min; gemma ≈ 2.5–3× faster decode. Monolith alternative: one ~820–900 s call vs a 900 s timeout — coin flip.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="stage">
+    <div class="t">③ Per-chunk gates (or whole-wave when single call) <span class="badge b-ex">EXISTING</span><span class="badge b-chg">CHANGED</span></div>
+    <ul>
+      <li><b>Name gate</b> <span class="badge b-ex">EXISTING</span>: blank names → one bounded repair pass (all flagged in one call) + 1 JSON retry. <span class="ev">build_in.py:747-781</span></li>
+      <li><b>Record gate</b> <span class="badge b-ex">EXISTING</span>: AR24 shape violations → one bounded pass in chunks of 4 (<code>RECORD_REPAIR_CHUNK_SIZE</code>), position-pinned refs. <span class="ev">build_in.py:784-835,156</span></li>
+      <li><b>Stat gate</b>: see ④ below (the reworked core). Runs per chunk with <b>global</b> positions — repair prompts/parsers already work on arbitrary flagged refs.</li>
+      <li>Chunk failures are contained: a bad chunk retries alone; siblings never ride on it (per-entity repair precedent, spec step 2).</li>
+    </ul>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="stage">
+    <div class="t">④ Stat gate — reworked <span class="badge b-chg">CHANGED A</span><span class="badge b-new">NEW M3</span><span class="badge b-own">OWNER ①②</span></div>
+    <ul>
+      <li><b>Canonicalize first</b> <span class="badge b-ex">EXISTING</span>: fold near-miss shapes, complete structured damage parts, stamp deterministic <code>power</code> annotation. <span class="ev">statblocks.py:1232-1294</span></li>
+      <li><b>NPC oracle fix</b> <span class="badge b-chg">A</span>: <code>_check_power</code> no longer holds NPC/BBEG <code>level</code> against the DMG <b>monster</b> CR table (<span class="ev">knowledge.py:701</span>) — no <code>under-powered</code>/<code>frail-HP</code> violations for them; <code>conform_stat_power</code> skips the HP-floor lift + rider for them (<span class="ev">statblocks.py:1046-1049,1104-1139</span>). Authentic NPC numbers commit as written. <b>Rules text updated in the same cut</b> — CHALLENGE SCALING today literally tells the model "NPC/BBEG scale on the DMG monster table" (<span class="ev">statblocks.py:117-122</span>); leaving it would keep gemma inflating. <span class="badge b-own">OWNER ①</span>: under-band NPC/BBEG stamped as DM-visible flag (recommended) vs silent. Evidence: Qwen rung-50 = 33/33 characters flagged, 45 of 48 calls were repairs, conform rewrote every block.</li>
+      <li><b>Conform-first</b> <span class="badge b-new">M3</span> <span class="badge b-own">OWNER ②</span>: violations that are <i>conformable</i> (under-powered / frail-HP / no-readable-damage, <span class="ev">statblocks.py:786-802</span>) on <b>Monster</b> blocks go straight to deterministic <code>conform_power</code> — <b>0 LLM calls</b>, guaranteed landing in band (measured: Qwen repairs never converge — "nudge 8.5→13→17, never near band"; conform lands 13→53 in one pass). Shape/vocabulary violations keep the existing ≤ 3 per-entity repair passes (scope-strip merge, identity-field guard, class-preserve). Conform still runs last after repairs. <span class="ev">build_in.py:293-393 · runlog:449-463,480-481</span></li>
+      <li>Still invalid after all of it → <span class="badge b-term">TERMINAL</span> <code>JobPayloadError</code>, zero commits (AR25 contract unchanged).</li>
+    </ul>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="stage">
+    <div class="t">⑤ Merge + wiring pass <span class="badge b-new">NEW M1</span></div>
+    <ul>
+      <li><b>Deterministic merge</b>: chunks merge in fixed global positional order; ULIDs assigned at merge (AD-16: same model outputs → same committed graph).</li>
+      <li><b>Wiring pass</b>: ONE edges-only call over the <b>compact full roster</b> (all N: ref + name + kind + one-line text excerpt ≈ 3–4K tokens in) — schema pins <code>src/dst</code> enums over E0..E(N-1) + <code>EDGE_TYPES</code> enum. This is the step-3 anchor-repair pattern already proven live (frozen rosters, edges-only, renames unrepresentable; att-20 green). <span class="ev">build_in.py:1318-1407</span></li>
+      <li><b>Wiring failure → edgeless commit</b> (retry once first): wave-1 edgeless is already legal by owner verdict 2026-09-11 (<code>allow_orphans=True</code>, <span class="ev">build_in.py:936-938</span>). At 100 this is the difference between "sparse graph, DM prunes" and "15 minutes incinerated."</li>
+      <li><b>Edge boundary</b> <span class="badge b-ex">EXISTING</span>: intra-chunk edges + wiring edges merged; exact-duplicate rows dropped (first wins), self-loops dropped, both info-logged. <span class="ev">build_in.py:1713-1741</span></li>
+    </ul>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="stage">
+    <div class="t">⑥ Commit wave 1 <span class="badge b-ex">EXISTING</span><span class="badge b-new">NEW M4</span> + progress <span class="badge b-chg">CHANGED H</span></div>
+    <ul>
+      <li><code>commit_subgraph(allow_orphans=True, base_revision=wave1_base)</code> — atomic, one revision (AR5/AD-1).</li>
+      <li><b>Stale-rebase</b> <span class="badge b-new">M4</span>: at 100 the generation window is minutes — a DM hand-edit mid-job makes the base stale → <code>StaleRevisionError</code> kills today's job. Fix: re-read head and <b>re-commit once against it — no regeneration</b> (fresh ULIDs + intra-wave edges are valid against any head). <span class="ev">commit.py:929-933</span></li>
+      <li><b>Progress</b> <span class="badge b-chg">H</span>: per-chunk milestones mapped 0 → 0.45, gates → 0.5 (today only 0.5/1.0 — a 20-min job looks wedged). WS events already flow. <span class="ev">build_in.py:948 · jobs.py:276-288</span></li>
+    </ul>
+  </div>
+
+  <div class="arrow">▼<small>if notes present (else → ⑨)</small></div>
+
+  <div class="stage">
+    <div class="t">⑦ Wave 2 — notes → anchored subgraph <span class="badge b-new">NEW M2/F</span><span class="badge b-ex">EXISTING anchor repair</span></div>
+    <ul>
+      <li><b>Two-tier context</b> <span class="badge b-new">M2</span>: detail tier unchanged (BFS depth-1, cap 24, full data) <b>+ compact roster tier = ALL wave-1 entities</b> (C-label + name + kind, ~100 lines ≈ 2.5K tokens). Today rowid-order BFS means wave 2 only ever sees E0..E23 — at 100, notes about entity #73 are unwirable and a C-ref to E30 hard-fails the wave. <span class="ev">retrieval.py:66-73 · build_in.py:952-969 · ledger 2.3 entry</span></li>
+      <li><b>Validation vs full roster</b> <span class="badge b-new">F</span>: C-refs resolve and the core-anchor rule judges against the <b>full wave-1 roster</b>; anchor-repair grammar enums cover every core ref.</li>
+      <li><b>Call</b>: unpinned count (notes-driven) + <code>maxItems</code> caps <span class="badge b-chg">E1</span>; truncation-retry class applies here (B/C).</li>
+      <li><b>Orphans</b> → one edges-only anchor repair (entities frozen, renames unrepresentable) <span class="badge b-ex">EXISTING</span> + one JSON retry <span class="badge b-new">C</span> → still-orphan = <span class="badge b-term">TERMINAL</span> with wave 1 kept (documented resilience).</li>
+      <li>Then the same three gates (③/④) run on wave-2 entities.</li>
+    </ul>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="stage">
+    <div class="t">⑧ Commit wave 2 <span class="badge b-ex">EXISTING</span><span class="badge b-new">NEW M4</span></div>
+    <ul>
+      <li><code>commit_subgraph(base_revision=revision_1.id)</code> — no <code>allow_orphans</code> (core-anchor rule enforced).</li>
+      <li><b>Stale-rebase, two-step</b> <span class="badge b-new">M4</span>: on stale → first try the cheap re-commit vs new head; on endpoint failures (DM deleted a wave-1 target → <code>DanglingEdgeError</code>) → <b>one</b> full bounded re-pass (re-retrieve at new head → rebuild prompt → regenerate → re-gate → commit). Never loops.</li>
+    </ul>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="stage">
+    <div class="t">⑨ Complete <span class="badge b-chg">CHANGED J</span></div>
+    <ul>
+      <li><code>complete_job(result)</code> — waves summary (existing) + <b>telemetry</b> <span class="badge b-new">J</span>: <code>llm_calls</code> per gate, per-call {model, seconds, prompt/response chars, finish class, retry kind, chunk index}. This is what gates Cut-3 parallelism and profiles. No new tables.</li>
+    </ul>
+  </div>
+
+</div>
+
+<details>
+  <summary>Cross-cutting: sampling controls (G) — prerequisite plumbing for half the diagram</summary>
+  <ul>
+    <li>Provider body today = <code>{model, max_tokens, messages}</code> (+ optional <code>chat_template_kwargs</code>, <code>response_format</code>) — <b>no temperature / seed / top_p</b>. <span class="ev">llm.py:96-114</span></li>
+    <li>Add all three to <code>LLMSettings</code> (omit-when-None, the <code>enable_thinking</code> backend-compat pattern) → enables: seeded retries (C), cold+seeded repairs vs warm generation, reproducible ladder re-runs, profiles (K).</li>
+    <li>Honesty note: seeded llama.cpp output is reproducible in the ladder sense, not byte-guaranteed across slot scheduling — AD-16's determinism claim stays "prompt-deterministic," not "output-deterministic."</li>
+  </ul>
+</details>
+
+<details>
+  <summary>Cross-cutting: model profiles (K, Cut 3) — two max, per call-class routing</summary>
+  <table>
+    <tr><th>Call class</th><th>Qwen3.8-27B (measured)</th><th>gemma-4-26B-A4B (measured)</th><th>Routing</th></tr>
+    <tr><td>Entity chunks (creative)</td><td>structurally clean, authentic NPC numbers, never overshoots; 2.7–4.5× slower, 1.35× verbose</td><td>faster, terse; shape/link churn (contained by strip+guards+grammar)</td><td><b>Qwen primary</b> — one shape death kills a 100-job</td></tr>
+    <tr><td>Wiring / anchor / name (disciplined, grammar-pinned)</td><td>fine</td><td>fast + edges-only pattern proven (att-20)</td><td><b>gemma primary</b></td></tr>
+    <tr><td>Prod caveat</td><td colspan="2">deployed stack = Unsloth + gemma-4-<b>12B</b> (docker-compose.yml:40) — schema-grammar enforcement unverified there; validators stay authoritative ("schema is the optimization" — codebase idiom)</td><td>12B smoke before cutover</td></tr>
+  </table>
+</details>
+
+<!-- ============================================================ FAILURES -->
+<h2 id="failures">2 · Failure semantics — every stage, one table</h2>
+<table>
+  <tr><th>Stage</th><th>Failure</th><th>Handling</th><th>Outcome if unhandled</th></tr>
+  <tr><td>Chunk / wave call</td><td>malformed JSON</td><td>1 bounded retry, fresh seed <span class="badge b-new">C</span></td><td><span class="badge b-term">TERMINAL</span> zero commits</td></tr>
+  <tr><td>Chunk / wave call</td><td><code>finish_reason=length</code></td><td>1 retry with larger window <span class="badge b-new">B</span>; chunks sized so this is near-impossible</td><td><span class="badge b-term">TERMINAL</span></td></tr>
+  <tr><td>Chunk validate</td><td>bad ref / kind</td><td>enum-pinned per chunk → unemittable on grammar backends <span class="badge b-new">E1/E2</span></td><td><span class="badge b-term">TERMINAL</span> (validator backstop elsewhere)</td></tr>
+  <tr><td>Identity fields</td><td>garbage <code>level</code>/<code>cr</code> (runlog's signature death ×4)</td><td>present-key grammar constraints: level int 1–20, role/class enums <span class="badge b-new">E2</span>; repair-inflicted damage already restored by merge guard <span class="badge b-ex">EXISTING</span></td><td><span class="badge b-term">TERMINAL</span></td></tr>
+  <tr><td>Wiring pass</td><td>any failure</td><td>retry once → <b>edgeless commit</b> (legal)</td><td class="ok">degrades, never dies</td></tr>
+  <tr><td>Name gate</td><td>blank names</td><td>1 pass + 1 JSON retry <span class="badge b-ex">EXISTING</span></td><td><span class="badge b-term">TERMINAL</span></td></tr>
+  <tr><td>Record gate</td><td>AR24 shape</td><td>1 pass, chunks of 4 <span class="badge b-ex">EXISTING</span></td><td><span class="badge b-term">TERMINAL</span></td></tr>
+  <tr><td>Stat gate — power, Monster</td><td>under/frail/unreadable</td><td>deterministic conform, 0 calls <span class="badge b-new">M3</span></td><td class="ok">guaranteed fix or terminal-with-reason</td></tr>
+  <tr><td>Stat gate — power, NPC/BBEG</td><td>under monster band</td><td>not a violation; flag stamp <span class="badge b-chg">A</span> <span class="badge b-own">OWNER ①</span></td><td class="ok">commits authentic</td></tr>
+  <tr><td>Stat gate — power, over</td><td>above band</td><td>flag-only since 2026-09-12 verdict <span class="badge b-ex">EXISTING</span></td><td class="ok">commits stamped</td></tr>
+  <tr><td>Stat gate — shape</td><td>vocab/skills/spells</td><td>≤3 per-entity passes, scope-strip + identity guard + class-preserve <span class="badge b-ex">EXISTING</span></td><td><span class="badge b-term">TERMINAL</span></td></tr>
+  <tr><td>Wave 1 commit</td><td>stale head</td><td>re-commit vs new head once, no regeneration <span class="badge b-new">M4</span></td><td class="ok">survives DM edits</td></tr>
+  <tr><td>Wave 2</td><td>orphans</td><td>edges-only anchor repair + JSON retry <span class="badge b-ex">+</span><span class="badge b-new">C</span></td><td><span class="badge b-term">TERMINAL</span>, wave 1 kept</td></tr>
+  <tr><td>Wave 2 commit</td><td>stale head / deleted endpoint</td><td>cheap re-commit → one full re-pass vs new head <span class="badge b-new">M4</span></td><td class="ok">bounded latency, not death</td></tr>
+  <tr><td>Any call</td><td>HTTP non-2xx / timeout / blip</td><td>bounded backoff retry (transport class — new; today one blip kills a 15-min job, spec-1.4 "never retried")</td><td><span class="badge b-term">TERMINAL</span></td></tr>
+  <tr><td>Any call</td><td>budget ceiling</td><td>—</td><td><span class="badge b-term">TERMINAL</span> by design (runaway guard)</td></tr>
+  <tr><td>Any poll point</td><td>DM cancel</td><td>stop between calls/chunks, committed waves stay, no terminal write <span class="badge b-ex">EXISTING</span> — chunking shrinks the wasted unit from ~15 min to ~2 min</td><td class="ok">no-op</td></tr>
+</table>
+<p class="sub">Honest bound: "no errors" is unguaranteeable — the <span class="badge b-term">TERMINAL</span> rows are deliberate fail-fast contracts. What the plan guarantees: every <i>measured</i> failure class at ≤50 (and every extrapolated one at 100) gets a bounded retry, a deterministic fix, or a legal degrade, and J telemetry names whichever one fired.</p>
+
+<!-- ============================================================ SCHEMA -->
+<h2 id="schema">3 · End-point entity schema — what commits (contract unchanged by this plan)</h2>
+<p class="sub">The plan changes how entities are <b>produced</b>, not what they <b>are</b>: store models, API responses, exports (5.1/5.2 OwlBear/Forge), and <code>StatBlock.vue</code> keep their contracts. Artifact-level deltas are exactly two: NPC/BBEG numbers become the model's authentic ones (not conform rewrites), and the <code>power</code> stamp may gain an under-band flag <span class="badge b-own">OWNER ①</span>.</p>
+
+<h3>Rows</h3>
+<table>
+  <tr><th>Table</th><th>Shape</th></tr>
+  <tr><td><code>Entity</code></td><td><code>{id: ULID(26ch Crockford), kind: character|faction|place, name: str, text: str?, data: JSON}</code> — runner-assigned at merge, in global positional order</td></tr>
+  <tr><td><code>Edge</code></td><td><code>{src, dst, type ∈ EDGE_TYPES, counter: int}</code> — directed; <code>located_in / member_of / relationship / rival_of / ally_of / enemy_of / …</code>; counter semantics fixed per type: debt=amount, grudge/loyalty=score, ally/enemy=intensity, else neutral <span class="ev">commit.py:33-72</span></td></tr>
+  <tr><td><code>Revision</code></td><td>one per wave commit — atomic, versioned world state (AD-1/AD-2)</td></tr>
+</table>
+
+<h3>Character <code>data</code> — the AR24 flat record</h3>
+<pre><span class="b">{</span>
+  <span class="k">"name"</span>: <span class="s">"Harbormaster Ilsa Vane"</span>,          <span class="c">// must equal entity.name exactly</span>
+  <span class="k">"role"</span>: <span class="s">"NPC"</span>,                              <span class="c">// closed set: NPC | BBEG | Monster</span>
+  <span class="k">"level_cr"</span>: <span class="s">"level 12"</span>,                     <span class="c">// DISPLAY ONLY — stat_block.identity numerics are authoritative;</span>
+                                              <span class="c">// "level &lt;n&gt;" NPC/BBEG, "CR &lt;n&gt;" Monster; exports derive from the block</span>
+  <span class="k">"race_type"</span>: <span class="s">"Human"</span>,                       <span class="c">// ┐ IDENTITY_FIELDS (candidates.py:93)</span>
+  <span class="k">"class_profession"</span>: <span class="s">"Rogue"</span>,                <span class="c">// │</span>
+  <span class="k">"alignment"</span>: <span class="s">"LE"</span>,                          <span class="c">// ┘</span>
+  <span class="k">"personality"</span>: <span class="s">"…"</span>,                         <span class="c">// AR19 core — non-blank strings, top-level,</span>
+  <span class="k">"secret"</span>: <span class="s">"a specific concealed fact"</span>,       <span class="c">// never nested under identity/lore subsections</span>
+  <span class="k">"rumor"</span>: <span class="s">"a concrete in-world claim"</span>,
+  <span class="k">"party_hook"</span>: <span class="s">"a concrete way the party engages her"</span>,
+  <span class="k">"appearance"</span>: <span class="s">"painter-grade prose: face, body, clothing, scars"</span>, <span class="c">// ┐ LORE_FIELDS</span>
+  <span class="k">"background"</span>: <span class="s">"…"</span>, <span class="k">"goals"</span>: <span class="s">"…"</span>, <span class="k">"relationships"</span>: <span class="s">"…"</span>,            <span class="c">// │ (candidates.py:98-105)</span>
+  <span class="k">"voice_style"</span>: <span class="s">"…"</span>, <span class="k">"catchphrases"</span>: <span class="s">"…"</span>,                          <span class="c">// ┘</span>
+  <span class="k">"world_integration"</span>: <span class="b">{</span>                       <span class="c">// WORLD_INTEGRATION_FIELDS (candidates.py:109-115)</span>
+    <span class="k">"reputation"</span>: <span class="s">"…"</span>, <span class="k">"factions"</span>: <span class="s">"…"</span>, <span class="k">"current_location"</span>: <span class="s">"…"</span>,
+    <span class="k">"reaction_matrix"</span>: <span class="s">"C0: distrusts her; C3: owes her water-debts"</span>, <span class="c">// ONE string, never a mapping (canonicalized)</span>
+    <span class="k">"on_defeat"</span>: <span class="s">"…"</span>
+  <span class="b">}</span>,
+  <span class="k">"boss"</span>: <span class="b">{</span>                                    <span class="c">// CONDITIONAL: present iff role ∈ {BBEG, Monster}; never empty;</span>
+    <span class="k">"lair_actions"</span>: <span class="s">"…"</span>, <span class="k">"legendary_actions"</span>: <span class="s">"…"</span>,   <span class="c">// omitted entirely for NPC (BOSS_FIELDS candidates.py:119-124)</span>
+    <span class="k">"immunities"</span>: <span class="s">"…"</span>, <span class="k">"vulnerabilities"</span>: <span class="s">"…"</span>
+  <span class="b">}</span>,
+  <span class="k">"stat_block"</span>: <span class="b">{ …AR25, below… }</span>
+<span class="b">}</span></pre>
+
+<h3><code>stat_block</code> — AR25 <span class="ev">(validator knowledge.py:741-830 · rules text statblocks.py:83-184)</span></h3>
+<pre><span class="b">{</span>
+  <span class="k">"identity"</span>: <span class="b">{</span>                                <span class="c">// required</span>
+    <span class="k">"role"</span>: <span class="s">"NPC"</span>,                             <span class="c">// NPC/BBEG → level int [1,20], NEVER cr</span>
+    <span class="k">"level"</span>: <span class="n">12</span>,                               <span class="c">// Monster → cr int [0,30] | "1/8"|"1/4"|"1/2", NEVER level</span>
+    <span class="k">"race"</span>: <span class="s">"Human"</span>,                           <span class="c">// SRD-9 races for NPC/BBEG; free non-blank type string for Monster</span>
+    <span class="k">"class"</span>: <span class="s">"Rogue"</span>,                          <span class="c">// optional — SRD 12 classes; required if spells present</span>
+    <span class="k">"alignment"</span>: <span class="s">"LE"</span>                          <span class="c">// optional — 9-axis + unaligned</span>
+  <span class="b">}</span>,
+  <span class="k">"attributes"</span>: <span class="b">{</span> <span class="k">"str"</span>:<span class="n">10</span>, <span class="k">"dex"</span>:<span class="n">18</span>, <span class="k">"con"</span>:<span class="n">14</span>, <span class="k">"int"</span>:<span class="n">12</span>, <span class="k">"wis"</span>:<span class="n">11</span>, <span class="k">"cha"</span>:<span class="n">16</span> <span class="b">}</span>, <span class="c">// required, ints [1,30]</span>
+  <span class="k">"combat"</span>: <span class="b">{</span> <span class="k">"ac"</span>: <span class="n">15</span>, <span class="k">"hp"</span>: <span class="n">78</span>, <span class="k">"hit_dice"</span>: <span class="s">"12d8 + 24"</span> <span class="b">}</span>,       <span class="c">// ac/hp required positive ints; hit_dice optional</span>
+  <span class="k">"skills"</span>:  <span class="b">[</span> <span class="b">{</span> <span class="k">"name"</span>: <span class="s">"Stealth"</span>, <span class="k">"bonus"</span>: <span class="n">8</span> <span class="b">}</span> <span class="b">]</span>,                  <span class="c">// optional — SRD-18 names only, int bonus</span>
+  <span class="k">"actions"</span>: <span class="b">[</span> <span class="b">{</span>
+      <span class="k">"name"</span>: <span class="s">"Water Knife"</span>, <span class="k">"to_hit"</span>: <span class="n">8</span>,
+      <span class="k">"description"</span>: <span class="s">"Melee Weapon Attack: +8 to hit, reach 5 ft., one target.</span>
+<span class="s">                      Hit: 11 (2d6 + 4) piercing damage."</span>,              <span class="c">// DM-readable numbers stay in prose</span>
+      <span class="k">"damage"</span>: <span class="b">[</span> <span class="b">{</span> <span class="k">"dice"</span>:<span class="s">"2d6"</span>, <span class="k">"count"</span>:<span class="n">2</span>, <span class="k">"sides"</span>:<span class="n">6</span>, <span class="k">"bonus"</span>:<span class="n">4</span>,
+                    <span class="k">"average"</span>:<span class="n">11</span>, <span class="k">"type"</span>:<span class="s">"piercing"</span> <span class="b">}</span> <span class="b">]</span>             <span class="c">// machine copy — auditor/sheet/export read this;</span>
+  <span class="b">}</span> <span class="b">]</span>,                                          <span class="c">// Multiattack routine carries NO damage list (count in text only)</span>
+  <span class="k">"traits"</span>:  <span class="b">[</span> <span class="b">{</span> <span class="k">"name"</span>: <span class="s">"Sneak Attack"</span>, <span class="k">"description"</span>: <span class="s">"…"</span> <span class="b">}</span> <span class="b">]</span>,   <span class="c">// objects; features are name-strings — never mixed</span>
+  <span class="k">"features"</span>: <span class="b">[</span><span class="s">"Cunning Action"</span><span class="b">]</span>,               <span class="c">// optional, names only</span>
+  <span class="k">"spells"</span>: <span class="b">[</span><span class="s">"Charm Person"</span><span class="b">]</span>,                   <span class="c">// optional; NEVER Monster; requires identity.class; on that class's SRD list</span>
+  <span class="k">"saves"</span>: <span class="b">{</span> <span class="k">"dex"</span>: <span class="n">8</span> <span class="b">}</span>, <span class="k">"initiative"</span>: <span class="n">4</span>, <span class="k">"passive_perception"</span>: <span class="n">13</span>,   <span class="c">// ┐ optional extra mechanics —</span>
+  <span class="k">"proficiency_bonus"</span>: <span class="n">4</span>,                                                   <span class="c">// │ absence legal, present must be well-formed</span>
+  <span class="k">"spellcasting"</span>: <span class="b">{</span> <span class="k">"dc"</span>:<span class="n">15</span>, <span class="k">"attack_bonus"</span>:<span class="n">7</span>, <span class="k">"slots"</span>:<span class="b">[</span><span class="n">4</span>,<span class="n">3</span>,<span class="n">3</span>,<span class="n">3</span>,<span class="n">1</span><span class="b">]</span> <span class="b">}</span>, <span class="c">// │ (knowledge.py:468-608)</span>
+  <span class="k">"resources"</span>: <span class="b">{</span> <span class="k">"sneak_attack_dice"</span>: <span class="n">6</span> <span class="b">}</span>,                                  <span class="c">// ┘</span>
+  <span class="k">"power"</span>: <span class="b">{</span> <span class="k">"dpr"</span>: <span class="n">11.0</span>, <span class="k">"band"</span>: <span class="b">[</span><span class="n">75</span>, <span class="n">80</span><span class="b">]</span>, <span class="k">"verdict"</span>: <span class="s">"under-powered"</span> <span class="b">}</span>
+  <span class="c">// ^^ SERVER-STAMPED ONLY at canonicalize (_stamp_power statblocks.py:1273) — model writes discarded.</span>
+  <span class="c">//    Today: over-powered verdict only. PLAN: + under-band flag for NPC/BBEG (OWNER ①) — flag, never violation, never rewrite.</span>
+<span class="b">}</span></pre>
+
+<h3>Faction / place</h3>
+<p class="sub">Flat and light: <code>{ref, kind, name, text}</code> — <code>data</code> optional, commits as <code>{}</code>; any stray stat block is stripped pre-validation (<code>strip_noncharacter_stat_blocks</code>). The wave schema's <code>additionalProperties:false</code> makes beside-<code>data</code> record slips unrepresentable; <code>canonicalize_entity_record</code> folds them when they occur anyway.</p>
+
+<h3>One vocabulary, single-sourced (why the schema can't drift)</h3>
+<table>
+  <tr><th>Definition</th><th>Home</th><th>Consumers</th></tr>
+  <tr><td>Record sections (IDENTITY/LORE/WORLD_INTEGRATION/BOSS, REGEN_SECTIONS, ROLES)</td><td><code>store/candidates.py</code></td><td>build-in prompts · generate staging · record gate · regenerate validation · accept guard</td></tr>
+  <tr><td>5e vocabularies (CLASSES/RACES/SKILLS/SPELLS/ALIGNMENTS, level/CR bounds)</td><td><code>pipeline/knowledge.py</code></td><td>validator · rules text · repair schema · export derivation</td></tr>
+  <tr><td>DPR/HP bands, verdict ratios</td><td><code>pipeline/combat.py</code></td><td>auditor · conform · power stamp · repair prompts</td></tr>
+  <tr><td>EDGE_TYPES + counter semantics</td><td><code>store/commit.py</code></td><td>wave/anchor/wiring schemas · store backstop · prompts</td></tr>
+</table>
+
+<!-- ============================================================ REGEN -->
+<h2 id="regen">4 · Section regeneration within this design <span class="ev">(spec-3.5, verified regenerate.py)</span></h2>
+<p class="sub"><b>Governing principle: regeneration is a proposal machine, never a commit.</b> It stages one <code>ProposedCandidate</code> row; the DM's accept (3.2/3.3 lifecycle) is the only path to world state, with hand-edit conflict protection at accept (<code>entity_base_data</code> base → <code>EntityEditConflictError</code>).</p>
+
+<div class="flow">
+  <div class="stage">
+    <div class="t">Job payload</div>
+    <div><code>{target: {kind: entity|candidate, id}, sections: [...] | null}</code> — <code>null</code> = whole record. Sections ⊆ closed set:</div>
+    <div class="chips">
+      <span class="chip">personality</span><span class="chip">secret</span><span class="chip">rumor</span><span class="chip">party_hook</span>
+      <span class="chip">appearance</span><span class="chip">background</span><span class="chip">goals</span><span class="chip">relationships</span>
+      <span class="chip">voice_style</span><span class="chip">catchphrases</span><span class="chip">stat_block</span><span class="chip">world_integration</span><span class="chip">boss</span>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="stage">
+    <div class="t">① Resolve fresh</div>
+    Target re-read at run time (deleted/undone/settled since enqueue → fail, zero rows — queue delay never trusted). 1-hop neighborhood of the target retrieved, cap 24 (AR6).
+  </div>
+  <div class="arrow">▼</div>
+  <div class="stage">
+    <div class="t">② One LLM call <span class="badge b-chg">CHANGED G/K</span></div>
+    Prompt = seed + full current record + requested sections + context (byte-deterministic, AD-16). Plain settings today (no schema — Never list holds; <span class="badge b-own">OWNER</span>: optionally add a single-candidate <code>json_schema</code> for syntax hardening — byte-identity can't be grammar-expressed anyway, Python stays authoritative). With G: warm profile + seed; retries get seed+1 (a deliberately <i>different</i> re-roll on demand).
+  </div>
+  <div class="arrow">▼</div>
+  <div class="stage">
+    <div class="t">③ Parse + validate <span class="badge b-ex">EXISTING</span><span class="badge b-chg">CHANGED C</span></div>
+    Single-candidate envelope (bare record tolerated) · one bounded JSON retry (gains C's retry classes) · <code>canonicalize_reaction_matrix</code> · <code>_validate_output</code>: full AR24 shape <b>and every non-requested section byte-identical</b> to base.
+  </div>
+  <div class="arrow">▼<small>only when "stat_block" ∈ requested</small></div>
+  <div class="stage">
+    <div class="t">④ Stat gate — the SAME shared gate as build-in <span class="badge b-chg">inherits A + M3 automatically</span></div>
+    <ul>
+      <li>NPC re-roll: no more under-powered flagging → the DM receives the model's authentic numbers, not a conform rewrite <span class="badge b-chg">A</span>.</li>
+      <li>Monster re-roll, power-only issues: deterministic conform, <b>0 extra calls</b> (was up to 3 + conform) <span class="badge b-new">M3</span>.</li>
+      <li>Shape issues: existing per-entity repair passes with strip + identity guard + class-preserve.</li>
+      <li>Scoped by design: re-rolling <code>secret</code> never fails over an unrelated weak block <span class="ev">(regenerate.py:218-233)</span>.</li>
+    </ul>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="stage">
+    <div class="t">⑤ Splice by construction <span class="badge b-ex">EXISTING</span></div>
+    Staged payload = <b>fresh</b> base record with ONLY the requested sections overwritten (trimmed). Preserved sections never come from the model — byte-identity is an assembly invariant, not a model promise. Boss section dropped if a mid-call hand edit moved role off BBEG/Monster. <span class="ev">regenerate.py:285-308</span>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="stage">
+    <div class="t">⑥ Stage (never commit)</div>
+    <b>entity-target</b> → new candidate row sharing ONE transaction with its conflict base (MID_CALL_EDIT safe: a hand edit landing mid-call is carried into both payload and base). <b>candidate-target</b> → payload replaced in place, staged edges survive (RE_ROLL_AFTER_EDIT). Result: <code>{candidate_ids, sections, target}</code> + <code>llm_calls</code> <span class="badge b-new">J</span>. Accept screen (3.3) → commit; reject/timeout → discarded.
+  </div>
+</div>
+
+<table>
+  <tr><th>Plan item</th><th>Effect on regeneration</th></tr>
+  <tr><td>A · NPC oracle</td><td>Biggest quality win, zero regenerate-code change: <code>stat_block</code> re-rolls of NPCs stop being rewritten by conform.</td></tr>
+  <tr><td>M3 · conform-first</td><td>Monster power re-rolls: 0 repair calls, deterministic landing.</td></tr>
+  <tr><td>C · retry classes</td><td>Existing 1 JSON retry gains truncation + seed-variance handling.</td></tr>
+  <tr><td>G/K · sampling, profiles</td><td>First time "re-roll again" can mean a different sample on demand; warm/cold per call class.</td></tr>
+  <tr><td>J · telemetry</td><td>Result gains <code>llm_calls</code>.</td></tr>
+  <tr><td>M4 · rebase</td><td>N/A — regenerate never commits; staleness handled at accept by the existing conflict base.</td></tr>
+  <tr><td>M2 interaction</td><td>Noted, out of scope: regenerate's own retrieval is cap-24 in &gt;24-entity worlds (ledger's spec-3-1 sibling); the compact-roster tier is reusable there later.</td></tr>
+</table>
+
+<!-- ============================================================ CUTS -->
+<h2 id="cuts">5 · Cuts &amp; sequencing</h2>
+<table>
+  <tr><th>Cut</th><th>Items</th><th>Gate to next</th></tr>
+  <tr><td><b>0 · Prerequisites</b> (small, independent)</td><td>J telemetry · G sampling passthrough · D dynamic budget · budget lock · E1 schema tightening · H1 gate-level progress</td><td>lands early — it gates everything</td></tr>
+  <tr><td><b>1 · Oracle + gate correctness</b></td><td>A NPC oracle (+ rules-text honesty + stamp decision) · M3 conform-first · C retry classes · B per-call max_tokens</td><td>rungs 10/25/50 re-green both models; Qwen rung-50 calls 48 → ~8-12; committed NPC blocks DB-verified authentic</td></tr>
+  <tr><td><b>2 · Structural scale</b></td><td>M1 chunking + wiring pass · per-chunk gates · M2 two-tier wave-2 context + F full-roster validation · E2 deep schema · M4 rebase both waves · H2 per-chunk progress</td><td>rung-100 green (§7); ≤chunk rosters byte-identical (rungs 10/25 proof)</td></tr>
+  <tr><td><b>3 · Perf, measured-gated</b></td><td>Chunk + repair pools · K profiles ×2 · transport retry for API models</td><td>only if J shows wall-clock pain AND <code>n_parallel</code>/KV verified on the 3090 (llama.cpp splits <code>n_ctx</code> across slots; 27B Q4 ≈ 17GB + KV — pool 2 or Q8-KV likely)</td></tr>
+  <tr><td><b>Decision track</b></td><td>L1 content-hash idempotency (hook exists) · L2 resume affordance (wave-2-only re-run of a failed job)</td><td>no code until owner rules</td></tr>
+  <tr><td><b>Non-goals</b></td><td colspan="2">prompt steering beyond rules-text truth · wave-1 rollback · counter ranges (Phase-3) · hand-rolled GBNF · per-campaign locks (beta) · NPC-DPR table (invented numbers) · semantic/embedding retrieval (AD-16) · per-entity full generation as default (held fallback) · 300-entity validation before rung-100 green</td></tr>
+</table>
+
+<!-- ============================================================ DECISIONS -->
+<h2 id="decisions">6 · Owner decisions (5)</h2>
+<table>
+  <tr><th>#</th><th>Decision</th><th>Recommendation</th></tr>
+  <tr><td>①</td><td>NPC/BBEG under monster band: silent vs DM-visible flag stamp</td><td><b>Flag stamp</b> — symmetric with the over-powered verdict ("tell the DM, not protect"), zero risk, answers ledger option (b) with visibility</td></tr>
+  <tr><td>②</td><td>Conform-first for conformable power violations</td><td><b>Yes</b> — named cost: Monster blocks get deterministic rider text ("plus 14 (4d6) force damage") instead of a model rewrite; measured: on Qwen the model never converges anyway</td></tr>
+  <tr><td>③</td><td>L1 idempotency + L2 resume affordance</td><td><b>Both, L1 first</b> (near-zero blast radius via existing <code>job_id</code> hook). Commit-upsert stays rejected: name-merge at 100 entities ("Hedd" vs "Hedd the Scavenger" — renames are observed model behavior) is a swamp</td></tr>
+  <tr><td>④</td><td>Chunk size default / pool default</td><td><b>12 (knob 8–25) / pool 1</b> until Cut-3 measurement</td></tr>
+  <tr><td>⑤</td><td>Ladder order at rung-100</td><td><b>gemma-4-26B-A4B first</b> (faster iteration), Qwen3.8-27B mandatory second pass — or reverse if quality-first preferred</td></tr>
+</table>
+
+<!-- ============================================================ VALIDATION -->
+<h2 id="validation">7 · Validation ladder</h2>
+<table>
+  <tr><th>Step</th><th>What</th><th>Acceptance</th></tr>
+  <tr><td>Regression</td><td>rungs 10/25 re-run after every cut, both models</td><td>green; ≤chunk-size rosters take the byte-identical single-call path</td></tr>
+  <tr><td>Cut-1 proof</td><td>rung 50 re-run both models</td><td>Qwen calls 48 → ~8-12; committed NPC blocks carry model numbers (DB-verified); no new death classes</td></tr>
+  <tr><td>rung-100 seed</td><td>author ~60 chars / 24 places / 16 factions; <b>notes-D deliberately names entities at positions &gt; 24</b> (the M2 probe, not a hope)</td><td>—</td></tr>
+  <tr><td>rung-100 green</td><td>per model, pool=1</td><td>job completes; committed == trimmed roster (per-chunk pins hold); edges &gt; 0 closed-vocabulary (edgeless fallback legal but recorded as wiring miss in J); zero truncation deaths; calls ≤ ceiling with actual recorded; wave-2 anchor to a &gt;24-position entity present; wall-clock baselined</td></tr>
+  <tr><td>Failure drills</td><td>scratch DB, injected</td><td>oversized wave-2 (truncation retry) · chunk malformed (per-chunk retry, siblings unaffected) · DM edit mid-job (M4 both waves) · duplicate re-submit after L1 (409, no double world)</td></tr>
+  <tr><td>Cut-3 gate</td><td>J telemetry from rung-100</td><td>pools ship only on measured residual wall-clock pain + confirmed <code>n_parallel</code> ≥ pool + KV footprint fits</td></tr>
+</table>
+
+<footer>
+  Planning artifact — no code implemented, no pipeline files touched. Evidence anchors: runlog
+  <code>_bmad-output/implementation-artifacts/ladder-qwen3-2026-09-11/runlog.md</code> · ledger <code>deferred-work.md</code> ·
+  code citations inline (build_in.py / knowledge.py / statblocks.py / combat.py / budget.py / llm.py / jobs.py / commit.py / retrieval.py / regenerate.py / candidates.py / config.py / run_rung.py).
+  Move or delete freely; suggested home if kept: alongside the BMAD specs as <code>spec-build-in-scale-100.md</code> when implementation is commissioned.
+</footer>
+
+</div>
+</body>
+</html>

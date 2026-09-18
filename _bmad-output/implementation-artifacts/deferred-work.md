@@ -570,3 +570,16 @@ maps to a proposed story; none implemented yet.
   RETENTION_DAYS=30 prunes once per job open. Write failures are logged
   and swallowed — a full disk never fails a job that already spent the
   call. Label pin: test_worker_opened_journal_round_trips_the_attempts.
+## Resolved by: owner ruling 2026-09-18 (edge counter semantic bounds)
+
+- The 2.3 "counter semantic ranges" deferral and the spec-3.1 round-3 "staged edge
+  counters are never validated" deferral are CLOSED by the owner's 2026-09-18 ruling:
+  per-semantic inclusive bounds live in `store.commit.EDGE_COUNTER_RANGES` —
+  amount (debt) 0..1_000_000, score (grudge/loyalty) 1..10, intensity
+  (ally_of/enemy_of/controls/protects) 1..10, neutral types shape-only int. The
+  store commit path rejects an out-of-range counter with `InvalidEdgeCounterError`
+  (bounds named in the message); the generate stage boundary (`_valid_edge`) and
+  the build-in wave edges (`_resolve_edges`, declared relations, `_edge_row_usable`)
+  enforce the same ranges (stage drop / named JobPayloadError). The wire rejects
+  via the existing 422 validation_error mapping. [backend/app/store/commit.py,
+  backend/app/pipeline/generate.py, backend/app/pipeline/build_in.py]

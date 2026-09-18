@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 08:25
-last_updated: 09-14-2026
+last_updated: 09-18-2026
 project: mythosCircle
 project_key: NOKEY
 tracking_system: file-system
@@ -64,6 +64,12 @@ development_status:
   3-5-regeneration-whole-and-per-section: done
   3-6-hand-editing-the-dm-is-the-final-author: done
   epic-3-retrospective: done
+  # -- 2026-09-15..18 sessions (owner verdict 2026-09-18: approve all) --
+  hybrid-authorship-two-paths: done
+  character-forge-ui-round-2: done
+  generic-character-library: done
+  structured-statblock-editor: done
+  statblock-power-accounting-saga: done
 
   epic-4: done
   4-1-portrait-generation-for-accepted-entities: done
@@ -162,8 +168,12 @@ action_items:
       loyalty, ally/enemy intensity); subsumes 2-3 counter-ranges deferral; front-load
       in Epic 4 or 6"
     owner: "pipeline-tuning story"
-    status: open
+    status: done
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-3-retro-2026-09-05.md"
+    note: "DONE 2026-09-18 (owner ruling): EDGE_COUNTER_RANGES — amount
+      0..1_000_000, score/intensity 1..10, neutral shape-only — enforced
+      at the store commit path (InvalidEdgeCounterError with bounds),
+      the generate stage boundary, and the build-in wave edges."
   - id: "epic-3-retro-item-4-retrieval-cap-truncation-diagnostic"
     epic: 3
     action: "Surface retrieval-cap truncation in generate job result + ask-target
