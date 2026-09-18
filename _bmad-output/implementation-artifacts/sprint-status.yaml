@@ -160,7 +160,10 @@ action_items:
       and WorldView.vue (975 lines): LORE_FIELDS / FIELD_LABELS / EDGE_VOCAB / COUNTER_TYPES
       / profile-render duplication; land before Epic 7 graph visualizer"
     owner: "frontend-refactor story"
-    status: open
+    status: done
+    note: "DONE as part of sprint A (2026-09-18): shared
+      components/profile/profile.ts — WorldView + CandidatesView deduped
+      onto it, byte-identical rendering preserved."
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-3-retro-2026-09-05.md"
   - id: "epic-3-retro-item-3-counter-semantic-bounds-enforcement"
     epic: 3
