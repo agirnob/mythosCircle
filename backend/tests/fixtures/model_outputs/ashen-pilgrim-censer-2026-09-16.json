@@ -1,0 +1,79 @@
+{
+  "journal_id": "01M2Q3A9KAX6VDRDNEQAG3QYWG",
+  "kind": "wave1",
+  "captured": "2026-09-17T07:12:11.194491+00:00",
+  "entity": "Ashen Pilgrim",
+  "block": {
+    "identity": {
+      "role": "NPC",
+      "level": 5,
+      "race": "Human",
+      "class": "Cleric"
+    },
+    "attributes": {
+      "str": 10,
+      "dex": 12,
+      "con": 14,
+      "int": 10,
+      "wis": 18,
+      "cha": 13
+    },
+    "combat": {
+      "ac": 15,
+      "hp": 38
+    },
+    "saves": {
+      "wis": 7,
+      "cha": 5
+    },
+    "skills": [
+      {
+        "name": "Religion",
+        "bonus": 6
+      },
+      {
+        "name": "Insight",
+        "bonus": 6
+      }
+    ],
+    "actions": [
+      {
+        "name": "Censer of Ash",
+        "to_hit": 6,
+        "description": "Melee Weapon Attack: +6 to hit, reach 5 ft., one target. Hit: 5 (1d6 + 2) bludgeoning damage plus 7 (2d6) necrotic damage.",
+        "damage": [
+          {
+            "dice": "1d6",
+            "count": 1,
+            "sides": 6,
+            "bonus": 2,
+            "average": 5,
+            "type": "bludgeoning"
+          },
+          {
+            "dice": "2d6",
+            "count": 1,
+            "sides": 6,
+            "bonus": 0,
+            "average": 7,
+            "type": "necrotic"
+          }
+        ]
+      }
+    ],
+    "spellcasting": {
+      "dc": 14,
+      "attack_bonus": 6,
+      "slots": [
+        4,
+        3,
+        3,
+        3,
+        1
+      ]
+    },
+    "traits": [
+      "Channel Divinity"
+    ]
+  }
+}

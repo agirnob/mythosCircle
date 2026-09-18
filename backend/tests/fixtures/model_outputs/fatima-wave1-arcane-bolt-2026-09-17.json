@@ -1,0 +1,74 @@
+{
+  "journal_id": "01M2R1AARMPAKQWZ1JMMKCGPV1",
+  "kind": "wave1",
+  "captured": "2026-09-17T15:56:32.369210+00:00",
+  "entity": "fatima",
+  "block": {
+    "identity": {
+      "role": "BBEG",
+      "level": 20,
+      "race": "Tiefling",
+      "class": "Wizard"
+    },
+    "attributes": {
+      "str": 10,
+      "dex": 16,
+      "con": 18,
+      "int": 22,
+      "wis": 16,
+      "cha": 18
+    },
+    "combat": {
+      "ac": 15,
+      "hp": 165
+    },
+    "saves": {
+      "int": 14,
+      "wis": 10,
+      "con": 8
+    },
+    "skills": {
+      "Arcana": 14,
+      "History": 14,
+      "Deception": 10
+    },
+    "actions": [
+      {
+        "name": "Multiattack",
+        "description": "Fatima makes two Arcane Bolt attacks."
+      },
+      {
+        "name": "Arcane Bolt",
+        "to_hit": 14,
+        "description": "Ranged Spell Attack: +14 to hit, range 120 ft., one target. Hit: 22 (4d6 + 8) force damage.",
+        "damage": [
+          {
+            "dice": "4d6",
+            "count": 1,
+            "sides": 6,
+            "bonus": 8,
+            "average": 22,
+            "type": "force"
+          }
+        ]
+      }
+    ],
+    "traits": [
+      {
+        "name": "Unsettling Presence",
+        "description": "Creatures starting their turn within 30 feet of Fatima must succeed on a DC 18 Wisdom saving throw or be frightened until the start of their next turn."
+      }
+    ],
+    "spells": {
+      "dc": 22,
+      "attack_bonus": 14,
+      "slots": [
+        4,
+        3,
+        3,
+        3,
+        1
+      ]
+    }
+  }
+}

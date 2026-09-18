@@ -1364,6 +1364,41 @@ def _fold_prose_damage(block: dict[str, Any]) -> dict[str, Any]:
             if isinstance(part, dict) and isinstance(part.get("type"), str) and part.get("type"):
                 first_type = part["type"]
                 break
+
+        def _prose_part_type(
+            parts: list[Any], first_type: str, count: int, sides: int, bonus: int
+        ) -> str:
+            """The existing part a prose idiom states, matched by its
+            DICE identity (the b99105f rule: the dice string outranks a
+            lying count). A multi-type action's rebuild must keep each
+            idiom's damage type — measured 2026-09-18 (ashen-pilgrim
+            Censer of Ash): the rebuild typecast EVERY idiom to the first
+            part's type, so "7 (2d6) necrotic damage" committed as
+            bludgeoning on the sheet."""
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                dice = part.get("dice")
+                if isinstance(dice, str):
+                    found = combat._DICE_RE.findall(dice)
+                    if not found:
+                        continue
+                    part_count, part_sides = int(found[0][0]), int(found[0][1])
+                else:
+                    raw_count, raw_sides = part.get("count"), part.get("sides")
+                    if type(raw_count) is not int or type(raw_sides) is not int:
+                        continue
+                    part_count, part_sides = raw_count, raw_sides
+                if (
+                    part_count == count
+                    and part_sides == sides
+                    and (part.get("bonus") or 0) == bonus
+                ):
+                    part_type = part.get("type")
+                    if isinstance(part_type, str) and part_type:
+                        return part_type
+            return first_type
+
         for _figure, count_s, sides_s, sign, bonus_s in _PROSE_DAMAGE_RE.findall(description):
             count, sides = int(count_s), int(sides_s)
             bonus = int(bonus_s) if bonus_s else 0
@@ -1371,7 +1406,15 @@ def _fold_prose_damage(block: dict[str, Any]) -> dict[str, Any]:
                 bonus = -bonus
             prose_avg = count * (sides + 1) / 2 + bonus
             prose_total += prose_avg
-            prose_parts.append(_damage_part(count, sides, prose_avg, first_type, bonus))
+            prose_parts.append(
+                _damage_part(
+                    count,
+                    sides,
+                    prose_avg,
+                    _prose_part_type(parts, first_type, count, sides, bonus),
+                    bonus,
+                )
+            )
         parts_total = 0.0
         for part in parts:
             if not isinstance(part, dict):

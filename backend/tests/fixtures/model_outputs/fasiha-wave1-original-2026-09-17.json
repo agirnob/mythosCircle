@@ -1,0 +1,106 @@
+{
+  "journal_id": "01M2RDX86VG681WFAKNSY0GM43",
+  "kind": "wave1",
+  "captured": "2026-09-17T19:36:42.204807+00:00",
+  "entity": "fasiha",
+  "block": {
+    "identity": {
+      "role": "NPC",
+      "level": 20,
+      "race": "Tiefling",
+      "class": "Warlock"
+    },
+    "attributes": {
+      "str": 10,
+      "dex": 16,
+      "con": 16,
+      "int": 18,
+      "wis": 14,
+      "cha": 22
+    },
+    "combat": {
+      "ac": 17,
+      "hp": 165
+    },
+    "saves": {
+      "wis": 8,
+      "cha": 14
+    },
+    "skills": [
+      {
+        "name": "Arcana",
+        "bonus": 10
+      },
+      {
+        "name": "Deception",
+        "bonus": 12
+      }
+    ],
+    "actions": [
+      {
+        "name": "Eldritch Torrent",
+        "to_hit": 14,
+        "description": "Multiattack: fasiha makes three Eldritch Blast attacks.",
+        "damage": []
+      },
+      {
+        "name": "Eldritch Blast",
+        "to_hit": 14,
+        "description": "Ranged Spell Attack: +14 to hit, range 120 ft., one target. Hit: 13 (1d10 + 8) force damage.",
+        "damage": [
+          {
+            "dice": "1d10",
+            "count": 1,
+            "sides": 10,
+            "bonus": 8,
+            "average": 13,
+            "type": "force"
+          }
+        ]
+      },
+      {
+        "name": "Void Collapse",
+        "to_hit": 14,
+        "description": "Area Effect: fasiha summons a rift. Each creature in a 20ft radius must make a DC 20 Charisma save or take 36 (8d8) necrotic damage and be frightened.",
+        "damage": [
+          {
+            "dice": "8d8",
+            "count": 1,
+            "sides": 8,
+            "bonus": 0,
+            "average": 36,
+            "type": "necrotic"
+          }
+        ]
+      }
+    ],
+    "traits": [
+      {
+        "name": "Patron's Aegis",
+        "description": "When hit by an attack, fasiha can use a reaction to gain resistance to that damage type until the start of her next turn."
+      }
+    ],
+    "spellcasting": {
+      "dc": 20,
+      "attack_bonus": 12,
+      "slots": [
+        4,
+        3,
+        3,
+        3,
+        1
+      ]
+    },
+    "spells": [
+      "Arms of Hadar",
+      "Banishment",
+      "Counterspell",
+      "Dimension Door",
+      "Eldritch Blast",
+      "Fear",
+      "Hunger of Hadar",
+      "Misty Step",
+      "Scrying"
+    ]
+  }
+}
