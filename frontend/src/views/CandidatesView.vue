@@ -8,6 +8,16 @@ import StatBlock from '../components/StatBlock.vue'
 import { useAuthStore } from '../stores/auth'
 import { useCandidatesStore } from '../stores/candidates'
 import { useJobsStore } from '../stores/jobs'
+import {
+  asString,
+  BOSS_FIELDS,
+  EDGE_DIRECTIONS,
+  EDGE_VOCAB,
+  FIELD_LABELS,
+  IDENTITY_FIELDS,
+  LORE_FIELDS,
+  WORLD_INTEGRATION_FIELDS as WORLD_FIELDS,
+} from '../components/profile/profile'
 import { useWorldStore } from '../stores/world'
 import { connectJobSocket } from '../ws'
 import type { WsMessage } from '../ws'
@@ -224,66 +234,13 @@ async function submitAsk() {
 // ---------------------------------------------------------------------------
 // The AR24 sectioned profile: known sections render, unknown keys are
 // skipped (AR24 forward compatibility) — nothing here fails on extras.
+// The field sets, labels, and edge vocabulary are the SHARED profile
+// module (epic-3 retro item 2) — one home, both views (see
+// ../components/profile/profile.ts).
 // ---------------------------------------------------------------------------
-
-const IDENTITY_FIELDS = ['level_cr', 'race_type', 'class_profession', 'alignment'] as const
-const LORE_FIELDS = [
-  'appearance',
-  'personality',
-  'background',
-  'goals',
-  'relationships',
-  'secret',
-  'rumor',
-  'party_hook',
-  'voice_style',
-  'catchphrases',
-] as const
-const BOSS_FIELDS = ['lair_actions', 'legendary_actions', 'immunities', 'vulnerabilities'] as const
-const WORLD_FIELDS = [
-  'reputation',
-  'factions',
-  'current_location',
-  'reaction_matrix',
-  'on_defeat',
-] as const
-
-const FIELD_LABELS: Record<string, string> = {
-  level_cr: 'Level / CR',
-  race_type: 'Race / Type',
-  class_profession: 'Class / Profession',
-  alignment: 'Alignment',
-  appearance: 'Appearance',
-  personality: 'Personality',
-  background: 'Background',
-  goals: 'Goals',
-  relationships: 'Relationships',
-  secret: 'Secret',
-  rumor: 'Rumor',
-  party_hook: 'Party hook',
-  voice_style: 'Voice style',
-  catchphrases: 'Catchphrases',
-  lair_actions: 'Lair actions',
-  legendary_actions: 'Legendary actions',
-  immunities: 'Immunities',
-  vulnerabilities: 'Vulnerabilities',
-  reputation: 'Reputation',
-  factions: 'Factions',
-  current_location: 'Current location',
-  reaction_matrix: 'Reaction matrix',
-  on_defeat: 'On defeat',
-  // WorldView's copy carries these two; the badge renders section names, so
-  // a missing key would leak the raw snake_case name into the UI.
-  stat_block: 'Stat block',
-  world_integration: 'World integration',
-}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() !== '' ? value : null
 }
 
 function sectionObject(
@@ -331,30 +288,6 @@ function relationLine(candidate: Candidate, edge: StagedEdge): string {
 // final list and an invalid edge fails the whole accept (row stays
 // proposed).
 // ---------------------------------------------------------------------------
-
-/**
- * The closed edge vocabulary (AD-5, 16 members since 2026-09-13) — the
- * add-relation picker. Mirrors app/store/commit.py EDGE_TYPES.
- */
-const EDGE_VOCAB: readonly string[] = [
-  'relationship',
-  'debt',
-  'grudge',
-  'loyalty',
-  'member_of',
-  'located_in',
-  'rival_of',
-  'kin_of',
-  'ally_of',
-  'enemy_of',
-  'bases_at',
-  'controls',
-  'employs',
-  'worships',
-  'hails_from',
-  'protects',
-]
-const EDGE_DIRECTIONS = ['outbound', 'inbound'] as const
 
 /** Committed entities the candidate can wire into (world store snapshot). */
 const worldEntities = computed(() => world.entry(campaignId).world?.entities ?? [])

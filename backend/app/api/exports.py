@@ -257,7 +257,21 @@ def _download_stem(label: str, ident: str, fallback: str) -> str:
     return f"{slug}-{ident[-8:]}" if slug else f"{fallback}-{ident[-8:]}"
 
 
-@router.get("/api/campaigns/{campaign_id}/export", response_model=WorldExport)
+@router.get(
+    "/api/campaigns/{campaign_id}/export",
+    response_model=WorldExport,
+    responses={
+        200: {
+            "content": {
+                "text/markdown": {"schema": {"type": "string"}},
+                "text/html": {"schema": {"type": "string"}},
+            },
+            "description": "The latest-revision world export: WorldExport JSON "
+            "by default, or an Obsidian-markdown / standalone-HTML attachment "
+            "via ?format=.",
+        }
+    },
+)
 def export_world(
     campaign_id: str,
     current: Annotated[models.Account, Depends(get_current_account)],
@@ -300,6 +314,19 @@ def export_world(
 @router.get(
     "/api/campaigns/{campaign_id}/entities/{entity_id}/export",
     response_model=EntityExportDetail,
+    responses={
+        200: {
+            "content": {
+                "text/markdown": {"schema": {"type": "string"}},
+                "text/html": {"schema": {"type": "string"}},
+                "text/xml": {"schema": {"type": "string"}},
+                "application/zip": {"schema": {"type": "string", "format": "binary"}},
+            },
+            "description": "The entity export: EntityExportDetail JSON by default, "
+            "or a format-specific attachment (markdown / html / owlbear JSON / "
+            "fg XML / maptool .rptok zip) via ?format=.",
+        }
+    },
 )
 def export_entity(
     campaign_id: str,

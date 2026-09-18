@@ -23,10 +23,22 @@ import {
 import { useJobsStore } from '../stores/jobs'
 import { useWorldStore } from '../stores/world'
 import { connectJobSocket } from '../ws'
+import {
+  BOSS_FIELDS as BOSS_TEXT_FIELDS,
+  BOSS_ROLES,
+  CORE_FIELDS,
+  COUNTER_TYPES,
+  EDGE_DIRECTIONS,
+  EDGE_VOCAB,
+  edgeLabel,
+  FIELD_LABELS as PROFILE_FIELD_LABELS,
+  IDENTITY_FIELDS,
+  LORE_FIELDS,
+  WORLD_INTEGRATION_FIELDS,
+} from '../components/profile/profile'
 
 type WorldExport = components['schemas']['WorldExport']
 type EntityExport = components['schemas']['EntityExport']
-type EdgeExport = components['schemas']['EdgeExport']
 
 const route = useRoute()
 const router = useRouter()
@@ -136,50 +148,9 @@ const nameById = computed(() => {
 })
 
 /**
- * Frontend mirror of 2.6's `_edge_label` (AD-23): neutral types render
- * bare; debt/grudge/loyalty/ally/enemy carry the counter.
+ * The closed edge vocabulary + counter set are shared with the
+ * candidates view (epic-3 retro item 2) — ../components/profile/profile.ts.
  */
-const COUNTER_TYPES: ReadonlySet<string> = new Set([
-  'debt',
-  'grudge',
-  'loyalty',
-  'ally_of',
-  'enemy_of',
-  'controls',
-  'worships',
-  'protects',
-])
-
-function edgeLabel(edge: EdgeExport): string {
-  return COUNTER_TYPES.has(edge.type) ? `${edge.type}(${edge.counter})` : edge.type
-}
-
-/**
- * The closed edge vocabulary (AD-5, 16 members since 2026-09-13) — the
- * add-relation picker. Mirrors app/store/commit.py EDGE_TYPES: the six
- * role-bearing types (bases_at, controls, employs, worships, hails_from,
- * protects) were added to absorb the meanings that used to collapse into
- * ``relationship``.
- */
-const EDGE_VOCAB: readonly string[] = [
-  'relationship',
-  'debt',
-  'grudge',
-  'loyalty',
-  'member_of',
-  'located_in',
-  'rival_of',
-  'kin_of',
-  'ally_of',
-  'enemy_of',
-  'bases_at',
-  'controls',
-  'employs',
-  'worships',
-  'hails_from',
-  'protects',
-]
-
 interface RelationLine {
   edgeId: string
   srcName: string
@@ -203,7 +174,7 @@ const relationsByEntity = computed(() => {
         edgeId: edge.id,
         srcName: nameById.value.get(edge.src) ?? '(unknown)',
         dstName: nameById.value.get(edge.dst) ?? '(unknown)',
-        label: edgeLabel(edge),
+        label: edgeLabel(edge.type, edge.counter),
         type: edge.type,
         counter: edge.counter,
         outbound: endpoint === edge.src,
@@ -227,8 +198,6 @@ function relationsFor(entityId: string): RelationLine[] {
 // world store's edge actions (the backend commit path) and comes back as a
 // coalesced refetch. Errors render inline on the owning card.
 // ---------------------------------------------------------------------------
-
-const EDGE_DIRECTIONS = ['outbound', 'inbound'] as const
 
 const addingFor = ref<string | null>(null)
 const addType = ref<string>(EDGE_VOCAB[0])
@@ -977,59 +946,25 @@ async function removeEdge(entityId: string, relation: RelationLine) {
 // conditional validation never forces a shape they lack.
 // ---------------------------------------------------------------------------
 
-const IDENTITY_FIELDS = ['level_cr', 'race_type', 'class_profession', 'alignment'] as const
-const LORE_FIELDS = [
-  'appearance',
-  'background',
-  'goals',
-  'relationships',
-  'voice_style',
-  'catchphrases',
-] as const
-const BOSS_ROLES = new Set(['BBEG', 'Monster'])
-
+/**
+ * This view's label map: the shared canonical base with the profile
+ * editor's compact spellings ('Level/CR' — no spaces) and the boss
+ * block's label (the base deliberately omits 'boss' so the candidates
+ * re-roll badge keeps rendering the raw section name).
+ */
 const FIELD_LABELS: Record<string, string> = {
-  text: 'Text',
-  name: 'Name',
-  role: 'Role',
+  ...PROFILE_FIELD_LABELS,
   level_cr: 'Level/CR',
   race_type: 'Race/Type',
-  class_profession: 'Class / Profession',
-  alignment: 'Alignment',
-  personality: 'Personality',
-  secret: 'Secret',
-  rumor: 'Rumor',
-  party_hook: 'Party hook',
-  appearance: 'Appearance',
-  background: 'Background',
-  goals: 'Goals',
-  relationships: 'Relationships',
-  voice_style: 'Voice style',
-  catchphrases: 'Catchphrases',
-  reputation: 'Reputation',
-  factions: 'Factions',
-  current_location: 'Current location',
-  reaction_matrix: 'Reaction matrix',
-  on_defeat: 'On defeat',
-  stat_block: 'Stat block',
-  world_integration: 'World integration',
   boss: 'Boss',
 }
 
-/** World-integration subfields in contract order (spec-3.3). */
-const WORLD_INTEGRATION_FIELDS = [
-  'reputation',
-  'factions',
-  'current_location',
-  'reaction_matrix',
-  'on_defeat',
+/** Editable scalar string fields (AR19 core + identity anchor + narrative
+ * lore). The shared LORE_FIELDS covers the AR19 core too, so the union
+ * dedupes to the canonical render order (Set keeps first occurrence). */
+const SCALAR_FIELDS = [
+  ...new Set<string>(['name', 'role', ...CORE_FIELDS, ...IDENTITY_FIELDS, ...LORE_FIELDS]),
 ] as const
-
-/** Editable scalar string fields (identity anchor + narrative lore). */
-const CORE_FIELDS = ['personality', 'secret', 'rumor', 'party_hook'] as const
-
-/** Editable scalar string fields (AR19 core + identity anchor + narrative lore). */
-const SCALAR_FIELDS = ['name', 'role', ...CORE_FIELDS, ...IDENTITY_FIELDS, ...LORE_FIELDS] as const
 
 /** Structured blocks edited as pretty JSON. The character stat block
  * edits through the structured StatBlockEditor and the boss section
@@ -1055,8 +990,6 @@ const profileBases = ref<Record<string, string | null>>({})
  * null = the block was cleared. Seeded at edit-open like the strings. */
 const statBlockDrafts = ref<Record<string, Record<string, unknown> | null>>({})
 const statBlockInitials = ref<Record<string, unknown>>({})
-/** The boss section's four text fields, same object-draft pattern. */
-const BOSS_TEXT_FIELDS = ['lair_actions', 'legendary_actions', 'immunities', 'vulnerabilities'] as const
 const bossDrafts = ref<Record<string, Record<string, string> | null>>({})
 const bossInitials = ref<Record<string, unknown>>({})
 const hasStatBlock = (entity: EntityExport): boolean =>
@@ -1375,6 +1308,12 @@ function additionalDataBlock(entity: EntityExport): string {
           <RouterLink :to="{ name: 'forge', params: { id: campaignId } }" class="cta secondary">
             Open character forge
           </RouterLink>
+          <RouterLink
+            :to="{ name: 'add-character', params: { id: campaignId } }"
+            class="cta secondary"
+          >
+            Add character
+          </RouterLink>
         </p>
         <div v-if="isGenericLibrary" class="move-picker">
           <h3>Character library</h3>
@@ -1422,6 +1361,12 @@ function additionalDataBlock(entity: EntityExport): string {
         </RouterLink>
         <RouterLink :to="{ name: 'forge', params: { id: campaignId } }" class="cta secondary">
           Open character forge
+        </RouterLink>
+        <RouterLink
+          :to="{ name: 'add-character', params: { id: campaignId } }"
+          class="cta secondary"
+        >
+          Add character
         </RouterLink>
       </div>
 
@@ -1791,8 +1736,8 @@ function additionalDataBlock(entity: EntityExport): string {
               <div v-if="hasStatBlock(entity)" class="field">
                 <span>Stat block</span>
                 <StatBlockEditor
-                  v-model="statBlockDrafts[entity.id]"
                   :key="`sbe-${entity.id}-${profileBases[entity.id] ?? ''}`"
+                  v-model="statBlockDrafts[entity.id]"
                 />
               </div>
               <div

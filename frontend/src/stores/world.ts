@@ -115,15 +115,33 @@ export const useWorldStore = defineStore('world', {
         this.mediaErrorByCampaign[campaignId] = true
       }
     },
-    /** The LATEST PORTRAIT row for an entity, or null (newest
-     * created_at, ``kind === 'image'`` only) — a 4.2 video row for the
-     * same entity must never displace the portrait as the <img> src. */
+    /** The portrait row for an entity, or null — the newest AVAILABLE
+     * image by manifest rowid (spec-4.3 / epic-4 retro item 13): the
+     * export_sheets._hero_portrait_src rule, mirrored exactly. The
+     * manifest is explicitly rowid (insertion) order, so the LAST
+     * image row that is not flagged missing on this entity's export is
+     * the newest available by rowid — the old created_at sort is gone
+     * (a broken newest row must not shadow an older good one, and a
+     * same-second regen resolves by rowid, not by string compare).
+     * Availability lives on the entity export's media refs (the
+     * manifest itself does not carry it); kind === 'image' only — a
+     * 4.2 video row must never displace the portrait as the <img> src. */
     portraitFor(campaignId: string, entityId: string): MediaRow | null {
-      return (
-        this.mediaFor(campaignId)
-          .filter((row) => row.entity_id === entityId && row.kind === 'image')
-          .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
+      const entry = this.byCampaign[campaignId]
+      const entity = entry?.world?.entities.find((candidate) => candidate.id === entityId)
+      // A missing file is flagged per ref; any image ref NOT in the
+      // missing set is available. (Refs and manifest come from the same
+      // media rows; with no refs — pre-4.3 worlds — every row counts.)
+      const missing = new Set(
+        (entity?.media ?? [])
+          .filter((ref) => ref.kind === 'image' && !ref.available)
+          .map((ref) => ref.id),
       )
+      const rows = this.mediaFor(campaignId).filter(
+        (row) =>
+          row.entity_id === entityId && row.kind === 'image' && !missing.has(row.id),
+      )
+      return rows.length > 0 ? rows[rows.length - 1]! : null
     },
     /** The LATEST reveal-video row for an entity, or null (newest
      * created_at, ``kind === 'video'`` only) — the boss-tier card's

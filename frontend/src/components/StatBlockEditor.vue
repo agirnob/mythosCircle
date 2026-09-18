@@ -8,7 +8,15 @@
 import { computed } from 'vue'
 import { ref, watch } from 'vue'
 
-const props = defineProps<{ modelValue: Record<string, unknown> | null }>()
+const props = defineProps<{
+  modelValue: Record<string, unknown> | null
+  /** True when the parent owns the identity block (the fully-authored
+   * Add-Character form authors role/race/level/CR/class/alignment once,
+   * at sheet level, and injects them at build time) — the identity grid
+   * renders and emits nothing here. WorldView's profile editor leaves it
+   * unset and keeps the built-in identity rows. */
+  hideIdentity?: boolean
+}>()
 const emit = defineEmits<{ (e: 'update:modelValue', value: Record<string, unknown> | null): void }>()
 
 const ROLES = ['NPC', 'BBEG', 'Monster'] as const
@@ -219,12 +227,14 @@ function emitBlock(): Record<string, unknown> | null {
   const block: Record<string, unknown> = {}
 
   const identity: Record<string, unknown> = {}
-  if (identityRole.value.trim()) identity.role = identityRole.value.trim()
-  if (identityRace.value.trim()) identity.race = identityRace.value.trim()
-  if (powerSlot.value === 'level' && levelValue.value !== null) identity.level = levelValue.value
-  if (powerSlot.value === 'cr' && crValue.value.trim()) identity.cr = crValue.value.trim()
-  if (identityClass.value.trim()) identity.class = identityClass.value.trim()
-  if (identityAlignment.value.trim()) identity.alignment = identityAlignment.value.trim()
+  if (!props.hideIdentity) {
+    if (identityRole.value.trim()) identity.role = identityRole.value.trim()
+    if (identityRace.value.trim()) identity.race = identityRace.value.trim()
+    if (powerSlot.value === 'level' && levelValue.value !== null) identity.level = levelValue.value
+    if (powerSlot.value === 'cr' && crValue.value.trim()) identity.cr = crValue.value.trim()
+    if (identityClass.value.trim()) identity.class = identityClass.value.trim()
+    if (identityAlignment.value.trim()) identity.alignment = identityAlignment.value.trim()
+  }
   if (Object.keys(identity).length > 0) block.identity = identity
 
   const attrs: Record<string, number> = {}
@@ -314,7 +324,7 @@ function emitUpdate() {
   <div class="sbe" @change="emitUpdate" @blur="emitUpdate">
     <p v-if="stampLine" class="muted small mono">{{ stampLine }}</p>
 
-    <div class="grid">
+    <div v-if="!props.hideIdentity" class="grid">
       <label>
         Role
         <select v-model="identityRole">
@@ -355,15 +365,15 @@ function emitUpdate() {
     <div class="grid">
       <label v-for="attr in ATTRIBUTES" :key="attr">
         {{ attr.toUpperCase() }}
-        <input v-model.number="attributes[attr]" type="number" min="1" max="30" />
+        <input v-model.number="attributes[attr]" type="number" min="1" max="30" :aria-label="`attributes.${attr}`" />
       </label>
     </div>
 
     <h4>Combat</h4>
     <div class="grid">
-      <label>AC <input v-model.number="ac" type="number" min="0" /></label>
-      <label>HP <input v-model.number="hp" type="number" min="1" /></label>
-      <label>Hit dice <input v-model="hitDice" type="text" /></label>
+      <label>AC <input v-model.number="ac" type="number" min="0" aria-label="combat.ac" /></label>
+      <label>HP <input v-model.number="hp" type="number" min="1" aria-label="combat.hp" /></label>
+      <label>Hit dice <input v-model="hitDice" type="text" aria-label="combat.hit_dice" /></label>
     </div>
 
     <h4>Skills <button type="button" class="link" @click="addSkill">+ add</button></h4>

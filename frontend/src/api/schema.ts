@@ -1892,13 +1892,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description The latest-revision world export: WorldExport JSON by default, or an Obsidian-markdown / standalone-HTML attachment via ?format=. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["WorldExport"];
+                    "text/markdown": string;
+                    "text/html": string;
                 };
             };
             /** @description Validation Error */
@@ -1928,13 +1930,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description The entity export: EntityExportDetail JSON by default, or a format-specific attachment (markdown / html / owlbear JSON / fg XML / maptool .rptok zip) via ?format=. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["EntityExportDetail"];
+                    "text/markdown": string;
+                    "text/html": string;
+                    "text/xml": string;
+                    "application/zip": string;
                 };
             };
             /** @description Validation Error */
@@ -2208,13 +2214,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description The media file bytes inline (video/mp4 for video rows, image/png for portraits). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "video/mp4": string;
+                    "image/png": string;
                 };
             };
             /** @description Validation Error */

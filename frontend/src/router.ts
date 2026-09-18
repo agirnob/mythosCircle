@@ -43,6 +43,12 @@ const router = createRouter({
       component: () => import('./views/CharacterForgeView.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      path: '/campaigns/:id/add-character',
+      name: 'add-character',
+      component: () => import('./views/AddCharacterView.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

@@ -307,7 +307,19 @@ def _signed_file(
     )
 
 
-@router.get("/api/campaigns/{campaign_id}/media/{entity_id}/{filename}")
+@router.get(
+    "/api/campaigns/{campaign_id}/media/{entity_id}/{filename}",
+    responses={
+        200: {
+            "content": {
+                "video/mp4": {"schema": {"type": "string", "format": "binary"}},
+                "image/png": {"schema": {"type": "string", "format": "binary"}},
+            },
+            "description": "The media file bytes inline (video/mp4 for video rows, "
+            "image/png for portraits).",
+        }
+    },
+)
 def get_file(
     campaign_id: str,
     entity_id: str,

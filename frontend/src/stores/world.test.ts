@@ -524,3 +524,103 @@ describe('world store', () => {
     expect(exportCalls).toHaveLength(1)
   })
 })
+
+describe('portraitFor (spec-4.3 / epic-4 retro item 13: newest AVAILABLE by rowid)', () => {
+  type MediaRow = components['schemas']['MediaResponse']
+  type MediaRef = components['schemas']['MediaRefExport']
+
+  function mediaRow(id: string, kind: string, created_at: string): MediaRow {
+    return {
+      id,
+      campaign_id: 'C1',
+      entity_id: 'E1',
+      filename: `${id}.png`,
+      kind,
+      created_at,
+    }
+  }
+
+  function exportWith(refs: MediaRef[]): WorldExport {
+    const exported = worldExport()
+    exported.entities = [
+      { id: 'E1', kind: 'character', name: 'Mira Vane', text: null, data: {}, media: refs },
+    ]
+    return exported
+  }
+
+  function stubFetch(exported: WorldExport, manifest: MediaRow[]) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = requestUrl(input)
+      if (url.includes('/media')) return jsonResponse({ media: manifest })
+      if (url.includes('/api/jobs')) return jsonResponse({ jobs: [], next_cursor: null })
+      if (url.includes('/export')) return jsonResponse(exported)
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+  }
+
+  it('a broken newest row never shadows an older available one', async () => {
+    stubFetch(
+      exportWith([
+        { id: 'M1', kind: 'image', filename: 'M1.png', available: true },
+        { id: 'M2', kind: 'image', filename: 'M2.png', available: false },
+      ]),
+      [
+        mediaRow('M1', 'image', '2026-09-06T10:00:00Z'),
+        mediaRow('M2', 'image', '2026-09-06T11:00:00Z'),
+      ],
+    )
+    const world = useWorldStore()
+    await world.load('C1')
+    await world.fetchMedia('C1')
+    expect(world.portraitFor('C1', 'E1')?.id).toBe('M1')
+  })
+
+  it('among available rows the manifest (rowid) order wins — not created_at string order', async () => {
+    // M2 inserted AFTER M1 (later rowid) even though its created_at sorts
+    // EARLIER — the backend's _hero_portrait_src takes candidates[-1].
+    stubFetch(
+      exportWith([
+        { id: 'M1', kind: 'image', filename: 'M1.png', available: true },
+        { id: 'M2', kind: 'image', filename: 'M2.png', available: true },
+      ]),
+      [
+        mediaRow('M1', 'image', '2026-09-06T11:00:00Z'),
+        mediaRow('M2', 'image', '2026-09-06T10:00:00Z'),
+      ],
+    )
+    const world = useWorldStore()
+    await world.load('C1')
+    await world.fetchMedia('C1')
+    expect(world.portraitFor('C1', 'E1')?.id).toBe('M2')
+  })
+
+  it('a video row never displaces the portrait, even as the newest manifest row', async () => {
+    stubFetch(
+      exportWith([
+        { id: 'M1', kind: 'image', filename: 'M1.png', available: true },
+        { id: 'M2', kind: 'video', filename: 'M2.mp4', available: true },
+      ]),
+      [
+        mediaRow('M1', 'image', '2026-09-06T10:00:00Z'),
+        mediaRow('M2', 'video', '2026-09-06T11:00:00Z'),
+      ],
+    )
+    const world = useWorldStore()
+    await world.load('C1')
+    await world.fetchMedia('C1')
+    const portrait = world.portraitFor('C1', 'E1')
+    expect(portrait?.id).toBe('M1')
+    expect(portrait?.kind).toBe('image')
+  })
+
+  it('returns null when every image row is broken or none exists', async () => {
+    stubFetch(
+      exportWith([{ id: 'M1', kind: 'image', filename: 'M1.png', available: false }]),
+      [mediaRow('M1', 'image', '2026-09-06T10:00:00Z')],
+    )
+    const world = useWorldStore()
+    await world.load('C1')
+    await world.fetchMedia('C1')
+    expect(world.portraitFor('C1', 'E1')).toBe(null)
+  })
+})
