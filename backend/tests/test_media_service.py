@@ -330,6 +330,30 @@ def test_run_portrait_happy_path(world: str, tmp_path: Path) -> None:
     assert list(target.iterdir()) == [target / filename]  # no .tmp leftover
 
 
+def test_run_portrait_keep5_prunes_oldest_row_and_file(world: str, tmp_path: Path) -> None:
+    """KEEP-5 retention (epic-4 retro item 13, owner ruling 2026-09-10):
+    a 6th portrait for one entity leaves EXACTLY the 5 newest manifest
+    rows (rowid order) and the oldest row's FILE is gone from disk —
+    the bounded history stays fully present while the surplus is
+    reclaimed (rows pruned in the store, files reclaimed post-commit)."""
+    entity_id = _commit_with_appearance(world, "sharp")
+    filenames: list[str] = []
+    for _ in range(6):
+        job = _claim_image_job(world, entity_id)
+        run_portrait(job, _png_provider, SETTINGS, media_dir=tmp_path)
+        done, _position = job_status(job.id)
+        assert done.state == "succeeded"
+        filenames.append(str(done.result["filename"]))
+
+    rows = list_media(world)
+    assert [row.filename for row in rows] == filenames[-5:]  # the newest 5, rowid order
+    target = tmp_path / world / entity_id
+    assert not (target / filenames[0]).exists()  # the oldest row's FILE is gone
+    for filename in filenames[-5:]:
+        assert (target / filename).is_file()  # every kept row's file present
+    assert len(list(target.iterdir())) == 5  # exactly the kept files, no litter
+
+
 def test_run_portrait_verbatim_string_appearance(world: str, tmp_path: Path) -> None:
     """A string appearance is the prompt verbatim (never free text from
     other fields)."""

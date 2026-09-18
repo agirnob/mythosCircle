@@ -310,3 +310,42 @@ def test_undo_explicit_head_revision_id_is_accepted(client: Any) -> None:
     assert response.content == b""
     assert _head(campaign_id).base_revision == head.id
     assert _entity(client, campaign_id, character_id)["text"] == "A rogue with a ledger."
+
+
+def test_undo_of_entity_creation_reclaims_media_files_post_commit(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENTITY_CREATE_UNDO_MEDIA at the wire (spec-4.3 deferral closed,
+    owner ruling 2026-09-10): undoing the revision that CREATED an
+    entity deletes it — the manifest rows leave in the store transaction
+    and the route reclaims the FILES post-commit (the delete-entity
+    route's rows-first pattern), with the 204 intact."""
+    from app.core.ids import new_id as media_new_id
+    from app.media.service import PNG_SIGNATURE
+    from app.store import add_media, list_media
+
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign_id = _create_campaign(client)
+    _place_id, character_id = _commit_world(campaign_id)
+    kellan_id = ids.new_id()
+    commit_subgraph(
+        campaign_id,
+        [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
+        [models.EdgeInput(src=kellan_id, dst=character_id, type="rival_of", counter=1)],
+        base_revision=_head(campaign_id).id,
+    )
+    row = add_media(campaign_id, kellan_id, f"{media_new_id()}.png", "image")
+    path = tmp_path / "media" / campaign_id / kellan_id / row.filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(PNG_SIGNATURE + b"portrait")
+
+    response = client.post(f"/api/campaigns/{campaign_id}/undo")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert list_media(campaign_id) == []  # rows reclaimed in the store txn
+    assert not path.exists()  # file reclaimed post-commit by the route
+    with session_scope() as session:
+        entities, _edges = world_state(session, campaign_id)
+    assert kellan_id not in {e.id for e in entities}

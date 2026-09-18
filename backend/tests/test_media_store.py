@@ -34,6 +34,7 @@ from app.store import (
     init_db,
     list_media,
     models,
+    prune_entity_media,
     session_scope,
     world_entities,
 )
@@ -167,6 +168,31 @@ def test_reads_are_campaign_scoped(world: str) -> None:
         list_media("0" * 26)
     with pytest.raises(UnknownCampaignError):
         get_media_file("0" * 26, entity_id, row.filename)
+
+
+def test_prune_entity_media_keeps_five_newest_rows(world: str) -> None:
+    """KEEP-5 at the store seam (epic-4 retro item 13, owner ruling
+    2026-09-10): prune_entity_media deletes every row beyond the 5
+    newest (rowid order) in its own transaction and returns the deleted
+    rows — the runner's file-reclaim source — mixed kinds sharing the
+    one bounded history; other entities' rows survive; a second prune is
+    a no-op."""
+    entity_id = _commit_entity(world)
+    other_id = _commit_entity(world, "Other")
+    rows = [
+        add_media(world, entity_id, f"{ids.new_id()}.png", "image"),
+        add_media(world, entity_id, f"{ids.new_id()}.mp4", "video"),
+        *[add_media(world, entity_id, f"{ids.new_id()}.png", "image") for _ in range(4)],
+    ]
+    kept_other = add_media(world, other_id, f"{ids.new_id()}.png", "image")
+    assert len(rows) == 6
+
+    pruned = prune_entity_media(world, entity_id)
+
+    assert [r.id for r in pruned] == [rows[0].id]  # exactly the oldest row
+    assert [r.id for r in list_media(world)] == [r.id for r in rows[1:]] + [kept_other.id]
+    # Idempotent: nothing beyond the 5 newest to prune a second time.
+    assert prune_entity_media(world, entity_id) == []
 
 
 def test_delete_entity_media_deletes_rows_in_callers_session(world: str) -> None:

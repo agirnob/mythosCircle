@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from app.core import time
 from app.core.ids import new_id
 from app.media.service import PNG_SIGNATURE
-from app.store import add_media, models
+from app.store import add_media, models, prune_entity_media
 from app.store.commit import commit_subgraph
 from app.store.db import session_scope
 
@@ -560,6 +560,34 @@ def test_export_media_refs_flag_disk_presence(
     assert f"- video: {clip.filename}" in md
     assert f"- image: {broken.filename} (broken: file missing on disk)" in md
     assert f"- image: {guild_portrait.filename}" in md
+
+
+def test_export_refers_newest_available_after_keep5_prune(
+    client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KEEP-5 retention (epic-4 retro item 13, owner ruling 2026-09-10):
+    after a 6th portrait prunes the oldest row (the runner's post-commit
+    step), the export still references the NEWEST available rows — the
+    hero rule over the bounded history: the pruned row never rides the
+    export, every remaining reference is available."""
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    _register_login(client)
+    campaign_id, vespera_id = _sheet_world(client)
+    rows = [add_media(campaign_id, vespera_id, f"{new_id()}.png", "image") for _ in range(6)]
+    for row in rows:
+        _write_media_file(tmp_path, campaign_id, row)
+    pruned = prune_entity_media(campaign_id, vespera_id)
+    assert [r.id for r in pruned] == [rows[0].id]  # exactly the oldest row
+
+    data = client.get(f"/api/campaigns/{campaign_id}/export").json()
+    vespera_media = next(
+        entity["media"] for entity in data["entities"] if entity["id"] == vespera_id
+    )
+    # rowid (insertion) order within the kept five: the newest row rides
+    # the export, the pruned oldest is gone, and every kept file is
+    # present on disk.
+    assert [m["filename"] for m in vespera_media] == [row.filename for row in rows[1:]]
+    assert [m["available"] for m in vespera_media] == [True] * 5
 
 
 def test_export_without_media_lists_nothing(

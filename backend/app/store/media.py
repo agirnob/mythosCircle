@@ -7,7 +7,7 @@ never dangles over a missing file) and ``delete_entity_media`` is the
 entity-delete seam (used by ``_delete_entity`` inside its transaction;
 spec-4.3 reclaims rows with their entity — ``delete_campaign`` bulk-deletes
 its campaign's rows in the same spirit, and undo of an entity-CREATION
-revision leaves rows behind, deferred). ``delete_media_row`` /
+revision reclaims rows the same way in-store). ``delete_media_row`` /
 ``delete_one_media`` are the single-row seam behind the DM's portrait
 delete (spec-4.3) — one row, the file reclaimed after the commit. The row is the index of record
 for a generated portrait; the file lives under
@@ -30,6 +30,13 @@ from app.core import ids, time
 from app.store import models
 from app.store.commit import StoreError, UnknownCampaignError, UnknownEntityError
 from app.store.db import session_scope
+
+#: KEEP-5 retention (epic-4 retro item 13, owner ruling 2026-09-10): per
+#: entity, media history is bounded to the 5 newest rows (current + 4
+#: priors) by media row rowid ordering. ``prune_entity_media`` enforces
+#: the bound after every runner write; the frontend selector mirrors the
+#: backend 'newest AVAILABLE' rule over the bounded history.
+KEEP_MEDIA_ROWS = 5
 
 
 class MediaNotFoundError(StoreError):
@@ -105,12 +112,55 @@ def list_media(campaign_id: str) -> Sequence[models.Media]:
         ).all()
 
 
+def prune_entity_media(campaign_id: str, entity_id: str) -> Sequence[models.Media]:
+    """KEEP-5 retention: delete every manifest row of one entity beyond
+    the 5 newest (rowid order) in its own transaction, and return the
+    deleted rows — the caller's file-reclaim source.
+
+    The post-commit prune step of the KEEP-5 rule (epic-4 retro item 13,
+    owner ruling 2026-09-10): the runner calls it right after
+    ``add_media`` committed the new row, so the 5 newest rows (current +
+    4 priors) survive and everything older leaves — image and video
+    alike, one bounded history per entity. An entity with 5 or fewer
+    rows deletes nothing and returns an empty sequence; an unknown
+    campaign/entity is the same no-op (its manifest is empty).
+
+    Files are reclaimed by the caller AFTER this transaction commits
+    (AD-10 rows-first ordering, the spec-4.3 delete pattern): a crash
+    between the two leaves garbage files but no dangling row, and a
+    failed file delete never re-enters the DB.
+    """
+    with session_scope() as session:
+        keep = (
+            select(models.Media.id)
+            .where(
+                models.Media.campaign_id == campaign_id,
+                models.Media.entity_id == entity_id,
+            )
+            .order_by(literal_column("rowid").desc())
+            .limit(KEEP_MEDIA_ROWS)
+        )
+        pruned = session.scalars(
+            select(models.Media)
+            .where(
+                models.Media.campaign_id == campaign_id,
+                models.Media.entity_id == entity_id,
+                models.Media.id.not_in(keep),
+            )
+            .order_by(literal_column("rowid"))
+        ).all()
+        for row in pruned:
+            session.delete(row)
+        return pruned
+
+
 def delete_entity_media(session: Session, campaign_id: str, entity_id: str) -> None:
     """Delete every manifest row of one entity INSIDE the caller's
-    transaction — the entity-delete seam (AD-1; the caller is
-    ``_delete_entity``, spec-4.3). The store's other row deletions are
-    ``delete_campaign``'s bulk sweep and undo's leave-behind on
-    entity-creation reverts; neither routes through here.
+    transaction — the entity-delete seam (AD-1; the callers are
+    ``_delete_entity`` and undo's inverse of an entity-CREATION
+    revision, spec-4.3 — both delete the entity, so its rows leave with
+    it). The store's other row deletions are ``delete_campaign``'s
+    bulk sweep; neither of the two callers routes around this seam.
 
     Media rows are NOT world graph: no events, no revision delta, and
     undo does not restore them (``store/undo.py`` — regeneration is the

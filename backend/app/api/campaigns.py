@@ -26,7 +26,7 @@ from app.api.auth import get_current_account
 from app.api.common import store_error_as_http
 from app.core.pagination import InvalidCursorError, decode_cursor, encode_cursor
 from app.core.settings import configured_media_dir
-from app.media.service import reclaim_campaign_media
+from app.media.service import reclaim_campaign_media, reclaim_entity_media
 from app.store import StoreError, models
 from app.store.campaigns import (
     create_campaign,
@@ -38,7 +38,7 @@ from app.store.campaigns import (
     update_campaign,
 )
 from app.store.db import session_scope
-from app.store.read import latest_revision
+from app.store.read import latest_revision, revision_events
 from app.store.undo import undo as store_undo
 
 logger = logging.getLogger(__name__)
@@ -262,8 +262,12 @@ async def undo(
     through the shared mapper (rebase-or-reject, never a silent
     overwrite), exactly like the other commit routes.
 
-    Undo appends its own revision (the log is never rewritten) and does
-    not restore media rows (``store/undo.py``, spec-4.3).
+    Undo appends its own revision (the log is never rewritten). Media
+    rows are never RESTORED by undo (``store/undo.py``, spec-4.3); when
+    the undo DELETES an entity — the inverse of an entity-CREATION
+    revision — its manifest rows are reclaimed inside the store
+    transaction and the FILES are reclaimed post-commit here, the
+    delete-entity route's rows-first pattern (AD-10).
     """
     if get_campaign(current.id, campaign_id) is None:
         # Foreign or unknown — indistinguishable 404, before any body read
@@ -280,9 +284,28 @@ async def undo(
     if latest is None:
         raise HTTPException(status_code=404, detail="No revision to undo.")
     try:
-        store_undo(campaign_id, revision_id if revision_id is not None else latest.id)
+        revision = store_undo(campaign_id, revision_id if revision_id is not None else latest.id)
     except StoreError as exc:
         store_error_as_http(exc)
+    # The undo revision's entity_deleted events name exactly the entities
+    # the undo just deleted (the inverse of entity_created revisions) —
+    # their manifest rows are already gone (same store transaction);
+    # reclaim the FILES post-commit (AD-10 rows-first ordering, spec-4.3).
+    # Best-effort, like the delete routes: a reclaim failure NEVER turns
+    # the 204 into an error.
+    with session_scope() as session:
+        deleted_entities = [
+            event.payload["id"]
+            for event in revision_events(session, campaign_id, revision.id)
+            if event.type == "entity_deleted"
+        ]
+    for deleted_entity_id in deleted_entities:
+        try:
+            reclaim_entity_media(configured_media_dir(), campaign_id, deleted_entity_id)
+        except Exception:  # noqa: BLE001 - reclaim must never fail the 204
+            logger.exception(
+                "post-undo media reclaim failed for %s/%s", campaign_id, deleted_entity_id
+            )
 
 
 class GenericWorldCreate(BaseModel):

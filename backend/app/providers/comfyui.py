@@ -15,6 +15,14 @@ backends (spec-4.4 Always list). Backend-only: the worker picks this
 provider when ``[image] backend = "comfyui"``; the OpenAI path stays the
 default.
 
+The ComfyUI wire machinery is SHARED with the video twin: the endpoint
+config, workflow prompt build, JSON error mapping, and the
+deadline-budgeted submit/poll/fetch core live in
+``providers.comfyui_common`` (epic-4 retro item 11) — this module owns
+only the format-specific atoms: the PNG completeness check (signature +
+IEND), the SaveImage output scan with the rembg node targeting, and the
+resolution pinning.
+
 Leaf of the dependency graph, exactly like ``providers.llm`` / ``image``
 / ``video``: depends on nothing else in ``app/`` except settings.
 ``ProviderError`` is the shared provider-failure family from
@@ -22,34 +30,23 @@ Leaf of the dependency graph, exactly like ``providers.llm`` / ``image``
 provider alike.
 """
 
-import copy
-import json
-import re
-import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 import httpx
 
 from app.core.settings import ComfyUIImageSettings
+from app.providers.comfyui_common import (
+    build_workflow,
+    fetch_generation,
+    load_workflow,
+    widget,
+)
 from app.providers.llm import ProviderError
 
 #: A provider call: one prompt in, PNG bytes out. ``...`` accepts the
 #: keyword-only ``transport`` kwarg injected by tests.
 ComfyUIImageGeneration = Callable[..., bytes]
-
-#: Relative paths appended under the endpoint base — httpx joins a
-#: relative path under ``base_url`` (``http://host:7896`` +
-#: ``prompt`` -> ``http://host:7896/prompt``). ComfyUI's API is
-#: bare-host, no version mount.
-_PROMPT_PATH = "prompt"
-_VIEW_PATH = "view"
-
-#: Seconds between ``/history`` polls — a hardcoded code default, NOT an
-#: operator knob (spec-4.4 Always list). The ``timeout`` setting bounds
-#: the ENTIRE call, never the cadence.
-_POLL_INTERVAL = 1.0
 
 #: The PNG magic a ``/view`` 200 must carry: ComfyUI's SaveImage output
 #: is always PNG, so a non-PNG body (an HTML error page wrapped in a
@@ -70,10 +67,14 @@ _PNG_IEND = b"IEND\xaeB`\x82"
 #: shorter cannot be a complete image.
 _MIN_PNG_LEN = 20
 
-#: Acceptable ComfyUI prompt ids — hashes the server emits. A
-#: hostile/broken server must not inject path segments into the
-#: ``/history/{prompt_id}`` URL (review round 1).
-_SAFE_PROMPT_ID = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+def _valid_png(data: bytes) -> bool:
+    """A COMPLETE PNG: signature + IEND terminator and at least the
+    smallest plausible size — anything else is garbage the provider
+    rejects before the runner sees it (matrix row NON_PNG_BYTES)."""
+    return (
+        len(data) >= _MIN_PNG_LEN and data.startswith(_PNG_SIGNATURE) and data.endswith(_PNG_IEND)
+    )
 
 
 def comfyui_image_generation(
@@ -92,20 +93,15 @@ def comfyui_image_generation(
     it, injects ``prompt`` into the configured prompt node's
     ``inputs.value`` and the configured generation shape
     (``aspect_ratio`` / ``megapixels``) into the workflow's resolution
-    node if it has one, POSTs to ``{endpoint}/prompt``, polls
-    ``{endpoint}/history/{prompt_id}`` every ``_POLL_INTERVAL`` seconds
-    until the output SaveImage node has output — or ``settings.timeout``
-    elapses — then GETs the image bytes from ``{endpoint}/view``.
+    node if it has one, then runs the shared submit -> poll -> fetch
+    core (``comfyui_common.fetch_generation``).
 
     The rembg workflow carries TWO SaveImage nodes (the plain PNG and
     the alpha-joined transparent one); when ``use_rembg`` the provider
     targets ``settings.rembg_output_node_id`` so it always returns the
     transparent PNG, never the plain twin.
 
-    ``settings.timeout`` bounds the ENTIRE call (submit + poll + fetch):
-    every request carries a per-request httpx timeout capped at the
-    remaining deadline budget, and the poll loop / view fetch refuse to
-    start once the deadline is exhausted.
+    ``settings.timeout`` bounds the ENTIRE call (submit + poll + fetch).
 
     Error vocabulary (the 4-1 / 4-2 family plus one new kind): a
     missing/malformed workflow file, a prompt node without a string
@@ -127,16 +123,8 @@ def comfyui_image_generation(
     # class: the operator asked for a transparent background without
     # wiring the second workflow.
     path = settings.rembg_workflow_path if use_rembg else settings.workflow_path
-    if not path:
-        raise ProviderError("connection")
-    try:
-        workflow = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ProviderError("connection") from exc
-    node = workflow.get(settings.prompt_node_id) if isinstance(workflow, dict) else None
-    node_inputs = node.get("inputs") if isinstance(node, dict) else None
-    value = node_inputs.get("value") if isinstance(node_inputs, dict) else None
-    if not isinstance(value, str):
+    workflow = load_workflow(path)
+    if widget(workflow, settings.prompt_node_id, "value") is None:
         # The prompt widget (``inputs.value``) is the ONLY field the
         # provider must touch — a workflow that cannot carry it (missing
         # node, non-dict ``inputs``, non-string widget) is not the Krea2
@@ -144,148 +132,20 @@ def comfyui_image_generation(
         # INVALID_WORKFLOW_JSON, review rounds 1/2: guarded against a
         # present-but-non-dict ``inputs``).
         raise ProviderError("connection")
-    workflow = copy.deepcopy(workflow)
-    workflow[settings.prompt_node_id]["inputs"]["value"] = prompt
+    workflow = build_workflow(workflow, settings.prompt_node_id, "value", prompt)
     _apply_resolution(workflow, settings)
 
-    try:
-        client = httpx.Client(
-            base_url=settings.endpoint,
-            timeout=settings.timeout,
-            transport=transport,
-        )
-    except (httpx.InvalidURL, ValueError) as exc:
-        # An unparseable configured endpoint (missing scheme, garbage) is a
-        # connection-class failure, never a raw exception escaping.
-        raise ProviderError("connection") from exc
-    headers = (
-        {"Authorization": f"Bearer {settings.api_key}"} if settings.api_key is not None else {}
+    return fetch_generation(
+        workflow=workflow,
+        endpoint=settings.endpoint,
+        timeout=settings.timeout,
+        api_key=settings.api_key,
+        transport=transport,
+        extract_output=lambda outputs: _save_image_output(
+            outputs, settings.rembg_output_node_id if use_rembg else None
+        ),
+        valid_bytes=_valid_png,
     )
-    # The timeout bounds the ENTIRE call (spec-4.4): the deadline gates
-    # every request and the poll loop, so a hung request can never run
-    # the call past settings.timeout. One ``with client`` for the whole
-    # call — an httpx client cannot be re-opened once closed, and one
-    # call must be one generation (submit + poll + fetch).
-    deadline = time.monotonic() + settings.timeout
-    with client:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise ProviderError("timeout")
-        try:
-            response = client.post(
-                _PROMPT_PATH,
-                json={"prompt": workflow},
-                headers=headers,
-                timeout=_request_timeout(settings.timeout, remaining),
-            )
-        except (httpx.RequestError, httpx.InvalidURL, ValueError) as exc:
-            # Request-time URL join failures are connection-class
-            # failures; a request that consumed the whole-call deadline
-            # is the "timeout" kind, never a raw escape.
-            if time.monotonic() >= deadline:
-                raise ProviderError("timeout") from exc
-            raise ProviderError("connection") from exc
-        if response.status_code != 200:
-            raise ProviderError("http", status_code=response.status_code)
-        try:
-            prompt_id = response.json()["prompt_id"]
-        except (KeyError, TypeError, ValueError) as exc:
-            # A 200 with a non-JSON body (HTML error page, empty) or no
-            # prompt_id is a malformed submit — the job must fail, never
-            # poll a phantom prompt (matrix row MALFORMED_SUBMIT).
-            raise ProviderError("http", status_code=response.status_code) from exc
-        if not isinstance(prompt_id, str) or not _SAFE_PROMPT_ID.match(prompt_id):
-            # A hostile/broken server must not inject path segments into
-            # the history URL (review round 1).
-            raise ProviderError("http", status_code=response.status_code)
-
-        image: dict[str, str] | None = None
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break  # poll exhaustion -> ProviderError("timeout") below
-            try:
-                response = client.get(
-                    f"history/{prompt_id}",
-                    headers=headers,
-                    timeout=_request_timeout(settings.timeout, remaining),
-                )
-            except (httpx.RequestError, httpx.InvalidURL, ValueError) as exc:
-                if time.monotonic() >= deadline:
-                    raise ProviderError("timeout") from exc
-                raise ProviderError("connection") from exc
-            if response.status_code != 200:
-                raise ProviderError("http", status_code=response.status_code)
-            try:
-                entry = response.json().get(prompt_id)
-            except (AttributeError, ValueError) as exc:
-                # A 200 with a non-JSON body is a malformed history
-                # response, never a raw escape.
-                raise ProviderError("http", status_code=response.status_code) from exc
-            if entry is None:
-                # No history entry yet — the prompt is still running; poll
-                # again after the cadence, clamped so the sleep never
-                # overshoots the whole-call deadline.
-                time.sleep(min(_POLL_INTERVAL, max(0.0, deadline - time.monotonic())))
-                continue
-            if not isinstance(entry, dict):
-                raise ProviderError("http", status_code=response.status_code)
-            # The entry exists: the prompt FINISHED. A completed prompt
-            # without a SaveImage output is NO_OUTPUT_NODE — fail, never
-            # poll forever (matrix row NO_OUTPUT_NODE).
-            image = _save_image_output(
-                entry.get("outputs"),
-                settings.rembg_output_node_id if use_rembg else None,
-            )
-            if image is None:
-                raise ProviderError("http", status_code=response.status_code)
-            break
-        if image is None:
-            # Poll exhaustion: every history poll came up empty before the
-            # deadline. The ONLY caller of the "timeout" kind (spec-4.4).
-            raise ProviderError("timeout")
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise ProviderError("timeout")
-        try:
-            response = client.get(
-                _VIEW_PATH,
-                params=image,
-                headers=headers,
-                timeout=_request_timeout(settings.timeout, remaining),
-            )
-        except (httpx.RequestError, httpx.InvalidURL, ValueError) as exc:
-            if time.monotonic() >= deadline:
-                raise ProviderError("timeout") from exc
-            raise ProviderError("connection") from exc
-        if response.status_code != 200:
-            raise ProviderError("http", status_code=response.status_code)
-        data = response.content
-        if (
-            len(data) < _MIN_PNG_LEN
-            or not data.startswith(_PNG_SIGNATURE)
-            or not data.endswith(_PNG_IEND)
-        ):
-            # A /view 200 that is not a COMPLETE PNG — an HTML error
-            # page, a truncated body with an intact signature — is
-            # rejected provider-side, before run_portrait ever sees it
-            # (matrix rows NON_PNG_BYTES; the write-boundary guard
-            # stays single).
-            raise ProviderError("http", status_code=200)
-        return data
-
-
-def _request_timeout(timeout: float, remaining: float) -> float:
-    """A per-request httpx timeout capped at the whole-call deadline.
-
-    ``min(timeout, remaining)`` would let a request run the full
-    settings timeout even with seconds left on the deadline — that is
-    the 2-3x overshoot this guard exists to prevent. The floor keeps
-    httpx from rejecting a zero/negative timeout; the deadline checks
-    around each request are the real gate.
-    """
-    return min(timeout, max(0.01, remaining))
 
 
 def _apply_resolution(workflow: dict[str, Any], settings: ComfyUIImageSettings) -> None:

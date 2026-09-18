@@ -46,6 +46,7 @@ from app.store import (
     complete_job,
     job_status,
     models,
+    prune_entity_media,
     report_progress,
 )
 from app.store.candidates import BOSS_FIELDS, BOSS_ROLES
@@ -385,44 +386,10 @@ def run_portrait(
         # .png: the job fails cleanly with no file and no row.
         raise JobPayloadError("image generation returned non-PNG data")
 
-    # Atomic write FIRST (a row never dangles over a missing file), then
-    # the manifest row through the store (AD-1). Filename is a fresh
-    # ULID (conventions.md), validated by add_media.
-    filename = f"{ids.new_id()}.png"
-    target_dir = Path(media_dir) / job.campaign_id / entity_id
-    target_dir.mkdir(parents=True, exist_ok=True)
-    final_path = target_dir / filename
-    tmp_path = target_dir / f".{filename}.tmp"
-    try:
-        # Atomic write: temp + rename, so a crash never leaves a
-        # half-written image at the final path. A disk-full / I/O error
-        # (write OR replace) removes the partial temp — no .tmp litter.
-        tmp_path.write_bytes(data)
-        os.replace(tmp_path, final_path)
-    except Exception:
-        tmp_path.unlink(missing_ok=True)
-        raise
-    try:
-        add_media(job.campaign_id, entity_id, filename, "image")
-    except Exception as exc:
-        # ANY manifest-write failure — entity deleted (UnknownEntityError),
-        # campaign deleted (UnknownCampaignError), transient DB error —
-        # removes the just-written file: a failed job leaves no file and
-        # no row (the module's no-dangling invariant).
-        final_path.unlink(missing_ok=True)
-        if isinstance(exc, UnknownEntityError):
-            raise JobPayloadError(
-                f"image: entity {entity_id} no longer exists — portrait discarded"
-            ) from exc
-        raise
-    try:
-        report_progress(job.id, 1.0)
-        complete_job(job.id, result={"entity_id": entity_id, "filename": filename})
-    except JobStateConflictError:
-        # A cancel raced the terminal write: the file+row stay — the
-        # portrait is real content with its file present (no dangling
-        # row), and the cancelled job simply never reports success.
-        raise
+    # The shared write tail: atomic file write FIRST (a row never
+    # dangles over a missing file), then the manifest row through the
+    # store (AD-1), then the terminal job write.
+    _persist_media_output(job, media_dir=media_dir, entity_id=entity_id, data=data, kind="image")
 
 
 def run_video(
@@ -571,43 +538,100 @@ def run_video(
         # no file and no row.
         raise JobPayloadError("video generation returned non-mp4 data")
 
-    # Atomic write FIRST (a row never dangles over a missing file), then
-    # the manifest row through the store (AD-1). Filename is a fresh
-    # ULID (conventions.md), validated by add_media.
-    filename = f"{ids.new_id()}.mp4"
+    # The shared write tail: atomic file write FIRST (a row never
+    # dangles over a missing file), then the manifest row through the
+    # store (AD-1), then the terminal job write.
+    _persist_media_output(
+        job, media_dir=media_dir, entity_id=entity_id, data=video_bytes, kind="video"
+    )
+
+
+#: Manifest kind -> (filename extension, the noun the run-time failure
+#: vocabulary uses): the write-tail helper's only kind-specific atoms.
+_MEDIA_KINDS: dict[str, tuple[str, str]] = {
+    "image": ("png", "portrait"),
+    "video": ("mp4", "clip"),
+}
+
+
+def _persist_media_output(
+    job: models.Job,
+    *,
+    media_dir: str | os.PathLike[str],
+    entity_id: str,
+    data: bytes,
+    kind: str,
+) -> None:
+    """The run_portrait/run_video shared write tail (epic-4 retro item
+    12): atomic file write (temp + rename, file-before-row), the
+    manifest row through the store (AD-1), the KEEP-5 retention prune
+    (rows + files, retro item 13), then the terminal job write.
+
+    A row never dangles over a missing file: the file lands FIRST (temp
+    + rename, so a crash never leaves a half-written artifact), then
+    ``add_media`` re-checks campaign + entity existence inside its own
+    transaction. ANY manifest-write failure removes the just-written
+    file — a failed job leaves no file and no row (the module's
+    no-dangling invariant); an entity deleted mid-run surfaces the
+    stable ``{kind}: entity {entity_id} no longer exists — {noun}
+    discarded`` user-facing message through ``JobPayloadError``
+    (UnknownEntityError is the only special-cased store failure). A
+    cancel racing the terminal write raises ``JobStateConflictError``
+    with the file+row kept — the artifact is real content with its file
+    present (no dangling row), and the cancelled job simply never
+    reports success.
+    """
+    extension, discard_noun = _MEDIA_KINDS[kind]
+    filename = f"{ids.new_id()}.{extension}"
     target_dir = Path(media_dir) / job.campaign_id / entity_id
     target_dir.mkdir(parents=True, exist_ok=True)
     final_path = target_dir / filename
     tmp_path = target_dir / f".{filename}.tmp"
     try:
         # Atomic write: temp + rename, so a crash never leaves a
-        # half-written clip at the final path. A disk-full / I/O error
-        # (write OR replace) removes the partial temp — no .tmp litter.
-        tmp_path.write_bytes(video_bytes)
+        # half-written artifact at the final path. A disk-full / I/O
+        # error (write OR replace) removes the partial temp — no .tmp
+        # litter.
+        tmp_path.write_bytes(data)
         os.replace(tmp_path, final_path)
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
     try:
-        add_media(job.campaign_id, entity_id, filename, "video")
+        add_media(job.campaign_id, entity_id, filename, kind)
     except Exception as exc:
-        # ANY manifest-write failure — entity deleted (UnknownEntityError),
-        # campaign deleted (UnknownCampaignError), transient DB error —
-        # removes the just-written file: a failed job leaves no file and
-        # no row (the module's no-dangling invariant).
+        # ANY manifest-write failure — entity deleted
+        # (UnknownEntityError), campaign deleted (UnknownCampaignError),
+        # transient DB error — removes the just-written file: a failed
+        # job leaves no file and no row (the no-dangling invariant).
         final_path.unlink(missing_ok=True)
         if isinstance(exc, UnknownEntityError):
             raise JobPayloadError(
-                f"video: entity {entity_id} no longer exists — clip discarded"
+                f"{kind}: entity {entity_id} no longer exists — {discard_noun} discarded"
             ) from exc
         raise
+    # KEEP-5 retention (epic-4 retro item 13, owner ruling 2026-09-10):
+    # per entity, history is bounded to the 5 newest rows (rowid order) —
+    # prune the surplus post-commit, then reclaim the pruned rows' FILES
+    # (rows-first, the spec-4.3 delete pattern: rows in the store
+    # transaction, files after the commit). A prune/reclaim failure must
+    # never fail the job: the surplus rows stay referenced until the next
+    # write prunes again, and per-file reclaim errors are logged and
+    # swallowed by reclaim_media_file itself.
+    try:
+        for old in prune_entity_media(job.campaign_id, entity_id):
+            reclaim_media_file(media_dir, job.campaign_id, entity_id, old.filename)
+    except Exception:  # noqa: BLE001 - retention must never fail the job
+        logger.warning(
+            "media retention prune failed for %s/%s", job.campaign_id, entity_id, exc_info=True
+        )
     try:
         report_progress(job.id, 1.0)
         complete_job(job.id, result={"entity_id": entity_id, "filename": filename})
     except JobStateConflictError:
-        # A cancel raced the terminal write: the file+row stay — the clip
-        # is real content with its file present (no dangling row), and
-        # the cancelled job simply never reports success.
+        # A cancel raced the terminal write: the file+row stay — the
+        # artifact is real content with its file present (no dangling
+        # row), and the cancelled job simply never reports success.
         raise
 
 

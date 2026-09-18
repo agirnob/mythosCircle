@@ -15,13 +15,17 @@ path's validate-then-mutate discipline. State/log inconsistencies that
 would make the inverse impossible raise ``CorruptEventError`` (reject,
 never guess) and roll back the whole undo.
 
-Media-manifest rows are untouched by undo — no media events exist to
-invert, so undo never restores reclaimed media (spec-4.3). An entity
-delete reclaims its manifest rows in the same transaction; undo of an
-entity-CREATION revision currently leaves that entity's media rows and
-files behind (rows and files both — media are not world graph, so the
-inverse of an entity_created event reclaims neither; a media delete is
-likewise not undoable). The HTTP surface is ``POST
+Media-manifest rows are untouched by undo in the RESTORE direction — no
+media events exist to invert, so undo never restores reclaimed media
+(spec-4.3; undoing an entity-delete revision recreates the entity but
+its reclaimed rows/files stay gone — regeneration is the recovery). The
+DELETE direction reclaims: an entity-delete revision reclaims its
+manifest rows in the same transaction, and the inverse of an
+entity-CREATION revision — which deletes the entity — now reclaims the
+entity's manifest rows in this transaction too (spec-4.3 deferral
+closed, epic-4 retro item 12/13 bundle; rows in the store transaction,
+files post-commit by the API layer, mirroring ``_delete_entity``). A
+media delete is likewise not undoable. The HTTP surface is ``POST
 /api/campaigns/{campaign_id}/undo`` (spec-4.3 follow-up).
 """
 
@@ -216,6 +220,17 @@ def _inverse_entity_deleted(
     row = session.get(models.Entity, payload["id"])
     if row is None:
         raise CorruptEventError(event.id, "entity row missing for inverse of entity_created")
+    # Reclaim the entity's media rows inside this transaction (AD-10,
+    # spec-4.3; the ``_delete_entity`` pattern, deferral closed 2026-09-10):
+    # the inverse of an entity_created event DELETES the entity, so its
+    # manifest rows leave with it — an index, not graph state, no events,
+    # no revision delta, and undo never restores them (regeneration is
+    # the recovery). Files are the API layer's post-commit job (AD-10
+    # rows-first ordering). Function-local import: store.media imports
+    # this module's errors' siblings.
+    from app.store.media import delete_entity_media
+
+    delete_entity_media(session, campaign_id, payload["id"])
     session.delete(row)
     _add_event(
         session,
