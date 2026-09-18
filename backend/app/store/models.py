@@ -120,7 +120,8 @@ class Edge(Base):
     ``src``/``dst`` are entity ULIDs. ``type`` comes from the closed
     Phase-1 vocabulary; per-type ``counter`` semantics resolve from
     ``app.store.EDGE_COUNTER_SEMANTICS`` (the code contract, AD-23),
-    and the commit path validates the counter's int shape, not its range.
+    and the commit path validates the counter's int shape plus its
+    semantic range (owner ruling 2026-09-18).
     """
 
     __tablename__ = "edge"

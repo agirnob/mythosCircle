@@ -374,6 +374,40 @@ def test_add_counter_coercions_rejected_422(client: Any) -> None:
     assert _edge_ids(mine["id"]) == ids_before
 
 
+def test_add_edge_counter_semantic_bounds_422(client: Any) -> None:
+    """Owner ruling 2026-09-18: semantic counter bounds reach the wire as
+    422 validation_error (grudge 0/11, ally_of 0/11, debt -1/1_000_001),
+    while boundary values commit (debt 0, ally_of 10)."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    bar, mira = _seed_world(mine["id"])
+    ids_before = _edge_ids(mine["id"])
+    for edge_type, counter in [
+        ("grudge", 0),
+        ("grudge", 11),
+        ("ally_of", 0),
+        ("ally_of", 11),
+        ("debt", -1),
+        ("debt", 1_000_001),
+    ]:
+        resp = client.post(
+            f"/api/campaigns/{mine['id']}/edges",
+            json={"src": mira, "dst": bar, "type": edge_type, "counter": counter},
+        )
+        assert resp.status_code == 422, (edge_type, counter)
+        assert resp.json()["code"] == "validation_error", (edge_type, counter)
+    assert _edge_ids(mine["id"]) == ids_before
+    added: set[str] = set()
+    for edge_type, counter in [("debt", 0), ("ally_of", 10)]:
+        resp = client.post(
+            f"/api/campaigns/{mine['id']}/edges",
+            json={"src": mira, "dst": bar, "type": edge_type, "counter": counter},
+        )
+        assert resp.status_code == 201, (edge_type, counter)
+        added.add(resp.json()["id"])
+    assert _edge_ids(mine["id"]) == ids_before | added
+
+
 def test_patch_non_int_counter_422(client: Any) -> None:
     """EDGE_EDIT: a non-int counter on the PATCH wire is a 422, no state
     change."""

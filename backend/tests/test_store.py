@@ -437,10 +437,15 @@ def test_empty_world_rejects_staged_base(world: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_undo_restores_prior_state_with_stable_ulids_and_media(world: str) -> None:
+def test_undo_restores_prior_state_with_stable_ulids_and_reclaims_media(
+    world: str,
+) -> None:
     """Undoing the latest revision restores the previous state exactly:
-    entity ULIDs stable, inbound edges and media rows survive, a new undo
-    revision with its own events is appended."""
+    entity ULIDs stable, inbound edges restored, a new undo revision
+    with its own events is appended — and the media row of an entity the
+    undo DELETES (Kellan, created by the undone revision) is reclaimed
+    in the same transaction (spec-4.3 deferral closed, owner ruling
+    2026-09-10)."""
     _bar_id, mira_id = _seed_world(world)
     before = _state(world)
 
@@ -473,9 +478,9 @@ def test_undo_restores_prior_state_with_stable_ulids_and_media(world: str) -> No
         chain = list(revision_chain(session, world))
         undo_events = list(revision_events(session, world, undo_revision.id))
         media_rows = list(session.scalars(select(models.Media)))
-        # Undo must not touch the media manifest (undo never restores
-        # reclaimed media, spec-4.3).
-        assert [m.entity_id for m in media_rows] == [kellan_id]
+        # The undo DELETED the entity the undone revision created, so its
+        # media rows leave with it (spec-4.3); undo never RESTORES media.
+        assert media_rows == []
 
     assert len(chain) == 3
     assert chain[-1].id == undo_revision.id
@@ -676,8 +681,10 @@ def test_edge_counter_invalid_shape_rejects_update_path(world: str) -> None:
 
 def test_edge_counter_valid_rows_stored_verbatim(world: str) -> None:
     """EDGE_COUNTER_VALID's full row: an omitted counter commits as the
-    default 1, and the store pins shape not range — a negative and the
-    int64 bound are stored verbatim (semantic ranges are pipeline-owned)."""
+    default 1, semantic boundary values commit verbatim (owner ruling
+    2026-09-18: amount 0..1_000_000, score/intensity 1..10 inclusive),
+    and a NEUTRAL edge type keeps shape-only storage (no semantic
+    range)."""
     bar_id, mira_id = _seed_world(world)
     commit_subgraph(
         world,
@@ -685,15 +692,70 @@ def test_edge_counter_valid_rows_stored_verbatim(world: str) -> None:
         [
             models.EdgeInput(src=mira_id, dst=bar_id, type="ally_of"),
             models.EdgeInput(src=bar_id, dst=mira_id, type="kin_of", counter=-5),
-            models.EdgeInput(src=bar_id, dst=mira_id, type="grudge", counter=2**63 - 1),
+            models.EdgeInput(src=bar_id, dst=mira_id, type="grudge", counter=10),
+            models.EdgeInput(src=bar_id, dst=mira_id, type="debt", counter=1_000_000),
         ],
         base_revision=_head(world),
     )
     _entities, edges = _state(world)
     stored = {(row[2], row[0]): row[3] for row in edges.values()}
     assert stored[("ally_of", mira_id)] == 1  # default when omitted
-    assert stored[("kin_of", bar_id)] == -5  # shape, not range
-    assert stored[("grudge", bar_id)] == 2**63 - 1  # int64 upper bound stores
+    assert stored[("kin_of", bar_id)] == -5  # neutral: shape only, no range
+    assert stored[("grudge", bar_id)] == 10  # score maximum inclusive
+    assert stored[("debt", bar_id)] == 1_000_000  # amount maximum inclusive
+
+
+@pytest.mark.parametrize(
+    ("edge_type", "counter"),
+    [
+        ("debt", -1),  # amount below its minimum
+        ("debt", 1_000_001),  # amount above its maximum
+        ("grudge", 0),  # score below its minimum
+        ("grudge", 11),  # score above its maximum
+        ("ally_of", 0),  # intensity below its minimum
+        ("enemy_of", 11),  # intensity above its maximum
+    ],
+)
+def test_edge_counter_semantic_range_rejects_subgraph(
+    world: str, edge_type: str, counter: int
+) -> None:
+    """Owner ruling 2026-09-18 (closes the 2.3/3.1 counter-ranges
+    deferral): an int OUTSIDE its semantic range is rejected at the
+    store boundary with zero new revision and zero rows — an out-of-range
+    score would otherwise commit and Phase-3 arithmetic would misread it
+    silently."""
+    bar_id, mira_id = _seed_world(world)
+    before = _state(world)
+    before_head = _head(world)
+    with pytest.raises(InvalidEdgeCounterError) as excinfo:
+        commit_subgraph(
+            world,
+            [],
+            [models.EdgeInput(src=mira_id, dst=bar_id, type=edge_type, counter=counter)],
+            base_revision=before_head,
+        )
+    assert edge_type in str(excinfo.value)
+    assert _state(world) == before
+    assert _head(world) == before_head
+
+
+def test_edge_counter_semantic_range_rejects_update_path(world: str) -> None:
+    """The counter-update route (staged existing edge ULID) walks the same
+    range guard — the primary production counter mutation is pinned, not
+    just fresh edge creation."""
+    bar_id, mira_id = _seed_world(world)
+    debt_id = _edge_id(world, mira_id, bar_id, "debt")
+    before = _state(world)
+    before_head = _head(world)
+    with pytest.raises(InvalidEdgeCounterError):
+        commit_subgraph(
+            world,
+            [],
+            [models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=-1, id=debt_id)],
+            base_revision=before_head,
+        )
+    assert _state(world) == before
+    assert _head(world) == before_head
 
 
 def test_edge_never_carries_free_text_label() -> None:
@@ -1727,3 +1789,41 @@ def test_undo_of_delete_restores_entity_but_not_media(world: str) -> None:
     assert mira_id in entities
     assert member_id_before in edges and debt_id_before in edges
     assert list_media(world) == []  # media are NOT restored by undo
+
+
+def test_undo_of_entity_creation_reclaims_media_rows_and_files(world: str, tmp_path: Path) -> None:
+    """ENTITY_CREATE_UNDO_MEDIA (spec-4.3 deferral closed, owner ruling
+    2026-09-10): undoing the revision that CREATED an entity deletes the
+    entity — its manifest rows leave in the same store transaction (the
+    ``_delete_entity`` seam) and the FILES are reclaimed post-commit
+    (AD-10 rows-first; the undo route's reclaim half is called directly
+    here, mirroring the API layer)."""
+    from app.media.service import reclaim_entity_media
+
+    bar_id, mira_id = _seed_world(world)
+    kellan_id = ids.new_id()
+    creation = commit_subgraph(
+        world,
+        [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
+        [models.EdgeInput(src=kellan_id, dst=mira_id, type="rival_of", counter=1)],
+        base_revision=_head(world),
+    )
+    portrait = add_media(world, kellan_id, f"{ids.new_id()}.png", "image")
+    clip = add_media(world, kellan_id, f"{ids.new_id()}.mp4", "video")
+    media_dir = tmp_path / "media"
+    for row in (portrait, clip):
+        path = media_dir / world / kellan_id / row.filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"payload")
+    assert [r.entity_id for r in list_media(world)] == [kellan_id, kellan_id]
+
+    undo_revision = undo(world, creation.id)
+
+    with session_scope() as session:
+        events = [ev.type for ev in revision_events(session, world, undo_revision.id)]
+    assert sorted(events) == ["edge_deleted", "entity_deleted"]
+    assert list_media(world) == []  # both manifest rows reclaimed in the txn
+    assert bar_id in _state(world)[0]  # the seed world is untouched
+    # Files post-commit (AD-10 rows-first): the API layer's reclaim half.
+    reclaim_entity_media(media_dir, world, kellan_id)
+    assert not (media_dir / world / kellan_id).exists()  # files gone

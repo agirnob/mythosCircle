@@ -72,6 +72,7 @@ from app.store import (
     JobStateConflictError,
     complete_job,
     discard_candidates,
+    edge_counter_bounds,
     edge_counter_semantic,
     models,
     report_progress,
@@ -643,7 +644,9 @@ def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[st
     """One well-formed edge: a dict whose endpoint is a canonical
     ``C<index>`` ref in range, whose type is in the closed vocabulary,
     whose direction is outbound/inbound, and whose counter (when given)
-    is an int. Returns the staged edge record with the resolved committed
+    is an int within its semantic range (owner ruling 2026-09-18:
+    amount 0..1_000_000, score/intensity 1..10, neutral unbounded).
+    Returns the staged edge record with the resolved committed
     endpoint id, or None.
 
     Measured fold (2026-09-15, "cthullu ender of worlds"): the wave
@@ -680,6 +683,9 @@ def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[st
     if counter is None:
         counter = 1
     if type(counter) is not int:
+        return None
+    bounds = edge_counter_bounds(edge_type)
+    if bounds is not None and not bounds[0] <= counter <= bounds[1]:
         return None
     return {
         "endpoint": context_entities[position].id,

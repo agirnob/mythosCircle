@@ -4087,6 +4087,34 @@ def test_upsert_grown_resubmit_adds_only_new(world: str) -> None:
     assert sum(1 for row in rows if row.name == "Mira Vane") == 2  # fresh ULID, additive
 
 
+def test_wave_edge_counter_out_of_range_fails_job(world: str) -> None:
+    """Owner ruling 2026-09-18: a wave edge counter outside its semantic
+    range fails the wave with a named JobPayloadError (debt -1 vs the
+    amount range) — the job fails loudly instead of committing a counter
+    Phase-3 arithmetic would misread."""
+    output = _wave1_output()
+    output["edges"][1] = {"src": "E1", "dst": "E0", "type": "debt", "counter": -1}
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "counter -1 is outside the amount range (0, 1000000)" in (job.error or "")
+    with session_scope() as session:
+        assert world_entities(session, world) == []
+
+
+def test_wave_edge_counter_must_be_an_integer(world: str) -> None:
+    """Non-integer wave counters stay a named wave failure — the shape
+    guard is unchanged by the range ruling (wave 1: edge 1 counter)."""
+    output = _wave1_output()
+    output["edges"][1] = {"src": "E1", "dst": "E0", "type": "debt", "counter": 3.0}
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    run_next_job(provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "counter must be an integer" in (job.error or "")
+
+
 def test_upsert_drops_duplicate_relationships(world: str) -> None:
     """A re-submit whose edges duplicate live place/faction relationships
     drops them (the store would reject them as duplicates) and keeps the

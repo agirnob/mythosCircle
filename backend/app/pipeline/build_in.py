@@ -91,6 +91,7 @@ from app.store import (
     StaleRevisionError,
     commit_subgraph,
     complete_job,
+    edge_counter_bounds,
     edge_counter_semantic,
     job_status,
     models,
@@ -1393,6 +1394,12 @@ def _declared_edges(
             counter = raw.get("counter", 1)
             if type(counter) is not int:
                 raise JobPayloadError(f"wave 1: {where} counter must be an integer")
+            bounds = edge_counter_bounds(edge_type)
+            if bounds is not None and not bounds[0] <= counter <= bounds[1]:
+                raise JobPayloadError(
+                    f"wave 1: {where} counter {counter} is outside the "
+                    f"{edge_counter_semantic(edge_type)} range {bounds}"
+                )
             if "target_id" in raw:
                 target_id = raw["target_id"]
                 committed_row = committed_by_id.get(target_id)
@@ -3544,8 +3551,23 @@ def _edge_row_usable(row: Any, valid_refs: frozenset[str]) -> bool:
         and row["src"] in valid_refs
         and row["dst"] in valid_refs
         and row["src"] != row["dst"]
-        and type(row.get("counter", 1)) is int
+        and _row_counter_in_bounds(row)
     )
+
+
+def _row_counter_in_bounds(row: dict[str, Any]) -> bool:
+    """Shape + semantic range for the cheap edge-row pre-filter (owner
+    ruling 2026-09-18): an integer counter within its type's bounds;
+    neutral types are shape-only. Mirrors ``_resolve_edges``' guard so
+    the filtering boundary and the raise boundary agree."""
+    counter = row.get("counter", 1)
+    if type(counter) is not int:
+        return False
+    edge_type = row.get("type")
+    if not isinstance(edge_type, str):
+        return False
+    bounds = edge_counter_bounds(edge_type)
+    return bounds is None or bounds[0] <= counter <= bounds[1]
 
 
 def _cap_relationship_rows(raw: Sequence[Any], cap: int = 2) -> list[Any]:
@@ -4253,6 +4275,12 @@ def _resolve_edges(
         counter = raw.get("counter", 1)
         if type(counter) is not int:
             raise JobPayloadError(f"wave {wave}: edge {edge_index} counter must be an integer")
+        bounds = edge_counter_bounds(edge_type)
+        if bounds is not None and not bounds[0] <= counter <= bounds[1]:
+            raise JobPayloadError(
+                f"wave {wave}: edge {edge_index} counter {counter} is outside the "
+                f"{edge_counter_semantic(edge_type)} range {bounds}"
+            )
         src_id, src_position = _resolve_endpoint(
             raw.get("src"), wave, edge_index, "src", assigned_ids, context, ref_offset=ref_offset
         )

@@ -134,11 +134,31 @@ def edge_counter_semantic(edge_type: str) -> EdgeCounterSemantic:
     return EDGE_COUNTER_SEMANTICS.get(edge_type, DEFAULT_EDGE_COUNTER_SEMANTIC)
 
 
+#: Per-semantic counter bounds (owner ruling 2026-09-18 — closes the
+#: 2.3/3.1 counter-ranges deferral): amount is a non-negative
+#: magnitude, score/intensity a bounded strength between 1 and 10.
+#: Neutral types carry no range (informational, shape-only int). These
+#: boundaries are the code contract the pipeline stages against and
+#: Phase-3 counter arithmetic consumes — the store rejects a commit
+#: outside them with ``InvalidEdgeCounterError``.
+EDGE_COUNTER_RANGES: MappingProxyType[str, tuple[int, int]] = MappingProxyType(
+    {
+        "amount": (0, 1_000_000),
+        "score": (1, 10),
+        "intensity": (1, 10),
+    }
+)
+
+
+def edge_counter_bounds(edge_type: str) -> tuple[int, int] | None:
+    """The inclusive counter range for an edge type's semantic, or None
+    for the unbounded neutral default (AD-23, owner ruling 2026-09-18)."""
+    return EDGE_COUNTER_RANGES.get(edge_counter_semantic(edge_type))
+
+
 #: SQLite's INTEGER is signed 64-bit; representability is part of the
 #: store's shape contract (the driver otherwise raises a raw
 #: ``OverflowError`` at flush — outside the StoreError/422 family).
-#: Semantic ranges (how big a score, whether a debt is negative) stay
-#: pipeline-owned.
 _SQLITE_INT_MIN = -(2**63)
 _SQLITE_INT_MAX = 2**63 - 1
 
@@ -212,15 +232,28 @@ class InvalidEdgeTypeError(StoreError):
 
 
 class InvalidEdgeCounterError(StoreError):
-    """An edge counter that is not an integer SQLite can store — shape
-    rejection at the store boundary (AD-23; SQLite does not enforce the
-    Integer column, and larger magnitudes overflow the driver at flush)."""
+    """An edge counter outside the AD-23 counter contract — not an
+    integer SQLite can store, or beyond its semantic range (owner
+    ruling 2026-09-18: amount 0..1_000_000, score/intensity 1..10,
+    neutral shape-only). Rejected at the store boundary: SQLite does
+    not enforce the Integer column, magnitudes past int64 overflow the
+    driver at flush, and an out-of-range score would silently corrupt
+    Phase-3 counter arithmetic."""
 
-    def __init__(self, edge: models.EdgeInput) -> None:
-        super().__init__(
-            f"edge counter must be an integer in SQLite's signed 64-bit "
-            f"range: {edge.counter!r} ({edge.src} --{edge.type}--> {edge.dst})"
-        )
+    def __init__(self, edge: models.EdgeInput, bounds: tuple[int, int] | None = None) -> None:
+        if bounds is None:
+            message = (
+                f"edge counter must be an integer in SQLite's signed 64-bit "
+                f"range: {edge.counter!r} ({edge.src} --{edge.type}--> {edge.dst})"
+            )
+        else:
+            semantic = edge_counter_semantic(edge.type)
+            message = (
+                f"edge counter {edge.counter!r} is outside the {semantic} "
+                f"range {bounds} for {edge.type} (AD-23): "
+                f"{edge.src} --{edge.type}--> {edge.dst}"
+            )
+        super().__init__(message)
         self.edge = edge
 
 
@@ -452,6 +485,9 @@ def _commit(
         counter = edge.counter
         if type(counter) is not int or not _SQLITE_INT_MIN <= counter <= _SQLITE_INT_MAX:
             raise InvalidEdgeCounterError(edge)
+        bounds = edge_counter_bounds(edge.type)
+        if bounds is not None and not bounds[0] <= counter <= bounds[1]:
+            raise InvalidEdgeCounterError(edge, bounds=bounds)
         for endpoint in (edge.src, edge.dst):
             if endpoint not in known_ids:
                 raise DanglingEdgeError(edge, endpoint)

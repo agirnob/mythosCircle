@@ -805,6 +805,29 @@ def test_bad_edge_candidate_dropped_two_staged(world: str) -> None:
     assert "BAD_EDGE" in dropped[0]["reason"]
 
 
+def test_counter_out_of_semantic_range_drops_candidate(world: str) -> None:
+    """Owner ruling 2026-09-18: a staged edge whose counter is outside
+    its semantic range (score 0, intensity 11 here) is a malformed edge —
+    dropped at the stage boundary like any other; a candidate left with
+    no valid edge fails BAD_EDGE."""
+    _commit_world(world)
+    output = _generate_output()
+    output["candidates"][1]["edges"] = [
+        {"endpoint": "C0", "direction": "outbound", "type": "grudge", "counter": 0},
+        {"endpoint": "C1", "direction": "inbound", "type": "ally_of", "counter": 11},
+    ]
+    job_id = _run(world, lambda prompt, settings: json.dumps(output))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    rows = _staged(world)
+    assert [row.payload["name"] for row in rows] == ["Corvin Ashe", "The Tallyman"]
+    assert job.result is not None
+    dropped = job.result["dropped"]
+    assert [d["ref"] for d in dropped] == ["E1"]
+    assert dropped[0]["name"] == "Sister Yeva"
+    assert "BAD_EDGE" in dropped[0]["reason"]
+
+
 def test_edge_type_in_direction_slot_folded(world: str) -> None:
     """The measured 2026-09-15 slip: the wave writes the edge TYPE into
     ``direction`` and omits ``type`` ({"endpoint": "C0", "direction":

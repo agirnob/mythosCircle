@@ -91,6 +91,7 @@ from app.store.commit import (
     commit_subgraph,
     delete_edge,
     delete_entity,
+    edge_counter_bounds,
     edge_counter_semantic,
     update_entity,
 )
@@ -139,6 +140,7 @@ from app.store.media import (
     delete_one_media,
     get_media_file,
     list_media,
+    prune_entity_media,
 )
 from app.store.models import (
     Account,
@@ -258,6 +260,7 @@ __all__ = [
     "delete_edge",
     "delete_entity",
     "discard_candidates",
+    "edge_counter_bounds",
     "edge_counter_semantic",
     "entity_live_edges",
     "enqueue_job",
@@ -276,6 +279,7 @@ __all__ = [
     "list_media",
     "normalize_theme",
     "payload_section_violations",
+    "prune_entity_media",
     "recover_stale_running",
     "register_account",
     "reject_candidate",
