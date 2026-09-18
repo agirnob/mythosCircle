@@ -52,7 +52,6 @@ from app.pipeline.fencing import strip_fence, strip_trailing_commas
 from app.pipeline.knowledge import ROLES
 from app.pipeline.retrieval import (
     DEFAULT_ENTITY_CAP,
-    context_summary,
     retrieve_neighborhood,
     serialize_context,
 )
@@ -149,8 +148,19 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # landing between claim and the provider call is a no-op.
     if not _job_still_running(job):
         return
+    # Ask-target seeding (owner ruling 2026-09-18, "both"): when the world
+    # exceeds the AR6 cap the ask's named entities lead the retrieval and
+    # the remainder fills newest-first (rowid bias), so a tight context
+    # keeps the target instead of losing it to the oldest rowid rows. Both
+    # are pure functions of world state + the ask, so the prompt stays
+    # byte-deterministic (AD-16); a sub-cap world is untouched.
+    target_ids = _ask_target_ids(ask, entities)
     context_entities, context_edges = retrieve_neighborhood(
-        job.campaign_id, seed_ids=None, entity_cap=DEFAULT_ENTITY_CAP
+        job.campaign_id,
+        seed_ids=None,
+        entity_cap=DEFAULT_ENTITY_CAP,
+        boost_ids=target_ids or None,
+        newest_first=True,
     )
     prompt = build_generate_prompt(seed, ask, (context_entities, context_edges))
     parsed = call_wave(
@@ -329,6 +339,17 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
             if drops
             else "the model returned too few candidates"
         )
+        # Ambiguity hint (spec: retrieval-cap diagnostic): when the world
+        # outgrew the retrieval window and the ask named no committed
+        # entity, the failure may be exactly that — the model never saw
+        # the ask's target. The banner + this hint make the silent-loss
+        # failure diagnosable instead of a nameless drop.
+        if len(context_entities) < len(entities) and not target_ids:
+            detail += (
+                f" — hint: the ask may target an entity outside the retrieval "
+                f"window (context truncated to {DEFAULT_ENTITY_CAP} of "
+                f"{len(entities)}; the ask names no committed entity)"
+            )
         raise JobPayloadError(
             f"generate: {len(valid)} valid candidate(s) survived validation, "
             f"need {MIN_CANDIDATES}: {detail}"
@@ -356,13 +377,20 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
                 # split shows the wave call and any bounded JSON retry —
                 # the retry taxonomy's paper trail (owner notes 6/7).
                 "llm_calls": budget.snapshot(),
-                # Transparency (owner note 4, 2026-09-15): what the ask
-                # SAW — the committed-world retrieval the prompt embedded.
-                # Shows why an ask in an empty world yields nothing and how
-                # later asks inherit earlier builds; `truncated` means the
-                # world outgrew the retrieval cap, so the model's context
-                # is a neighborhood, not the whole world.
-                "context": context_summary(context_entities),
+                # Transparency (owner note 4, 2026-09-15; retrieval-cap
+                # diagnostic, 2026-09-18): what the ask SAW — the
+                # committed-world retrieval the prompt embedded.
+                # requested = world entities at retrieval, included = rows
+                # the context actually carried, truncated = included <
+                # requested (the AR6 cap shrank the model's window), cap =
+                # the retrieval cap. Proves truncation happened instead of
+                # silently losing the ask's target.
+                "context": {
+                    "requested": len(entities),
+                    "included": len(context_entities),
+                    "truncated": len(context_entities) < len(entities),
+                    "cap": DEFAULT_ENTITY_CAP,
+                },
             },
         )
     except JobStateConflictError:
@@ -546,6 +574,39 @@ def _parse_candidates(text: str) -> list[Any]:
 
 def _non_blank_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _ask_target_ids(ask: str, entities: Sequence[models.Entity]) -> list[str]:
+    """The committed entities a plain-language ask NAMES, in rowid order.
+
+    The ask-target seeding rule (owner ruling 2026-09-18, name-match
+    boost): normalize both sides and match whole-word containment —
+    "the old mill" in "The Old Mill needs a caretaker" — longest names
+    first, so "Maeve the Lamplighter" wins over a bare "Maeve", and a
+    name contained in an already-matched longer mention is the same
+    mention and skipped. No embeddings, closed and deterministic: a
+    pure function of the ask and the committed world (AD-16). Empty
+    when the ask names nothing.
+    """
+    from app.store.direct import normalize_entity_name  # noqa: PLC0415 - import cycle
+
+    normalized_ask = f" {normalize_entity_name(ask)} "
+    matched: list[tuple[int, str, str]] = []  # (rowid position, normalized name, id)
+    for position, entity in enumerate(entities):
+        normalized = normalize_entity_name(entity.name)
+        if normalized and f" {normalized} " in normalized_ask:
+            matched.append((position, normalized, entity.id))
+    # Longest name first; a name contained in an already-kept longer one
+    # is the same mention (the rowid order breaks ties).
+    matched.sort(key=lambda row: len(row[1]), reverse=True)
+    kept: list[tuple[int, str]] = []
+    held: list[str] = []
+    for position, normalized, entity_id in matched:
+        if any(normalized in longer for longer in held):
+            continue
+        kept.append((position, entity_id))
+        held.append(normalized)
+    return [entity_id for _position, entity_id in sorted(kept)]
 
 
 #: Required free-text AR24 fields the model leaves BLANK for creatures

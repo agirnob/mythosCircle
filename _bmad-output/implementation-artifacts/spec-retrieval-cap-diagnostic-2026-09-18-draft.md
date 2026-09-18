@@ -2,9 +2,10 @@
 title: 'Generate Retrieval-Cap Diagnostic — Surface Truncation & Ask-Target Seeding'
 type: 'feature'
 created: '2026-09-18'
-status: 'draft'
+status: 'done'
+owner_decision: 'both (name-match boost + rowid bias) — 2026-09-18'
 baseline_commit: 'main (post sprint-A 2026-09-18)'
----
+--->
 
 <!-- DRAFT for owner review (deferred ledger: spec-3.1 round-3 +
      spec-2.3 "wave-2 anchors truncate" counterpart, generate path). -->

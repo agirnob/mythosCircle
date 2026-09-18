@@ -24,7 +24,7 @@ from app.core import ids
 from app.core.pagination import encode_cursor
 from app.core.settings import LLMSettings
 from app.pipeline.generate import build_generate_prompt
-from app.pipeline.retrieval import retrieve_neighborhood
+from app.pipeline.retrieval import DEFAULT_ENTITY_CAP, retrieve_neighborhood
 from app.pipeline.statblocks import stat_block_rules_text
 from app.pipeline.worker import run_next_job
 from app.store import (
@@ -942,21 +942,167 @@ def test_wave_second_malformed_fails_loud(world: str) -> None:
     assert _staged(world) == []
 
 
-def test_generate_result_carries_context_summary(world: str) -> None:
-    """Transparency (owner note 4): result.context says what the ask saw —
-    the committed-world retrieval counts by kind plus the cap fact. An ask
-    in a 2-entity world reports exactly those two and no truncation."""
+def test_generate_result_carries_context_banner(world: str) -> None:
+    """Transparency (owner note 4; retrieval-cap diagnostic 2026-09-18):
+    result.context says what the ask saw — requested/included/truncated/
+    cap. A 2-entity world fits the AR6 cap: everything requested was
+    included, no truncation."""
     _commit_world(world)
     job_id = _run(world, lambda prompt, settings: json.dumps(_generate_output()))
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert job.result is not None
     assert job.result["context"] == {
-        "entities": 2,
-        "by_kind": {"faction": 1, "character": 1},
-        "retrieval_cap": 24,
+        "requested": 2,
+        "included": 2,
         "truncated": False,
+        "cap": 24,
     }
+
+
+def _commit_over_cap_world(campaign_id: str) -> tuple[str, list[str]]:
+    """A 26-entity world: 'The Old Mill' committed FIRST (the oldest
+    rowid), then 25 filler places. Returns (old_mill_id, filler_ids in
+    rowid order) — a world one past the AR6 cap where the rowid bias
+    alone would drop the oldest rows."""
+    old_mill_id = ids.new_id()
+    filler_ids = [ids.new_id() for _ in range(25)]
+    all_ids = [old_mill_id, *filler_ids]
+    commit_subgraph(
+        campaign_id,
+        [
+            EntityInput(
+                kind="place",
+                name="The Old Mill",
+                text="the first committed place",
+                id=old_mill_id,
+            ),
+            *[
+                EntityInput(
+                    kind="place",
+                    name=f"Filler {index:03d}",
+                    text="filler",
+                    id=filler_id,
+                )
+                for index, filler_id in enumerate(filler_ids)
+            ],
+        ],
+        # The store's no-orphan rule (FR2) needs every new entity on an
+        # edge: chain the places with located_in (place -> place is the
+        # vocabulary's legal containment shape).
+        [
+            EdgeInput(src=all_ids[index], dst=all_ids[index + 1], type="located_in", counter=1)
+            for index in range(len(all_ids) - 1)
+        ],
+    )
+    return old_mill_id, filler_ids
+
+
+def test_context_banner_reports_truncation_over_the_cap(world: str) -> None:
+    """A >24-entity world: the banner PROVES truncation (requested 26,
+    included 24, truncated True, cap 24) — the silent-loss complaint is
+    now diagnosable from the job result alone."""
+    _commit_over_cap_world(world)
+    job_id = _run(world, lambda prompt, settings: json.dumps(_generate_output()))
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    assert job.result is not None
+    assert job.result["context"] == {
+        "requested": 26,
+        "included": 24,
+        "truncated": True,
+        "cap": 24,
+    }
+
+
+def test_ask_target_boost_defeats_rowid_bias(world: str) -> None:
+    """The name-match boost: in a truncated world the rowid bias drops
+    the OLDEST rows; an ask that NAMES an old entity ('The Old Mill',
+    committed first) must still see it — boosted to the context front
+    (entity[0]/C0) — while the bias still fills the remainder newest-
+    first."""
+    _commit_over_cap_world(world)
+    calls: list[str] = []
+    job_id = _run(
+        world,
+        lambda prompt, settings: calls.append(prompt) or json.dumps(_generate_output()),
+        ask="The Old Mill has fallen quiet — who sees to it now?",
+    )
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    prompt = calls[0]
+    assert "entity[0] kind=place name='The Old Mill'" in prompt
+    # The bias still fills the remainder: the two oldest fillers drop,
+    # the newest stay.
+    assert "Filler 000" not in prompt
+    assert "Filler 024" in prompt
+
+
+def test_rowid_bias_fill_prefers_newest_without_boost(world: str) -> None:
+    """The rowid bias alone: an ask naming nothing drops the oldest rows
+    and keeps the newest 24 — and the same world + same ask yields a
+    byte-identical prompt (AD-16 determinism over the new fill)."""
+    _commit_over_cap_world(world)
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(_generate_output())
+
+    _run(world, provider, ask="a new harbormaster")
+    _run(world, provider, ask="a new harbormaster")
+    assert calls[0] == calls[1]
+    assert "The Old Mill" not in calls[0]
+    assert "entity[0] kind=place name='Filler 024'" in calls[0]
+    assert "Filler 000" not in calls[0]
+
+
+def test_truncation_hint_on_failed_generate(world: str) -> None:
+    """Ambiguity hint: a truncated world + an ask naming no committed
+    entity + a failed candidate set yields a job error that SAYS the ask
+    may target an entity outside the retrieval window — the silent-loss
+    failure is diagnosable instead of a nameless drop."""
+    _commit_over_cap_world(world)
+    job_id = _run(world, lambda prompt, settings: json.dumps({"candidates": []}))
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "outside the retrieval window" in (job.error or "")
+
+
+def test_retrieve_boost_ids_and_newest_first_order(world: str) -> None:
+    """The retrieval primitives behind the ruling: boost_ids lead the
+    reached set in the given order, the remainder fills newest-first,
+    boost ids naming no world entity raise loudly, and a world that FITS
+    the cap keeps the plain rowid order byte-identically."""
+    old_mill_id, filler_ids = _commit_over_cap_world(world)
+    boosted, _edges = retrieve_neighborhood(
+        world,
+        seed_ids=None,
+        entity_cap=DEFAULT_ENTITY_CAP,
+        boost_ids=[old_mill_id],
+        newest_first=True,
+    )
+    assert [entity.id for entity in boosted] == [old_mill_id, *reversed(filler_ids[2:])]
+
+    with pytest.raises(ValueError, match="boost_ids"):
+        retrieve_neighborhood(
+            world,
+            seed_ids=None,
+            boost_ids=["does-not-exist"],
+            newest_first=True,
+        )
+
+    # Sub-cap world: the ruling must not reorder a complete neighborhood —
+    # boost + bias are no-ops when everything fits.
+    second = create_campaign(
+        _owner_id(), title="Second", description="", theme="High Fantasy", custom_lore=""
+    ).id
+    _commit_world(second)
+    plain, _edges = retrieve_neighborhood(second, seed_ids=None)
+    with_bias, _edges = retrieve_neighborhood(
+        second, seed_ids=None, boost_ids=[plain[0].id], newest_first=True
+    )
+    assert [entity.id for entity in with_bias] == [entity.id for entity in plain]
 
 
 def test_worker_opened_journal_round_trips_the_attempts(

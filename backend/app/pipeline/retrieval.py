@@ -50,6 +50,8 @@ def retrieve_neighborhood(
     *,
     depth: int = DEFAULT_DEPTH,
     entity_cap: int = DEFAULT_ENTITY_CAP,
+    boost_ids: Sequence[str] | None = None,
+    newest_first: bool = False,
 ) -> tuple[list[models.Entity], list[models.Edge]]:
     """Bounded deterministic BFS over typed edges from the seed entities.
 
@@ -59,6 +61,22 @@ def retrieve_neighborhood(
     order, so the result is deterministic for a given world state
     (AD-16). ``seed_ids=None`` seeds with every entity (the full-world
     neighborhood).
+
+    ``boost_ids`` (ask-target seeding) and ``newest_first`` (rowid-bias
+    fill) reorder the SEED list before the cap truncates it — the
+    generate path's retrieval-cap ruling (owner 2026-09-18): when the
+    world exceeds the cap, the boosted entities lead the reached set in
+    the given order and the remainder prefers the most recently
+    committed entities (world rowid order reversed), so a tight context
+    keeps the ask's target and the newest additions instead of the
+    oldest rowid rows. Both are pure functions of world state plus the
+    caller's ids — no ids, timestamps, or job state in the result — so
+    the same state yields the same neighborhood (AD-16). A world that
+    FITS the cap keeps the plain rowid ordering byte-identically: the
+    boost and the bias only decide WHICH rows a tight cap keeps, never
+    reorder a complete neighborhood. ``boost_ids`` naming no world
+    entity is rejected with ``ValueError`` naming the offenders (caller
+    bug, loud — same rule as the seed list).
 
     A provided seed list that resolves to NO world entities is rejected
     with ``ValueError`` naming the offending seeds — a silently empty
@@ -83,6 +101,29 @@ def retrieve_neighborhood(
                     f"in campaign {campaign_id}: {sorted(seed_set)}"
                 )
             seeds = [entity.id for entity in entities if entity.id in seed_set]
+
+        if len(seeds) > entity_cap and (boost_ids or newest_first):
+            # The tight-cap reorder: a world that fits the cap is left in
+            # plain rowid order (byte-identical to the pre-ruling shape).
+            if boost_ids:
+                missing = sorted(set(boost_ids) - set(entity_by_id))
+                if missing:
+                    raise ValueError(
+                        "retrieve_neighborhood: boost_ids name no world entity "
+                        f"in campaign {campaign_id}: {missing}"
+                    )
+                boosted: list[str] = []
+                seen: set[str] = set()
+                for entity_id in boost_ids:
+                    if entity_id not in seen:
+                        seen.add(entity_id)
+                        boosted.append(entity_id)
+                rest = [entity_id for entity_id in seeds if entity_id not in seen]
+                if newest_first:
+                    rest.reverse()
+                seeds = [*boosted, *rest]
+            else:
+                seeds = list(reversed(seeds))
 
         reached: list[str] = []
         for seed in seeds:

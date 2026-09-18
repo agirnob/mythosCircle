@@ -180,7 +180,13 @@ action_items:
       seeding for worlds beyond the 24-entity cap; same root as the 3-1 round 1 deferral;
       subsumes the candidates-read no job/state scoping"
     owner: "retrieval-tuning story"
-    status: open
+    status: done
+    note: "DONE 2026-09-18 (owner ruling: both): name-match boost
+      (longest-name whole-word containment, longest first) leads the AR6
+      retrieval when the world exceeds the cap, rowid-bias fills the remainder
+      newest-first; sub-cap worlds stay byte-identical; result banner:
+      context {requested, included, truncated, cap}; truncation hint rides
+      the <2-candidates failure when the ask names nothing in a truncated world."
     ref: "/home/main/Projects/mythosCircle/_bmad-output/implementation-artifacts/epic-3-retro-2026-09-05.md"
   - id: "epic-4-retro-item-11-extract-shared-comfyui-provider-scaffold"
     epic: 4
