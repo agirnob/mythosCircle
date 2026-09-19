@@ -2,13 +2,17 @@ import { describe, expect, it } from 'vitest'
 
 import type { components } from '../../api/schema'
 import {
-  CARD_PITCH,
+  type GraphEdge,
+  type GraphNode,
+  type LayoutPosition,
   GRAPH_NODE_HEIGHT,
   GRAPH_NODE_WIDTH,
   avatarInitial,
+  buildFactionClusters,
   buildWorldGraph,
-  concentricLayoutByKind,
+  clusterLayout,
   displayName,
+  hashString,
   kindStyle,
   parallelSlots,
   vueFlowCurvature,
@@ -137,72 +141,104 @@ describe('buildWorldGraph', () => {
   })
 })
 
-describe('concentricLayoutByKind', () => {
-  function radius(id: string, positions: Array<{ id: string; x: number; y: number }>): number {
-    const position = positions.find((entry) => entry.id === id)!
-    return Math.hypot(position.x, position.y)
+describe('clusterLayout (semantic faction areas + force refinement)', () => {
+  function node(id: string, kind: string, name = id): GraphNode {
+    return { id, kind, name, order: 0, hasPortrait: false }
+  }
+  function edge(id: string, src: string, dst: string, type: string): GraphEdge {
+    return { id, src, dst, type, counter: 1, label: type, outbound: false }
   }
 
-  it('deterministic: identical input → identical output', () => {
-    const nodes = [
-      { id: 'a', kind: 'character', name: 'a', order: 0, hasPortrait: false },
-      { id: 'b', kind: 'faction', name: 'b', order: 1, hasPortrait: false },
-      { id: 'c', kind: 'place', name: 'c', order: 2, hasPortrait: false },
-    ]
-    expect(concentricLayoutByKind(nodes)).toEqual(concentricLayoutByKind(nodes))
+  /** A deterministic net: two factions with members, a place anchored to one,
+   * a rival pull between the factions, an unaffiliated loner linked across. */
+  function net(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+    return {
+      nodes: [
+        node('guild', 'faction', 'The Guild'),
+        node('m1', 'character', 'Mira'),
+        node('m2', 'character', 'Orin'),
+        node('m3', 'character', 'Tamsin'),
+        node('rival', 'faction', 'The Rivalry'),
+        node('r1', 'character', 'Harl'),
+        node('tavern', 'place', 'The Anchored Tavern'),
+        node('lone', 'character', 'Lonny'),
+      ],
+      edges: [
+        edge('e1', 'm1', 'guild', 'member_of'),
+        edge('e2', 'm2', 'guild', 'member_of'),
+        edge('e3', 'm3', 'guild', 'member_of'),
+        edge('e4', 'r1', 'rival', 'member_of'),
+        edge('e5', 'tavern', 'guild', 'bases_at'),
+        edge('e6', 'guild', 'rival', 'enemy_of'),
+        edge('e7', 'lone', 'm2', 'relationship'),
+      ],
+    }
+  }
+
+  function position(id: string, layout: LayoutPosition[]): { x: number; y: number } {
+    return layout.find((entry) => entry.id === id)!
+  }
+  function distance(a: { x: number; y: number }, b: { x: number; y: number }): number {
+    return Math.hypot(a.x - b.x, a.y - b.y)
+  }
+
+  it('deterministic: identical world → byte-identical positions (seeded)', () => {
+    const { nodes, edges } = net()
+    expect(clusterLayout(nodes, edges)).toEqual(clusterLayout(nodes, edges))
   })
 
-  it('SEMANTIC ring order: places outermost, characters innermost — regardless of counts', () => {
-    const nodes = [
-      ...Array.from({ length: 3 }, (_, i) => ({ id: `c${i}`, kind: 'character', name: `c${i}`, order: i, hasPortrait: false })),
-      { id: 'f', kind: 'faction', name: 'f', order: 99, hasPortrait: false },
-      ...Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, kind: 'place', name: `p${i}`, order: 100 + i, hasPortrait: false })),
-    ]
-    const layout = concentricLayoutByKind(nodes)
-    const faction = radius('f', layout)
-    const character = radius('c0', layout)
-    const place = radius('p0', layout)
-    expect(character).toBeLessThan(faction)
-    expect(faction).toBeLessThan(place)
-    // The innermost ring sits at least one CARD_PITCH from the origin —
-    // the center stays empty (focus never moves there).
-    expect(character).toBeGreaterThanOrEqual(CARD_PITCH)
+  it('members hug their faction: closer to it than to any other faction', () => {
+    const { nodes, edges } = net()
+    const layout = clusterLayout(nodes, edges)
+    for (const member of ['m1', 'm2', 'm3']) {
+      const toOwn = distance(position(member, layout), position('guild', layout))
+      const toRival = distance(position(member, layout), position('rival', layout))
+      expect(toOwn).toBeLessThan(toRival)
+    }
   })
 
-  it('semantic ring order: characters inner, factions middle, places outer', () => {
-    const nodes = [
-      ...Array.from({ length: 2 }, (_, i) => ({ id: `c${i}`, kind: 'character', name: `c${i}`, order: i, hasPortrait: false })),
-      ...Array.from({ length: 2 }, (_, i) => ({ id: `f${i}`, kind: 'faction', name: `f${i}`, order: 10 + i, hasPortrait: false })),
-      ...Array.from({ length: 2 }, (_, i) => ({ id: `p${i}`, kind: 'place', name: `p${i}`, order: 20 + i, hasPortrait: false })),
-    ]
-    const layout = concentricLayoutByKind(nodes)
-    expect(radius('c0', layout)).toBeLessThan(radius('f0', layout))
-    expect(radius('f0', layout)).toBeLessThan(radius('p0', layout))
+  it('a place with bases_at settles nearer its anchor hub than an unrelated faction', () => {
+    const { nodes, edges } = net()
+    const layout = clusterLayout(nodes, edges)
+    const toGuild = distance(position('tavern', layout), position('guild', layout))
+    const toRival = distance(position('tavern', layout), position('rival', layout))
+    expect(toGuild).toBeLessThan(toRival)
   })
 
-  it('semantic order holds even when characters are dense: characters stay inner', () => {
-    const nodes = [
-      ...Array.from({ length: 12 }, (_, i) => ({ id: `c${i}`, kind: 'character', name: `c${i}`, order: i, hasPortrait: false })),
-      ...Array.from({ length: 2 }, (_, i) => ({ id: `f${i}`, kind: 'faction', name: `f${i}`, order: 20 + i, hasPortrait: false })),
-    ]
-    const layout = concentricLayoutByKind(nodes)
-    // 12 characters (dense) stay INNER than 2 factions — the semantic order
-    // never inverts even though the inner ring needs a huge radius (the outer
-    // ring simply gets pushed further out).
-    expect(radius('c0', layout)).toBeLessThan(radius('f0', layout))
-    expect(radius('f0', layout)).toBeGreaterThanOrEqual(radius('c0', layout) + CARD_PITCH)
+  it('buildFactionClusters: member_of into a faction root, edge order kept; non-faction targets ignored', () => {
+    const { nodes, edges } = net()
+    const clusters = buildFactionClusters(nodes, edges)
+    expect([...clusters.keys()]).toEqual(['guild', 'rival'])
+    expect(clusters.get('guild')).toEqual(['m1', 'm2', 'm3'])
+    expect(clusters.get('rival')).toEqual(['r1'])
+    // member_of whose target is NOT a faction never opens a cluster.
+    const weird = {
+      nodes: [node('guild2', 'faction'), node('human', 'character'), node('falcon', 'faction')],
+      edges: [
+        edge('x1', 'human', 'guild2', 'member_of'),
+        edge('x2', 'guild2', 'human', 'member_of'), // faction member_of a character
+        edge('x3', 'falcon', 'guild2', 'enemy_of'), // non-member_of edge ignored
+      ],
+    }
+    expect(buildFactionClusters(weird.nodes, weird.edges)).toEqual(new Map([['guild2', ['human']]]))
   })
 
-  it('per-kind ring radii follow the count formula plus ring clearance', () => {
-    const nodes = [
-      ...Array.from({ length: 4 }, (_, i) => ({ id: `f${i}`, kind: 'faction', name: `f${i}`, order: i, hasPortrait: false })),
-      ...Array.from({ length: 2 }, (_, i) => ({ id: `p${i}`, kind: 'place', name: `p${i}`, order: 10 + i, hasPortrait: false })),
-    ]
-    const layout = concentricLayoutByKind(nodes)
-    // f-ring inner (4 nodes): max(4*190/2π≈121, 190) = 190.
-    // p-ring outer (2 nodes): max(2*190/2π≈60, 190+190=380) = 380.
-    expect(radius('f0', layout)).toBeCloseTo(CARD_PITCH, 0)
-    expect(radius('p0', layout)).toBeCloseTo(CARD_PITCH * 2, 0)
+  it('a faction with no members is a plain node: no NaN, bounded extent, one position per node', () => {
+    const { nodes, edges } = net()
+    const layout = clusterLayout(nodes, edges)
+    expect(layout).toHaveLength(nodes.length)
+    expect(new Set(layout.map((entry) => entry.id)).size).toBe(nodes.length)
+    for (const entry of layout) {
+      expect(Number.isFinite(entry.x)).toBe(true)
+      expect(Number.isFinite(entry.y)).toBe(true)
+      expect(Math.abs(entry.x)).toBeLessThan(100_000)
+      expect(Math.abs(entry.y)).toBeLessThan(100_000)
+    }
+  })
+
+  it('hashString is deterministic and spreads seeds', () => {
+    expect(hashString('The Drowned Harbor')).toBe(hashString('The Drowned Harbor'))
+    expect(hashString('a')).not.toBe(hashString('b'))
   })
 })
 

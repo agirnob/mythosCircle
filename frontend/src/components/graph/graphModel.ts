@@ -120,28 +120,60 @@ export function displayName(nameById: Readonly<Record<string, string>>, id: stri
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic concentric layout (one ring per kind) — the layout contract.
+// Deterministic cluster layout — semantic faction areas + force refinement
+// (owner verdict 2026-09-19 "do it right": faction members sit close to
+// their faction, places near their anchors; no perfect circles, no empty
+// center). Pure + deterministic: seeded PRNG, fixed iterations — repeated
+// layout of the same world is byte-identical.
 // ---------------------------------------------------------------------------
-
-/** The arc pitch between ring nodes (px, along the ring) — also the minimum
- * gap between successive rings so ring cards never collide. */
-export const CARD_PITCH = 190
 
 /** Shared node geometry — the mockup card, 186×66. */
 export const GRAPH_NODE_WIDTH = 186
 export const GRAPH_NODE_HEIGHT = 66
 
-/** Kind ring ordering — the SEMANTIC ring order (owner verdict 2026-09-19):
- * characters innermost, factions middle, places outermost; unknown kinds
- * trail the big three in first-seen order. */
-const KIND_ORDER: Readonly<Record<string, number>> = {
-  character: 0,
-  faction: 1,
-  place: 2,
+/** Arc pitch for cluster members (px along the member ring). */
+const CLUSTER_PITCH = 172
+/** Minimum member-ring radius — a faction card plus its closest members. */
+const CLUSTER_MIN_RADIUS = 120
+/** Ideal edge length for the ambient force pass. */
+const IDEAL_EDGE = 230
+
+/** Force refinement: iterations + spring/repulsion weights. */
+const REFINE_ITERATIONS = 220
+const EDGE_SPRING = 1.0
+// Anchor spring during refinement (the final ring projection in clusterLayout
+// enforces membership structurally; this only shapes the angular drift).
+const CLUSTER_SPRING = 0.8
+// Repulsion vs springs: cluster roots separate by ~1.5×IDEAL and member rings
+// never intrude on a neighbouring faction's area...
+const REPULSION = 300_000
+// Soft gravity to the running centroid: bounds edgeless/low-degree nodes
+// (pure repulsion alone lets them drift outward like t^(1/3) — the observed
+// 17k-px blowout) and keeps the layout's usable extent.
+const CENTER_GRAVITY = 0.04
+const MAX_STEP = 46
+const DAMPING = 0.86
+
+/** FNV-1a — deterministic uint32 seed from any string (per-world seed). */
+export function hashString(input: string): number {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return hash >>> 0
 }
 
-function kindOrder(kind: string): number {
-  return KIND_ORDER[kind] ?? 3
+/** mulberry32 — deterministic PRNG (seed-safe, no Date/random). */
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
 }
 
 export interface LayoutPosition {
@@ -151,47 +183,433 @@ export interface LayoutPosition {
   y: number
 }
 
-/**
- * Deterministic concentric rings, one per kind, in SEMANTIC order:
- * characters innermost → factions middle → places outermost (unknown kinds
- * after the big three, first-seen order). Ring radius = (count × CARD_PITCH)/2π,
- * enforced outward-monotonic with a CARD_PITCH clearance between rings so
- * ring cards never collide (a dense inner ring can push sparse outer rings
- * outward — that is the cost of the semantic order). The first ring starts
- * one CARD_PITCH from the origin and the center stays EMPTY: the focus never
- * moves (owner verdict 2026-09-19 — focused nodes stay in place, no center
- * slot).
- *
- * Pure: no randomness; a pure function of the node set, so positions are
- * stable across focus changes by construction.
- */
-export function concentricLayoutByKind(nodes: ReadonlyArray<GraphNode>): LayoutPosition[] {
-  const byKind = new Map<string, GraphNode[]>()
-  for (const node of nodes) {
-    const list = byKind.get(node.kind)
-    if (list) list.push(node)
-    else byKind.set(node.kind, [node])
-  }
-  const kinds = [...byKind.keys()].sort((a, b) => kindOrder(a) - kindOrder(b))
+type Point = { x: number; y: number }
 
-  const positions: LayoutPosition[] = []
-  let previousOuter = 0
-  for (const kind of kinds) {
-    const group = byKind.get(kind)!
-    const count = group.length
-    const radius = Math.max((count * CARD_PITCH) / (2 * Math.PI), previousOuter + CARD_PITCH)
-    previousOuter = radius
+/**
+ * Faction clusters from the committed vocabulary: every `member_of` edge
+ * whose target is a faction makes the source a member of that faction's
+ * cluster (deterministic: member order = edge rowid order). A faction with
+ * no members is just a plain node (no empty areas).
+ */
+export function buildFactionClusters(
+  nodes: ReadonlyArray<GraphNode>,
+  edges: ReadonlyArray<GraphEdge>,
+): Map<string, string[]> {
+  const kindById = new Map(nodes.map((node) => [node.id, node.kind]))
+  const clusters = new Map<string, string[]>()
+  for (const edge of edges) {
+    if (edge.type !== 'member_of') continue
+    if (kindById.get(edge.dst) !== 'faction') continue
+    const members = clusters.get(edge.dst)
+    if (members) members.push(edge.src)
+    else clusters.set(edge.dst, [edge.src])
+  }
+  return clusters
+}
+
+/** The representative id used for a node in the inter-cluster skeleton:
+ * a member counts as its faction (the cluster moves as one body). */
+function representative(id: string, clusterOfMember: Map<string, string>): string {
+  return clusterOfMember.get(id) ?? id
+}
+
+/**
+ * Deterministic cluster layout:
+ *
+ * 1. SKELETON — factions (with member mass) + unaffiliated nodes laid out by
+ *    a seeded force pass over the inter-cluster graph (members count as
+ *    their faction; internal cluster edges drop out).
+ * 2. FILL — each faction's members placed on a deterministic ring around
+ *    their faction, radius by member count (this is the "area": faction at
+ *    the center, members hugging it).
+ * 3. REFINE — a full force pass over EVERY node: committed edges attract,
+ *    all pairs repel, and every member keeps a spring to its faction, so
+ *    the semantic areas survive while cross-world relations pull clusters
+ *    toward each other and places settle near their anchors. Fixed
+ *    iterations, damped, deterministic (no randomness in this pass).
+ *
+ * Pure: same world ⇒ same positions; focus never influences the layout.
+ */
+export function clusterLayout(
+  nodes: ReadonlyArray<GraphNode>,
+  edges: ReadonlyArray<GraphEdge>,
+): LayoutPosition[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const kindById = new Map(nodes.map((node) => [node.id, node.kind]))
+  const clusters = buildFactionClusters(nodes, edges)
+  const memberOf = new Map<string, string>()
+  for (const [factionId, members] of clusters) {
+    for (const member of members) memberOf.set(member, factionId)
+  }
+
+  // Associations: a non-member, non-faction node whose ENTIRE edge incidence
+  // lands inside ONE faction cluster (root or members) binds to that cluster
+  // — e.g. a place with only `bases_at → guild` sits beside the guild, on the
+  // outskirts of its member ring, instead of drifting into the sparser side
+  // of the drawing.
+  const associates = new Map<string, string>()
+  for (const node of nodes) {
+    if (memberOf.has(node.id) || node.kind === 'faction') continue
+    const incident = edges.filter((edge) => edge.src === node.id || edge.dst === node.id)
+    if (incident.length === 0) continue
+    const touched = new Set<string>()
+    for (const edge of incident) {
+      const other = edge.src === node.id ? edge.dst : edge.src
+      const root = memberOf.get(other) ?? (kindById.get(other) === 'faction' ? other : null)
+      touched.add(root ?? '\u0000unaffiliated')
+    }
+    if (touched.size === 1 && !touched.has('\u0000unaffiliated')) {
+      associates.set(node.id, [...touched][0]!)
+    }
+  }
+  const clusterOfNode = new Map([...memberOf, ...associates])
+
+  const positions = new Map<string, Point>()
+
+  // 1. Skeleton: cluster roots + unaffiliated nodes.
+  const skeletonIds = nodes
+    .map((node) => node.id)
+    .filter((id) => !clusterOfNode.has(id)) // members + associates ride their faction
+  const rep = (id: string) => representative(id, clusterOfNode)
+  const skeletonEdgePairs = edges
+    .map((edge) => [rep(edge.src), rep(edge.dst)] as const)
+    .filter(([a, b]) => a !== b)
+
+  if (skeletonIds.length > 0) {
+    const random = mulberry32(hashString(byId.get(skeletonIds[0]!)?.name ?? 'skeleton'))
+    for (const id of skeletonIds) {
+      positions.set(id, {
+        x: (random() - 0.5) * 600,
+        y: (random() - 0.5) * 600,
+      })
+    }
+    relax(positions, skeletonIds, skeletonEdgePairs, REFINE_ITERATIONS, (id) => ({
+      // Cluster roots carry their member mass: heavier roots push harder.
+      mass: 1 + (clusters.get(id)?.length ?? 0) * 0.35,
+      anchor: null,
+    }))
+  }
+
+  // 2. Fill: members on a deterministic ring around their faction;
+  //    associates just outside that ring (bottom-right bias, fixed order).
+  for (const [factionId, members] of clusters) {
+    const center = positions.get(factionId) ?? { x: 0, y: 0 }
+    const radius = Math.max((members.length * CLUSTER_PITCH) / (2 * Math.PI), CLUSTER_MIN_RADIUS)
     const startAngle = -Math.PI / 2
-    group.forEach((node, index) => {
-      const angle = startAngle + (index * 2 * Math.PI) / count
-      positions.push({
-        id: node.id,
-        x: radius * Math.cos(angle),
-        y: radius * Math.sin(angle),
+    members.forEach((memberId, index) => {
+      const angle = startAngle + (index * 2 * Math.PI) / members.length
+      positions.set(memberId, {
+        x: center.x + radius * Math.cos(angle),
+        y: center.y + radius * Math.sin(angle),
       })
     })
   }
-  return positions
+  const associateIds = [...associates.keys()]
+  associateIds.forEach((associateId, index) => {
+    const rootId = associates.get(associateId)!
+    const center = positions.get(rootId) ?? { x: 0, y: 0 }
+    const members = clusters.get(rootId) ?? []
+    const radius = Math.max((members.length * CLUSTER_PITCH) / (2 * Math.PI), CLUSTER_MIN_RADIUS) + 10
+    const angle = -Math.PI / 2 + (index * 2 * Math.PI) / Math.max(associateIds.length, 1)
+    positions.set(associateId, {
+      x: center.x + radius * Math.cos(angle),
+      y: center.y + radius * Math.sin(angle),
+    })
+  })
+
+  // 3. Refine: every node, all forces — edges attract, pairs repel,
+  //    cluster-anchored nodes spring back to their faction at ring spacing
+  //    (members on the member ring, associates just outside it).
+  const allIds = nodes.map((node) => node.id)
+  const pairEdges = edges.map((edge) => [edge.src, edge.dst] as const).filter(([a, b]) => a !== b)
+  const anchorIdeal = new Map<string, number>()
+  for (const [factionId, members] of clusters) {
+    const radius = Math.max((members.length * CLUSTER_PITCH) / (2 * Math.PI), CLUSTER_MIN_RADIUS)
+    for (const member of members) anchorIdeal.set(member, radius)
+    for (const [associate, root] of associates) {
+      if (root === factionId) anchorIdeal.set(associate, radius + 10)
+    }
+  }
+  relax(positions, allIds, pairEdges, REFINE_ITERATIONS, (id) => {
+    const rootId = clusterOfNode.get(id)
+    if (rootId === undefined) return { mass: null, anchor: null }
+    const factionPoint = positions.get(rootId)
+    return factionPoint
+      ? {
+          mass: null,
+          anchor: { point: factionPoint, ideal: anchorIdeal.get(id) ?? CLUSTER_MIN_RADIUS },
+        }
+      : { mass: null, anchor: null }
+  })
+
+  // 3b. Cluster separation: factions must stand at least one full visual
+  //     footprint apart — each faction claims its own member-ring reach PLUS
+  //     its own depth when it is itself a member of another faction (faction-
+  //     as-member chains double the reach; Wren/Cathedral 18px was this).
+  const ringIds = new Map<string, string>(memberOf)
+  for (const [id, rootId] of associates) ringIds.set(id, rootId)
+  const factionIds = nodes.filter((node) => node.kind === 'faction').map((node) => node.id)
+  if (factionIds.length > 1) {
+    const reachOf = new Map<string, number>()
+    for (const id of factionIds) {
+      let reach = 0
+      for (const [memberId, rootId] of ringIds) {
+        if (rootId === id) reach = Math.max(reach, anchorIdeal.get(memberId) ?? 0)
+      }
+      const ownDepth = ringIds.get(id)
+      if (ownDepth !== undefined) reach += (anchorIdeal.get(id) ?? 0)
+      reachOf.set(id, Math.max(reach, 150))
+    }
+    for (let pass = 0; pass < 200; pass += 1) {
+      let moved = false
+      for (let i = 0; i < factionIds.length; i += 1) {
+        const a = factionIds[i]!
+        const pa = positions.get(a)
+        if (!pa) continue
+        for (let j = i + 1; j < factionIds.length; j += 1) {
+          const b = factionIds[j]!
+          const pb = positions.get(b)
+          if (!pb) continue
+          const dx = pb.x - pa.x
+          const dy = pb.y - pa.y
+          const d = Math.hypot(dx, dy)
+          const minSep = reachOf.get(a)! + reachOf.get(b)! + 180
+          if (d >= minSep) continue
+          const deficit = minSep - d
+          const ux = d === 0 ? 1 : dx / d
+          const uy = d === 0 ? 0 : dy / d
+          const half = deficit / 2
+          pa.x -= ux * half
+          pa.y -= uy * half
+          pb.x += ux * half
+          pb.y += uy * half
+          moved = true
+        }
+      }
+      if (!moved) break
+    }
+  }
+
+  // 4. Enforce membership (structural guarantee, not physics): project every
+  //    cluster-anchored node back onto its faction ring — own distance
+  //    exactly `ideal`, angle preserved. With the separation pass above the
+  //    ring radius can never reach a foreign faction, so a member is always
+  //    closer to its own faction than to any other.
+  //    Same-type refinement can still pull two members of ONE cluster to the
+  //    same angle — the angular redistribution below re-spaces each cluster's
+  //    members evenly, ORDER-preserving around the ring and centred on their
+  //    circular-mean direction (the organic lean survives).
+  const ringOf = new Map<string, string>()
+  for (const [id, rootId] of memberOf) ringOf.set(id, rootId)
+  for (const [id, rootId] of associates) ringOf.set(id, rootId)
+  const groupIds = new Map<string, string[]>()
+  for (const [id, rootId] of ringOf) {
+    const group = groupIds.get(rootId)
+    if (group) group.push(id)
+    else groupIds.set(rootId, [id])
+  }
+  for (const [rootId, group] of groupIds) {
+    const root = positions.get(rootId)
+    if (!root) continue
+    const ring = (id: string) => anchorIdeal.get(id) ?? CLUSTER_MIN_RADIUS
+    // Circular mean of the drift directions (wrap-safe). A faction that is
+    // itself a member of another faction points its ring AWAY from the
+    // parent, so its members can never sit between it and the grandparent.
+    let sumX = 0
+    let sumY = 0
+    const byAngle = group
+      .map((id) => {
+        const point = positions.get(id)!
+        return { id, angle: Math.atan2(point.y - root.y, point.x - root.x) }
+      })
+      .sort((a, b) => a.angle - b.angle)
+    const parentOfRoot = ringIds.get(rootId)
+    let mean: number
+    if (parentOfRoot !== undefined) {
+      const parent = positions.get(parentOfRoot)
+      mean = parent ? Math.atan2(root.y - parent.y, root.x - parent.x) : 0
+    } else {
+      for (const entry of byAngle) {
+        sumX += Math.cos(entry.angle)
+        sumY += Math.sin(entry.angle)
+      }
+      mean = Math.atan2(sumY, sumX)
+    }
+    const count = byAngle.length
+    const step = (2 * Math.PI) / count
+    byAngle.forEach((entry, index) => {
+      const angle = mean + (index - (count - 1) / 2) * step
+      const radius = ring(entry.id)
+      const point = positions.get(entry.id)!
+      point.x = root.x + radius * Math.cos(angle)
+      point.y = root.y + radius * Math.sin(angle)
+    })
+  }
+
+  // 6. (removed) A per-member "membership guard" that pushes foreign
+  //     factions away accumulated unboundedly across passes and ballooned the
+  //     layout to thousands of px. Nested chains are handled structurally
+  //     instead: chain roots' rings point away from their parent (step 4) and
+  //     the reach-aware separation (step 3b) reserves each faction's full
+  //     footprint.
+
+  // 5. Ambient de-overlap: nodes NOT anchored on a ring still get separated
+  //     from anything closer than one card diagonal (~150px). Ring members
+  //     never move (their positions are the membership guarantee); only the
+  //     free nodes give way, deterministically (later index moves, bounded
+  //     passes).
+  const NODE_SEP = 150
+  const freeIds = nodes.map((node) => node.id).filter((id) => !ringIds.has(id))
+  if (freeIds.length > 1) {
+    for (let pass = 0; pass < 60; pass += 1) {
+      let moved = false
+      for (let i = 0; i < nodes.length; i += 1) {
+        const a = nodes[i]!.id
+        const pa = positions.get(a)
+        if (!pa) continue
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const b = nodes[j]!.id
+          const pb = positions.get(b)
+          if (!pb) continue
+          const dx = pb.x - pa.x
+          const dy = pb.y - pa.y
+          const d = Math.hypot(dx, dy)
+          if (d >= NODE_SEP) continue
+          const free = ringIds.has(a) ? (ringIds.has(b) ? null : b) : a
+          if (free === null) continue // two ring members: guaranteed by rings
+          const target = free === a ? pa : pb
+          const other = free === a ? pb : pa
+          const ux = d === 0 ? 1 : dx / d
+          const uy = d === 0 ? 0 : dy / d
+          const push = (NODE_SEP - d) / 2
+          const awayX = free === a ? -ux : ux
+          const awayY = free === a ? -uy : uy
+          target.x = other.x + awayX * (d + push)
+          target.y = other.y + awayY * (d + push)
+          moved = true
+        }
+      }
+      if (!moved) break
+    }
+  }
+
+  // Normalize: centroid at the origin (stable, deterministic).
+  let cx = 0
+  let cy = 0
+  for (const point of positions.values()) {
+    cx += point.x
+    cy += point.y
+  }
+  cx /= positions.size || 1
+  cy /= positions.size || 1
+  return nodes.map((node) => {
+    const point = positions.get(node.id) ?? { x: 0, y: 0 }
+    return { id: node.id, x: point.x - cx, y: point.y - cy }
+  })
+}
+
+interface RefineHook {
+  /** Repulsion mass multiplier (null = 1). */
+  mass: number | null
+  /** Optional fixed-point spring (member → faction at ring spacing). */
+  anchor: { point: Point; ideal: number } | null
+}
+
+/** Seeded, damped force refinement over the given node ids. `hook` scales a
+ * node's repulsion mass and/or attaches it to a fixed point (the cluster
+ * spring). Iterations, damping and max step are fixed — deterministic. */
+function relax(
+  positions: Map<string, Point>,
+  ids: string[],
+  edgePairs: ReadonlyArray<readonly [string, string]>,
+  iterations: number,
+  hook: (id: string) => RefineHook,
+): void {
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const forces = new Map<string, Point>()
+    for (const id of ids) forces.set(id, { x: 0, y: 0 })
+
+    // Centroid gravity: a soft pull to the graph's current center, so
+    // edgeless nodes never drift unboundedly (1/d² repulsion alone gives a
+    // t^(1/3) outward drift).
+    let cx = 0
+    let cy = 0
+    for (const id of ids) {
+      const point = positions.get(id)!
+      cx += point.x
+      cy += point.y
+    }
+    cx /= ids.length || 1
+    cy /= ids.length || 1
+    for (const id of ids) {
+      const point = positions.get(id)!
+      forces.get(id)!.x += (cx - point.x) * CENTER_GRAVITY
+      forces.get(id)!.y += (cy - point.y) * CENTER_GRAVITY
+    }
+
+    // Repulsion (all pairs).
+    for (let i = 0; i < ids.length; i += 1) {
+      const a = ids[i]!
+      const pa = positions.get(a)!
+      const massA = hook(a).mass ?? 1
+      for (let j = i + 1; j < ids.length; j += 1) {
+        const b = ids[j]!
+        const pb = positions.get(b)!
+        const dx = pa.x - pb.x
+        const dy = pa.y - pb.y
+        const d2 = dx * dx + dy * dy + 1
+        const d = Math.sqrt(d2)
+        const force = (REPULSION * ((massA + (hook(b).mass ?? 1)) / 2)) / d2
+        const fx = (dx / d) * force
+        const fy = (dy / d) * force
+        forces.get(a)!.x += fx
+        forces.get(a)!.y += fy
+        forces.get(b)!.x -= fx
+        forces.get(b)!.y -= fy
+      }
+    }
+
+    // Springs: committed edges pull endpoints to the ideal length.
+    for (const [a, b] of edgePairs) {
+      const pa = positions.get(a)
+      const pb = positions.get(b)
+      if (!pa || !pb) continue
+      const dx = pb.x - pa.x
+      const dy = pb.y - pa.y
+      const d = Math.sqrt(dx * dx + dy * dy) || 1
+      const force = (d - IDEAL_EDGE) * EDGE_SPRING
+      const fx = (dx / d) * force
+      const fy = (dy / d) * force
+      forces.get(a)!.x += fx
+      forces.get(a)!.y += fy
+      forces.get(b)!.x -= fx
+      forces.get(b)!.y -= fy
+    }
+
+    // Cluster anchors: members spring back to their faction's LIVE location.
+    for (const id of ids) {
+      const anchor = hook(id).anchor
+      if (!anchor) continue
+      const point = positions.get(id)!
+      const target = anchor.point
+      const dx = target.x - point.x
+      const dy = target.y - point.y
+      const d = Math.sqrt(dx * dx + dy * dy) || 1
+      const force = (d - anchor.ideal) * CLUSTER_SPRING
+      forces.get(id)!.x += (dx / d) * force
+      forces.get(id)!.y += (dy / d) * force
+    }
+
+    // Apply with damping + a max step (no explosions, still deterministic).
+    for (const id of ids) {
+      const point = positions.get(id)!
+      const { x: fx, y: fy } = forces.get(id)!
+      const length = Math.sqrt(fx * fx + fy * fy) || 1
+      const clamp = Math.min(length, MAX_STEP) / length
+      point.x += fx * clamp * DAMPING
+      point.y += fy * clamp * DAMPING
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

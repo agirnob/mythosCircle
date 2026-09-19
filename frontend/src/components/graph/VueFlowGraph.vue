@@ -3,9 +3,10 @@
  * Story 7.1 — Vue Flow winner renderer (whole-world redesign, owner verdict
  * 2026-09-19). Consumes the shared graphModel output and renders the ENTIRE
  * committed world:
- *   - deterministic concentric ring-per-kind positions, SEMANTIC order
- *     (characters innermost, places outermost — owner verdict 2026-09-19);
- *     memoized per world change — focusing never moves or re-lays out a node,
+ *   - deterministic cluster layout (semantic faction areas + force
+ *     refinement): members hug their faction, places settle near anchors,
+ *     no perfect circles; memoized per world change — focusing never moves
+ *     or re-lays out a node,
  *   - every committed edge drawn; labels OFF by default,
  *   - focus (from ?focus= or node click): the 1-hop set (both directions)
  *     renders at full opacity WITH edge labels, everything else dims
@@ -27,7 +28,7 @@ import type { GraphRenderEdge, GraphRenderNode, OneHop } from './graphModel'
 import {
   GRAPH_NODE_HEIGHT,
   GRAPH_NODE_WIDTH,
-  concentricLayoutByKind,
+  clusterLayout,
   parallelSlots,
   vueFlowCurvature,
 } from './graphModel'
@@ -223,14 +224,14 @@ async function fitAfterRender() {
 }
 
 watch(
-  () => props.nodes,
+  () => [props.nodes, props.edges] as const,
   () => {
     hoveredEdgeId.value = null
     selectedEdgeId.value = null
-    // Stable layout: recompute the ring positions ONLY when the world
-    // (node set) changes — never on focus changes.
+    // Stable layout: recompute the cluster positions ONLY when the world
+    // (nodes/edges) changes — never on focus changes.
     ringPositions.value = new Map(
-      concentricLayoutByKind(props.nodes).map((position) => [position.id, { x: position.x, y: position.y }]),
+      clusterLayout(props.nodes, props.edges).map((position) => [position.id, { x: position.x, y: position.y }]),
     )
     void fitAfterRender()
   },
