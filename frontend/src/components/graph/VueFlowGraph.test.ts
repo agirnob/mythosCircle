@@ -111,6 +111,22 @@ describe('VueFlowGraph (the chosen candidate, whole world)', () => {
     wrapper.unmount()
   })
 
+  it('the focused node KEEPS its ring position — focus never repositions it', async () => {
+    const before = await mountGraph(worldProps(null, false))
+    const f0Before = before.find('.graph-node').element // F0 is first in entity order
+    const transformBefore = f0Before.parentElement!.getAttribute('style') ?? ''
+    before.unmount()
+
+    const focused = await mountGraph(worldProps('F0', false))
+    const f0Focused = focused.find('.graph-node.focus').element
+    // Same flow-node wrapper position — no center jump, no relayout (the
+    // card's own border/shadow DO change — that is the focus treatment).
+    expect(f0Focused.parentElement!.getAttribute('style')).toBe(transformBefore)
+    // And F0 is NOT parked at the graph origin — it sits on its ring.
+    expect(transformBefore).not.toMatch(/translate\(0px, 0px\)/)
+    focused.unmount()
+  })
+
   it('a drag cycle suppresses refocus until the drag ends (drag guard)', async () => {
     const wrapper = await mountGraph(worldProps('F0', false))
     const node = wrapper.find('.graph-node')

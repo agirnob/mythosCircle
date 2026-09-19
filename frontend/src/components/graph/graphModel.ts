@@ -131,8 +131,9 @@ export const CARD_PITCH = 190
 export const GRAPH_NODE_WIDTH = 186
 export const GRAPH_NODE_HEIGHT = 66
 
-/** Kind ring ordering for count ties (characters inner, factions middle,
- * places outer); unknown kinds trail the big three in first-seen order. */
+/** Kind ring ordering — the SEMANTIC ring order (owner verdict 2026-09-19):
+ * characters innermost, factions middle, places outermost; unknown kinds
+ * trail the big three in first-seen order. */
 const KIND_ORDER: Readonly<Record<string, number>> = {
   character: 0,
   faction: 1,
@@ -151,16 +152,18 @@ export interface LayoutPosition {
 }
 
 /**
- * Deterministic concentric rings, one per kind:
- * - rings sorted by node count so the LARGEST ring is the OUTERMOST, ties
- *   broken by kind order (character → faction → place);
- * - ring radius = (count × CARD_PITCH) / 2π — plus an inner clearance of one
- *   CARD_PITCH so a focused card at the center never overlaps the first ring
- *   (and successive rings never touch); the focus card sits at (0, 0) only
- *   when a focus exists — the center stays empty otherwise.
+ * Deterministic concentric rings, one per kind, in SEMANTIC order:
+ * characters innermost → factions middle → places outermost (unknown kinds
+ * after the big three, first-seen order). Ring radius = (count × CARD_PITCH)/2π,
+ * enforced outward-monotonic with a CARD_PITCH clearance between rings so
+ * ring cards never collide (a dense inner ring can push sparse outer rings
+ * outward — that is the cost of the semantic order). The first ring starts
+ * one CARD_PITCH from the origin and the center stays EMPTY: the focus never
+ * moves (owner verdict 2026-09-19 — focused nodes stay in place, no center
+ * slot).
  *
- * Pure: no randomness, stable across focus changes (the CALLER memoizes the
- * ring positions once per world; only the focused card's center slot shifts).
+ * Pure: no randomness; a pure function of the node set, so positions are
+ * stable across focus changes by construction.
  */
 export function concentricLayoutByKind(nodes: ReadonlyArray<GraphNode>): LayoutPosition[] {
   const byKind = new Map<string, GraphNode[]>()
@@ -169,10 +172,7 @@ export function concentricLayoutByKind(nodes: ReadonlyArray<GraphNode>): LayoutP
     if (list) list.push(node)
     else byKind.set(node.kind, [node])
   }
-  const kinds = [...byKind.keys()].sort((a, b) => {
-    const countDelta = byKind.get(a)!.length - byKind.get(b)!.length
-    return countDelta !== 0 ? countDelta : kindOrder(a) - kindOrder(b)
-  })
+  const kinds = [...byKind.keys()].sort((a, b) => kindOrder(a) - kindOrder(b))
 
   const positions: LayoutPosition[] = []
   let previousOuter = 0

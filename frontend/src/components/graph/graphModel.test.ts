@@ -152,24 +152,24 @@ describe('concentricLayoutByKind', () => {
     expect(concentricLayoutByKind(nodes)).toEqual(concentricLayoutByKind(nodes))
   })
 
-  it('rings ordered by node count — the LARGEST kind is the OUTERMOST', () => {
+  it('SEMANTIC ring order: places outermost, characters innermost — regardless of counts', () => {
     const nodes = [
       ...Array.from({ length: 3 }, (_, i) => ({ id: `c${i}`, kind: 'character', name: `c${i}`, order: i, hasPortrait: false })),
       { id: 'f', kind: 'faction', name: 'f', order: 99, hasPortrait: false },
       ...Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, kind: 'place', name: `p${i}`, order: 100 + i, hasPortrait: false })),
     ]
     const layout = concentricLayoutByKind(nodes)
-    // 5 places (outer), 3 characters (middle), 1 faction (inner).
     const faction = radius('f', layout)
     const character = radius('c0', layout)
     const place = radius('p0', layout)
-    expect(faction).toBeLessThan(character)
-    expect(character).toBeLessThan(place)
-    // Faction (1 node) sits at the inner clearance — never closer to (0,0).
-    expect(faction).toBeGreaterThanOrEqual(CARD_PITCH)
+    expect(character).toBeLessThan(faction)
+    expect(faction).toBeLessThan(place)
+    // The innermost ring sits at least one CARD_PITCH from the origin —
+    // the center stays empty (focus never moves there).
+    expect(character).toBeGreaterThanOrEqual(CARD_PITCH)
   })
 
-  it('count ties break by kind order: character inner, place outer', () => {
+  it('semantic ring order: characters inner, factions middle, places outer', () => {
     const nodes = [
       ...Array.from({ length: 2 }, (_, i) => ({ id: `c${i}`, kind: 'character', name: `c${i}`, order: i, hasPortrait: false })),
       ...Array.from({ length: 2 }, (_, i) => ({ id: `f${i}`, kind: 'faction', name: `f${i}`, order: 10 + i, hasPortrait: false })),
@@ -180,15 +180,17 @@ describe('concentricLayoutByKind', () => {
     expect(radius('f0', layout)).toBeLessThan(radius('p0', layout))
   })
 
-  it('rings never invert: sparse outer ring cannot fall inside a dense inner one', () => {
+  it('semantic order holds even when characters are dense: characters stay inner', () => {
     const nodes = [
       ...Array.from({ length: 12 }, (_, i) => ({ id: `c${i}`, kind: 'character', name: `c${i}`, order: i, hasPortrait: false })),
       ...Array.from({ length: 2 }, (_, i) => ({ id: `f${i}`, kind: 'faction', name: `f${i}`, order: 20 + i, hasPortrait: false })),
     ]
     const layout = concentricLayoutByKind(nodes)
-    // 12 characters outrank 2 factions: characters go outer despite the
-    // faction ring being sparse.
-    expect(radius('c0', layout)).toBeGreaterThan(radius('f0', layout))
+    // 12 characters (dense) stay INNER than 2 factions — the semantic order
+    // never inverts even though the inner ring needs a huge radius (the outer
+    // ring simply gets pushed further out).
+    expect(radius('c0', layout)).toBeLessThan(radius('f0', layout))
+    expect(radius('f0', layout)).toBeGreaterThanOrEqual(radius('c0', layout) + CARD_PITCH)
   })
 
   it('per-kind ring radii follow the count formula plus ring clearance', () => {
@@ -197,10 +199,10 @@ describe('concentricLayoutByKind', () => {
       ...Array.from({ length: 2 }, (_, i) => ({ id: `p${i}`, kind: 'place', name: `p${i}`, order: 10 + i, hasPortrait: false })),
     ]
     const layout = concentricLayoutByKind(nodes)
-    // p-ring inner (2 nodes): max(2*190/2π, 190) = 190.
-    // f-ring outer (4 nodes): max(4*190/2π≈121, 190+190=380) = 380.
-    expect(radius('p0', layout)).toBeCloseTo(CARD_PITCH, 0)
-    expect(radius('f0', layout)).toBeCloseTo(CARD_PITCH * 2, 0)
+    // f-ring inner (4 nodes): max(4*190/2π≈121, 190) = 190.
+    // p-ring outer (2 nodes): max(2*190/2π≈60, 190+190=380) = 380.
+    expect(radius('f0', layout)).toBeCloseTo(CARD_PITCH, 0)
+    expect(radius('p0', layout)).toBeCloseTo(CARD_PITCH * 2, 0)
   })
 })
 

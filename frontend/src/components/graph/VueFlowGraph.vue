@@ -3,9 +3,9 @@
  * Story 7.1 — Vue Flow winner renderer (whole-world redesign, owner verdict
  * 2026-09-19). Consumes the shared graphModel output and renders the ENTIRE
  * committed world:
- *   - deterministic concentric ring-per-kind positions (memoized per world
- *     change — focusing never re-lays out the world; only the focused card
- *     moves to the center slot),
+ *   - deterministic concentric ring-per-kind positions, SEMANTIC order
+ *     (characters innermost, places outermost — owner verdict 2026-09-19);
+ *     memoized per world change — focusing never moves or re-lays out a node,
  *   - every committed edge drawn; labels OFF by default,
  *   - focus (from ?focus= or node click): the 1-hop set (both directions)
  *     renders at full opacity WITH edge labels, everything else dims
@@ -59,9 +59,9 @@ const selectedEdgeId = ref<string | null>(null)
 const dragging = ref(false)
 const initialViewport = ref<ViewportTransform | null>(null)
 
-/** Ring positions per kind — memoized ONCE per world change. The focused
- * card's center slot (0,0) is applied reactively in `flowNodes`; nothing
- * else ever moves on focus changes. */
+/** Ring positions per kind — memoized ONCE per world change. Focus changes
+ * never move a node: positions are a pure function of the node set and the
+ * focus only drives the highlight/dim classes. */
 const ringPositions = ref<Map<string, { x: number; y: number }>>(new Map())
 
 interface HandleSpec {
@@ -88,9 +88,9 @@ const flowNodes = computed<Node[]>(() =>
   props.nodes.map((node) => {
     const focused = node.id === props.focusId
     const ring = ringPositions.value.get(node.id)
-    const position = focused
-      ? { x: -GRAPH_NODE_WIDTH / 2, y: -GRAPH_NODE_HEIGHT / 2 }
-      : ring ?? { x: -GRAPH_NODE_WIDTH / 2, y: -GRAPH_NODE_HEIGHT / 2 }
+    // The focus NEVER moves (owner verdict 2026-09-19): every node keeps its
+    // ring position; focus only changes the highlight/dim classes.
+    const position = ring ?? { x: -GRAPH_NODE_WIDTH / 2, y: -GRAPH_NODE_HEIGHT / 2 }
     return {
       id: node.id,
       type: 'graph',
