@@ -686,6 +686,8 @@ So that the "for online tables" claim is proven, not asserted.
 **When** it fails
 **Then** the "for online tables" claim is withdrawn and Epic 5 moves to Phase 2.
 
+**Verdict: MET (witnessed live 2026-09-18 — full path 3 m 31 s < 10 min, single-character exports 6–36 ms < 1 min, transparent portrait ~70 s, a second human watched the world reach the table; witness confirmed by the owner 2026-09-19).**
+
 ## Epic 6: Protect the Table — Backup, Restore & Ownership — **BETA LAUNCH GATE**
 
 **Value:** the DM's world is private to her, backed up nightly, and the restore has been *proven*; a campaign deletion is total and clean. Beta does not ship until this epic's restore test passes.

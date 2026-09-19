@@ -80,13 +80,13 @@ development_status:
   4-6-llm-authored-minimax-reveal-prompts: done
   epic-4-retrospective: done
 
-  epic-5: in-progress
+  epic-5: done
   5-1-export-engine-pure-projection: done
   5-2-owlbear-export-first-target: done
   5-3-fantasy-grounds-export-second-target: done
   5-4-maptool-rpgtoken-export-third-target: done
-  5-5-world-vtt-kill-criterion-demo: in-progress
-  epic-5-retrospective: optional
+  5-5-world-vtt-kill-criterion-demo: done
+  epic-5-retrospective: done
 
   epic-6: backlog
   6-1-nightly-snapshot-with-integrity: backlog

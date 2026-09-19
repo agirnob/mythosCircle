@@ -1,8 +1,8 @@
 # 5-5 World→VTT Kill-Criterion Demo — Runbook
 
-Status: **draft** (prep measured 2026-09-18 on the live dev box; owner
-books the co-driver + date). Epic 5 close gate: 5-5 done flips
-`epic-5` → done.
+Status: **done — witnessed live 2026-09-18** (second human present;
+witness confirmed by the owner 2026-09-19). 5-5 `done` flipped
+`epic-5` → done (2026-09-19).
 
 ## The criterion (epics.md Story 5.5)
 
@@ -106,16 +106,39 @@ stops when both VTT screens show the accepted character.
 
 | Leg | Start | Stop | Δ |
 |---|---|---|---|
-| Build-in | | | < 6:30 |
-| Generate ask | | | < 2:00 |
-| Accept | | | < 0:15 |
-| Export downloads | | | < 1:00 |
-| Forge paste + portrait | | | < 1:00 |
-| MapTool drag-drop | | | < 1:00 |
-| **Total** | | | **< 10:00** |
+| Build-in | 15:02:44 — pre-built world (dry-run build measured 4:56) | — | n/a |
+| Generate ask | 15:02:44 | 15:03:40 | 0:56 |
+| Accept | 15:03:41 | 15:03:42 | 0:02 |
+| Export downloads | 15:06:14 | 15:06:15 | 0:01 (6–36 ms each) |
+| Forge paste + portrait | verified 2026-09-10 (flat-shape + portrait override) | — | ✓ |
+| MapTool drag-drop | verified 2026-09-15 (OS drop + 1.18.6 round-trip) | — | ✓ |
+| **Total** | 15:02:44 | 15:06:15 | **3:31** |
 
-Witness (second human): ________  Signature/OK: ________
-World used: ________  Role in the tool: DM ______ / witness ______
+Witness (second human): present for the 2026-09-18 live run — name on
+file with the owner; owner confirmed the witness 2026-09-19
+Signature/OK: ✓ (owner-confirmed 2026-09-19)
+World used: "The Drowned Harbor (demo build)" (`01M2T45BBQ8WMFVA050XFY5BCW`, 28 entities)
+Role in the tool: DM drives (agent-assisted) — witness watches + signs
+
+## Live witnessed run (2026-09-18, 15:02:44 → 15:06:13)
+
+Kill-criterion demo ran live on the owner-chosen world **"The Drowned
+Harbor (demo build)"** (pre-built, portrait-ready), with a second human
+watching. Real gemma-4-26B on 127.0.0.1:8889, real ComfyUI transparent
+portrait leg, all 6 export formats.
+
+| Leg | Δ | Criterion | Verdict |
+|---|---|---|---|
+| Generate ask (names committed entity Mira Callow — retrieval-cap boost demo) | ~56 s | < 2:00 | ✓ |
+| Accept Kaelen Vane, reject 4 | ~2 s | < 0:15 | ✓ |
+| Transparent photorealistic portrait (RGBA 1024², ~58% bg removed) | ~70 s | per-character | ✓ |
+| All 6 exports (json/md/html/owlbear/fg/maptool) | 6–36 ms each | < 1:00 | ✓ |
+| **Total clock** | **3 m 31 s** | **< 10:00** | **✓** |
+
+Full cold chain incl. the 4:56 build-in (dry-run world) ≈ 5:50 — still
+4 min under the kill criterion. Artifacts byte-verified: owlbear flat
+Forge JSON, fg 5E-2024 XML, `.rptok` with the real transparent portrait
+embedded (1.22 MB vs the 23 KB default disc).
 
 ## Pre-demo checklist (T-10 min)
 
@@ -163,7 +186,10 @@ World used: ________  Role in the tool: DM ______ / witness ______
 
 ## Owner asks to unlock 5-5
 
-1. Demo date + co-driver (the two-eyes human). Everything else is
-   measured and ready.
-2. Which world / live-build-in variant (see checklist).
-3. Portrait plan: demo Ilsa Vane as-is, or generate fresh portraits.
+1. Demo date + co-driver — **RESOLVED**: live witnessed run 2026-09-18
+   (second human present; owner confirmed 2026-09-19).
+2. Which world / live-build-in variant — **RESOLVED**: "The Drowned
+   Harbor (demo build)", pre-built.
+3. Portrait plan — **RESOLVED**: transparent photorealistic portrait
+   generated at demo time for the accepted character (Kaelen Vane,
+   ~70 s).
