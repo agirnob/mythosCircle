@@ -64,9 +64,9 @@ const model = computed(() =>
   exportData.value ? buildGraphModel(exportData.value, requestedFocus.value) : null,
 )
 
-// NO FOCUS: the model defaults to the first entity — surface it in the URL so
-// refresh / back / direct nav all restore the same focus. Watched (not
-// setup-time) because on a cold load the model lands asynchronously.
+// NO FOCUS: the model defaults to the most-connected entity — surface it in
+// the URL so refresh / back / direct nav all restore the same focus. Watched
+// (not setup-time) because on a cold load the model lands asynchronously.
 watch(
   () => [model.value, requestedFocus.value] as const,
   () => {

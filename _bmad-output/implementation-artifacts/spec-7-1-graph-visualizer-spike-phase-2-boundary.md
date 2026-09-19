@@ -54,7 +54,7 @@ context:
 | Scenario | Input / State | Expected Output / Behavior | Error Handling |
 |----------|--------------|---------------------------|----------------|
 | HAPPY_PATH | committed world, `?focus=<eid>` exists | canvas shows focus node + 1-hop neighbors (both directions), typed edge arrows labelled with `edgeLabel`, ≤24 nodes; node click refocuses (URL `?focus=` replaces) | N/A |
-| NO FOCUS | `/graph` without `?focus` | focus = first entity in store order (deterministic), URL gains `?focus` | N/A |
+| NO FOCUS | `/graph` without `?focus` | focus = the world's most-connected entity (max degree over all committed typed edges; rowid tie-break; deterministic), URL gains `?focus` — the demo moment never lands on an edgeless first row | N/A |
 | MISSING FOCUS | `?focus=<ulid>` not in the world | empty-state message + hint; no crash | handled in view |
 | OVER CAP | focus with >24 one-hop neighbors | deterministic truncation + "showing N of M connected entities, plus the focused entity" | N/A |
 | NO RELATIONSHIPS | focus with zero edges | "No relationships" state, focus node still shown | handled in view |
@@ -106,7 +106,7 @@ context:
 
 ## Spec Change Log
 
-<!-- Append-only. Populated by step-04 during review loops. -->
+- `[owner verdict 2026-09-19]` NO FOCUS now defaults to the world's **most-connected entity** (max degree over all committed typed edges; rowid tie-break; deterministic), not the first rowid entity — the original default degraded the demo moment in real worlds: The Drowned Harbor's first entity (The Rotting Pier) has degree 0 → 1 lonely node; the demo build's first entity (The Guttered Light) shows 2/1. URL still gains `?focus=` for the hub (refresh/back/direct-nav survive). _Avoids:_ a graph landing that reads as broken/empty on real data. _KEEP:_ neighborhood caps, deterministic selection, `focusDefaulted` URL surfacing, the `?focus=` channel for explicit entity entry.
 
 ## Design Notes
 

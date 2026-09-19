@@ -58,7 +58,7 @@ export interface GraphModel {
   focusId: string | null
   /** True when a focus was requested but no such entity exists (MISSING FOCUS). */
   focusMissing: boolean
-  /** True when no focus was requested and the first entity in store order was used. */
+  /** True when no focus was requested and the most-connected entity was used. */
   focusDefaulted: boolean
   nodes: GraphNode[]
   edges: GraphEdge[]
@@ -71,7 +71,7 @@ export interface GraphModel {
 /**
  * Build the bounded 1-hop web around `requestedFocus`.
  *
- * - NO FOCUS: the first entity in store order becomes focus (`focusDefaulted`).
+ * - NO FOCUS: the most-connected entity becomes focus (`focusDefaulted`).
  * - MISSING FOCUS: an unknown requested id yields the empty set
  *   (`focusMissing` marks the state for the view's empty-state message).
  * - EMPTY WORLD: empty set, no default focus.
@@ -99,7 +99,25 @@ export function buildGraphModel(world: WorldExport, requestedFocus: string | nul
   let focusMissing = false
   let focusDefaulted = false
   if (focusId === null) {
-    focusId = entities[0]!.id
+    // NO FOCUS: the most-connected entity — max degree over all committed
+    // typed edges, first-in-rowid tie-break. The first rowid entity can be an
+    // edgeless place (owner verdict 2026-09-19), which made the default land
+    // on an empty web in real worlds.
+    const degrees = new Map<string, number>()
+    for (const edge of world.edges) {
+      degrees.set(edge.src, (degrees.get(edge.src) ?? 0) + 1)
+      degrees.set(edge.dst, (degrees.get(edge.dst) ?? 0) + 1)
+    }
+    let bestId = entities[0]!.id
+    let bestDegree = -1
+    for (const entity of entities) {
+      const degree = degrees.get(entity.id) ?? 0
+      if (degree > bestDegree) {
+        bestDegree = degree
+        bestId = entity.id
+      }
+    }
+    focusId = bestId
     focusDefaulted = true
   } else if (!entities.some((entity) => entity.id === focusId)) {
     focusMissing = true

@@ -68,11 +68,42 @@ describe('graphModel', () => {
     expect(model.edges.some((edge) => edge.src === 'D' || edge.dst === 'D')).toBe(false)
   })
 
-  it('NO FOCUS: defaults to the first entity in store order and flags it', () => {
+  it('NO FOCUS: defaults to the most-connected entity (hub), flagged', () => {
     const model = buildGraphModel(world(), null)
-    expect(model.focusId).toBe('A')
+    // Degrees: A=2, B=3 (hub), C=2, D=1 — B wins, not first-row A.
+    expect(model.focusId).toBe('B')
     expect(model.focusDefaulted).toBe(true)
     expect(model.focusMissing).toBe(false)
+    // The hub's 1-hop web: every entity (A, C, D all touch B) and all edges.
+    expect(model.nodes.map((node) => node.id).sort()).toEqual(['A', 'B', 'C', 'D'])
+    expect(model.edges).toHaveLength(4)
+  })
+
+  it('NO FOCUS in an edgeless world falls back to the first entity', () => {
+    const isolated = world()
+    isolated.edges = []
+    const model = buildGraphModel(isolated, null)
+    expect(model.focusId).toBe('A') // all degrees 0 → first in rowid order
+    expect(model.focusDefaulted).toBe(true)
+    expect(model.nodes.map((node) => node.id)).toEqual(['A'])
+    expect(model.edges).toEqual([])
+  })
+
+  it('NO FOCUS hub pick is deterministic across runs (degree tie-break: rowid)', () => {
+    const twoHubs = world()
+    // A and B both degree 3 (max); others lower — A (first rowid) must win.
+    twoHubs.edges = [
+      { id: 'e1', src: 'A', dst: 'B', type: 'relationship', counter: 1 },
+      { id: 'e2', src: 'A', dst: 'C', type: 'ally_of', counter: 2 },
+      { id: 'e3', src: 'B', dst: 'D', type: 'loyalty', counter: 7 },
+      { id: 'e4', src: 'B', dst: 'C', type: 'relationship', counter: 1 },
+      { id: 'e5', src: 'A', dst: 'D', type: 'employs', counter: 1 },
+    ]
+    const first = buildGraphModel(twoHubs, null)
+    const again = buildGraphModel(twoHubs, null)
+    expect(first.focusId).toBe('A')
+    expect(again.focusId).toBe('A')
+    expect(first.nodes).toEqual(again.nodes)
   })
 
   it('MISSING FOCUS: unknown id yields the empty set flagged for the view', () => {
@@ -197,15 +228,17 @@ describe('graphModel', () => {
     expect(slots.get('e01')!.index).toBe(0)
   })
 
-  it('entities array order drives focus default and truncation order', () => {
+  it('array order drives truncation order; hub default is degree-based, not array position', () => {
     const reordered = world()
     reordered.entities = [entity('C'), entity('A'), entity('B'), entity('D')]
+    // Hub semantics: B (degree 3) wins regardless of array position.
     const defaulted = buildGraphModel(reordered, null)
-    expect(defaulted.focusId).toBe('C') // first in ARRAY order, not id order
-    const model = buildGraphModel(reordered, 'C')
-    const ids = model.nodes.map((node) => node.id)
-    // Neighbors kept in ARRAY order: A then B.
-    expect(ids).toEqual(['C', 'A', 'B'])
+    expect(defaulted.focusId).toBe('B')
+    // Truncation still follows ARRAY order: explicit-focus web keeps neighbors
+    // in array order (C first, then A, then B).
+    const model = buildGraphModel(reordered, 'D')
+    // D's 1-hop: B only (e3) — D, then its neighbor in array order.
+    expect(model.nodes.map((node) => node.id)).toEqual(['D', 'B'])
   })
 
   it('cap boundary behavior: 23 neighbors stay, 24 neighbors truncate (flag + counts)', () => {

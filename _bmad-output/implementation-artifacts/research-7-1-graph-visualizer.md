@@ -102,6 +102,12 @@ in the FINAL commit — this working tree keeps both candidates for review, with
 this record as the decision evidence (`git history` + this file preserve the
 A/B). `cytoscape`/`cytoscape-fcose` are then dropped from `package.json`.
 
+**Post-verdict amendment (owner, 2026-09-19):** the NO FOCUS default changed
+from first-rowid entity to the world's **most-connected entity** (max degree,
+rowid tie-break — see spec-7-1 change log). Real-world pre-fix: The Drowned
+Harbor's first entity (The Rotting Pier, degree 0) rendered 1 lonely node; the
+demo build's first entity showed 2/1. Post-fix: hubs render 7/10 and 8/9.
+
 ### Final-commit removal checklist (loser = Cytoscape)
 - [ ] Delete `frontend/src/components/graph/CytoscapeGraph.vue`
 - [ ] Delete `frontend/src/components/graph/cytoscape-fcose.d.ts`
