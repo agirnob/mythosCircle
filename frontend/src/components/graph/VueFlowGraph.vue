@@ -58,6 +58,7 @@ const nodeTypes = { graph: GraphNodeCard }
 const hoveredEdgeId = ref<string | null>(null)
 const selectedEdgeId = ref<string | null>(null)
 const dragging = ref(false)
+const paneMoved = ref(false)
 const initialViewport = ref<ViewportTransform | null>(null)
 
 /** Ring positions per kind — memoized ONCE per world change. Focus changes
@@ -195,10 +196,25 @@ function onEdgeClick({ edge }: { edge: { id: string } }) {
   selectedEdgeId.value = edge.id
 }
 
-/** Empty-space click clears the focus (URL drops ?focus=). */
+/** Any pan/zoom gesture starts a potential viewport-drag; its release
+ * click must not be read as a deliberate empty-space click. */
+function onViewportGestureStart() {
+  paneMoved.value = true
+}
+function onPaneScroll() {
+  paneMoved.value = true
+}
+
+/** Empty-space click clears the focus (URL drops ?focus=) — EXCEPT when the
+ * click is the release of a pan/zoom gesture (paneClick fires after pane
+ * drags end; clearing then would silently drop a deliberate focus). */
 function onPaneClick() {
   hoveredEdgeId.value = null
   selectedEdgeId.value = null
+  if (paneMoved.value) {
+    paneMoved.value = false
+    return
+  }
   emit('clear-focus')
 }
 
@@ -211,10 +227,11 @@ function onNodeDragStop() {
   }, 0)
 }
 
-/** Refocus keeps the same campaign: the focused card slides to the center
- * slot within the STABLE layout, then the view fits once the re-render
- * settles. The first SUCCESSFUL fit also captures the "reset" home viewport
- * (fitView resolves false pre-init). */
+/** Fit the current world into view (a world CHANGE — new node set — refits;
+ * a focus change never reaches this path because GraphView passes the SAME
+ * node/edge arrays and only the oneHop/focusId props move). The first
+ * SUCCESSFUL fit also captures the "reset" home viewport (fitView resolves
+ * false pre-init). */
 async function fitAfterRender() {
   await nextTick()
   const fitted = await flow.fitView({ padding: 0.12, duration: 200 })
@@ -228,8 +245,9 @@ watch(
   () => {
     hoveredEdgeId.value = null
     selectedEdgeId.value = null
-    // Stable layout: recompute the cluster positions ONLY when the world
-    // (nodes/edges) changes — never on focus changes.
+    // The watch observes ARRAY IDENTITY: GraphView keeps the world's
+    // node/edge arrays stable across focus changes, so this fires only on a
+    // real world change (or a filter) — never on refocus.
     ringPositions.value = new Map(
       clusterLayout(props.nodes, props.edges).map((position) => [position.id, { x: position.x, y: position.y }]),
     )
@@ -315,6 +333,8 @@ defineExpose({ zoomIn, zoomOut, fitView, resetView, panBy })
       @edge-mouse-leave="onEdgeLeave"
       @edge-click="onEdgeClick"
       @pane-click="onPaneClick"
+      @viewport-change-start="onViewportGestureStart"
+      @pane-scroll="onPaneScroll"
     >
       <template #edge-graph="p">
         <g

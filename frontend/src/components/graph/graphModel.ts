@@ -38,8 +38,6 @@ export interface GraphEdge {
   counter: number
   /** edgeLabel(type, counter) — the committed label, never remapped. */
   label: string
-  /** True when the edge's source equals the focus (committed direction). */
-  outbound: boolean
 }
 
 /** The focus's 1-hop incidence (both directions) — drives highlight/dim. */
@@ -81,15 +79,20 @@ export function buildWorldGraph(world: WorldExport, focusId: string | null): Wor
     order,
     hasPortrait: entity.media.some((ref) => ref.kind === 'image' && ref.available),
   }))
-  const edges: GraphEdge[] = world.edges.map((edge) => ({
-    id: edge.id,
-    src: edge.src,
-    dst: edge.dst,
-    type: edge.type,
-    counter: edge.counter,
-    label: edgeLabel(edge.type, edge.counter),
-    outbound: focusId !== null && edge.src === focusId,
-  }))
+  // Dangling-edge exclusion: an edge whose src or dst is NOT a committed
+  // entity never enters the model (Vue Flow misbehaves with unknown endpoint
+  // ids; a committed world cannot produce one, but exports can).
+  const entityIds = new Set(world.entities.map((entity) => entity.id))
+  const edges: GraphEdge[] = world.edges
+    .filter((edge) => entityIds.has(edge.src) && entityIds.has(edge.dst))
+    .map((edge) => ({
+      id: edge.id,
+      src: edge.src,
+      dst: edge.dst,
+      type: edge.type,
+      counter: edge.counter,
+      label: edgeLabel(edge.type, edge.counter),
+    }))
 
   let focusMissing = false
   let oneHop: OneHop | null = null

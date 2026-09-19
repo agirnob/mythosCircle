@@ -1,9 +1,9 @@
 /**
  * Story 7.1 — the deterministic dense world both the tests and the demo rely
- * on (owner verdict 2026-09-19: whole-world render — 29 entities, 32 edges,
- * including reciprocal + parallel pairs, all 16 EDGE_VOCAB types, long
- * names, and a single portrait path). The whole committed world is the render
- * scope: there is no node cap in the view.
+ * on (owner verdict 2026-09-19: whole-world render — 29 entities, 33 edges,
+ * including reciprocal + parallel pairs, a focus self-loop, all 16
+ * EDGE_VOCAB types, long names, and a single portrait path). The whole
+ * committed world is the render scope: there is no node cap in the view.
  *
  * Constructed from the committed-data shapes only (WorldExport); ids are
  * readable for debugging. F0 is the demo focus — the dense hub: its 1-hop web
@@ -110,6 +110,9 @@ export function denseWorld(): WorldExport {
     // Never in the web: both endpoints outside the neighbor set.
     edge('e31', 'X01', 'X02', 'relationship'),
     edge('e32', 'X02', 'X03', 'ally_of', 2),
+    // Self-loop on the focus (committed data renders verbatim): a F0-loop is
+    // in the 1-hop set and renders as a small arc above the card.
+    edge('e33', DENSE_FOCUS_ID, DENSE_FOCUS_ID, 'relationship'),
   ]
 
   return {

@@ -35,6 +35,7 @@ import {
   buildWorldGraph,
   type GraphRenderEdge,
   type GraphRenderNode,
+  type OneHop,
 } from './graphModel'
 import VueFlowGraph from './VueFlowGraph.vue'
 
@@ -70,9 +71,31 @@ const requestedFocus = computed<string | null>(() => {
   return typeof focus === 'string' && focus.length > 0 ? focus : null
 })
 
-const model = computed(() =>
-  exportData.value ? buildWorldGraph(exportData.value, requestedFocus.value) : null,
+/**
+ * The whole-world graph WITHOUT a focus — STABLE array identities per world.
+ * Refocusing must never rebuild renderNodes/renderEdges: the candidate's
+ * layout watch fires on array identity, so focus-dependent recomputation
+ * would relayout + re-fit and discard the user's camera.
+ */
+const baseGraph = computed(() =>
+  exportData.value ? buildWorldGraph(exportData.value, null) : null,
 )
+
+/** The focus's 1-hop incidence — the ONLY focus-dependent recomputation
+ * (cheap, and candidate-visible as the `oneHop` prop, never as node/edge
+ * arrays). */
+const oneHopOf = computed<OneHop | null>(() => {
+  const worldData = exportData.value
+  const focus = requestedFocus.value
+  return worldData && focus !== null ? buildWorldGraph(worldData, focus).oneHop : null
+})
+
+/** The focus identity + presence — resolved against the world. */
+const focusGraph = computed(() => {
+  const worldData = exportData.value
+  const focus = requestedFocus.value
+  return worldData && focus !== null ? buildWorldGraph(worldData, focus) : null
+})
 
 onMounted(() => {
   // The world snapshot comes from the store — never fetched here. If a
@@ -101,12 +124,12 @@ function onClearFocus() {
 
 /** A focus is active (and known) — drives the Clear-focus affordance. */
 const focusActive = computed(
-  () => model.value?.focusId !== null && !model.value?.focusMissing,
+  () => focusGraph.value !== null && !focusGraph.value.focusMissing,
 )
 
 /** The candidate's focus identity — an unknown ?focus= renders unfocused. */
 const renderFocusId = computed<string | null>(() => {
-  const graph = model.value
+  const graph = focusGraph.value
   if (!graph || graph.focusMissing) return null
   return graph.focusId
 })
@@ -114,7 +137,7 @@ const renderFocusId = computed<string | null>(() => {
 /** Kind + relationship filters over the FULL world (the visible subset). */
 const kinds = computed(() => {
   const seen: string[] = []
-  for (const node of model.value?.nodes ?? []) {
+  for (const node of baseGraph.value?.nodes ?? []) {
     if (!seen.includes(node.kind)) seen.push(node.kind)
   }
   return seen
@@ -124,12 +147,12 @@ const edgeTypes = computed(() => {
   const seen = new Set<string>()
   const types: string[] = []
   for (const type of EDGE_VOCAB) {
-    if ((model.value?.edges ?? []).some((edge) => edge.type === type) && !seen.has(type)) {
+    if ((baseGraph.value?.edges ?? []).some((edge) => edge.type === type) && !seen.has(type)) {
       seen.add(type)
       types.push(type)
     }
   }
-  for (const edge of model.value?.edges ?? []) {
+  for (const edge of baseGraph.value?.edges ?? []) {
     if (!seen.has(edge.type)) {
       seen.add(edge.type)
       types.push(edge.type)
@@ -140,14 +163,14 @@ const edgeTypes = computed(() => {
 
 const nodeNameById = computed<Record<string, string>>(() => {
   const names: Record<string, string> = {}
-  for (const node of model.value?.nodes ?? []) {
+  for (const node of baseGraph.value?.nodes ?? []) {
     names[node.id] = node.name
   }
   return names
 })
 
 const renderNodes = computed<GraphRenderNode[]>(() => {
-  const nodes = model.value?.nodes ?? []
+  const nodes = baseGraph.value?.nodes ?? []
   const kindFiltered = kindFilter.value
     ? nodes.filter((node) => node.kind === kindFilter.value)
     : nodes
@@ -156,7 +179,7 @@ const renderNodes = computed<GraphRenderNode[]>(() => {
   let kept = kindFiltered
   if (edgeTypeFilter.value) {
     const incident = new Set<string>()
-    for (const edge of model.value?.edges ?? []) {
+    for (const edge of baseGraph.value?.edges ?? []) {
       if (edge.type === edgeTypeFilter.value) {
         incident.add(edge.src)
         incident.add(edge.dst)
@@ -172,7 +195,7 @@ const renderNodes = computed<GraphRenderNode[]>(() => {
 })
 
 const renderEdges = computed<GraphRenderEdge[]>(() => {
-  const edges = model.value?.edges ?? []
+  const edges = baseGraph.value?.edges ?? []
   const byType = edgeTypeFilter.value ? edges.filter((edge) => edge.type === edgeTypeFilter.value) : edges
   const visibleIds = new Set(renderNodes.value.map((node) => node.id))
   return byType.filter((edge) => visibleIds.has(edge.src) && visibleIds.has(edge.dst))
@@ -186,7 +209,7 @@ const focusName = computed(() =>
 const noFilteredRelationships = computed(
   () =>
     renderNodes.value.length > 0 &&
-    (model.value?.edges.length ?? 0) > 0 &&
+    (baseGraph.value?.edges.length ?? 0) > 0 &&
     renderEdges.value.length === 0,
 )
 
@@ -278,9 +301,9 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
       <button type="button" @click="retryStore">Retry</button>
       <RouterLink :to="{ name: 'campaigns' }" class="back">Back to your worlds</RouterLink>
     </div>
-    <p v-else-if="exportData && !model" class="muted">Loading the world…</p>
+    <p v-else-if="exportData && !baseGraph" class="muted">Loading the world…</p>
 
-    <template v-else-if="exportData && model">
+    <template v-else-if="exportData && baseGraph">
       <div class="graph-shell">
         <div class="toolbar">
           <div class="filters">
@@ -329,7 +352,7 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
           aria-label="Relationship graph canvas — arrow keys pan, + and − zoom, f fits, r resets"
           @keydown="onCanvasKeydown"
         >
-          <div v-if="model.nodes.length === 0" class="state-card">
+          <div v-if="baseGraph.nodes.length === 0" class="state-card">
             <p class="muted">This world is still empty — nothing has been built yet.</p>
             <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }" class="cta">
               Open build-in
@@ -356,13 +379,13 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
               :nodes="renderNodes"
               :edges="renderEdges"
               :focus-id="renderFocusId"
-              :one-hop="model.focusMissing ? null : model.oneHop"
+              :one-hop="oneHopOf"
               :labels-visible="labelsVisible"
               :node-name-by-id="nodeNameById"
               @refocus="onRefocus"
               @clear-focus="onClearFocus"
             />
-            <div v-if="model.focusMissing" class="notice">
+            <div v-if="focusGraph?.focusMissing" class="notice">
               Focus not found — showing the whole world.
             </div>
             <div v-else-if="noFilteredRelationships" class="notice">
@@ -395,6 +418,7 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
   /* Definite height independent of the shell: App.vue's <main> is auto-height
    * (no height:100% ancestor), which collapses the Vue Flow canvas to 0px —
    * flex:1 chains resolve only against a definite parent height. */
+  height: 64vh;
   height: clamp(320px, 64dvh, 780px);
   min-height: 320px;
 }

@@ -96,16 +96,41 @@ vi.mock('./VueFlowGraph.vue', () => {
   return { default: VueFlowGraphStub }
 })
 
-vi.mock('vue-router', () => ({
-  RouterLink: { template: '<a class="router-link"><slot /></a>' },
-  useRoute: () => ({
-    params: { id: 'C1' },
-    get query() {
-      return { ...cfg.query }
-    },
-  }),
-  useRouter: () => ({ replace: cfg.pushMock }),
-}))
+vi.mock('vue-router', async () => {
+  // A reactive source over the SAME plain object `cfg.query` (the tests'
+  // setQuery mutates it in place): the route's query property stays visible
+  // to Vue's computed dependency tracking, so a replace -> mutation ->
+  // re-read loop re-renders the view exactly like the real router.
+  const { ref } = await import('vue')
+  const queryRef = ref(cfg.query)
+  const applyQuery = (next: Record<string, string | undefined> | null) => {
+    if (!next) return
+    for (const key of Object.keys(queryRef.value)) {
+      if (!(key in next)) delete queryRef.value[key]
+    }
+    for (const [key, value] of Object.entries(next)) {
+      if (value === undefined || value === null) continue
+      queryRef.value[key] = value
+    }
+  }
+  return {
+    RouterLink: { template: '<a class="router-link"><slot /></a>' },
+    useRoute: () => ({
+      params: { id: 'C1' },
+      get query() {
+        return queryRef.value
+      },
+    }),
+    useRouter: () => ({
+      // The real router.replace mutates the routed query (reactive loop):
+      // the mock applies the same so the view re-renders on refocus/clear.
+      replace: (location: { query?: Record<string, string | undefined> | null }) => {
+        cfg.pushMock(location)
+        applyQuery(location.query ?? null)
+      },
+    }),
+  }
+})
 
 vi.mock('../../api/client', () => {
   class ApiErrorMock extends Error {
@@ -178,7 +203,7 @@ describe('GraphView', () => {
     expect(wrapper.findAll('button.node')).toHaveLength(29)
     expect(wrapper.findAll('span.edge')).toHaveLength(0) // labels off by default
     expect(wrapper.text()).toContain('29 entities')
-    expect(wrapper.text()).toContain('32 relationships')
+    expect(wrapper.text()).toContain('33 relationships')
     // No focus anywhere: the candidate receives focusId null and no oneHop.
     const props = stubProps(wrapper)
     expect(props.focusId).toBeNull()
@@ -199,14 +224,21 @@ describe('GraphView', () => {
     wrapper.unmount()
   })
 
-  it('node click refocuses: router.replace carries the new ?focus', async () => {
+  it('node click refocuses: ?focus replaced AND the candidate receives the new focusId/oneHop', async () => {
     seed(denseWorld())
     setQuery({ focus: DENSE_FOCUS_ID })
     const wrapper = mountView()
     await flushPromises()
+    expect(stubProps(wrapper).focusId).toBe(DENSE_FOCUS_ID)
     await wrapper.find('button.node[data-id="N01"]').trigger('click')
+    await flushPromises()
     const call = pushMock.mock.calls[pushMock.mock.calls.length - 1][0]
     expect(call.query.focus).toBe('N01')
+    // The reactive loop re-renders the candidate with the new focus.
+    const props = stubProps(wrapper)
+    expect(props.focusId).toBe('N01')
+    expect(props.oneHop?.nodeIds.size).toBe(2) // N01 + F0
+    expect(props.oneHop?.nodeIds).toContain('F0')
     wrapper.unmount()
   })
 
@@ -237,15 +269,21 @@ describe('GraphView', () => {
     wrapper.unmount()
   })
 
-  it('empty-space click clears the focus: ?focus drops and the web unhighlights', async () => {
+  it('empty-space click clears the focus: ?focus drops and the candidate unhighlights', async () => {
     seed(denseWorld())
     setQuery({ focus: DENSE_FOCUS_ID })
     const wrapper = mountView()
     await flushPromises()
     expect(stubProps(wrapper).focusId).toBe(DENSE_FOCUS_ID)
     await wrapper.find('.stub-pane').trigger('click')
+    await flushPromises()
     const call = pushMock.mock.calls[pushMock.mock.calls.length - 1][0]
     expect(call.query.focus).toBeUndefined()
+    // The reactive loop returns the candidate to the full unhighlighted web.
+    const props = stubProps(wrapper)
+    expect(props.focusId).toBeNull()
+    expect(props.oneHop).toBeNull()
+    expect(props.nodes).toHaveLength(29)
     wrapper.unmount()
   })
 
@@ -415,7 +453,7 @@ describe('GraphView', () => {
     expect(wrapper.findAll('span.edge')).toHaveLength(0)
     await checkbox.setValue(true)
     await flushPromises()
-    expect(wrapper.findAll('span.edge')).toHaveLength(32)
+    expect(wrapper.findAll('span.edge')).toHaveLength(33)
     wrapper.unmount()
   })
 

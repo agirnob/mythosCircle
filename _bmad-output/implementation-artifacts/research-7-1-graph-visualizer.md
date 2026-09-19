@@ -100,12 +100,15 @@ the choice.
 
 The owner amended story 7.1 after this record: the graph view no longer
 renders a capped 1-hop neighborhood — it renders **every committed entity and
-every committed edge** in a deterministic **concentric ring-per-kind layout**
-(characters inner, factions middle, places outer; rings ordered by node
-count so the largest is outermost; ring radius = `count × CARD_PITCH / 2π`
-with one `CARD_PITCH` of inner clearance for the focused card at the center).
-AR6's depth/entity caps remain the backend retrieval/generation contract and
-no longer bound the view.
+every committed edge** in a deterministic **cluster layout** (owner verdict
+"do it right"): committed `member_of` edges form faction areas — members on a
+ring around their faction (chain roots point their ring AWAY from the parent
+faction), exclusive-incidence places join as associates, everything else
+settles via a seeded force pass with a refinement pass (edges attract, pairs
+repel, centroid gravity bounds drift, members spring to their ring), plus
+reach-aware separation and bounded de-overlap. Seeded PRNG + fixed
+iterations ⇒ byte-identical layouts; AR6's depth/entity caps remain the
+backend retrieval/generation contract and no longer bound the view.
 
 Focus semantics replaced: a node click (or `?focus=`) highlights the entity +
 its 1-hop relations (both directions) with edge labels and dims the rest
@@ -117,7 +120,7 @@ the toolbar Labels toggle shows all.
 
 This supersedes the A/B-capped behavior recorded above: graphModel.ts now
 exports `buildWorldGraph(world, focusId|null)` (full world + `oneHop` set)
-and `concentricLayoutByKind(nodes)`; the loser (Cytoscape) was REMOVED per
+and `clusterLayout(nodes, edges)`; the loser (Cytoscape) was REMOVED per
 the checklist below (git history + this file keep the A/B evidence), and the
 shipped view renders the winner (Vue Flow) only.
 
@@ -137,11 +140,10 @@ no candidate switch in the code.
       "Graph renderer (spike)" select
 - [x] `GraphView.test.ts`: remove the spike-switch test row and the
       `./CytoscapeGraph.vue` mock
-- [x] Delete the cytoscape A/B evidence PNGs
-      (`ab-dense-cytoscape-desktop.png`, `ab-dense-cytoscape-mobile.png`)
+- [x] KEEP the cytoscape A/B evidence PNGs
+      (`ab-dense-cytoscape-desktop.png`, `ab-dense-cytoscape-mobile.png`) — they
+      stay tracked alongside the Vue Flow PNGs as the historical A/B evidence
 - [x] Keep: `VueFlowGraph.vue`, `GraphNodeCard.vue`, `graphModel.ts`,
-      `denseFixture.ts`, `VueFlowGraph.test.ts`, `GraphView.vue` + its tests,
-      and the Vue Flow evidence PNGs
       `denseFixture.ts`, `VueFlowGraph.test.ts`, `GraphView.vue` + its tests,
       and the Vue Flow evidence PNGs
 

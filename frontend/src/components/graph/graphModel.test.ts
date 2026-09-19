@@ -71,7 +71,7 @@ describe('buildWorldGraph', () => {
   it('dense fixture: 29 entities / 32 edges, all committed, no cap', () => {
     const model = buildWorldGraph(denseWorld(), null)
     expect(model.nodes).toHaveLength(29)
-    expect(model.edges).toHaveLength(32)
+    expect(model.edges).toHaveLength(33)
     // Every fixture entity and edge is present — nothing is truncated away.
     const ids = new Set(model.nodes.map((node) => node.id))
     for (const id of ['F0', 'N01', 'N24', 'N25', 'X01', 'X03']) {
@@ -98,13 +98,6 @@ describe('buildWorldGraph', () => {
     expect(edgeById.get('e2')!.label).toBe('ally_of(2)') // counter suffix
   })
 
-  it('outbound is the committed direction relative to the focus', () => {
-    const model = buildWorldGraph(world(), 'A')
-    const edgeById = new Map(model.edges.map((edge) => [edge.id, edge]))
-    expect(edgeById.get('e1')!.outbound).toBe(true) // A -> B
-    expect(edgeById.get('e2')!.outbound).toBe(false) // C -> A
-  })
-
   it('oneHop: both directions, reciprocal + parallel edges all included', () => {
     const model = buildWorldGraph(denseWorld(), DENSE_FOCUS_ID)
     expect(model.focusMissing).toBe(false)
@@ -117,10 +110,10 @@ describe('buildWorldGraph', () => {
     }
     // Committed direction is irrelevant to the hop set: reciprocal e10/e11
     // and parallel e16/e17 are all present.
-    for (const edgeId of ['e01', 'e10', 'e11', 'e16', 'e17', 'e28', 'e29']) {
+    for (const edgeId of ['e01', 'e10', 'e11', 'e16', 'e17', 'e28', 'e29', 'e33']) {
       expect(oneHop.edgeIds).toContain(edgeId)
     }
-    expect(oneHop.edgeIds.size).toBe(30)
+    expect(oneHop.edgeIds.size).toBe(31)
     // X* never touch the focus — outside the hop set; their edges stay out.
     expect(oneHop.nodeIds).not.toContain('X01')
     expect(oneHop.edgeIds).not.toContain('e31')
@@ -132,7 +125,34 @@ describe('buildWorldGraph', () => {
     expect(model.focusId).toBe('NO-SUCH-ENTITY')
     expect(model.oneHop).toBeNull()
     expect(model.nodes).toHaveLength(29)
-    expect(model.edges).toHaveLength(32)
+    expect(model.edges).toHaveLength(33)
+  })
+
+  it('dangling edges are excluded: an endpoint outside the entity set never enters', () => {
+    const w = world()
+    w.edges = [
+      { id: 'ok', src: 'A', dst: 'B', type: 'employs', counter: 1 },
+      { id: 'ghost-src', src: 'ZZZ', dst: 'A', type: 'relationship', counter: 1 },
+      { id: 'ghost-dst', src: 'B', dst: 'YYY', type: 'relationship', counter: 1 },
+    ]
+    const model = buildWorldGraph(w, null)
+    expect(model.edges.map((edge) => edge.id)).toEqual(['ok'])
+  })
+
+  it('self-loop on the focus stays in the web; a foreign self-loop stays out', () => {
+    const w = world()
+    w.entities = [entity('A'), entity('B')]
+    w.edges = [
+      { id: 'focus-loop', src: 'A', dst: 'A', type: 'controls', counter: 3 },
+      { id: 'foreign-loop', src: 'B', dst: 'B', type: 'kin_of', counter: 1 },
+    ]
+    const unfocused = buildWorldGraph(w, null)
+    expect(unfocused.edges.map((edge) => edge.id)).toEqual(['focus-loop', 'foreign-loop'])
+    const focused = buildWorldGraph(w, 'A')
+    expect(focused.oneHop!.edgeIds).toContain('focus-loop')
+    expect(focused.oneHop!.edgeIds).not.toContain('foreign-loop')
+    // The focus loop adds NO new node: it is the focus itself.
+    expect(focused.oneHop!.nodeIds.size).toBe(1)
   })
 
   it('displayName never leaks the raw id', () => {
@@ -146,7 +166,7 @@ describe('clusterLayout (semantic faction areas + force refinement)', () => {
     return { id, kind, name, order: 0, hasPortrait: false }
   }
   function edge(id: string, src: string, dst: string, type: string): GraphEdge {
-    return { id, src, dst, type, counter: 1, label: type, outbound: false }
+    return { id, src, dst, type, counter: 1, label: type }
   }
 
   /** A deterministic net: two factions with members, a place anchored to one,
@@ -223,17 +243,85 @@ describe('clusterLayout (semantic faction areas + force refinement)', () => {
     expect(buildFactionClusters(weird.nodes, weird.edges)).toEqual(new Map([['guild2', ['human']]]))
   })
 
-  it('a faction with no members is a plain node: no NaN, bounded extent, one position per node', () => {
+  it('a faction with no members is a plain node: exactly one finite position, no area', () => {
     const { nodes, edges } = net()
+    nodes.push(node('lonely', 'faction', 'The Lonely Hall'))
     const layout = clusterLayout(nodes, edges)
     expect(layout).toHaveLength(nodes.length)
     expect(new Set(layout.map((entry) => entry.id)).size).toBe(nodes.length)
+    const lonely = layout.filter((entry) => entry.id === 'lonely')
+    expect(lonely).toHaveLength(1)
+    expect(Number.isFinite(lonely[0]!.x)).toBe(true)
+    expect(Number.isFinite(lonely[0]!.y)).toBe(true)
+    // It opened NO ring: no members positioned relative to it (it is the
+    // only own-cluster entry).
     for (const entry of layout) {
       expect(Number.isFinite(entry.x)).toBe(true)
       expect(Number.isFinite(entry.y)).toBe(true)
       expect(Math.abs(entry.x)).toBeLessThan(100_000)
       expect(Math.abs(entry.y)).toBeLessThan(100_000)
     }
+  })
+
+  it('chain roots: a faction that is itself member_of another faction points its ring AWAY from the parent', () => {
+    const nodes = [
+      node('guild', 'faction', 'The Guild'),
+      node('rival', 'faction', 'The Rivalry'),
+      node('m1', 'character'),
+      node('m2', 'character'),
+      node('m3', 'character'),
+      node('r1', 'character'),
+      node('r2', 'character'),
+      node('r3', 'character'),
+    ]
+    const edges = [
+      edge('e1', 'm1', 'guild', 'member_of'),
+      edge('e2', 'm2', 'guild', 'member_of'),
+      edge('e3', 'm3', 'guild', 'member_of'),
+      edge('e4', 'rival', 'guild', 'member_of'), // faction-as-member chain
+      edge('e5', 'r1', 'rival', 'member_of'),
+      edge('e6', 'r2', 'rival', 'member_of'),
+      edge('e7', 'r3', 'rival', 'member_of'),
+    ]
+    const layout = clusterLayout(nodes, edges)
+    const root = position('rival', layout)
+    const parent = position('guild', layout)
+    const toParent = { x: parent.x - root.x, y: parent.y - root.y }
+    // (a) every child-faction member is closer to its OWN root than to the
+    // grandparent (and the root's members are closer to the root too).
+    for (const member of ['r1', 'r2', 'r3']) {
+      expect(distance(position(member, layout), root)).toBeLessThan(
+        distance(position(member, layout), parent),
+      )
+    }
+    for (const member of ['m1', 'm2', 'm3']) {
+      expect(distance(position(member, layout), parent)).toBeLessThan(
+        distance(position(member, layout), root),
+      )
+    }
+    // (b) the child ring's mean direction points AWAY from the parent.
+    // The projection forces even spacing (± step) about the away axis
+    // (`mean = parent → root`), so the STRICT vector mean of the members is
+    // provably ~0 and no per-member dot can be negative for every member.
+    // The away-centering contract, restated exactly: every member sits
+    // within `step` of the away axis, and the dot products are symmetric
+    // about it (their sum ≈ 0) — the ring's SECTOR faces away from the
+    // parent; a non-chain root would center on its own drift instead.
+    const awayAngle = Math.atan2(root.y - parent.y, root.x - parent.x)
+    const step = (2 * Math.PI) / 3
+    const dots: number[] = []
+    for (const member of ['r1', 'r2', 'r3']) {
+      const point = position(member, layout)
+      const offsetX = point.x - root.x
+      const offsetY = point.y - root.y
+      dots.push(toParent.x * offsetX + toParent.y * offsetY)
+      let deviation = Math.abs(Math.atan2(offsetY, offsetX) - awayAngle) % (2 * Math.PI)
+      if (deviation > Math.PI) deviation = 2 * Math.PI - deviation
+      expect(deviation).toBeLessThanOrEqual(step + 1e-6)
+    }
+    expect(Math.abs(dots.reduce((sum, dot) => sum + dot, 0))).toBeLessThan(1e-6)
+    // (c) the chain world lays out deterministically.
+    expect(clusterLayout(nodes, edges)).toEqual(layout)
   })
 
   it('hashString is deterministic and spreads seeds', () => {

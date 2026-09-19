@@ -74,23 +74,23 @@ describe('VueFlowGraph (the chosen candidate, whole world)', () => {
     expect(wrapper.findAll('.graph-node.dim')).toHaveLength(3)
     // 32 edges: the 30 focus-incident edges are active; e31/e32 (X-side)
     // dim.
-    expect(wrapper.findAll('.graph-edge.active')).toHaveLength(30)
+    expect(wrapper.findAll('.graph-edge.active')).toHaveLength(31)
     expect(wrapper.findAll('.graph-edge.dim')).toHaveLength(2)
     wrapper.unmount()
   })
 
   it('focus-mode labels: only the 1-hop edges carry labels while the toggle is off', async () => {
     const wrapper = await mountGraph(worldProps('F0', false))
-    expect(wrapper.findAll('.edge-label')).toHaveLength(30)
+    expect(wrapper.findAll('.edge-label')).toHaveLength(31)
     wrapper.unmount()
   })
 
   it('labels toggle shows EVERY edge label when on', async () => {
     const withToggle = await mountGraph(worldProps('F0', true))
-    expect(withToggle.findAll('.edge-label')).toHaveLength(32)
+    expect(withToggle.findAll('.edge-label')).toHaveLength(33)
     withToggle.unmount()
     const withoutFocus = await mountGraph(worldProps(null, true))
-    expect(withoutFocus.findAll('.edge-label')).toHaveLength(32)
+    expect(withoutFocus.findAll('.edge-label')).toHaveLength(33)
     withoutFocus.unmount()
   })
 
@@ -108,6 +108,47 @@ describe('VueFlowGraph (the chosen candidate, whole world)', () => {
     const vf = wrapper.findComponent(VueFlow)
     await vf.vm!.$emit('paneClick', {})
     expect(wrapper.emitted('clear-focus')).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  it('a pan/zoom gesture release does NOT clear the focus; the next clean click does', async () => {
+    const wrapper = await mountGraph(worldProps('F0', false))
+    const vf = wrapper.findComponent(VueFlow)
+    // Pan gesture: viewport moved (viewport-change-start), then the release
+    // click — Vue Flow fires paneClick after panning; the focus must SURVIVE.
+    await vf.vm!.$emit('viewportChangeStart', {})
+    await vf.vm!.$emit('paneClick', {})
+    expect(wrapper.emitted('clear-focus')).toBeFalsy()
+    // Wheel zoom also marks a gesture.
+    await vf.vm!.$emit('paneScroll', {})
+    await vf.vm!.$emit('paneClick', {})
+    expect(wrapper.emitted('clear-focus')).toBeFalsy()
+    // A DELIBERATE empty-space click (no preceding gesture) still clears.
+    await vf.vm!.$emit('paneClick', {})
+    expect(wrapper.emitted('clear-focus')).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  it('refocus (new focusId/oneHop, SAME node/edge arrays) never relayouts or re-fits', async () => {
+    // GraphView now passes stable node/edge arrays across focus changes; the
+    // candidate's layout watch fires on ARRAY IDENTITY, so a refocus must
+    // leave every rendered transform and the viewport exactly as they were.
+    const wrapper = await mountGraph(worldProps(null, false))
+    const nodeWrapper = wrapper.findAll('.graph-node')[0].element.parentElement!
+    const pane = wrapper.element.querySelector('.vue-flow__transformationpane')
+    const transform = () =>
+      JSON.stringify({
+        node: getComputedStyle(nodeWrapper).transform,
+        pane: pane ? getComputedStyle(pane).transform : null,
+      })
+    const before = transform()
+    const focused = buildWorldGraph(denseWorld(), 'F0')
+    await wrapper.setProps({ focusId: 'F0', oneHop: focused.oneHop })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+    expect(transform()).toBe(before)
+    // The refocus DID switch the highlight state (the oneHop prop landed).
+    expect(wrapper.findAll('.graph-node.dim')).toHaveLength(3)
     wrapper.unmount()
   })
 
