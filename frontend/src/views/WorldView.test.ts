@@ -24,7 +24,7 @@ const { pushMock, socketCalls, apiFetchMock } = vi.hoisted(() => ({
 }))
 
 vi.mock('vue-router', () => ({
-  RouterLink: { template: '<a><slot /></a>' },
+  RouterLink: { props: ['to'], template: '<a :data-to="JSON.stringify(to)"><slot /></a>' },
   useRoute: () => ({ params: { id: 'C1' } }),
   useRouter: () => ({ push: pushMock }),
 }))
@@ -125,7 +125,7 @@ function populatedWorld(): WorldExport {
 function mountView() {
   return mount(WorldView, {
     global: {
-      stubs: { RouterLink: { template: '<a><slot /></a>' } },
+      stubs: { RouterLink: { props: ['to'], template: '<a :data-to="JSON.stringify(to)"><slot /></a>' } },
     },
   })
 }
@@ -2428,6 +2428,30 @@ describe('WorldView', () => {
     expect(text).toContain('to-hit +18 · 19 (2d6+12) slashing + 16.5 (3d10) radiant')
     // An action without structured parts keeps today's description-only line.
     expect(text).toContain('Shield bash — Shoves the target.')
+    wrapper.unmount()
+  })
+
+  it('graph entry points: section "Open graph" link and per-card "See web" with ?focus', async () => {
+    // The router mock renders each RouterLink's :to payload as data-to, so the
+    // WIRING is asserted: name 'graph', campaign param, and the entity as ?focus.
+    apiFetchMock.mockResolvedValue(worldExport())
+    const wrapper = mountView()
+    await flushPromises()
+    const links = wrapper.findAll('a[data-to]')
+
+    const openGraph = links.find((link) => link.text().includes('Open graph'))
+    expect(openGraph).toBeTruthy()
+    const openGraphTo = JSON.parse(openGraph!.attributes('data-to') ?? '')
+    expect(openGraphTo.name).toBe('graph')
+    expect(openGraphTo.params).toEqual({ id: 'C1' })
+
+    const seeWeb = links.find((link) => link.text().includes('See web'))
+    expect(seeWeb).toBeTruthy()
+    const seeWebTo = JSON.parse(seeWeb!.attributes('data-to') ?? '')
+    expect(seeWebTo.name).toBe('graph')
+    expect(seeWebTo.params).toEqual({ id: 'C1' })
+    // The per-card entry deep-links the entity's web.
+    expect(seeWebTo.query).toEqual({ focus: 'E1' })
     wrapper.unmount()
   })
 })

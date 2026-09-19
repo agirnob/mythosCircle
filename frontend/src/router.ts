@@ -32,6 +32,15 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      // Story 7.1: the relationship web (reads the world store only). The
+      // ?focus=<entity-id> query is the entity deep-link; the raw ULID is
+      // never rendered — the view shows a human-readable breadcrumb.
+      path: '/campaigns/:id/graph',
+      name: 'graph',
+      component: () => import('./components/graph/GraphView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/forge',
       name: 'forge-global',
       component: () => import('./views/CharacterForgeView.vue'),

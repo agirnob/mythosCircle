@@ -143,6 +143,18 @@ export const useWorldStore = defineStore('world', {
       )
       return rows.length > 0 ? rows[rows.length - 1]! : null
     },
+    /**
+     * The same-origin portrait file URL for an entity, or null — the ONE
+     * source of the media URL convention (story 7.1 review): the manifest
+     * row's entity_id + filename. The session cookie (path /api)
+     * authenticates the request; this is a resource URL, never an apiFetch.
+     */
+    portraitSrc(campaignId: string, entityId: string): string | null {
+      const row = this.portraitFor(campaignId, entityId)
+      return row
+        ? `/api/campaigns/${encodeURIComponent(campaignId)}/media/${encodeURIComponent(row.entity_id)}/${row.filename}`
+        : null
+    },
     /** The LATEST reveal-video row for an entity, or null (newest
      * created_at, ``kind === 'video'`` only) — the boss-tier card's
      * <video> source; a separate projection from ``portraitFor`` so a

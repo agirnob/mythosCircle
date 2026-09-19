@@ -15,4 +15,11 @@ describe('router', () => {
   it('resolves the world route under its campaign', () => {
     expect(router.resolve({ name: 'world', params: { id: 'X' } }).path).toBe('/campaigns/X/world')
   })
+
+  it('resolves the graph route under its campaign (story 7.1 entry point)', () => {
+    const resolved = router.resolve({ name: 'graph', params: { id: 'X' }, query: { focus: 'E1' } })
+    expect(resolved.path).toBe('/campaigns/X/graph')
+    expect(resolved.query.focus).toBe('E1')
+    expect(resolved.meta.requiresAuth).toBe(true)
+  })
 })

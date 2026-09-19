@@ -398,12 +398,10 @@ function portraitFor(entity: EntityExport) {
   return world.portraitFor(campaignId, entity.id)
 }
 
-/** The same-origin file URL — the session cookie (path /api) authenticates it. */
+/** The same-origin file URL — the session cookie (path /api) authenticates
+ * it; ONE convention, owned by the world store (story 7.1 review). */
 function portraitUrl(entity: EntityExport): string {
-  const row = portraitFor(entity)
-  return row
-    ? `/api/campaigns/${encodeURIComponent(campaignId)}/media/${encodeURIComponent(row.entity_id)}/${row.filename}`
-    : ''
+  return world.portraitSrc(campaignId, entity.id) ?? ''
 }
 
 /** Spec-5-2: signed Forge portrait URL per entity — minted on click
@@ -1305,6 +1303,9 @@ function additionalDataBlock(entity: EntityExport): string {
           >
             Open candidates
           </RouterLink>
+          <RouterLink :to="{ name: 'graph', params: { id: campaignId } }" class="cta secondary">
+            Open graph
+          </RouterLink>
           <RouterLink :to="{ name: 'forge', params: { id: campaignId } }" class="cta secondary">
             Open character forge
           </RouterLink>
@@ -1424,6 +1425,13 @@ function additionalDataBlock(entity: EntityExport): string {
               >
                 Edit profile
               </button>
+              <RouterLink
+                :to="{ name: 'graph', params: { id: campaignId }, query: { focus: entity.id } }"
+                class="link"
+                title="Browse this entity's relationship web"
+              >
+                See web
+              </RouterLink>
               <a class="link" :href="entityExportUrl(entity.id, 'markdown')" download> Markdown </a>
               <a class="link" :href="entityExportUrl(entity.id, 'html')" download> Sheet (HTML) </a>
               <a class="link" :href="entityExportUrl(entity.id, 'owlbear')" download>
