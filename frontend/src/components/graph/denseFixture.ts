@@ -1,17 +1,14 @@
 /**
- * Story 7.1 — the dense fixture BOTH A/B candidates render and the tests
- * assert against (spec-7-1: "24 visible nodes, >23 eligible neighbors, long
- * names, missing portraits, incoming + outgoing edges, reciprocal pairs,
- * multiple edges between the same pair, same- and cross-type edges, dense
- * labels").
+ * Story 7.1 — the deterministic dense world both the tests and the demo rely
+ * on (owner verdict 2026-09-19: whole-world render — 29 entities, 32 edges,
+ * including reciprocal + parallel pairs, all 16 EDGE_VOCAB types, long
+ * names, and a single portrait path). The whole committed world is the render
+ * scope: there is no node cap in the view.
  *
  * Constructed from the committed-data shapes only (WorldExport); ids are
- * readable for debugging. All 16 EDGE_VOCAB types appear, counters ride the
- * 8 COUNTER_TYPES, and the neighbor cap (23 + focus = 24 entities) is
- * exceeded two-fold so truncation is exercised deterministically:
- * N24/N25 are eligible neighbors but drop out in world.entities order;
- * X01..X03 exist but have no edge to the focus, so they (and their edges)
- * are never in the web.
+ * readable for debugging. F0 is the demo focus — the dense hub: its 1-hop web
+ * (both directions) spans 26 of the 29 entities across all 16 committed edge
+ * types; X01..X03 have no edge to F0, so they render unhighlighted.
  */
 
 import type { components } from '../../api/schema'
@@ -22,11 +19,8 @@ type EdgeExport = components['schemas']['EdgeExport']
 
 export const DENSE_CAMPAIGN_ID = 'C-DENSE'
 export const DENSE_FOCUS_ID = 'F0'
-
-/** Eligible 1-hop neighbors — the >23 count that forces truncation. */
-export const DENSE_ELIGIBLE_NEIGHBORS = 25
-/** Visible nodes: focus + the 23 kept neighbors. */
-export const DENSE_VISIBLE_NODES = 24
+/** Alias used by the whole-world test suite. */
+export const denseFocusId = DENSE_FOCUS_ID
 
 const KINDS = ['character', 'faction', 'place'] as const
 

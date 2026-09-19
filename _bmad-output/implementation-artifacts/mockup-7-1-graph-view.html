@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Story 7.1 — Graph Visualizer layout mockup v2</title>
+<title>Story 7.1 — Graph Visualizer layout mockup v2 (HISTORICAL: approved 1-hop layout, superseded by the whole-world redesign 2026-09-19)</title>
 <style>
   :root {
     --bg: #f4f5f7; --panel: #ffffff; --border: #d8dbe0; --ink: #1c2330;
@@ -195,6 +195,13 @@
   </div>
 </div>
 
+<div class="note">
+  <b>HISTORICAL — Story 7.1 layout mockup v2 (approved CHECKPOINT 1, 1-hop layout).</b> Superseded by the
+  owner's whole-world render redesign (2026-09-19): the view now renders every
+  committed entity + edge in a deterministic concentric ring-per-kind layout
+  with focus-driven highlight/dim; the node/edge PRESENTATION contract below
+  (card, avatar, kind chip, arrows, labels, colors) remains in force.
+</div>
 <div class="note">
   <b>Story 7.1 layout mockup v2</b> — real data: Pike the Rook's 1-hop web (The Drowned Harbor demo world). Relationship semantics come from committed edge types — the visualizer renders them verbatim, never invents. Labels follow the app's <code>edgeLabel(type, counter)</code> contract: counter suffix only on the 8 counter-carrying types — <code>ally_of(2)</code>, <code>loyalty(7)</code>, <code>debt(1)</code>, <code>enemy_of(1)</code>; <code>employs</code> / <code>bases_at</code> bare. Direction is the committed src → dst. Focus = thicker border + soft halo (no boundary ring); arrows stop outside node borders; reciprocal pairs render as separate curved paths. The floating tooltip (hover/selection) shows <i>source → type(counter) → target</i>. Controls (zoom, fit, reset, type + relationship filters, label toggle) are wired in the spike, not this mockup. The 24-node dense fixture + both-renderer A/B is a spike deliverable; the 7-node example cannot prove the cap.
 </div>

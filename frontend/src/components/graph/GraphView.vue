@@ -1,28 +1,38 @@
 <script setup lang="ts">
 /**
- * Story 7.1 — the graph view shell.
+ * Story 7.1 — the graph view shell (whole-world redesign, owner verdict
+ * 2026-09-19; supersedes the capped 1-hop neighborhood scope).
  *
  * Reads the world store ONLY (AR16/AD-20): the snapshot comes from
  * `world.entry(campaignId).world` and portraits from the store's media
- * manifest; no view-local API calls, no private caches. The renderer is the
- * spike winner — Vue Flow (@vue-flow/core); the Cytoscape A/B and its verdict
- * live in research-7-1-graph-visualizer.md.
+ * manifest; no view-local API calls, no private caches. Renders the ENTIRE
+ * committed world through the winner renderer (Vue Flow): the A/B is
+ * historical (research-7-1 records it); no candidate switch ships.
  *
- * State machine: loader / notFound / error / empty-world / missing-focus /
- * no-relationships / filtered-empty / renderer-error — never a blank canvas.
- * Breadcrumb is human-readable (Campaigns / <world> / Graph / <entity>);
+ * Focus semantics:
+ *   - focus = `?focus=` ONLY if it resolves in the world — no default focus,
+ *     no URL writes for an absent focus (deep-link / refresh / back-forward
+ *     restore via the query channel);
+ *   - node click refocuses (?focus= replaced); empty-space click or the
+ *     "Clear focus" control drops `?focus=` — the web returns to full
+ *     opacity, "like it started";
+ *   - an unknown `?focus=` renders the WHOLE world unfocused with a
+ *     non-blocking "Focus not found" notice (never an error card).
+ *
+ * State machine: loader / notFound / error / empty-world / missing-focus
+ * notice / filtered-empty / renderer-error — never a blank canvas.
+ * Breadcrumb is human-readable (Campaigns / <world> / Graph / [<entity>]);
  * the raw ULID only ever lives in `?focus=`.
  */
-import { computed, onErrorCaptured, onMounted, ref, watch } from 'vue'
+import { computed, onErrorCaptured, onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import type { components } from '../../api/schema'
 import { useWorldStore } from '../../stores/world'
 import { EDGE_VOCAB } from '../profile/profile'
 import {
-  NEIGHBOR_CAP,
   avatarInitial,
-  buildGraphModel,
+  buildWorldGraph,
   type GraphRenderEdge,
   type GraphRenderNode,
 } from './graphModel'
@@ -44,7 +54,7 @@ const campaignId = route.params.id as string
 
 const world = useWorldStore()
 
-const labelsVisible = ref(true)
+const labelsVisible = ref(false)
 const kindFilter = ref('')
 const edgeTypeFilter = ref('')
 const rendererKey = ref(0)
@@ -61,26 +71,15 @@ const requestedFocus = computed<string | null>(() => {
 })
 
 const model = computed(() =>
-  exportData.value ? buildGraphModel(exportData.value, requestedFocus.value) : null,
-)
-
-// NO FOCUS: the model defaults to the most-connected entity — surface it in
-// the URL so refresh / back / direct nav all restore the same focus. Watched
-// (not setup-time) because on a cold load the model lands asynchronously.
-watch(
-  () => [model.value, requestedFocus.value] as const,
-  () => {
-    if (model.value?.focusDefaulted && requestedFocus.value === null && model.value.focusId) {
-      void router.replace({ query: { focus: model.value.focusId } })
-    }
-  },
-  { immediate: true },
+  exportData.value ? buildWorldGraph(exportData.value, requestedFocus.value) : null,
 )
 
 onMounted(() => {
   // The world snapshot comes from the store — never fetched here. If a
   // Phase-1 view already loaded it, use it as-is (remounts on ?focus=
-  // changes are then free of network churn).
+  // changes are then free of network churn). The async-load path re-applies
+  // an ALREADY-present ?focus= automatically once the model lands (the
+  // computed above) — no URL writes for an absent focus.
   if (!world.entry(campaignId).world) {
     void world.load(campaignId)
   }
@@ -93,7 +92,26 @@ function onRefocus(id: string) {
   void router.replace({ query: { ...route.query, focus: id } })
 }
 
-/** Kind + relationship filters over the model (the visible subset only). */
+/** Empty-space click / Clear-focus control: drop `?focus=` entirely. */
+function onClearFocus() {
+  const query = { ...route.query }
+  delete query.focus
+  void router.replace({ query })
+}
+
+/** A focus is active (and known) — drives the Clear-focus affordance. */
+const focusActive = computed(
+  () => model.value?.focusId !== null && !model.value?.focusMissing,
+)
+
+/** The candidate's focus identity — an unknown ?focus= renders unfocused. */
+const renderFocusId = computed<string | null>(() => {
+  const graph = model.value
+  if (!graph || graph.focusMissing) return null
+  return graph.focusId
+})
+
+/** Kind + relationship filters over the FULL world (the visible subset). */
 const kinds = computed(() => {
   const seen: string[] = []
   for (const node of model.value?.nodes ?? []) {
@@ -128,18 +146,13 @@ const nodeNameById = computed<Record<string, string>>(() => {
   return names
 })
 
-/** The store's portrait URL for an entity (manifest-backed, ONE convention). */
-function portraitSrcFor(nodeId: string): string | null {
-  return world.portraitSrc(campaignId, nodeId)
-}
-
 const renderNodes = computed<GraphRenderNode[]>(() => {
   const nodes = model.value?.nodes ?? []
   const kindFiltered = kindFilter.value
     ? nodes.filter((node) => node.kind === kindFilter.value)
     : nodes
   // A relationship filter shows the sub-web: only entities incident to a
-  // matching edge stay visible (the focus too, when it has one).
+  // matching edge stay visible.
   let kept = kindFiltered
   if (edgeTypeFilter.value) {
     const incident = new Set<string>()
@@ -153,7 +166,7 @@ const renderNodes = computed<GraphRenderNode[]>(() => {
   }
   return kept.map((node) => ({
     ...node,
-    portraitUrl: node.hasPortrait ? portraitSrcFor(node.id) : null,
+    portraitUrl: node.hasPortrait ? world.portraitSrc(campaignId, node.id) : null,
     initial: avatarInitial(node.name),
   }))
 })
@@ -166,18 +179,12 @@ const renderEdges = computed<GraphRenderEdge[]>(() => {
 })
 
 const focusName = computed(() =>
-  model.value?.focusId ? nodeNameById.value[model.value.focusId] ?? null : null,
-)
-
-/** No-relationships: the focus renders alone with a notice. */
-const noRelationships = computed(
-  () => (model.value?.nodes.length ?? 0) > 0 && (model.value?.edges.length ?? 0) === 0,
+  renderFocusId.value ? nodeNameById.value[renderFocusId.value] ?? null : null,
 )
 
 /** Relationship filter hid every edge while nodes remain. */
 const noFilteredRelationships = computed(
   () =>
-    !noRelationships.value &&
     renderNodes.value.length > 0 &&
     (model.value?.edges.length ?? 0) > 0 &&
     renderEdges.value.length === 0,
@@ -293,10 +300,19 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
               <option value="">All relationships</option>
               <option v-for="type in edgeTypes" :key="type" :value="type">{{ type }}</option>
             </select>
-<label class="lbl-toggle">
+            <label class="lbl-toggle">
               <input v-model="labelsVisible" type="checkbox" aria-label="Show edge labels" />
-              <span>Labels</span>
+              Labels
             </label>
+            <button
+              v-if="focusActive"
+              type="button"
+              class="btn clear-focus"
+              title="Clear focus — return to the whole unhighlighted world"
+              @click="onClearFocus"
+            >
+              Clear focus
+            </button>
           </div>
           <div class="zoom">
             <button type="button" class="btn" title="Zoom in" aria-label="Zoom in" @click="candidateRef?.zoomIn()">+</button>
@@ -313,15 +329,7 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
           aria-label="Relationship graph canvas — arrow keys pan, + and − zoom, f fits, r resets"
           @keydown="onCanvasKeydown"
         >
-          <div v-if="model.focusMissing" class="state-card">
-            <p class="error">That entity is not in this world.</p>
-            <p class="muted">The link may be stale — open its web from the world view instead.</p>
-            <RouterLink :to="{ name: 'world', params: { id: campaignId } }" class="back">
-              Back to the world
-            </RouterLink>
-          </div>
-
-          <div v-else-if="model.nodes.length === 0" class="state-card">
+          <div v-if="model.nodes.length === 0" class="state-card">
             <p class="muted">This world is still empty — nothing has been built yet.</p>
             <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }" class="cta">
               Open build-in
@@ -343,17 +351,19 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
 
           <template v-else>
             <VueFlowGraph
-              :key="`renderer-${rendererKey}`"
+              :key="rendererKey"
               ref="candidateRef"
               :nodes="renderNodes"
               :edges="renderEdges"
-              :focus-id="model.focusId"
+              :focus-id="renderFocusId"
+              :one-hop="model.focusMissing ? null : model.oneHop"
               :labels-visible="labelsVisible"
               :node-name-by-id="nodeNameById"
               @refocus="onRefocus"
+              @clear-focus="onClearFocus"
             />
-            <div v-if="noRelationships" class="notice">
-              No relationships — this entity stands alone.
+            <div v-if="model.focusMissing" class="notice">
+              Focus not found — showing the whole world.
             </div>
             <div v-else-if="noFilteredRelationships" class="notice">
               No relationships match the current filter.
@@ -366,14 +376,10 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
           <span>
             <b>{{ renderNodes.length }} entities</b> · <b>{{ renderEdges.length }} relationships</b>
           </span>
-          <span
-            v-if="model.truncation && !filtersActive"
-            class="truncation"
-          >
-            showing {{ NEIGHBOR_CAP }} of {{ model.totalNeighbors }} connected entities, plus the
-            focused entity
+          <span v-if="focusActive" class="focus-hint">
+            click a node to refocus · click empty space to clear
           </span>
-          <span class="hint">drag to pan · scroll or pinch to zoom · click a node to refocus</span>
+          <span class="hint">drag to pan · scroll or pinch to zoom</span>
         </div>
       </div>
     </template>
@@ -386,8 +392,11 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  height: 100%;
-  min-height: 0;
+  /* Definite height independent of the shell: App.vue's <main> is auto-height
+   * (no height:100% ancestor), which collapses the Vue Flow canvas to 0px —
+   * flex:1 chains resolve only against a definite parent height. */
+  height: clamp(320px, 64dvh, 780px);
+  min-height: 320px;
 }
 .crumbs {
   display: flex;
@@ -442,6 +451,11 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
   border-radius: 7px;
   padding: 4px 9px;
 }
+.filters .btn.clear-focus {
+  color: #7a5c12;
+  background: #fff8e6;
+  border-color: #f0d9a8;
+}
 .lbl-toggle {
   display: flex;
   align-items: center;
@@ -456,9 +470,6 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
 .lbl-toggle input {
   accent-color: #b45309;
   margin: 0;
-}
-.candidate-switch {
-  color: #6b7280 !important;
 }
 .zoom {
   display: flex;
@@ -480,7 +491,8 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
 .canvas {
   position: relative;
   flex: 1;
-  min-height: 0;
+  /* Floor so the canvas never collapses even if an ancestor chain regresses. */
+  min-height: 240px;
   background: #f4f5f7;
   outline: none;
 }
@@ -531,8 +543,8 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
 .hud b {
   color: #1c2330;
 }
-.hud .truncation {
-  color: #7a5c12;
+.hud .focus-hint {
+  color: #b45309;
 }
 .hud .hint {
   margin-left: auto;

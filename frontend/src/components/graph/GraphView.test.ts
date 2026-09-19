@@ -29,7 +29,6 @@ const cfg = vi.hoisted(() => {
     },
     candidateBehavior: {
       throwOnRender: false,
-      rendered: [] as string[],
       /** Exposed toolbar surface calls, in order (keyboard/button wiring). */
       calls: [] as string[],
     },
@@ -38,29 +37,30 @@ const cfg = vi.hoisted(() => {
 
 const { pushMock, setQuery, candidateBehavior } = cfg
 
-function stub(name: string, cls: string) {
-  return {
-    name,
+vi.mock('./VueFlowGraph.vue', () => {
+  /** The single shipped candidate — the A/B is historical (winner only). */
+  const VueFlowGraphStub = {
+    name: 'VueFlowGraphStub',
     props: {
       nodes: { type: Array, default: () => [] },
       edges: { type: Array, default: () => [] },
       focusId: { type: [String, null], default: null },
-      labelsVisible: { type: Boolean, default: true },
+      oneHop: { type: [Object, null], default: null },
+      labelsVisible: { type: Boolean, default: false },
       nodeNameById: { type: Object, default: () => ({}) },
     },
-    emits: ['refocus'],
+    emits: ['refocus', 'clear-focus'],
     setup(
       props: {
-        nodes: Array<{ id: string; name: string }>
+        nodes: Array<{ id: string; name: string; portraitUrl: string | null }>
         edges: Array<{ label: string }>
         labelsVisible: boolean
       },
       context: {
-        emit: (event: string, id: string) => void
+        emit: (event: string, id?: string) => void
         expose: (surface: Record<string, (...args: number[]) => void>) => void
       },
     ) {
-      candidateBehavior.rendered.push(cls)
       if (candidateBehavior.throwOnRender) throw new Error('stub render failure')
       context.expose({
         zoomIn: () => candidateBehavior.calls.push('zoomIn'),
@@ -70,11 +70,17 @@ function stub(name: string, cls: string) {
         panBy: (dx: number, dy: number) => candidateBehavior.calls.push(`panBy:${dx},${dy}`),
       })
       return () =>
-        h('div', { class: cls }, [
+        h('div', { class: 'candidate-vueflow' }, [
+          // Empty-space click surface (the pane clears the focus).
+          h('div', { class: 'stub-pane', onClick: () => context.emit('clear-focus') }),
           ...(props.nodes as Array<{ id: string; name: string }>).map((node) =>
             h(
               'button',
-              { class: 'node', 'data-id': node.id, onClick: () => context.emit('refocus', node.id) },
+              {
+                class: 'node',
+                'data-id': node.id,
+                onClick: () => context.emit('refocus', node.id),
+              },
               [node.name],
             ),
           ),
@@ -87,7 +93,8 @@ function stub(name: string, cls: string) {
         ])
     },
   }
-}
+  return { default: VueFlowGraphStub }
+})
 
 vi.mock('vue-router', () => ({
   RouterLink: { template: '<a class="router-link"><slot /></a>' },
@@ -119,10 +126,9 @@ vi.mock('../../api/client', () => {
   }
 })
 
-vi.mock('./VueFlowGraph.vue', () => ({ default: stub('VueFlowGraphStub', 'candidate-vueflow') }))
-
-import GraphView from './GraphView.vue'
 import { apiFetch } from '../../api/client'
+import VueFlowGraphStub from './VueFlowGraph.vue'
+import GraphView from './GraphView.vue'
 
 describe('GraphView', () => {
   let entry: WorldEntry
@@ -143,37 +149,45 @@ describe('GraphView', () => {
   }
 
   function mountView(): VueWrapper {
-    return mount(GraphView, { global: { provide: {} } })
+    return mount(GraphView)
+  }
+
+  /** The driver stub's props (the contract GraphView feeds the candidate). */
+  function stubProps(wrapper: VueWrapper) {
+    return wrapper.findComponent(VueFlowGraphStub).props() as {
+      nodes: Array<{ id: string; portraitUrl: string | null }>
+      edges: Array<{ label: string }>
+      focusId: string | null
+      oneHop: { nodeIds: Set<string>; edgeIds: Set<string> } | null
+      labelsVisible: boolean
+    }
   }
 
   beforeEach(() => {
     setActivePinia(createPinia())
     setQuery({})
     candidateBehavior.throwOnRender = false
-    candidateBehavior.rendered = []
     candidateBehavior.calls = []
     pushMock.mockClear()
   })
 
-  it('renders nodes + edges from a store-provided world with HUD counts and truncation notice', async () => {
+  it('renders the WHOLE world from a store-provided snapshot with full HUD counts', async () => {
     seed(denseWorld())
     const wrapper = mountView()
     await flushPromises()
-    const nodes = wrapper.findAll('button.node')
-    expect(nodes).toHaveLength(24)
-    expect(wrapper.findAll('span.edge').length).toBeGreaterThan(0)
-    const edgeLabels = wrapper.findAll('span.edge').map((span) => span.text())
-    expect(edgeLabels).toContain('ally_of(2)')
-    expect(edgeLabels).toContain('employs')
-    expect(wrapper.text()).toContain('24 entities')
-    expect(wrapper.text()).toContain('28 relationships')
-    expect(wrapper.text()).toContain(
-      `showing 23 of 25 connected entities, plus the focused entity`,
-    )
+    expect(wrapper.findAll('button.node')).toHaveLength(29)
+    expect(wrapper.findAll('span.edge')).toHaveLength(0) // labels off by default
+    expect(wrapper.text()).toContain('29 entities')
+    expect(wrapper.text()).toContain('32 relationships')
+    // No focus anywhere: the candidate receives focusId null and no oneHop.
+    const props = stubProps(wrapper)
+    expect(props.focusId).toBeNull()
+    expect(props.oneHop).toBeNull()
+    expect(wrapper.find('button.clear-focus').exists()).toBe(false)
     wrapper.unmount()
   })
 
-  it('breadcrumb is human-readable: Campaigns / world / Graph / entity name — no raw ULID shape', async () => {
+  it('breadcrumb is human-readable; no raw ULID shape leaks into the UI', async () => {
     seed(denseWorld())
     const wrapper = mountView()
     await flushPromises()
@@ -181,8 +195,6 @@ describe('GraphView', () => {
     expect(text).toContain('Campaigns')
     expect(text).toContain('The Drowned Harbor (dense fixture)')
     expect(text).toContain('Graph')
-    expect(text).toContain('Pike the Rook, Harbormaster of the Ninth Quay')
-    // No 26-char ULID-looking tokens leak into the UI.
     expect(text.match(/[0-9A-HJKMNP-TV-Z]{26}/)).toBeNull()
     wrapper.unmount()
   })
@@ -198,12 +210,102 @@ describe('GraphView', () => {
     wrapper.unmount()
   })
 
-  it('NO FOCUS: defaults to the first entity and surfaces ?focus in the URL', async () => {
-    seed(denseWorld())
+  it('deep-linked ?focus survives an async store load (cold mount)', async () => {
+    seed(null)
+    setQuery({ focus: 'N01' })
+    vi.mocked(apiFetch).mockResolvedValueOnce(denseWorld())
     const wrapper = mountView()
     await flushPromises()
-    const call = pushMock.mock.calls.find(([args]) => args?.query?.focus === DENSE_FOCUS_ID)
-    expect(call).toBeTruthy()
+    const props = stubProps(wrapper)
+    expect(props.focusId).toBe('N01')
+    // N01's 1-hop: itself + F0, via its single employs edge (e01).
+    expect(props.oneHop?.nodeIds.size).toBe(2)
+    expect(props.oneHop?.edgeIds.size).toBe(1)
+    // Absent focus is never written; a PRESENT focus needs no URL rewrite.
+    expect(pushMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('cold mount WITHOUT ?focus writes nothing and renders the whole world unfocused', async () => {
+    seed(null)
+    vi.mocked(apiFetch).mockResolvedValueOnce(denseWorld())
+    const wrapper = mountView()
+    await flushPromises()
+    expect(pushMock).not.toHaveBeenCalled()
+    expect(wrapper.findAll('button.node')).toHaveLength(29)
+    expect(stubProps(wrapper).focusId).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('empty-space click clears the focus: ?focus drops and the web unhighlights', async () => {
+    seed(denseWorld())
+    setQuery({ focus: DENSE_FOCUS_ID })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(stubProps(wrapper).focusId).toBe(DENSE_FOCUS_ID)
+    await wrapper.find('.stub-pane').trigger('click')
+    const call = pushMock.mock.calls[pushMock.mock.calls.length - 1][0]
+    expect(call.query.focus).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('the Clear focus control performs the same query drop', async () => {
+    seed(denseWorld())
+    setQuery({ focus: DENSE_FOCUS_ID })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.find('button.clear-focus').exists()).toBe(true)
+    await wrapper.find('button.clear-focus').trigger('click')
+    const call = pushMock.mock.calls[pushMock.mock.calls.length - 1][0]
+    expect(call.query.focus).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('MISSING FOCUS: whole world renders unfocused with a notice — never an error card', async () => {
+    seed(denseWorld())
+    setQuery({ focus: 'NO-SUCH-ENTITY' })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.findAll('button.node')).toHaveLength(29)
+    expect(stubProps(wrapper).focusId).toBeNull()
+    expect(wrapper.text()).toContain('Focus not found — showing the whole world.')
+    expect(wrapper.text()).not.toContain('error')
+    wrapper.unmount()
+  })
+
+  it('focus highlight reaches the candidate: oneHop + focusId on a known entity', async () => {
+    seed(denseWorld())
+    setQuery({ focus: DENSE_FOCUS_ID })
+    const wrapper = mountView()
+    await flushPromises()
+    const props = stubProps(wrapper)
+    expect(props.focusId).toBe(DENSE_FOCUS_ID)
+    expect(props.oneHop?.nodeIds.size).toBe(26)
+    expect(props.oneHop?.nodeIds).toContain('N01')
+    expect(props.oneHop?.nodeIds).not.toContain('X01')
+    wrapper.unmount()
+  })
+
+  it('portrait URL flows from the store manifest into the rendered nodes', async () => {
+    const w = denseWorld()
+    const store = useWorldStore()
+    seed(w)
+    // The manifest row for F0 (whose export carries an available image ref).
+    store.mediaByCampaign['C1'] = [
+      {
+        id: 'm-01',
+        campaign_id: 'C1',
+        entity_id: 'F0',
+        filename: 'pike.png',
+        kind: 'image',
+        created_at: '2026-09-19T00:00:00Z',
+      },
+    ]
+    const wrapper = mountView()
+    await flushPromises()
+    const props = stubProps(wrapper)
+    const f0 = props.nodes.find((node) => node.id === 'F0')
+    expect(f0?.portraitUrl).toBe('/api/campaigns/C1/media/F0/pike.png')
     wrapper.unmount()
   })
 
@@ -244,28 +346,6 @@ describe('GraphView', () => {
     wrapper.unmount()
   })
 
-  it('MISSING FOCUS renders the empty-state with a hint, not a crash', async () => {
-    seed(denseWorld())
-    setQuery({ focus: 'NO-SUCH-ENTITY' })
-    const wrapper = mountView()
-    await flushPromises()
-    expect(wrapper.text()).toContain('That entity is not in this world.')
-    expect(wrapper.findAll('button.node')).toHaveLength(0)
-    wrapper.unmount()
-  })
-
-  it('NO RELATIONSHIPS state still renders the lone focus node with a notice', async () => {
-    const w = denseWorld()
-    w.entities = w.entities.slice(0, 1)
-    w.edges = []
-    seed(w)
-    const wrapper = mountView()
-    await flushPromises()
-    expect(wrapper.findAll('button.node')).toHaveLength(1)
-    expect(wrapper.text()).toContain('No relationships')
-    wrapper.unmount()
-  })
-
   it('entity-type filter narrows the visible set', async () => {
     seed(denseWorld())
     const wrapper = mountView()
@@ -278,7 +358,7 @@ describe('GraphView', () => {
     await flushPromises()
     const after = wrapper.findAll('button.node')
     expect(after.length).toBeGreaterThan(0)
-    expect(after.length).toBeLessThan(24)
+    expect(after.length).toBeLessThan(29)
     wrapper.unmount()
   })
 
@@ -287,8 +367,8 @@ describe('GraphView', () => {
     setQuery({ focus: DENSE_FOCUS_ID })
     const wrapper = mountView()
     await flushPromises()
-    // Kind + relationship filters together: F0's employs edge touches only
-    // characters/factions, so place + employs excludes every visible node.
+    // employs touches F0(char) + N01/N25(factions) — place + employs
+    // excludes every visible node.
     await wrapper
       .find('select[aria-label="Filter by entity type"]')
       .setValue('place')
@@ -305,40 +385,13 @@ describe('GraphView', () => {
     wrapper.unmount()
   })
 
-  it('labels toggle is consumed by the candidate: edge labels drop when off', async () => {
-    seed(denseWorld())
-    const wrapper = mountView()
-    await flushPromises()
-    const canvas = () => wrapper.find('.canvas')
-    expect(canvas().findAll('span.edge').length).toBeGreaterThan(0)
-    const checkbox = wrapper.find('input[aria-label="Show edge labels"]')
-    expect((checkbox.element as unknown as { checked: boolean }).checked).toBe(true)
-    await checkbox.setValue(false)
-    await flushPromises()
-    expect((checkbox.element as unknown as { checked: boolean }).checked).toBe(false)
-    expect(canvas().findAll('span.edge')).toHaveLength(0)
-    wrapper.unmount()
-  })
-
-  it('cold mount without ?focus gains it once the world lands (async store load)', async () => {
-    // Empty store entry: the view must fetch through the store and only then
-    // default the focus to the first entity and surface it in the URL.
-    seed(null)
-    vi.mocked(apiFetch).mockResolvedValueOnce(denseWorld())
-    const wrapper = mountView()
-    await flushPromises()
-    const call = pushMock.mock.calls.find(([args]) => args?.query?.focus === DENSE_FOCUS_ID)
-    expect(call).toBeTruthy()
-    wrapper.unmount()
-  })
-
   it('noFilteredRelationships: kind filter keeps nodes, relationship filter empties the edge set', async () => {
     seed(denseWorld())
     setQuery({ focus: DENSE_FOCUS_ID })
     const wrapper = mountView()
     await flushPromises()
-    // loyalty edges touch F0(char) + N05/N17 (places) — kind=character keeps
-    // the focus but drops both loyalty endpoints → edges empty, nodes remain.
+    // loyalty touches F0(char) + N05/N17(places) — kind=character keeps the
+    // focus but drops both loyalty endpoints → edges empty, nodes remain.
     await wrapper
       .find('select[aria-label="Filter by entity type"]')
       .setValue('character')
@@ -353,22 +406,30 @@ describe('GraphView', () => {
     wrapper.unmount()
   })
 
-  it('filtered HUD counts track the rendered subset, not the model', async () => {
+  it('labels toggle is OFF by default and shows every edge label when on', async () => {
     seed(denseWorld())
-    setQuery({ focus: DENSE_FOCUS_ID })
     const wrapper = mountView()
     await flushPromises()
-    // Unfiltered: rendered == model counts.
-    expect(wrapper.text()).toContain('24 entities')
-    expect(wrapper.text()).toContain('28 relationships')
+    const checkbox = wrapper.find('input[aria-label="Show edge labels"]')
+    expect((checkbox.element as unknown as { checked: boolean }).checked).toBe(false)
+    expect(wrapper.findAll('span.edge')).toHaveLength(0)
+    await checkbox.setValue(true)
+    await flushPromises()
+    expect(wrapper.findAll('span.edge')).toHaveLength(32)
+    wrapper.unmount()
+  })
+
+  it('filtered HUD counts track the rendered subset', async () => {
+    seed(denseWorld())
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('29 entities')
     await wrapper
       .find('select[aria-label="Filter by entity type"]')
       .setValue('place')
     await flushPromises()
     const canvasNodes = wrapper.find('.canvas').findAll('button.node').length
     expect(wrapper.find('.hud').text()).toContain(`${canvasNodes} entities`)
-    // Truncation note stays model-truncation, but only shows unfiltered.
-    expect(wrapper.find('.hud').text()).not.toContain('showing 23 of 25')
     wrapper.unmount()
   })
 

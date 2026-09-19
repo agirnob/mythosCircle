@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /**
- * Story 7.1 — Vue Flow node card (mockup-7-1 contract): white card, avatar
- * (portrait when the store has one, else the name initial), name, kind chip
- * (color is reinforcement — the chip text carries the meaning), node-attached
- * focus = thicker border + soft halo (never a boundary ring).
+ * Story 7.1 — Vue Flow node card (mockup-7-1 contract, whole-world edition):
+ * white card, avatar (portrait when the store has one, else the name
+ * initial), name, kind chip (color is reinforcement — the chip text carries
+ * the meaning), node-attached focus = thicker border + soft halo; under an
+ * active focus, non-1-hop cards render dimmed (greyed but visible).
  *
  * Connector handles are hidden but per-edge: each incident edge gets its own
  * handle id with a distinct vertical offset, so parallel/reciprocal edges
@@ -18,6 +19,8 @@ import { GRAPH_NODE_WIDTH, GRAPH_NODE_HEIGHT, kindStyle } from './graphModel'
 
 interface CardData {
   node: GraphRenderNode
+  focused: boolean
+  dimmed: boolean
   outHandles: Array<{ edgeId: string; pct: number }>
   inHandles: Array<{ edgeId: string; pct: number }>
 }
@@ -42,22 +45,22 @@ function activate() {
     class="graph-node"
     :class="[
       `kind-${card.node.kind}`,
-      { focus: card.node.focus, selected: props.selected, dragging: props.dragging },
+      { focus: card.focused, dim: card.dimmed, selected: props.selected, dragging: props.dragging },
     ]"
     :style="{
       width: `${GRAPH_NODE_WIDTH}px`,
       height: `${GRAPH_NODE_HEIGHT}px`,
-      borderColor: card.node.focus ? '#b45309' : style.color,
-      boxShadow: card.node.focus ? '0 0 14px rgba(245, 158, 11, 0.35)' : undefined,
+      borderColor: card.focused ? '#b45309' : style.color,
+      boxShadow: card.focused ? '0 0 14px rgba(245, 158, 11, 0.35)' : undefined,
     }"
     role="button"
     tabindex="0"
-    :aria-label="`${card.node.name}, ${card.node.kind}${card.node.focus ? ', focused' : ''}; click to refocus its web`"
+    :aria-label="`${card.node.name}, ${card.node.kind}${card.focused ? ', focused' : ''}; click to refocus its web`"
     :title="card.node.name"
     @keydown.enter.prevent="activate"
     @keydown.space.prevent="activate"
   >
-    <span v-if="card.node.focus" class="halo" aria-hidden="true"></span>
+    <span v-if="card.focused" class="halo" aria-hidden="true"></span>
     <img
       v-if="card.node.portraitUrl"
       class="avatar"
@@ -109,6 +112,10 @@ function activate() {
   padding: 10px 8px 8px;
   gap: 2px;
   user-select: none;
+}
+/* Whole-world dimming: non-1-hop cards under an active focus (grey, visible). */
+.graph-node.dim {
+  opacity: 0.25;
 }
 .graph-node.focus {
   border-width: 2.6px;

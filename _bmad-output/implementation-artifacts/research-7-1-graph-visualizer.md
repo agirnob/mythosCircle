@@ -96,36 +96,52 @@ AR6 scale. Cytoscape rendered faithfully and handled parallel edges well, but
 its canvas a11y gap, first-render latency, and imperative bridge resolution
 the choice.
 
-## Shipped-tree note
-Per spec, the loser (Cytoscape component + its ambient type decl) is removed
-in the FINAL commit — this working tree keeps both candidates for review, with
-this record as the decision evidence (`git history` + this file preserve the
-A/B). `cytoscape`/`cytoscape-fcose` are then dropped from `package.json`.
+## Whole-world redesign (owner verdict 2026-09-19) — supersession note
 
-**Post-verdict amendment (owner, 2026-09-19):** the NO FOCUS default changed
-from first-rowid entity to the world's **most-connected entity** (max degree,
-rowid tie-break — see spec-7-1 change log). Real-world pre-fix: The Drowned
-Harbor's first entity (The Rotting Pier, degree 0) rendered 1 lonely node; the
-demo build's first entity showed 2/1. Post-fix: hubs render 7/10 and 8/9.
+The owner amended story 7.1 after this record: the graph view no longer
+renders a capped 1-hop neighborhood — it renders **every committed entity and
+every committed edge** in a deterministic **concentric ring-per-kind layout**
+(characters inner, factions middle, places outer; rings ordered by node
+count so the largest is outermost; ring radius = `count × CARD_PITCH / 2π`
+with one `CARD_PITCH` of inner clearance for the focused card at the center).
+AR6's depth/entity caps remain the backend retrieval/generation contract and
+no longer bound the view.
+
+Focus semantics replaced: a node click (or `?focus=`) highlights the entity +
+its 1-hop relations (both directions) with edge labels and dims the rest
+(grey, visible); **clicking empty canvas clears the focus** (URL drops
+`?focus=`, the web returns to full opacity). No default focus exists — no
+`?focus=` is ever written for an absent one; an unknown `?focus=` renders the
+full world with a non-blocking notice. Edge labels are **off by default**;
+the toolbar Labels toggle shows all.
+
+This supersedes the A/B-capped behavior recorded above: graphModel.ts now
+exports `buildWorldGraph(world, focusId|null)` (full world + `oneHop` set)
+and `concentricLayoutByKind(nodes)`; the loser (Cytoscape) was REMOVED per
+the checklist below (git history + this file keep the A/B evidence), and the
+shipped view renders the winner (Vue Flow) only.
+
+## Shipped-tree note (executed 2026-09-19 with the redesign)
+The loser (Cytoscape) is REMOVED: component, ambient type decl, dependencies,
+and evidence PNGs are gone from the tree (git history + this file keep the
+A/B evidence). The shipped view renders the winner (Vue Flow) only — there is
+no candidate switch in the code.
 
 ### Final-commit removal checklist (loser = Cytoscape)
-- [ ] Delete `frontend/src/components/graph/CytoscapeGraph.vue`
-- [ ] Delete `frontend/src/components/graph/cytoscape-fcose.d.ts`
-- [ ] Remove `cytoscape` + `cytoscape-fcose` from `frontend/package.json` and the
+- [x] Delete `frontend/src/components/graph/CytoscapeGraph.vue`
+- [x] Delete `frontend/src/components/graph/cytoscape-fcose.d.ts`
+- [x] Remove `cytoscape` + `cytoscape-fcose` from `frontend/package.json` and the
       corresponding `package-lock.json` subtree (`npm uninstall cytoscape cytoscape-fcose`)
-- [ ] `GraphView.vue`: drop the `CytoscapeGraph` import + the
-      `ACTIVE_CANDIDATES` map + the `which` binding — render `VueFlowGraph`
-      directly with the `:key="rendererKey"` retry key; remove the `CANDIDATE`
-      ref and the visible "Graph renderer (spike)" select (and its
-      `'vueflow' | 'cytoscape'` type)
-- [ ] `GraphView.test.ts`: remove the spike-switch test row and the
+- [x] `GraphView.vue`: render `VueFlowGraph` directly — no `CytoscapeGraph`
+      import, no `ACTIVE_CANDIDATES` map, no `CANDIDATE` ref, no visible
+      "Graph renderer (spike)" select
+- [x] `GraphView.test.ts`: remove the spike-switch test row and the
       `./CytoscapeGraph.vue` mock
-- [x] KEEP the cytoscape A/B evidence PNGs
-      (`ab-dense-cytoscape-desktop.png`, `ab-dense-cytoscape-mobile.png`) —
-      supersedes the earlier "delete" intent: fixture precedent (MapTool/fixture
-      dirs) keeps evidence; these document the verdict this file records and
-      `Evidence files` below references them.
-- [ ] Keep: `VueFlowGraph.vue`, `GraphNodeCard.vue`, `graphModel.ts`,
+- [x] Delete the cytoscape A/B evidence PNGs
+      (`ab-dense-cytoscape-desktop.png`, `ab-dense-cytoscape-mobile.png`)
+- [x] Keep: `VueFlowGraph.vue`, `GraphNodeCard.vue`, `graphModel.ts`,
+      `denseFixture.ts`, `VueFlowGraph.test.ts`, `GraphView.vue` + its tests,
+      and the Vue Flow evidence PNGs
       `denseFixture.ts`, `VueFlowGraph.test.ts`, `GraphView.vue` + its tests,
       and the Vue Flow evidence PNGs
 

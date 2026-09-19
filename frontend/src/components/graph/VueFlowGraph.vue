@@ -1,17 +1,21 @@
 <script setup lang="ts">
 /**
- * Story 7.1 — Vue Flow candidate. Consumes the shared graphModel output
- * (GraphView props), lays nodes out on a deterministic focus-centered
- * concentric ring (Vue Flow ships no layout algorithm — this is the
- * hand-rolled one), and renders the mockup-7-1 presentation:
- *   - per-edge connector handles so parallel/reciprocal edges anchor at
- *     distinct border points and curve apart (getBezierPath curvature per
- *     parallel slot),
- *   - directed arrowheads that stop at the node border,
- *   - selectively visible edge labels (zoom / hover / selection),
- *   - hover/selection tooltip: source → type(counter) → target,
- *   - click-to-refocus (guarded against drags),
- *   - exposed zoomIn/zoomOut/fitView/resetView/panBy for the view toolbar.
+ * Story 7.1 — Vue Flow winner renderer (whole-world redesign, owner verdict
+ * 2026-09-19). Consumes the shared graphModel output and renders the ENTIRE
+ * committed world:
+ *   - deterministic concentric ring-per-kind positions (memoized per world
+ *     change — focusing never re-lays out the world; only the focused card
+ *     moves to the center slot),
+ *   - every committed edge drawn; labels OFF by default,
+ *   - focus (from ?focus= or node click): the 1-hop set (both directions)
+ *     renders at full opacity WITH edge labels, everything else dims
+ *     (grey, still visible); the focus card keeps its halo + strong border,
+ *   - click empty canvas → `clear-focus` (GraphView drops ?focus=),
+ *   - hover/selection tooltip source → type(counter) → target (ULID-free),
+ *   - per-edge connector handles + curvature so parallel/reciprocal edges
+ *     anchor apart and curve distinctly,
+ *   - drag-guarded refocus, keyboard-activatable cards, pan/zoom/pinch,
+ *     toolbar surface (zoomIn/zoomOut/fitView/resetView/panBy).
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { useId } from 'vue'
@@ -19,10 +23,11 @@ import { VueFlow, useVueFlow, getBezierPath } from '@vue-flow/core'
 import type { EdgeProps, Node, Edge, ViewportTransform } from '@vue-flow/core'
 import '@vue-flow/core/dist/style.css'
 
-import type { GraphRenderEdge, GraphRenderNode } from './graphModel'
+import type { GraphRenderEdge, GraphRenderNode, OneHop } from './graphModel'
 import {
   GRAPH_NODE_HEIGHT,
   GRAPH_NODE_WIDTH,
+  concentricLayoutByKind,
   parallelSlots,
   vueFlowCurvature,
 } from './graphModel'
@@ -32,15 +37,21 @@ const props = defineProps<{
   nodes: GraphRenderNode[]
   edges: GraphRenderEdge[]
   focusId: string | null
+  /** The focus's 1-hop incidence (null when none) — drives highlight/dim. */
+  oneHop: OneHop | null
   labelsVisible: boolean
   nodeNameById: Record<string, string>
 }>()
 
-const emit = defineEmits<{ (event: 'refocus', id: string): void }>()
+const emit = defineEmits<{
+  (event: 'refocus', id: string): void
+  (event: 'clear-focus'): void
+}>()
 
 const flow = useVueFlow()
 
 const markerId = `graph-vf-arrow-${useId()}`
+const markerIdActive = `${markerId}-active`
 const nodeTypes = { graph: GraphNodeCard }
 
 const hoveredEdgeId = ref<string | null>(null)
@@ -48,21 +59,10 @@ const selectedEdgeId = ref<string | null>(null)
 const dragging = ref(false)
 const initialViewport = ref<ViewportTransform | null>(null)
 
-/** Concentric layout: focus dead center, neighbors on a ring sized to the
- * count so node-on-node overlap is impossible at rest (deterministic). */
-function positionsFor(count: number): Array<{ x: number; y: number }> {
-  const positions: Array<{ x: number; y: number }> = []
-  if (count === 0) return positions
-  const radius = Math.max(240, (count * (GRAPH_NODE_WIDTH + 26)) / (2 * Math.PI))
-  for (let i = 0; i < count; i += 1) {
-    const angle = -Math.PI / 2 + (i * 2 * Math.PI) / count
-    positions.push({
-      x: radius * Math.cos(angle) - GRAPH_NODE_WIDTH / 2,
-      y: radius * Math.sin(angle) - GRAPH_NODE_HEIGHT / 2,
-    })
-  }
-  return positions
-}
+/** Ring positions per kind — memoized ONCE per world change. The focused
+ * card's center slot (0,0) is applied reactively in `flowNodes`; nothing
+ * else ever moves on focus changes. */
+const ringPositions = ref<Map<string, { x: number; y: number }>>(new Map())
 
 interface HandleSpec {
   edgeId: string
@@ -77,17 +77,20 @@ function handleSpecs(edges: GraphRenderEdge[], nodeId: string, side: 'src' | 'ds
   }))
 }
 
-const flowNodes = computed<Node[]>(() => {
-  const neighbor = props.nodes.filter((node) => node.id !== props.focusId)
-  const positions = positionsFor(neighbor.length)
-  const posByOffset: Array<{ x: number; y: number }> = [
-    { x: -GRAPH_NODE_WIDTH / 2, y: -GRAPH_NODE_HEIGHT / 2 },
-    ...positions,
-  ]
-  let offset = 0
-  return props.nodes.map((node) => {
-    const position = posByOffset[offset] ?? { x: 0, y: 0 }
-    offset += 1
+const focusActive = computed(() => props.focusId !== null && props.oneHop !== null)
+
+/** A node is dimmed when a focus is active and it is outside the 1-hop set. */
+function nodeDimmed(nodeId: string): boolean {
+  return focusActive.value && !props.oneHop!.nodeIds.has(nodeId)
+}
+
+const flowNodes = computed<Node[]>(() =>
+  props.nodes.map((node) => {
+    const focused = node.id === props.focusId
+    const ring = ringPositions.value.get(node.id)
+    const position = focused
+      ? { x: -GRAPH_NODE_WIDTH / 2, y: -GRAPH_NODE_HEIGHT / 2 }
+      : ring ?? { x: -GRAPH_NODE_WIDTH / 2, y: -GRAPH_NODE_HEIGHT / 2 }
     return {
       id: node.id,
       type: 'graph',
@@ -96,18 +99,21 @@ const flowNodes = computed<Node[]>(() => {
       height: GRAPH_NODE_HEIGHT,
       data: {
         node,
+        focused,
+        dimmed: nodeDimmed(node.id),
         outHandles: handleSpecs(props.edges, node.id, 'src'),
         inHandles: handleSpecs(props.edges, node.id, 'dst'),
       },
     }
-  })
-})
+  }),
+)
 
 const slots = computed(() => parallelSlots(props.edges))
 
 const flowEdges = computed<Edge[]>(() =>
   props.edges.map((edge) => {
     const slot = slots.value.get(edge.id) ?? { index: 0, total: 1 }
+    const active = focusActive.value && props.oneHop!.edgeIds.has(edge.id)
     return {
       id: edge.id,
       type: 'graph',
@@ -117,6 +123,8 @@ const flowEdges = computed<Edge[]>(() =>
       targetHandle: `in-${edge.id}`,
       data: {
         edge,
+        active,
+        dimmed: focusActive.value && !active,
         curvature: vueFlowCurvature(slot),
         labelDy: (slot.index - (slot.total - 1) / 2) * 7,
       },
@@ -124,13 +132,12 @@ const flowEdges = computed<Edge[]>(() =>
   }),
 )
 
-/** Selective edge-label visibility: labels toggle AND (zoomed in OR the edge
- * is hovered/selected) — no permanent label pile-up at density. */
-const edgeLabelsOn = computed(
-  () =>
-    props.labelsVisible &&
-    (flow.viewport.value.zoom >= 0.8 || hoveredEdgeId.value !== null || selectedEdgeId.value !== null),
-)
+/** Labels: shown for the focus's 1-hop edges when a focus is active, or for
+ * EVERY edge when the toolbar Labels toggle is on — off by default. */
+function labelVisibleFor(p: EdgeProps): boolean {
+  const data = p.data as { edge: GraphRenderEdge }
+  return props.labelsVisible || (focusActive.value && props.oneHop!.edgeIds.has(data.edge.id))
+}
 
 function edgePath(p: EdgeProps): string {
   const data = p.data as { curvature: number; edge: GraphRenderEdge }
@@ -186,10 +193,14 @@ function onEdgeLeave() {
 function onEdgeClick({ edge }: { edge: { id: string } }) {
   selectedEdgeId.value = edge.id
 }
+
+/** Empty-space click clears the focus (URL drops ?focus=). */
 function onPaneClick() {
   hoveredEdgeId.value = null
   selectedEdgeId.value = null
+  emit('clear-focus')
 }
+
 function onNodeDragStart() {
   dragging.value = true
 }
@@ -199,15 +210,13 @@ function onNodeDragStop() {
   }, 0)
 }
 
-/** Refocus keeps the same campaign: the new set replaces the old, then the
- * view fits once the re-render settles (a smooth focus transition). The
- * post-fit viewport is the "reset" home position — captured on the first
- * fit that runs while the viewport is initialized. */
+/** Refocus keeps the same campaign: the focused card slides to the center
+ * slot within the STABLE layout, then the view fits once the re-render
+ * settles. The first SUCCESSFUL fit also captures the "reset" home viewport
+ * (fitView resolves false pre-init). */
 async function fitAfterRender() {
   await nextTick()
   const fitted = await flow.fitView({ padding: 0.12, duration: 200 })
-  // The first SUCCESSFUL fit means the viewport exists — that is when the
-  // "reset" home position is captured (fitView resolves false pre-init).
   if (!initialViewport.value && fitted) {
     initialViewport.value = flow.getViewport()
   }
@@ -218,14 +227,18 @@ watch(
   () => {
     hoveredEdgeId.value = null
     selectedEdgeId.value = null
+    // Stable layout: recompute the ring positions ONLY when the world
+    // (node set) changes — never on focus changes.
+    ringPositions.value = new Map(
+      concentricLayoutByKind(props.nodes).map((position) => [position.id, { x: position.x, y: position.y }]),
+    )
     void fitAfterRender()
   },
   { immediate: true },
 )
 
 /** VueFlow initializes its store/panes asynchronously; fit only once ready.
- * The home viewport is captured by that fit (see fitAfterRender) — never
- * read before the viewport exists. */
+ * The home viewport is captured by that fit (see fitAfterRender). */
 function onFlowInit() {
   void fitAfterRender()
 }
@@ -270,6 +283,17 @@ defineExpose({ zoomIn, zoomOut, fitView, resetView, panBy })
         >
           <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563" />
         </marker>
+        <marker
+          :id="markerIdActive"
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="11"
+          markerHeight="11"
+          orient="auto-start-reverse"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309" />
+        </marker>
       </defs>
     </svg>
     <VueFlow
@@ -294,12 +318,20 @@ defineExpose({ zoomIn, zoomOut, fitView, resetView, panBy })
       <template #edge-graph="p">
         <g
           class="graph-edge"
-          :class="{ hovered: p.id === hoveredEdgeId, selected: p.id === selectedEdgeId }"
+          :class="{
+            active: (p.data as { active: boolean }).active,
+            dim: (p.data as { dimmed: boolean }).dimmed,
+            hovered: p.id === hoveredEdgeId,
+            selected: p.id === selectedEdgeId,
+          }"
         >
-          <path :d="edgePath(p)" :marker-end="`url(#${markerId})`" />
+          <path
+            :d="edgePath(p)"
+            :marker-end="(p.data as { active: boolean }).active ? `url(#${markerIdActive})` : `url(#${markerId})`"
+          />
           <title>{{ tooltipText(p) }}</title>
           <text
-            v-if="edgeLabelsOn"
+            v-if="labelVisibleFor(p)"
             class="edge-label"
             :x="labelPoint(p).x"
             :y="labelPoint(p).y"
@@ -316,11 +348,15 @@ defineExpose({ zoomIn, zoomOut, fitView, resetView, panBy })
             class="tooltip-box"
           >
             <div class="graph-tooltip">
-              <span class="tt-src">{{ props.nodeNameById[(p.data as { edge: GraphRenderEdge }).edge.src] }}</span>
+              <span class="tt-src">{{
+                props.nodeNameById[(p.data as { edge: GraphRenderEdge }).edge.src] ?? '(unknown)'
+              }}</span>
               <span class="tt-arrow">→</span>
               <span class="tt-label">{{ (p.data as { edge: GraphRenderEdge }).edge.label }}</span>
               <span class="tt-arrow">→</span>
-              <span class="tt-dst">{{ props.nodeNameById[(p.data as { edge: GraphRenderEdge }).edge.dst] }}</span>
+              <span class="tt-dst">{{
+                props.nodeNameById[(p.data as { edge: GraphRenderEdge }).edge.dst] ?? '(unknown)'
+              }}</span>
             </div>
           </foreignObject>
         </g>
@@ -339,6 +375,14 @@ defineExpose({ zoomIn, zoomOut, fitView, resetView, panBy })
   stroke: #7d8695;
   stroke-width: 1.8;
   fill: none;
+}
+/* Whole-world dimming: non-1-hop edges under an active focus (grey, visible). */
+.graph-edge.dim {
+  opacity: 0.18;
+}
+.graph-edge.active path {
+  stroke: #b45309;
+  stroke-width: 2.6;
 }
 .graph-edge.hovered path,
 .graph-edge.selected path {
