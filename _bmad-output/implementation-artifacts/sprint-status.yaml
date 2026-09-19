@@ -89,7 +89,7 @@ development_status:
   epic-5-retrospective: done
 
   epic-6: backlog
-  6-1-nightly-snapshot-with-integrity: backlog
+  6-1-nightly-snapshot-with-integrity: done
   6-2-restore-proven-verify-then-apply: backlog
   6-3-total-clean-campaign-deletion: backlog
   6-4-privacy-and-per-campaign-ownership: backlog

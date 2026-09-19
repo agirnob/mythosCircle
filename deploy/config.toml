@@ -163,3 +163,13 @@ max_in_flight_per_campaign = 1
 [campaigns]
 # Seed theme list (AD-24); operators can extend per campaign.
 themes = ["High Fantasy", "Grimdark", "Steampunk", "Planar"]
+
+[backup]
+# Nightly snapshot (epic-6 story 6-1, AR13/AR30) — operator-visible
+# defaults for app/core/backup.py; env wins (AD-22): MYTHOSCIRCLE_BACKUP_DIR,
+# MYTHOSCIRCLE_BACKUP_RETENTION. The snapshot (WAL-safe sqlite backup API
+# copy + sha256 + media manifest) lands in a dated dir under the backup
+# root — a second local location relative to the live DB + media.
+# Defaults: <data-dir>/backups, retention 14.
+# dir = ""
+# retention = 14

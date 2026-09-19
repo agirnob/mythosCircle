@@ -1,0 +1,18 @@
+# Nightly world-state snapshot for the DOCKER stack (192.168.1.21 etc;
+# epic-6 story 6-1, AR13/AR30).
+#
+# The api container ships the backup module (stdlib-only) and holds the
+# live DB + media on the mythos-data volume under /data. A snapshot is
+# the sqlite3 online backup API copy + checksum + media manifest, landed
+# at /data/backups/<stamp>/ — a second local location relative to the
+# live DB/media (mount /data/backups on a separate device for real
+# storage independence). Retention: 14 snapshots (env override
+# MYTHOSCIRCLE_BACKUP_RETENTION).
+#
+# Install (root-owned, 0644) on the docker host:
+#   scp deploy/backup.docker.cron homest@192.168.1.21:/tmp/
+#   ssh homest@192.168.1.21 "sudo install -m 0644 -o root -g root \
+#       /tmp/backup.docker.cron /etc/cron.d/mythoscircle-backup"
+# It is a no-op until the stack exists (docker exec fails loudly into
+# /var/log/mythoscircle-backup.log — fix the stack, don't mask).
+30 1 * * * root docker exec mythoscircle-api-1 .venv/bin/python -m app.core.backup --data-dir /data >> /var/log/mythoscircle-backup.log 2>&1
