@@ -29,14 +29,23 @@ def test_default_db_url_matches_config_toml() -> None:
 
 
 def test_backup_and_restore_target_the_same_db() -> None:
-    """backup.sh and restore.sh resolve their DB path from the same
-    data-dir default the operator config declares."""
+    """backup.sh and restore.sh resolve their data dir from the same
+    default the operator config declares; restore's DB filename comes
+    from the snapshot manifest (db.file), which backup.py writes at
+    snapshot time — the pair stays on one file without restore
+    hardcoding a name (6-2: faithful to the snapshot, dev DB
+    mythos.db included)."""
     config = tomllib.loads((DEPLOY_DIR / "config.toml").read_text())
     data_dir = config["world"]["data_dir"]
-    for script in ("backup.sh", "restore.sh"):
-        text = (DEPLOY_DIR / script).read_text()
+    backup_text = (DEPLOY_DIR / "backup.sh").read_text()
+    restore_text = (DEPLOY_DIR / "restore.sh").read_text()
+    for text in (backup_text, restore_text):
         assert f'DATA_DIR="${{MYTHOSCIRCLE_DATA_DIR:-{data_dir}}}"' in text
-        assert 'DB="$DATA_DIR/mythoscircle.db"' in text
+    assert 'DB="$DATA_DIR/mythoscircle.db"' in backup_text
+    # 6-2: restore delegates the DB name to the manifest — never a
+    # hardcoded filename here.
+    assert 'DB="$DATA_DIR/mythoscircle.db"' not in restore_text
+    assert "-m app.core.restore" in restore_text
 
 
 def test_api_binds_loopback_only() -> None:

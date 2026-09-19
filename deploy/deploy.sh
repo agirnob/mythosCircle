@@ -80,6 +80,10 @@ DEPLOY_DEST="$(stage /opt/mythoscircle/deploy)"
 mkdir -p "$DEPLOY_DEST"
 install_with_parents deploy/backup.sh "$DEPLOY_DEST/backup.sh"
 install_with_parents deploy/restore.sh "$DEPLOY_DEST/restore.sh"
+# Docker-stack wrapper ships in the same tree (the laptop compose host
+# scp's it like backup.docker.cron; keeping it provisioned here pins it
+# to CI's stage-tree test and gives one canonical source).
+install_with_parents deploy/restore.docker.sh "$DEPLOY_DEST/restore.docker.sh"
 
 # 4. Systemd unit.
 install_with_parents deploy/mythoscircle.service "$(stage /etc/systemd/system/mythoscircle.service)"
