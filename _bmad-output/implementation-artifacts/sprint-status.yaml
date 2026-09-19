@@ -96,8 +96,8 @@ development_status:
   6-5-beta-launch-gate: backlog
   epic-6-retrospective: optional
 
-  epic-7: in-progress
-  7-1-graph-visualizer-spike-phase-2-boundary: review
+  epic-7: done
+  7-1-graph-visualizer-spike-phase-2-boundary: done
   epic-7-retrospective: optional
 
   epic-8: backlog
