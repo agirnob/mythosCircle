@@ -129,11 +129,13 @@ Epic 2: Bring the World In — Guided Build-In
 Epic 3: Living Candidates — Generation & Acceptance
 Epic 4: Give Them a Face — Media
 Epic 5: Take It to the Table — Export & VTT
-Epic 6: Protect the Table — Backup, Restore & Ownership (BETA LAUNCH GATE)
 Epic 7: See the Web — Relationship Graph (Phase 2, boundary-level)
+Epic 6: Protect the Table — Backup, Restore & Ownership (BETA LAUNCH GATE)
 Epic 8: Polish the Table — UI Uplift (hardening; after Epic 7, pre-Phase-3)
 Epic 9: The World Reacts — Simulate History (Phase 3, boundary-level)
 ```
+
+> **Execution order (owner swap, 2026-09-19):** Epic 7's graph spike runs before Epic 6's beta gate. Epic IDs and story numbers are stable — they are load-bearing keys in sprint-status, retro refs, and spec filenames.
 
 ## Value Checkpoints
 
@@ -688,6 +690,32 @@ So that the "for online tables" claim is proven, not asserted.
 
 **Verdict: MET (witnessed live 2026-09-18 — full path 3 m 31 s < 10 min, single-character exports 6–36 ms < 1 min, transparent portrait ~70 s, a second human watched the world reach the table; witness confirmed by the owner 2026-09-19).**
 
+## Epic 7: See the Web — Relationship Graph *(Phase 2, boundary-level)*
+
+**Value:** the DM browses the web around any entity — "barkeep → thieves' guild → mayor" — the product's signature demo moment.
+**FRs covered:** FR15
+**Notes:** node-link visualizer reads Pinia only, no direct API calls (AR16); library choice (Cytoscape.js vs Vue Flow) decided at P2 build; spike early — the demo moment, not a backlog item.
+
+### Story 7.1: Graph Visualizer Spike *(Phase 2 boundary)*
+
+As a **DM**,
+I want to click any entity and see its web of relationships rendered,
+So that "barkeep → thieves' guild → mayor" is a live demo moment, not a screenshot.
+
+**Acceptance Criteria:**
+
+**Given** a Phase-1 world
+**When** an entity is clicked
+**Then** its typed-edge web renders within the AR6 depth/entity caps (FR15).
+
+**Given** the visualizer
+**When** it reads state
+**Then** it reads Pinia only — no direct API calls, no private caches (AR16, AD-20).
+
+**Given** the spike
+**When** it concludes
+**Then** the visualizer library is chosen (Cytoscape.js vs Vue Flow, NFR12) — the demo moment, not a backlog item.
+
 ## Epic 6: Protect the Table — Backup, Restore & Ownership — **BETA LAUNCH GATE**
 
 **Value:** the DM's world is private to her, backed up nightly, and the restore has been *proven*; a campaign deletion is total and clean. Beta does not ship until this epic's restore test passes.
@@ -761,32 +789,6 @@ So that "beta" means the world is actually safe.
 **Given** the beta launch
 **When** the gate is checked
 **Then** beta is permitted only if restore has been exercised against a real campaign snapshot, a corrupted snapshot has failed loudly, and a clean restore has verified against its checksum — otherwise it is blocked (gate; AR13, AR30, NFR5).
-
-## Epic 7: See the Web — Relationship Graph *(Phase 2, boundary-level)*
-
-**Value:** the DM browses the web around any entity — "barkeep → thieves' guild → mayor" — the product's signature demo moment.
-**FRs covered:** FR15
-**Notes:** node-link visualizer reads Pinia only, no direct API calls (AR16); library choice (Cytoscape.js vs Vue Flow) decided at P2 build; spike early — the demo moment, not a backlog item.
-
-### Story 7.1: Graph Visualizer Spike *(Phase 2 boundary)*
-
-As a **DM**,
-I want to click any entity and see its web of relationships rendered,
-So that "barkeep → thieves' guild → mayor" is a live demo moment, not a screenshot.
-
-**Acceptance Criteria:**
-
-**Given** a Phase-1 world
-**When** an entity is clicked
-**Then** its typed-edge web renders within the AR6 depth/entity caps (FR15).
-
-**Given** the visualizer
-**When** it reads state
-**Then** it reads Pinia only — no direct API calls, no private caches (AR16, AD-20).
-
-**Given** the spike
-**When** it concludes
-**Then** the visualizer library is chosen (Cytoscape.js vs Vue Flow, NFR12) — the demo moment, not a backlog item.
 
 ## Epic 8: Polish the Table — UI Uplift *(hardening; after Epic 7, before Phase 3)*
 
