@@ -93,7 +93,7 @@ development_status:
   6-2-restore-proven-verify-then-apply: done
   6-3-total-clean-campaign-deletion: done
   6-4-privacy-and-per-campaign-ownership: review
-  6-5-beta-launch-gate: backlog
+  6-5-beta-launch-gate: review
   epic-6-retrospective: optional
 
   epic-7: done
