@@ -583,3 +583,12 @@ maps to a proposed story; none implemented yet.
   enforce the same ranges (stage drop / named JobPayloadError). The wire rejects
   via the existing 422 validation_error mapping. [backend/app/store/commit.py,
   backend/app/pipeline/generate.py, backend/app/pipeline/build_in.py]
+
+## Deferred from: code review of spec-6-4-privacy-and-per-campaign-ownership (2026-09-20)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-6-4-privacy-and-per-campaign-ownership.md`
+  summary: Store move-404 misattributes the campaign: `move_character_from_generic` raises `UnknownCampaignError(f"campaign not found: {target_campaign_id}")` for any of the four ownership conditions, so a DM moving from a typo'd/foreign source library is told their OWN (target) campaign is missing.
+  evidence: commit.py:1184 names the target in every branch; the new wire pin `test_move_foreign_library_404_identical_to_unknown_library` passes BECAUSE the shared body names the target — byte-identity is correct and must survive a future message fix (KEEP), but the message itself should name neither side once the move path is next touched.
+- source_spec: `_bmad-output/implementation-artifacts/spec-6-4-privacy-and-per-campaign-ownership.md`
+  summary: Global job-id idempotency key leaves a cross-campaign existence oracle: `enqueue_job` dedupes by job_id with no campaign scoping, so any registered account can POST a guessed/observed job id on their own campaign and read 409 "duplicate" vs 201 "created", confirming that id exists in someone else's queue.
+  evidence: store/jobs.py duplicate-check is `session.get(models.Job, job_id)` (global, AD-3 job ids unique across the single FIFO); ULIDs are unguessable but observably leakable (WS broadcasts, logs), and the 409-vs-201 split is a side channel the four route gates do not close. Scoping the key per campaign or hiding the 409 would remove it; AD-3's single-FIFO uniqueness is the current rationale for the global key.

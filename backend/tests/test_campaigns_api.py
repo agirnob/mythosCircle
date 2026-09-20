@@ -371,3 +371,68 @@ def test_delete_media_reclaim_failure_still_204(
             select(models.Media).where(models.Media.campaign_id == mine["id"])
         ).all()
         assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# Per-campaign ownership (spec-6-4) — second-account API pins
+# ---------------------------------------------------------------------------
+
+
+def test_move_foreign_target_404_identical_to_unknown(client: Any) -> None:
+    """MOVE_FOREIGN target (spec-6-4): a second account moving INTO
+    another DM's campaign is the ownership 404 — byte-identical to an
+    unknown target, so the campaign's existence is never revealed (the
+    store is not even consulted)."""
+    _register_login(client, "dm@example.com")
+    dm_campaign = _create_campaign(client).json()["id"]
+    dm_generic = client.post("/api/campaigns/generic", json={"theme": "Grimdark"}).json()["id"]
+    _register_login(client, "other@example.com")
+
+    foreign = client.post(
+        f"/api/campaigns/{dm_campaign}/move",
+        json={"source_campaign_id": dm_generic, "entity_id": "0" * 26},
+    )
+    unknown = client.post(
+        f"/api/campaigns/{'0' * 26}/move",
+        json={"source_campaign_id": dm_generic, "entity_id": "0" * 26},
+    )
+    assert foreign.status_code == 404
+    assert foreign.json()["code"] == "not_found"
+    assert foreign.json() == unknown.json()  # byte-identical, no oracle
+
+
+def test_move_foreign_library_404_identical_to_unknown_library(client: Any) -> None:
+    """MOVE_FOREIGN source (spec-6-4): moving from another DM's Generic
+    library — even with a REAL character in it — is the same 404 as an
+    unknown source library: the store's ownership check precedes any
+    entity lookup, and commit.py raises one message for ANY of the four
+    ownership conditions (source/target `None` or foreign), naming the
+    TARGET id — so the body never varies with the SOURCE, which is
+    exactly why foreign and unknown are byte-identical."""
+    from app.store import commit_subgraph, models
+
+    _register_login(client, "dm@example.com")
+    dm_generic = client.post("/api/campaigns/generic", json={"theme": "Grimdark"}).json()
+    commit_subgraph(  # DM's library really holds a character — unreachable to B
+        dm_generic["id"],
+        entities=[models.EntityInput(kind="character", name="Corrosion Sal")],
+        allow_orphans=True,
+    )
+    _register_login(client, "other@example.com")
+    other_campaign = _create_campaign(client).json()["id"]
+
+    foreign_library = client.post(
+        f"/api/campaigns/{other_campaign}/move",
+        json={"source_campaign_id": dm_generic["id"], "entity_id": "0" * 26},
+    )
+    unknown_library = client.post(
+        f"/api/campaigns/{other_campaign}/move",
+        json={"source_campaign_id": "0" * 26, "entity_id": "0" * 26},
+    )
+    assert foreign_library.status_code == 404
+    assert foreign_library.json()["code"] == "not_found"
+    # KEEP (deferred-work): the byte-identity assertion must survive any
+    # future store-message fix (a message naming the SOURCE would break it
+    # loudly) — the deferred-work entry tracks the misattribution; the
+    # store is NOT to be pre-fixed here.
+    assert foreign_library.json() == unknown_library.json()

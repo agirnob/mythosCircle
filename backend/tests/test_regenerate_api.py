@@ -27,7 +27,6 @@ from app.store import (
     enqueue_job,
     init_db,
     list_jobs,
-    register_account,
     stage_candidates,
 )
 
@@ -45,26 +44,37 @@ def _reset_rate_limiter() -> Iterator[None]:
     _register_limiter.reset()
 
 
-def _owner_id() -> str:
-    return register_account(f"owner-regenapi-{ids.new_id()}@example.com", "password123").id
+def _register(client: TestClient) -> str:
+    """Register via the API (sets the session cookie); returns the id."""
+    body = client.post(
+        "/api/auth/register",
+        json={"email": f"regen-{ids.new_id()}@example.com", "password": "password123"},
+    )
+    assert body.status_code == 201
+    return str(body.json()["id"])
 
 
 @pytest.fixture()
 def job_api(tmp_path: Path, client: TestClient) -> Iterator[Callable[[], str]]:
+    """Re-point the app's store at a fresh scratch DB; yields a maker for
+    an EMPTY campaign owned by the session's account (spec-6-4: the jobs
+    routes are session-gated — the owner registers via the API so every
+    POST rides the cookie)."""
     previous = app_db_url()
     init_db(f"sqlite:///{tmp_path / 'regen-api.db'}")
+    account_id = _register(client)
+
+    def make() -> str:
+        return create_campaign(
+            account_id,
+            title="API World",
+            description="",
+            theme="High Fantasy",
+            custom_lore="",
+        ).id
+
     try:
-        yield (
-            lambda: (
-                create_campaign(
-                    _owner_id(),
-                    title="API World",
-                    description="",
-                    theme="High Fantasy",
-                    custom_lore="",
-                ).id
-            )
-        )
+        yield make
     finally:
         init_db(previous)
 
@@ -128,16 +138,6 @@ def _commit_world(campaign_id: str) -> tuple[str, str]:
         base_revision=None,
     )
     return mira_id, guild_id
-
-
-def _register(client: TestClient) -> str:
-    """Register via the API (sets the session cookie); returns the id."""
-    body = client.post(
-        "/api/auth/register",
-        json={"email": f"regen-{ids.new_id()}@example.com", "password": "password123"},
-    )
-    assert body.status_code == 201
-    return str(body.json()["id"])
 
 
 def _post(

@@ -33,6 +33,10 @@ services:
       MYTHOSCIRCLE_MEDIA_DIR: /data/media
       MYTHOSCIRCLE_LOG_FILE: /data/logs/app.jsonl
       MYTHOSCIRCLE_BASE_URL: https://world.miscco.uk
+      # spec-6-4 (AR14): the origin behind the TLS edge serves plain HTTP
+      # and never learns the public scheme, so the Secure flag is declared
+      # explicitly (AD-22, env-only; unset keeps the dev plain-http flow).
+      MYTHOSCIRCLE_COOKIE_SECURE: "true"
       MYTHOSCIRCLE_MEDIA_URL_SECRET: ${MYTHOSCIRCLE_MEDIA_URL_SECRET:?MYTHOSCIRCLE_MEDIA_URL_SECRET is required}
       # LLM lives on the dev PC (Unsloth Studio); the laptop reaches it
       # over the LAN. Requires one /v1/load per Unsloth restart.

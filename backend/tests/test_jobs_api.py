@@ -23,21 +23,31 @@ from app.core.pagination import encode_cursor
 from app.core.settings import MAX_PENDING_PER_CAMPAIGN
 from app.store import (
     app_db_url,
+    cancel_job,
     claim_next_job,
     complete_job,
     create_campaign,
     fail_job,
     init_db,
+    job_status,
+    list_jobs,
     report_progress,
 )
 
 
-def _owner_id() -> str:
-    """One owner account per scratch DB for campaign creation (spec-1.6)."""
-    from app.core.ids import new_id
-    from app.store import register_account
+@pytest.fixture(autouse=True)
+def _reset_limiters() -> Any:
+    """Register-quota isolation (the edges/API convention): the register
+    limiter is module-global and keyed on the TestClient's fixed host —
+    every test here registers via the API (job_api + the newcomer
+    switches)."""
+    from app.api.auth import _login_limiter, _register_limiter
 
-    return register_account(f"owner-jobsapi-{new_id()}@example.com", "password123").id
+    _login_limiter.reset()
+    _register_limiter.reset()
+    yield
+    _login_limiter.reset()
+    _register_limiter.reset()
 
 
 def _authed_owned_campaign(client: TestClient) -> str:
@@ -56,24 +66,40 @@ def _authed_owned_campaign(client: TestClient) -> str:
     ).id
 
 
+def _switch_account(client: TestClient) -> None:
+    """Register a fresh second account via the API — the TestClient jar
+    holds one session, so the cookie now belongs to the newcomer."""
+    email = f"foreign-{ids.new_id()}@example.com"
+    body = client.post("/api/auth/register", json={"email": email, "password": "password123"})
+    assert body.status_code == 201
+
+
 ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 
 
 @pytest.fixture()
 def job_api(tmp_path: Path, client: TestClient) -> Iterator[Callable[[], str]]:
-    """Re-point the app's store at a fresh scratch DB; yields a campaign maker.
+    """Re-point the app's store at a fresh scratch DB; yields a campaign
+    maker for the session's OWNED account.
 
+    The owner registers via the API so the session cookie rides every
+    REST request (spec-6-4: all four jobs routes are session-gated — a
+    store-made campaign without a cookie would 401 on its own posts).
     The store engine is module-global (store.db), and the test client's
     endpoints use it at call time, so re-pointing per test isolates the
     queue — every claim is deterministic.
     """
     previous = app_db_url()
     init_db(f"sqlite:///{tmp_path / 'job-api.db'}")
+    email = f"jobs-{ids.new_id()}@example.com"
+    body = client.post("/api/auth/register", json={"email": email, "password": "password123"})
+    assert body.status_code == 201
+    account_id = body.json()["id"]
 
     def make() -> str:
         return create_campaign(
-            _owner_id(),
+            account_id,
             title="API Test World",
             description="",
             theme="High Fantasy",
@@ -281,8 +307,11 @@ def test_post_video_prompt_bad_payload_422(client: TestClient, job_api: Callable
     assert listed["jobs"] == []  # zero rows written
 
 
-def test_post_job_missing_campaign_fields_422(client: TestClient) -> None:
-    # Payload with neither campaign_id nor kind is rejected by validation.
+def test_post_job_missing_campaign_fields_422(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    # Payload with neither campaign_id nor kind is rejected by validation
+    # (the session gate has already passed — job_api registered the owner).
     response = client.post("/api/jobs", json={"payload": {}})
     _assert_envelope(response, 422, "validation_error")
 
@@ -297,8 +326,92 @@ def test_post_job_duplicate_job_id_409(client: TestClient, job_api: Callable[[],
     assert len(listed["jobs"]) == 1  # idempotent by job-id: no double enqueue
 
 
-def test_post_job_unknown_campaign_404(client: TestClient) -> None:
+def test_post_job_unknown_campaign_404(client: TestClient, job_api: Callable[[], str]) -> None:
     _assert_envelope(_post_job(client, ids.new_id()), 404, "not_found")
+
+
+def test_jobs_anon_generic_401_all_four_routes(client: TestClient) -> None:
+    """JOBS_ANON (spec-6-4): with no session cookie every jobs route is
+    the generic 401 envelope — the anonymous hole (list anyone's queue,
+    enqueue on any campaign, cancel anyone's job) is closed."""
+    _assert_envelope(_post_job(client, ids.new_id()), 401, "unauthorized")
+    _assert_envelope(
+        client.get("/api/jobs", params={"campaign_id": ids.new_id()}),
+        401,
+        "unauthorized",
+    )
+    _assert_envelope(client.get(f"/api/jobs/{ids.new_id()}"), 401, "unauthorized")
+    _assert_envelope(client.post(f"/api/jobs/{ids.new_id()}/cancel"), 401, "unauthorized")
+    # The BARE list (no query at all) is 401 too — the session gate fires
+    # before query validation (the deployed flip: 422 -> 401).
+    _assert_envelope(client.get("/api/jobs"), 401, "unauthorized")
+
+
+def test_foreign_campaign_create_and_list_404(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """JOBS_FOREIGN create/list (spec-6-4): another owner's campaign is a
+    404 byte-identical to an unknown one (no oracle), and the stranger's
+    create writes zero job rows."""
+    campaign_id = job_api()  # cookie = owner A
+    _switch_account(client)  # cookie = account B
+    foreign = _post_job(client, campaign_id)
+    _assert_envelope(foreign, 404, "not_found")
+    assert foreign.json() == _post_job(client, ids.new_id()).json()  # cipher-identical
+    jobs, _cursor = list_jobs(campaign_id)
+    assert jobs == []  # zero rows written by the stranger's 404
+    foreign_list = client.get("/api/jobs", params={"campaign_id": campaign_id})
+    unknown_list = client.get("/api/jobs", params={"campaign_id": ids.new_id()})
+    _assert_envelope(foreign_list, 404, "not_found")
+    assert foreign_list.json() == unknown_list.json()
+    # The ownership 404 fires BEFORE cursor decoding (the route's
+    # documented order): a foreign campaign plus an undecodable cursor is
+    # the same 404 as the no-cursor one — the gate wins over cursor
+    # validation, so the cursor error surface leaks nothing to a stranger.
+    undecodable = client.get(
+        "/api/jobs", params={"campaign_id": campaign_id, "cursor": "not-a-cursor"}
+    )
+    _assert_envelope(undecodable, 404, "not_found")
+    assert undecodable.json() == foreign_list.json()
+
+
+def test_foreign_job_get_404_identical_to_unknown(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """JOBS_FOREIGN_GET (spec-6-4): a job of another owner's campaign is
+    the store's unknown-job 404 for THAT id — a stranger cannot tell it
+    exists (the caller supplied the id, so the echo leaks nothing)."""
+    campaign_id = job_api()
+    job_id = _post_job(client, campaign_id).json()["id"]
+    _switch_account(client)
+    foreign = client.get(f"/api/jobs/{job_id}")
+    _assert_envelope(foreign, 404, "not_found")
+    assert foreign.json() == {
+        "code": "not_found",
+        "message": f"unknown job: {job_id}",
+        "details": None,
+    }
+
+
+def test_foreign_cancel_404_state_and_row_untouched(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """JOBS_FOREIGN_CANCEL (spec-6-4): cancel checks ownership BEFORE any
+    mutation — a foreign cancel is the unknown-job 404 and the job's
+    state and row are untouched (still queued, still cancellable)."""
+    campaign_id = job_api()
+    job_id = _post_job(client, campaign_id).json()["id"]
+    _switch_account(client)
+    foreign = client.post(f"/api/jobs/{job_id}/cancel")
+    _assert_envelope(foreign, 404, "not_found")
+    assert foreign.json() == {
+        "code": "not_found",
+        "message": f"unknown job: {job_id}",
+        "details": None,
+    }
+    job, _position = job_status(job_id)
+    assert job.state == "queued"  # the stranger's 404 mutated nothing
+    assert cancel_job(job_id).state == "cancelled"  # the owner's path still works
 
 
 def test_post_job_queue_full_409(
@@ -312,7 +425,7 @@ def test_post_job_queue_full_409(
     assert len(listed["jobs"]) == 1  # no state change
 
 
-def test_get_unknown_job_404(client: TestClient) -> None:
+def test_get_unknown_job_404(client: TestClient, job_api: Callable[[], str]) -> None:
     _assert_envelope(client.get(f"/api/jobs/{ids.new_id()}"), 404, "not_found")
 
 
@@ -528,8 +641,11 @@ def test_ws_jobs_cancel_flow(client: TestClient, job_api: Callable[[], str]) -> 
 def test_ws_jobs_campaign_isolation(client: TestClient, job_api: Callable[[], str]) -> None:
     """A's transitions never surface on B's socket — B's frames are exactly
     its own job's sequence, asserted exactly (review round 1 hardening)."""
-    campaign_a = _authed_owned_campaign(client)
-    campaign_b = _authed_owned_campaign(client)
+    # Both campaigns belong to the ONE session account (job_api registers
+    # once): posting to A must still be allowed (spec-6-4 ownership), and
+    # the isolation property is per-CAMPAIGN, not per-account.
+    campaign_a = job_api()
+    campaign_b = job_api()
     with client.websocket_connect(f"/api/ws/jobs?campaign_id={campaign_b}") as ws:
         a_job = _post_job(client, campaign_a).json()["id"]  # must not leak to B
         b_job = _post_job(client, campaign_b).json()["id"]

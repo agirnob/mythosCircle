@@ -488,6 +488,20 @@ def session_ttl_days() -> int:
     return env_int(SESSION_TTL_DAYS, DEFAULT_SESSION_TTL_DAYS)
 
 
+#: Environment variable for the session cookie Secure-flag override
+#: (spec-6-4, AR14): tri-state — unset → derive from the request scheme
+#: (the plain-http dev flow keeps a non-Secure cookie), "true" → always
+#: mark Secure (deployed stacks behind a TLS edge: every topology serves
+#: plain HTTP at the origin and uvicorn does not honor a proxy scheme
+#: header from the docker sidecar), "false" → never Secure.
+COOKIE_SECURE_ENV = "MYTHOSCIRCLE_COOKIE_SECURE"
+
+
+def cookie_secure_override() -> bool | None:
+    """The Secure-flag override, or None to derive from the request scheme."""
+    return env_bool_optional(COOKIE_SECURE_ENV, None)
+
+
 def configured_themes() -> list[str]:
     """The campaign theme list from config (code seed fallback, spec-1.7)."""
     return list(runtime_config().themes)

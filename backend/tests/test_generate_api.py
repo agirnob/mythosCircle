@@ -27,7 +27,6 @@ from app.store import (
     create_campaign,
     enqueue_job,
     init_db,
-    register_account,
     session_scope,
 )
 from app.store.read import latest_revision, revision_chain, world_entities
@@ -57,22 +56,19 @@ _VALID_STAT_BLOCK: dict[str, Any] = {
 }
 
 
-def _owner_id() -> str:
-    from app.core.ids import new_id
-
-    return register_account(f"owner-genapi-{new_id()}@example.com", "password123").id
-
-
 @pytest.fixture()
 def job_api(tmp_path: Path, client: TestClient) -> Iterator[Callable[[], str]]:
     """Re-point the app's store at a fresh scratch DB; yields a maker for
-    an EMPTY campaign (the test commits its own world when needed)."""
+    an EMPTY campaign owned by the session's account (spec-6-4: the jobs
+    routes are session-gated — the owner registers via the API so the
+    cookie rides every POST)."""
     previous = app_db_url()
     init_db(f"sqlite:///{tmp_path / 'job-api.db'}")
+    account_id = _register(client)
 
     def make() -> str:
         return create_campaign(
-            _owner_id(),
+            account_id,
             title="API Test World",
             description="",
             theme="High Fantasy",
@@ -227,7 +223,7 @@ def test_post_generate_bad_payload_422(client: TestClient, job_api: Callable[[],
     assert listed["jobs"] == []
 
 
-def test_post_generate_unknown_campaign_404(client: TestClient) -> None:
+def test_post_generate_unknown_campaign_404(client: TestClient, job_api: Callable[[], str]) -> None:
     _assert_envelope(_post_job(client, ids.new_id()), 404, "not_found")
 
 
@@ -240,6 +236,7 @@ def test_candidates_unauthed_401(client: TestClient, job_api: Callable[[], str])
     """Unauthenticated candidates read is the generic 401 (AR29)."""
     campaign_id = job_api()
     _commit_world(campaign_id)
+    client.cookies.clear()  # drop the setup session — the read must be anonymous
     _assert_envelope(client.get(f"/api/campaigns/{campaign_id}/candidates"), 401, "unauthorized")
 
 
@@ -964,6 +961,7 @@ def test_lifecycle_routes_unauthed_401(client: TestClient, job_api: Callable[[],
     generic 401 (AR29)."""
     campaign_id = job_api()
     _commit_world(campaign_id)
+    client.cookies.clear()  # drop the setup session — the calls must be anonymous
     for suffix in ("accept", "reject"):
         _assert_envelope(
             client.post(f"/api/campaigns/{campaign_id}/candidates/{ids.new_id()}/{suffix}"),

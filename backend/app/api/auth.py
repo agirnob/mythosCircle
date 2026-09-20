@@ -15,7 +15,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 
 from app.core.ratelimit import AttemptLimiter
-from app.core.settings import session_ttl_days
+from app.core.settings import cookie_secure_override, session_ttl_days
 from app.store import models
 from app.store.auth import (
     EmailTakenError,
@@ -101,11 +101,19 @@ def _session_max_age() -> int | None:
 def _set_session_cookie(response: Response, token: str, *, secure: bool) -> None:
     """Attach the httpOnly, SameSite=Lax session cookie (AR14).
 
-    ``secure`` is derived from the request scheme: over TLS (Caddy front,
+    ``secure`` starts as the scheme-derived flag: over TLS (Caddy front,
     uvicorn trusts the loopback proxy's X-Forwarded-Proto) the cookie is
     marked Secure; over plain-http dev (the Vite proxy) it is not, so the
     owner's dogfood flow works without a cert (spec-2.1 smoke find).
+    ``MYTHOSCIRCLE_COOKIE_SECURE`` overrides it (spec-6-4): every
+    deployed topology serves plain HTTP at the origin behind the TLS edge
+    and the origin never learns the public scheme, so the operator
+    declares the flag explicitly (AD-22, env-only). Unset = current
+    behavior; dev stays untouched.
     """
+    override = cookie_secure_override()
+    if override is not None:
+        secure = override
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,

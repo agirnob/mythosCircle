@@ -65,6 +65,21 @@ def test_api_binds_loopback_only() -> None:
     assert "reverse_proxy" in caddy.lower()
 
 
+def test_both_compose_variants_set_cookie_secure() -> None:
+    """Spec-6-4 (AR14): both repo compose variants declare
+    MYTHOSCIRCLE_COOKIE_SECURE=true in the api service env — the origin
+    behind the TLS edge serves plain HTTP and never learns the public
+    scheme, so the Secure flag is operator-declared (AD-22). Unset keeps
+    the dev plain-http flow non-Secure; the auth-api pins cover the
+    tri-state."""
+    for compose_name in ("docker-compose.yml", "docker-compose.portainer.yml"):
+        text = (DEPLOY_DIR / compose_name).read_text()
+        # Anchor on the top-level service keys (both files declare api
+        # before web): isolate exactly the api service block.
+        api_block = text.split("\n  api:", 1)[1].split("\n  web:", 1)[0]
+        assert 'MYTHOSCIRCLE_COOKIE_SECURE: "true"' in api_block, compose_name
+
+
 def test_image_and_video_backend_and_comfyui_contract() -> None:
     """Spec-4.4/4.5: the shipped [image]/[video] backends stay openai
     (default — a flipped backend would silently change production

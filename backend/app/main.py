@@ -26,6 +26,7 @@ from app.api import (
 )
 from app.core.errors import register_error_handlers
 from app.core.logging_setup import setup_logging
+from app.core.settings import cookie_secure_override
 from app.pipeline.worker import worker_loop
 from app.store import init_app_db
 from app.store.jobs import recover_stale_running
@@ -66,6 +67,10 @@ def create_app() -> FastAPI:
     application = FastAPI(title="mythosCircle API", version="0.1.0", lifespan=lifespan)
     setup_logging()  # JSON-lines file logging first — every handler logs structured
     register_error_handlers(application)
+    # Fail boot loudly on a garbage MYTHOSCIRCLE_COOKIE_SECURE (spec-6-4):
+    # the tri-state reader's ValueError surfaces at construction, never as
+    # a per-request 500 from _set_session_cookie on every login/register.
+    cookie_secure_override()
     init_app_db()  # world store: schema + WAL, idempotent
     recover_stale_running()  # AR11: re-queue a crashed worker's running job
     application.include_router(auth.router)

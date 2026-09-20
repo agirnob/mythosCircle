@@ -6,17 +6,20 @@ contract; store rejections map to the error envelope — 4xx = user error,
 never a state change.
 """
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.api.auth import get_current_account
 from app.api.common import store_error_as_http
 from app.core.pagination import InvalidCursorError, decode_cursor, encode_cursor
 from app.store import (
+    JobNotFoundError,
     StoreError,
     cancel_job,
     enqueue_job,
+    get_campaign,
     job_status,
     list_jobs,
     models,
@@ -92,9 +95,39 @@ def _to_response(job: models.Job, position: int | None) -> JobResponse:
     )
 
 
+def _require_campaign(current_id: str, campaign_id: str) -> None:
+    """Ownership-404-first (the characters/edges precedent, AD-9): a
+    foreign or unknown campaign is the single 404 — no worker is ever
+    asked to touch a campaign its caller does not own and no message
+    distinguishes the two (no-oracle rule)."""
+    if get_campaign(current_id, campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+
+
+def _require_owned_job(current_id: str, job: models.Job) -> None:
+    """The get/cancel twin of ``_require_campaign`` (spec-6-4).
+
+    The store is owner-blind by design — workers claim jobs by id with no
+    account (AD-3) — so the route resolves the job first, then gates its
+    campaign. A job whose campaign the caller does not own is raised as
+    ``JobNotFoundError``: byte-identical to a genuinely unknown job's 404,
+    so the endpoint yields no oracle one level down (the same rule
+    exports.py applies to entities)."""
+    if get_campaign(current_id, job.campaign_id) is None:
+        raise JobNotFoundError(job.id)
+
+
 @router.post("/api/jobs", status_code=201)
-def create_job(payload: JobCreate) -> JobResponse:
-    """Enqueue a job at the FIFO tail; idempotent by job_id (AD-3, AR28)."""
+def create_job(
+    payload: JobCreate,
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> JobResponse:
+    """Enqueue a job at the FIFO tail; idempotent by job_id (AD-3, AR28).
+
+    Ownership (spec-6-4): the caller's session must own the campaign —
+    foreign and unknown campaigns are the same 404 raised BEFORE the
+    store ever runs (the characters ``_require_campaign`` precedent)."""
+    _require_campaign(current.id, payload.campaign_id)
     try:
         job = enqueue_job(
             payload.campaign_id,
@@ -111,10 +144,19 @@ def create_job(payload: JobCreate) -> JobResponse:
 
 
 @router.get("/api/jobs/{job_id}")
-def get_job(job_id: str) -> JobResponse:
-    """One job plus its current queue position (STATUS_POSITION)."""
+def get_job(
+    job_id: str,
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> JobResponse:
+    """One job plus its current queue position (STATUS_POSITION).
+
+    Ownership (spec-6-4): there is no campaign_id to gate on, so the
+    route resolves the job first (store is owner-blind, AD-3), then gates
+    its campaign — a foreign job's 404 is byte-identical to a genuinely
+    unknown job's (``_require_owned_job``, no-oracle rule)."""
     try:
         job, position = job_status(job_id)
+        _require_owned_job(current.id, job)
     except StoreError as exc:
         store_error_as_http(exc)
     return _to_response(job, position)
@@ -122,11 +164,16 @@ def get_job(job_id: str) -> JobResponse:
 
 @router.get("/api/jobs")
 def list_campaign_jobs(
+    current: Annotated[models.Account, Depends(get_current_account)],
     campaign_id: str = Query(...),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> JobListResponse:
-    """Campaign-scoped FIFO list, oldest first, cursor-paginated (AD-9)."""
+    """Campaign-scoped FIFO list, oldest first, cursor-paginated (AD-9).
+
+    Ownership (spec-6-4): the ownership 404 fires before cursor decoding
+    — a stranger learns nothing, not even via the cursor error surface."""
+    _require_campaign(current.id, campaign_id)
     after = None
     if cursor is not None:
         try:
@@ -144,9 +191,18 @@ def list_campaign_jobs(
 
 
 @router.post("/api/jobs/{job_id}/cancel")
-def cancel_job_route(job_id: str) -> JobResponse:
-    """Cancel a queued or running job; frees the queue slot (AR28)."""
+def cancel_job_route(
+    job_id: str,
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> JobResponse:
+    """Cancel a queued or running job; frees the queue slot (AR28).
+
+    Ownership (spec-6-4): the ownership check runs BEFORE any mutation —
+    a foreign cancel is a byte-identical 404 and the job's state and row
+    are untouched (resolve-then-gate, then cancel)."""
     try:
+        job, _position = job_status(job_id)
+        _require_owned_job(current.id, job)
         job = cancel_job(job_id)
         job, position = job_status(job.id)
     except StoreError as exc:

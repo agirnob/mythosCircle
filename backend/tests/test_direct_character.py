@@ -70,6 +70,21 @@ def world(tmp_path: Path) -> Iterator[str]:
         init_db(previous)
 
 
+@pytest.fixture(autouse=True)
+def _reset_limiters() -> None:
+    """Register-quota isolation (the edges/API convention): the register
+    limiter is module-global and keyed on the TestClient's fixed host —
+    _authed_campaign registers per test (incl. the second-account
+    ownership pin, spec-6-4)."""
+    from app.api.auth import _login_limiter, _register_limiter
+
+    _login_limiter.reset()
+    _register_limiter.reset()
+    yield
+    _login_limiter.reset()
+    _register_limiter.reset()
+
+
 @pytest.fixture()
 def client() -> Iterator[TestClient]:
     from app.main import create_app
@@ -405,13 +420,22 @@ def test_gate_target_key_must_name_sibling_sheet(client: TestClient) -> None:
 def test_gate_requires_ownership(client: TestClient) -> None:
     """Ownership first: another DM's (or a fabricated) campaign is a
     single indistinguishable 404 — never a payload verdict."""
-    _authed_campaign(client)
-    body = client.post(
+    first_campaign = _authed_campaign(client)
+    _authed_campaign(client)  # a REAL second account takes the session over
+
+    foreign = client.post(
+        "/api/characters",
+        json=_payload(first_campaign, [_sheet()]),
+    )
+    fabricated = client.post(
         "/api/characters",
         json=_payload("1" * 26, [_sheet()]),
     )
-    assert body.status_code == 404
-    assert body.json()["code"] == "not_found"
+    assert foreign.status_code == 404
+    assert foreign.json()["code"] == "not_found"
+    # CHARACTERS_FOREIGN (spec-6-4): byte-identical bodies — a stranger
+    # cannot tell the campaign exists (no oracle).
+    assert foreign.json() == fabricated.json()
 
 
 def _world(world_id: str) -> tuple[list, list]:

@@ -279,3 +279,54 @@ def test_login_plain_http_cookie_not_secure() -> None:
         assert "mythoscircle_session=" in set_cookie
         assert "Secure" not in set_cookie  # plain http must not mark Secure
         assert plain_client.get("/api/auth/me").status_code == 200
+
+
+def test_cookie_secure_override_true_over_plain_http(monkeypatch: Any) -> None:
+    """COOKIE_TRUE_HTTP (spec-6-4): with MYTHOSCIRCLE_COOKIE_SECURE=true
+    the cookie carries Secure even over the plain-http origin — the
+    deployed stack behind the TLS edge (Caddy's plain-http listener gives
+    uvicorn no public scheme to derive from), declared via the AD-22
+    env-only lever, never the client."""
+    from app.core.settings import COOKIE_SECURE_ENV
+
+    monkeypatch.setenv(COOKIE_SECURE_ENV, "true")
+    from app.main import app
+
+    with TestClient(app, base_url="http://testserver") as plain_client:
+        response = _register(plain_client, "secure-over-http@example.com")
+        assert response.status_code == 201
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "mythoscircle_session=" in set_cookie
+        assert "Secure" in set_cookie  # the env override beats the http scheme
+
+
+def test_cookie_secure_override_false_over_https(client: Any, monkeypatch: Any) -> None:
+    """COOKIE_FALSE_HTTPS (spec-6-4): MYTHOSCIRCLE_COOKIE_SECURE=false
+    suppresses the Secure flag even over TLS — the operator can pin the
+    flag off (e.g. an interim LAN origin) without touching code."""
+    from app.core.settings import COOKIE_SECURE_ENV
+
+    monkeypatch.setenv(COOKIE_SECURE_ENV, "false")
+    _register(client, "no-secure@example.com")
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "no-secure@example.com", "password": "correct-battery-horse"},
+    )
+    assert response.status_code == 200
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "mythoscircle_session=" in set_cookie
+    assert "Secure" not in set_cookie  # the env override beats the https scheme
+
+
+def test_cookie_secure_garbage_env_fails_boot(monkeypatch: Any) -> None:
+    """A typo'd MYTHOSCIRCLE_COOKIE_SECURE fails at app CONSTRUCTION —
+    the env_bool_optional ValueError — never as a per-request 500 from
+    _set_session_cookie on every login/register (spec-6-4 review round
+    1)."""
+    from app.core.settings import COOKIE_SECURE_ENV
+
+    monkeypatch.setenv(COOKIE_SECURE_ENV, "banana")
+    with pytest.raises(ValueError, match="must be a boolean"):
+        from app.main import create_app
+
+        create_app()
