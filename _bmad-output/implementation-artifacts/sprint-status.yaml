@@ -90,8 +90,8 @@ development_status:
 
   epic-6: in-progress
   6-1-nightly-snapshot-with-integrity: done
-  6-2-restore-proven-verify-then-apply: review
-  6-3-total-clean-campaign-deletion: review
+  6-2-restore-proven-verify-then-apply: done
+  6-3-total-clean-campaign-deletion: done
   6-4-privacy-and-per-campaign-ownership: backlog
   6-5-beta-launch-gate: backlog
   epic-6-retrospective: optional
