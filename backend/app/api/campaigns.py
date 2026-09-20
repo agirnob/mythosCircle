@@ -53,10 +53,6 @@ class CampaignCreate(BaseModel):
     custom_lore: str = Field(default="", max_length=20_000)
 
 
-class CampaignDelete(BaseModel):
-    confirm: bool = False
-
-
 class CampaignUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=300)
     description: str | None = Field(default=None, max_length=20_000)

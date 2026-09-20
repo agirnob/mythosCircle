@@ -259,6 +259,80 @@ def test_delete_campaign_reclaims_media_rows_and_files(
         assert len(keep_rows) == 1
 
 
+def test_delete_wire_leaves_zero_rows_in_all_ar20_tables(client: Any) -> None:
+    """DELETE_ZERO_COUNTS (spec-6.3): a confirmed wire DELETE 204 leaves
+    ZERO rows in every AR20 table scoped to the deleted id — revisions,
+    event log, entities/edges, queue entries (in more than one state),
+    media-manifest rows — while a keep campaign's world rows survive
+    (negative control; an over-broad cascade must not touch it).
+    ProposedCandidate is NOT re-pinned here: its cascade is pinned at
+    store level (test_generate_pipeline.py: test_delete_campaign_cascades_
+    staged_candidates + test_mid_run_campaign_delete_does_not_wedge_worker)
+    and the wire delete invokes the identical store function."""
+    from sqlalchemy import select
+
+    from app.core import ids
+    from app.store import (
+        add_media,
+        cancel_job,
+        commit_subgraph,
+        enqueue_job,
+        models,
+        session_scope,
+    )
+
+    _register_login(client)
+    mine = _create_campaign(client).json()
+    keep = _create_campaign(client, title="Keeper").json()
+
+    def seed(campaign_id: str) -> str:
+        entity_id, anchor_id = ids.new_id(), ids.new_id()
+        commit_subgraph(
+            campaign_id,
+            [
+                models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
+                models.EntityInput(kind="character", name="Mira Vane", id=entity_id),
+            ],
+            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        )
+        return entity_id
+
+    mira = seed(mine["id"])
+    # Queue entries in DIFFERENT states (a state-filtered cascade bug
+    # must not pass): one queued, one cancelled-terminal.
+    enqueue_job(mine["id"], "text", {"prompt": "first"})
+    terminal = enqueue_job(mine["id"], "text", {"prompt": "second"}).id
+    cancel_job(terminal)
+    add_media(mine["id"], mira, f"{ids.new_id()}.png", "image")
+    # Keep-side world rows for the negative control.
+    seed(keep["id"])
+    enqueue_job(keep["id"], "text", {"prompt": "keeper"})
+
+    response = client.request("DELETE", f"/api/campaigns/{mine['id']}", json={"confirm": True})
+    assert response.status_code == 204
+
+    with session_scope() as session:
+        ar20_tables: list[tuple[str, Any]] = [
+            ("revisions", models.Revision),
+            ("events", models.Event),
+            ("entities", models.Entity),
+            ("edges", models.Edge),
+            ("jobs", models.Job),
+            ("media", models.Media),
+        ]
+        for label, table in ar20_tables:
+            rows = session.scalars(select(table).where(table.campaign_id == mine["id"])).all()
+            assert rows == [], f"{label} rows survive the confirmed delete"
+        # Negative control: the keep campaign's world rows still exist —
+        # only the deleted id's rows went.
+        keep_world = {
+            label: len(session.scalars(select(table).where(table.campaign_id == keep["id"])).all())
+            for label, table in ar20_tables[:5]
+        }
+        assert keep_world["revisions"] >= 1 and keep_world["entities"] >= 1
+        assert keep_world["jobs"] == 1
+
+
 def test_delete_media_reclaim_failure_still_204(
     client: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

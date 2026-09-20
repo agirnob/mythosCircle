@@ -33,6 +33,7 @@ from app.store import (
     EntityInput,
     InvalidCandidateError,
     InvalidJobInputError,
+    JobNotFoundError,
     app_db_url,
     campaign_seed,
     cancel_job,
@@ -40,6 +41,7 @@ from app.store import (
     create_campaign,
     delete_campaign,
     enqueue_job,
+    get_campaign,
     init_db,
     job_status,
     list_candidates,
@@ -184,6 +186,20 @@ def _revision_count(campaign_id: str) -> int:
                 select(func.count())
                 .select_from(models.Revision)
                 .where(models.Revision.campaign_id == campaign_id)
+            )
+            or 0
+        )
+
+
+def _candidate_count(campaign_id: str) -> int:
+    """ProposedCandidate rows scoped to one campaign (the AR20 cascade
+    covers staging rows too — a deleted campaign must leave zero)."""
+    with session_scope() as session:
+        return int(
+            session.scalar(
+                select(func.count())
+                .select_from(models.ProposedCandidate)
+                .where(models.ProposedCandidate.campaign_id == campaign_id)
             )
             or 0
         )
@@ -1995,6 +2011,69 @@ def test_runner_guard_empty_world_at_claim(world: str) -> None:
     job, _position = job_status(emptied)
     assert job.state == "failed"
     assert "no committed entities" in (job.error or "")
+
+
+def test_mid_run_campaign_delete_does_not_wedge_worker(world: str) -> None:
+    """MID_RUN_DELETE (spec-6.3): a campaign deleted while its generate
+    job is claimed and running must not crash the worker or wedge the
+    queue. The deleting provider models the wire race (DELETE
+    /api/campaigns/{id} landing mid-run) deterministically: it removes
+    the campaign through the real store seam (``delete_campaign``), then
+    returns normal wave output. When the runner stages after the call,
+    the campaign (and the claimed job row) is gone: ``stage_candidates``
+    campaign pre-check raises ``UnknownCampaignError`` (candidates.py),
+    which the worker's generic guard swallows; its ``fail_job`` then
+    raises ``JobNotFoundError`` (also swallowed + logged) — and
+    ``run_next_job`` STILL returns the claimed job id. The asserted
+    observables: the job id comes back, the campaign row is gone,
+    ``job_status`` raises ``JobNotFoundError`` (row removed), and the
+    pre-seeded staged rows die with the campaign (``proposed_candidate``
+    cascade leg) — then a fresh job on a survivor world drains normally
+    (queue keeps flowing)."""
+    _commit_world(world)
+    doomed_owner = _owner_id()
+    doomed = create_campaign(
+        doomed_owner, title="Doomed", description="", theme="High Fantasy", custom_lore=""
+    ).id
+    _commit_world(doomed)
+    # A prior generate run leaves staged rows on the doomed campaign —
+    # the delete must cascade them away, not leave ghost rows.
+    _run(doomed, lambda prompt, settings: json.dumps(_generate_output()))
+    assert _candidate_count(doomed) == 3
+    job_id = enqueue_job(doomed, "generate", {"ask": "a rival for Mira"}).id
+
+    def deleting_provider(prompt: str, settings: LLMSettings) -> str:
+        # The race: the campaign — and with it the claimed job row — is
+        # gone before the wave output is processed. The store seam (not
+        # SQL) so the real cascade runs.
+        delete_campaign(doomed_owner, doomed)
+        return json.dumps(_generate_output())
+
+    # The worker completes without crashing and returns the claimed id —
+    # the post-delete store errors (UnknownCampaignError at staging, then
+    # JobNotFoundError from the failed terminal write) are by-design
+    # tolerance inside the generic guard, not failures the loop must dodge.
+    assert run_next_job(provider=deleting_provider, settings=SETTINGS) == job_id
+    # The cascade removed the job row with the campaign: the terminal
+    # write could not record anything for it.
+    assert get_campaign(doomed_owner, doomed) is None
+    with pytest.raises(JobNotFoundError):
+        job_status(job_id)
+    # Nothing staged survives — the delete cascade covers proposed rows.
+    assert _candidate_count(doomed) == 0
+
+    # The queue keeps flowing: a fresh generate on the surviving world
+    # claims, stages and completes normally — no wedge, no ghost rows.
+    survivor = enqueue_job(world, "generate", {"ask": "another rival"}).id
+    assert (
+        run_next_job(
+            provider=lambda prompt, settings: json.dumps(_generate_output()), settings=SETTINGS
+        )
+        == survivor
+    )
+    job, _position = job_status(survivor)
+    assert job.state == "succeeded"
+    assert _candidate_count(world) == 3
 
 
 def test_status_read_error_does_not_wedge_job(world: str, monkeypatch: pytest.MonkeyPatch) -> None:
