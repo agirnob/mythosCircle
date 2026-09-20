@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-25-2026 08:25
-last_updated: 09-20-2026
+last_updated: 09-21-2026
 project: mythosCircle
 project_key: NOKEY
 tracking_system: file-system
@@ -88,12 +88,12 @@ development_status:
   5-5-world-vtt-kill-criterion-demo: done
   epic-5-retrospective: done
 
-  epic-6: in-progress
+  epic-6: done
   6-1-nightly-snapshot-with-integrity: done
   6-2-restore-proven-verify-then-apply: done
   6-3-total-clean-campaign-deletion: done
-  6-4-privacy-and-per-campaign-ownership: review
-  6-5-beta-launch-gate: review
+  6-4-privacy-and-per-campaign-ownership: done
+  6-5-beta-launch-gate: done
   epic-6-retrospective: optional
 
   epic-7: done
