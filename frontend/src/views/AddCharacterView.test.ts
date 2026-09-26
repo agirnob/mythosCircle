@@ -110,9 +110,7 @@ async function fillCompleteSheet(wrapper: VueWrapper) {
 }
 
 function submitButton(wrapper: VueWrapper) {
-  return wrapper
-    .findAll('button')
-    .filter((button) => button.attributes('type') === 'submit')[0]!
+  return wrapper.findAll('button').filter((button) => button.attributes('type') === 'submit')[0]!
 }
 
 describe('AddCharacterView — the F3 frontend gate + POST /api/characters', () => {
@@ -122,14 +120,22 @@ describe('AddCharacterView — the F3 frontend gate + POST /api/characters', () 
     socketCalls.length = 0
   })
 
-  it('mounts one empty sheet with submit disabled and inline completeness violations', async () => {
+  it('mounts one empty sheet with submit disabled and NO violation wall until touched', async () => {
     stubApi()
     const wrapper = await mountView()
     expect(wrapper.text()).toContain('Greymarch')
     expect(submitButton(wrapper).attributes('disabled')).toBeDefined()
-    // The mirror's per-sheet list renders bare schema paths inline.
-    expect(wrapper.text()).toContain('record.personality must be a non-blank string')
-    expect(wrapper.text()).toContain('record.stat_block.attributes section missing or not an object')
+    // The violation wall is touch-gated (2026-09-27): a freshly mounted
+    // empty form shows the hint line, not 24 red schema paths.
+    expect(wrapper.text()).not.toContain('record.personality must be a non-blank string')
+    expect(wrapper.text()).toContain('Fill the required fields')
+    // The first edit surfaces the mirror's per-sheet list inline.
+    await wrapper.find('textarea[aria-label="Personality"]').setValue('steely')
+    await flushPromises()
+    expect(wrapper.text()).toContain('record.secret must be a non-blank string')
+    expect(wrapper.text()).toContain(
+      'record.stat_block.attributes section missing or not an object',
+    )
     wrapper.unmount()
   })
 
@@ -148,7 +154,10 @@ describe('AddCharacterView — the F3 frontend gate + POST /api/characters', () 
     await flushPromises()
 
     expect(posted).toHaveLength(1)
-    const body = posted[0]!.body as { campaign_id: string; characters: Array<Record<string, unknown>> }
+    const body = posted[0]!.body as {
+      campaign_id: string
+      characters: Array<Record<string, unknown>>
+    }
     expect(body.campaign_id).toBe('C1')
     expect(body.characters).toHaveLength(1)
     const sheet = body.characters[0]!

@@ -159,21 +159,6 @@ const dial = computed<string | null>(() => {
 /** The registry's closed dial set (AD-34 payload) — the picker's options. */
 const dialLevels = computed<string[]>(() => tonight.kindsFor(campaignId)?.dial_levels ?? [])
 
-/** The newest session event's revision for THIS entity — the take-back
- * target (AD-27 surgical, per-transaction inverse; the feed never
- * distinguishes undo from edit, so the revision id is the handle). */
-const latestSessionRevision = computed<string | null>(() => {
-  const name = entity.value?.name
-  if (!name) return null
-  for (const revision of tonightEntry.value.revisions ?? []) {
-    const hit = revision.events.find(
-      (event) => event.kind === 'session' && event.target_names.includes(name),
-    )
-    if (hit) return revision.revision_id
-  }
-  return null
-})
-
 /** Non-boolean session markers render as small facts (the AD-27 scar
  * `hp: -12`, allegiance strings, …). */
 const sessionFacts = computed<[string, unknown][]>(() =>
@@ -201,15 +186,6 @@ async function fireVerb(update: Record<string, unknown>) {
     await tonight.fireVerb(campaignId, entityId, update)
   } catch (err) {
     actionError.value = messageFrom(err, 'Could not apply that consequence.')
-  }
-}
-
-async function takeBack() {
-  actionError.value = null
-  try {
-    await tonight.takeBack(campaignId, latestSessionRevision.value)
-  } catch (err) {
-    actionError.value = messageFrom(err, 'Could not rewind that consequence.')
   }
 }
 
@@ -437,12 +413,7 @@ async function createEdge(edge: {
       <section v-if="tonightEntry.runState || actionError">
         <SectionHeader title="Tonight" meta="session state" />
         <p v-if="actionError" class="mc-action-error" role="alert">{{ actionError }}</p>
-        <VerbRow
-          :session="sessionImage"
-          :can-take-back="latestSessionRevision !== null"
-          @fire="fireVerb"
-          @take-back="takeBack"
-        />
+        <VerbRow :session="sessionImage" @fire="fireVerb" />
         <ul v-if="sessionFacts.length > 0" class="mc-session-facts">
           <li v-for="[key, value] in sessionFacts" :key="key" class="mc-session-fact">
             <span class="mc-session-key">{{ key }}</span>

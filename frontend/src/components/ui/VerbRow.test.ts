@@ -7,18 +7,18 @@ import VerbRow from './VerbRow.vue'
 describe('VerbRow', () => {
   it('renders the four consequence verbs from the session image', () => {
     const wrapper = mount(VerbRow, {
-      props: { session: { defeated: true, hp: -12 }, canTakeBack: true },
+      props: { session: { defeated: true, hp: -12 } },
     })
     const text = wrapper.text()
-    expect(text).toContain('Defeated') // active affordance reads the state
+    expect(text).toContain('Defeated — take back') // active affordance reads the state
     expect(text).toContain('Flip allegiance')
     expect(text).toContain('Resolve thread')
     expect(text).toContain('Spend item')
-    expect(text).toContain('Take it back')
+    expect(text).not.toContain('Take it back') // take-back is the reverse verb now
   })
 
   it('fires the defeated delta once and the toggle verbs flip', async () => {
-    const wrapper = mount(VerbRow, { props: { session: {}, canTakeBack: false } })
+    const wrapper = mount(VerbRow, { props: { session: {} } })
     const buttons = wrapper.findAll('button')
     await buttons[0]!.trigger('click')
     expect(wrapper.emitted('fire')![0]![0]).toEqual({ defeated: true })
@@ -30,20 +30,12 @@ describe('VerbRow', () => {
     expect(wrapper.emitted('fire')![3]![0]).toEqual({ item: true })
   })
 
-  it('an active allegiance affordance fires its inverse on the next click', async () => {
-    const wrapper = mount(VerbRow, { props: { session: { allegiance: true }, canTakeBack: false } })
-    await wrapper.findAll('button')[1]!.trigger('click')
-    expect(wrapper.emitted('fire')![0]![0]).toEqual({ allegiance: false })
-  })
-
-  it('emits take-back only when a take-back is possible', async () => {
-    const possible = mount(VerbRow, { props: { session: { defeated: true }, canTakeBack: true } })
-    const takeBack = possible.findAll('button').find((b) => b.text() === 'Take it back')
-    expect(takeBack).toBeDefined()
-    await takeBack!.trigger('click')
-    expect(possible.emitted('take-back')).toHaveLength(1)
-
-    const none = mount(VerbRow, { props: { session: {}, canTakeBack: false } })
-    expect(none.text()).not.toContain('Take it back')
+  it('an active affordance fires its INVERSE on the next click — take-back is the reverse verb', async () => {
+    const wrapper = mount(VerbRow, { props: { session: { defeated: true, allegiance: true } } })
+    const buttons = wrapper.findAll('button')
+    await buttons[0]!.trigger('click')
+    expect(wrapper.emitted('fire')![0]![0]).toEqual({ defeated: false })
+    await buttons[1]!.trigger('click')
+    expect(wrapper.emitted('fire')![1]![0]).toEqual({ allegiance: false })
   })
 })

@@ -181,8 +181,17 @@ function preview(list: EntityExport[]): EntityExport[] {
       </p>
 
       <section v-if="tonightEntry.revisions && tonightEntry.revisions.length > 0">
-        <SectionHeader title="Tonight" meta="recent changes" />
-        <TonightFeed :revisions="tonightEntry.revisions" />
+        <SectionHeader title="Tonight" meta="recent changes">
+          <template #actions>
+            <RouterLink
+              :to="{ name: 'tonight', params: { id: campaignId } }"
+              class="mc-link mc-muted"
+            >
+              See all →
+            </RouterLink>
+          </template>
+        </SectionHeader>
+        <TonightFeed :revisions="tonightEntry.revisions.slice(0, 5)" />
       </section>
 
       <EmptyState

@@ -52,6 +52,27 @@ let disconnectSocket: (() => void) | null = null
 const violationsBySheet = ref<string[][]>([])
 const payloadViolations = ref<string[]>([])
 
+/** The violation wall only appears once a sheet has been TOUCHED or a
+ * submit was attempted — a freshly mounted empty form never screams
+ * (2026-09-27 owner feedback: the on-paint 24-error list read as
+ * broken). */
+const dirtySheets = ref<Set<number>>(new Set())
+const submitAttempted = ref(false)
+
+function onSheetChange(index: number) {
+  dirtySheets.value = new Set(dirtySheets.value).add(index)
+  recomputeViolations()
+}
+
+/** Whether the inline violation lists for a sheet may render. */
+function showSheetViolations(index: number): boolean {
+  return dirtySheets.value.has(index) || submitAttempted.value
+}
+
+const showPayloadViolations = computed(
+  () => dirtySheets.value.size > 0 || submitAttempted.value,
+)
+
 /** characters[i] prefixes stripped for the inline per-sheet lists. */
 function groupViolations(violations: string[]): { perSheet: string[][]; payload: string[] } {
   const perSheet: string[][] = []
@@ -136,6 +157,7 @@ function removeSheet(index: number) {
 
 async function submit() {
   if (submitting.value || anyViolations.value) return
+  submitAttempted.value = true
   submitError.value = null
   serverViolations.value = []
   startedJobId.value = null
@@ -251,11 +273,18 @@ const recentJobs = computed(() => jobs
           :index="index"
           :entities="entities"
           :staged="stagedFor(index)"
-          @change="recomputeViolations"
+          @change="onSheetChange(index)"
         />
-        <ul v-if="violationsBySheet[index] && violationsBySheet[index].length" class="violations">
+        <ul
+          v-if="showSheetViolations(index) && violationsBySheet[index] && violationsBySheet[index].length"
+          class="violations"
+        >
           <li v-for="violation in violationsBySheet[index]" :key="violation">{{ violation }}</li>
         </ul>
+        <p v-if="!showSheetViolations(index)" class="muted small">
+          Fill the required fields to enable submission — every sheet field is required
+          (the same checks run server-side at POST /api/characters).
+        </p>
         <button
           v-if="sheetCount > 1"
           type="button"
@@ -274,7 +303,7 @@ const recentJobs = computed(() => jobs
       </p>
 
       <form class="card" @submit.prevent="submit">
-        <ul v-if="payloadViolations.length" class="violations">
+        <ul v-if="showPayloadViolations && payloadViolations.length" class="violations">
           <li v-for="violation in payloadViolations" :key="violation">{{ violation }}</li>
         </ul>
         <p v-if="submitError" class="error">{{ submitError }}</p>
@@ -299,7 +328,7 @@ const recentJobs = computed(() => jobs
           }}
         </button>
         <p class="muted small">
-          <template v-if="anyViolations">
+          <template v-if="anyViolations && (dirtySheets.size > 0 || submitAttempted)">
             Fix the {{ payloadViolations.length + violationsBySheet.flat().length }} issue(s)
             above to enable submission — the same checks run server-side at POST /api/characters.
           </template>

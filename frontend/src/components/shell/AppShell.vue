@@ -34,6 +34,9 @@ async function logout() {
           <RouterLink :to="{ name: 'overview', params: { id: campaignId } }" class="mc-nav-link">
             Overview
           </RouterLink>
+          <RouterLink :to="{ name: 'tonight', params: { id: campaignId } }" class="mc-nav-link">
+            Tonight
+          </RouterLink>
           <RouterLink :to="{ name: 'world', params: { id: campaignId } }" class="mc-nav-link">
             World
           </RouterLink>
@@ -43,8 +46,11 @@ async function logout() {
           <RouterLink :to="{ name: 'ask', params: { id: campaignId } }" class="mc-nav-link">
             Ask the World
           </RouterLink>
-          <RouterLink :to="{ name: 'add-character', params: { id: campaignId } }" class="mc-nav-link">
-            Character
+          <RouterLink
+            :to="{ name: 'add-character', params: { id: campaignId } }"
+            class="mc-nav-link"
+          >
+            Add character
           </RouterLink>
           <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }" class="mc-nav-link">
             Guided Build

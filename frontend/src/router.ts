@@ -40,6 +40,15 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      // v3 Tonight: the run-state summary + recent-changes feed on its
+      // own page (owner feed clash 2026-09-27: the overview caps its
+      // preview; this page carries the full feed).
+      path: '/campaigns/:id/tonight',
+      name: 'tonight',
+      component: () => import('./views/TonightView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       // Rebuild Stage 3: DM-readable entity detail (NewEntityView).
       path: '/campaigns/:id/entities/:entityId',
       name: 'entity',

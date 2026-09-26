@@ -20,7 +20,6 @@ import { defineStore } from 'pinia'
 
 import type { components } from '../api/schema'
 import { ApiError, apiFetch } from '../api/client'
-import { useWorldStore } from './world'
 
 type RevisionsResponse = components['schemas']['RevisionsResponse']
 type RunStateResponse = components['schemas']['RunStateResponse']
@@ -106,15 +105,6 @@ export const useTonightStore = defineStore('tonight', {
         `/api/campaigns/${encodeURIComponent(campaignId)}/entities/${encodeURIComponent(entityId)}/knowledge-toggle`,
         { method: 'POST', body: JSON.stringify({ field, known }) },
       )
-      await this.fetchTonight(campaignId)
-    },
-    /** Undo ONE revision (AD-2/AD-27): the Tier-2 take-back — surgical,
-     * per-transaction inverse; verb commits and take-backs both render
-     * `edited` in the feed (the feed never distinguishes undo from edit).
-     * Delegates to the world store's route so one undo call refetches
-     * both projections. */
-    async takeBack(campaignId: string, revisionId: string | null) {
-      await useWorldStore().undoLastCommit(campaignId, revisionId)
       await this.fetchTonight(campaignId)
     },
     /** The single coalesced fetch for the two Tonight projections. */

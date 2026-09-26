@@ -4,34 +4,37 @@
  * consequence-verb affordances rendered from the entity's CURRENT session
  * image. The image is open (the AD-27 scar `{"hp": -12}` is a verb), so
  * this component is presentational: each affordance emits its delta and
- * the parent fires the session-verb route; double-fire safety is the
- * backend's no-op (a repeated gesture commits nothing).
+ * the parent fires the session-verb route.
  *
- * Take-it-back (AD-27) is the per-transaction rewind: the parent resolves
- * the verb's own revision from the feed and calls undo — this component
- * only announces that a take-back is possible.
+ * Take-back IS the reverse verb (the DM's gesture is the target state):
+ * an active affordance's next click fires the inverse delta —
+ * `{defeated: false}` for the active Defeated chip — one revision, fully
+ * deterministic from the session image, never a revision-hunting undo
+ * (the feed cannot identify which revision set a state, and a
+ * take-back-of-a-take-back would re-apply it). Double-fire safety stays
+ * the backend's no-op.
  */
-defineProps<{
+const props = defineProps<{
   /** The entity's current session image (absent keys = not applied). */
   session: Record<string, unknown>
-  /** Whether the newest session revision for this entity can be undone
-   * (its revision id resolves from the feed in the parent). */
-  canTakeBack: boolean
   disabled?: boolean
 }>()
 
 defineEmits<{
   /** One verb delta; parent POSTs session-verb. */
   fire: [update: Record<string, unknown>]
-  /** Take-it-back: parent undoes the verb's own revision (AD-27). */
-  'take-back': []
 }>()
 
 /** A session-state flag reads as active when truthy — absent/false is
- * "not applied". Boolean affordances only; scalar deltas (hp, strings)
- * stay the parent's concern. */
+ * "not applied". */
 function isActive(value: unknown): boolean {
   return value === true
+}
+
+/** The toggle-style verbs: click emits the INVERSE of the displayed
+ * state, so the second click of an active affordance takes it back. */
+function toggle(key: string) {
+  return { [key]: !isActive(props.session[key]) }
 }
 </script>
 
@@ -42,9 +45,9 @@ function isActive(value: unknown): boolean {
       class="mc-verb"
       :class="{ 'mc-verb-active': isActive(session.defeated) }"
       :disabled="disabled"
-      @click="$emit('fire', { defeated: true })"
+      @click="$emit('fire', toggle('defeated'))"
     >
-      {{ isActive(session.defeated) ? 'Defeated' : 'Mark defeated' }}
+      {{ isActive(session.defeated) ? 'Defeated — take back' : 'Mark defeated' }}
     </button>
     <button
       type="button"
@@ -73,15 +76,6 @@ function isActive(value: unknown): boolean {
     >
       {{ isActive(session.item) ? 'Item spent' : 'Spend item' }}
     </button>
-    <button
-      v-if="canTakeBack"
-      type="button"
-      class="mc-verb mc-verb-take-back"
-      :disabled="disabled"
-      @click="$emit('take-back')"
-    >
-      Take it back
-    </button>
   </div>
 </template>
 
@@ -104,10 +98,6 @@ function isActive(value: unknown): boolean {
 .mc-verb-active {
   border-color: var(--mc-canonical);
   color: var(--mc-canonical);
-}
-.mc-verb-take-back {
-  border-color: var(--mc-warning);
-  color: var(--mc-warning);
 }
 .mc-verb[disabled] {
   cursor: default;
