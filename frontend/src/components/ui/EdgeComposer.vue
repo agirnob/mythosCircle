@@ -48,12 +48,14 @@ const counterInput = ref('')
 const reason = ref('')
 
 /** The available outgoing types for the source kind (AD-31 single source:
- * the registry renders the same matrix the commit path validates). */
+ * the registry renders the same matrix the commit path validates; a
+ * ``src: null`` cell means ANY kind — the legacy catch-all types). */
 const types = computed<string[]>(() => {
   const edgeTypes = props.kinds?.edge_types ?? []
-  return edgeTypes.filter(
-    (edgeType) => kindRule(edgeType)?.src?.includes(props.srcEntity.kind) ?? false,
-  )
+  return edgeTypes.filter((edgeType) => {
+    const src = kindRule(edgeType)?.src
+    return src === undefined || src === null || src.includes(props.srcEntity.kind)
+  })
 })
 
 const rule = computed<EdgeTypeRule | undefined>(() => kindRule(type.value))

@@ -6,7 +6,7 @@ import EdgeComposer from './EdgeComposer.vue'
 
 const kinds = {
   version: 'abc',
-  edge_types: ['debt', 'located_in', 'part_of'],
+  edge_types: ['debt', 'located_in', 'part_of', 'relationship'],
   kind_rules: {
     debt: {
       src: ['character', 'faction'],
@@ -25,6 +25,14 @@ const kinds = {
       dst: ['place', 'faction'],
       counter_semantic: 'neutral',
       counter_bounds: [1],
+    },
+    // The legacy catch-all: null src/dst means ANY kind — it must be
+    // offered to every source, never filtered out (live-matrix lesson).
+    relationship: {
+      src: null,
+      dst: null,
+      counter_semantic: 'neutral',
+      counter_bounds: null,
     },
   },
   dial_levels: ['draft', 'simple'],
@@ -46,11 +54,12 @@ describe('EdgeComposer', () => {
       .findAll('select')[0]!
       .findAll('option')
       .map((option) => option.text())
-    // character src: debt (character/faction) and located_in (place) —
-    // NOT part_of (no character cell). Option labels carry the cell's
-    // counter semantic ('debt · count').
+    // character src: debt (character/faction), located_in (place) AND the
+    // null-src catch-all relationship (any kind) — NOT part_of (no
+    // character cell). Option labels carry the cell's counter semantic.
     expect(typeOptions.some((text) => text.includes('debt'))).toBe(true)
     expect(typeOptions.some((text) => text.includes('located_in'))).toBe(true)
+    expect(typeOptions.some((text) => text.includes('relationship'))).toBe(true)
     expect(typeOptions.some((text) => text.includes('part_of'))).toBe(false)
 
     await wrapper.findAll('select')[0]!.setValue('located_in')
@@ -88,9 +97,24 @@ describe('EdgeComposer', () => {
   })
 
   it('a kind without outgoing relations renders an honest empty state', () => {
+    // A fixture WITHOUT a null-src catch-all: nothing names 'deity'.
+    const strictKinds = {
+      version: 'abc',
+      edge_types: ['part_of'],
+      kind_rules: {
+        part_of: {
+          src: ['place', 'faction'],
+          dst: ['place', 'faction'],
+          counter_semantic: 'neutral',
+          counter_bounds: [1],
+        },
+      },
+      dial_levels: ['draft', 'simple'],
+      archetypes: [],
+    }
     const wrapper = mount(EdgeComposer, {
       props: {
-        kinds,
+        kinds: strictKinds,
         srcEntity: { id: 'P1', name: 'Greymarch', kind: 'deity' }, // no cells
         candidates,
         busy: false,
