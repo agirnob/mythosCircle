@@ -148,17 +148,41 @@ def _migrate_login_session(engine: Engine) -> None:
     ``session`` henceforth means tonight's table. ``create_all`` makes
     the new name on fresh databases; a database created before v3 still
     has the old name, so the model's SELECTs would fail with
-    ``no such table: login_session``. One idempotent ALTER RENAME (the
-    owner runs tests against disposable databases — 2026-09-25 verdict —
-    so no downtime choreography is needed: the rename is a metadata
-    write inside one transaction on startup). Runs after
-    ``create_all`` in ``init_db``.
+    ``no such table: login_session``.
+
+    Two live shapes (both observed): a pre-v3 DB has ONLY ``session``
+    (-> rename); a v3 ``init_db`` run against that same DB has BOTH
+    (``create_all`` already made the empty new table, so a pure rename
+    would orphan the old rows and log everyone out — the copy branch
+    moves the rows and drops the old table). Idempotent: a DB with only
+    ``login_session`` is untouched (the owner runs tests against
+    disposable databases — 2026-09-25 verdict — so no downtime
+    choreography is needed: both branches are metadata/row writes
+    inside single transactions on startup).
     """
     from sqlalchemy import inspect, text
 
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
-    if "login_session" in tables or "session" not in tables:
+    if "login_session" in tables and "session" not in tables:
+        return
+    if "session" not in tables:
+        return
+    # Both tables exist: the old ``session`` still holds the live rows
+    # (a v3 create_all ran before this migration). Move AND drop in one
+    # transaction — the columns are the same model's, so the identity
+    # copy is exact.
+    if "login_session" in tables:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO login_session "
+                    "(id, account_id, token_hash, expires_at, revoked_at, created_at) "
+                    "SELECT id, account_id, token_hash, expires_at, revoked_at, created_at "
+                    "FROM session"
+                )
+            )
+            connection.execute(text("DROP TABLE session"))
         return
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE session RENAME TO login_session"))

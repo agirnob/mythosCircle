@@ -2299,3 +2299,190 @@ def test_run_state_commit_empty_is_rejected(world: str) -> None:
     _bar_id, _mira_id = _seed_world(world)
     with pytest.raises(EmptySubgraphError):
         commit_run_state(world)
+
+
+# ---------------------------------------------------------------------------
+# AD-28/AD-32 migrations (the pre-v3 live shape)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_login_session_renames_pre_v3_table(tmp_path: Path) -> None:
+    """A pre-v3 database has the login table under ``session`` (AD-28):
+    init_db renames it in place, rows and all — the model's
+    ``login_session`` SELECTs work and no login is lost."""
+    import sqlite3
+
+    db_path = tmp_path / "pre-v3-session.db"
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        CREATE TABLE account (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            email VARCHAR(320) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        CREATE TABLE session (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            account_id VARCHAR(26) NOT NULL REFERENCES account(id),
+            token_hash VARCHAR(64) NOT NULL,
+            expires_at VARCHAR(40) NOT NULL,
+            revoked_at VARCHAR(40),
+            created_at VARCHAR(40) NOT NULL
+        );
+        """
+    )
+    raw.execute(
+        "INSERT INTO account VALUES "
+        "('22222222222222222222222222', 'pre-v3@example.com', 'hash', '2026-01-01')"
+    )
+    raw.execute(
+
+            "INSERT INTO session VALUES ('11111111111111111111111111', "
+            "'22222222222222222222222222', 'deadbeef', "
+            "'2099-01-01', NULL, '2026-01-01')"
+
+    )
+    raw.commit()
+    raw.close()
+
+    previous = app_db_url()
+    try:
+        init_db(f"sqlite:///{db_path}")
+        with session_scope() as session:
+            rows = session.execute(select(models.LoginSession)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].token_hash == "deadbeef"
+        tables = (
+            sqlite3.connect(db_path)
+            .execute("SELECT name FROM sqlite_master WHERE type='table'")
+            .fetchall()
+        )
+        assert ("session",) not in tables
+    finally:
+        init_db(previous)
+
+
+def test_migrate_login_session_merges_when_both_tables_exist(tmp_path: Path) -> None:
+    """The damaged live shape (v3 ``create_all`` ran before the rename):
+    both tables exist and ``session`` still holds the rows — init_db
+    COPIES them into the empty ``login_session`` and drops the old table
+    (a pure rename would log everyone out)."""
+    import sqlite3
+
+    db_path = tmp_path / "both-session.db"
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        CREATE TABLE account (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            email VARCHAR(320) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        CREATE TABLE session (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            account_id VARCHAR(26) NOT NULL REFERENCES account(id),
+            token_hash VARCHAR(64) NOT NULL,
+            expires_at VARCHAR(40) NOT NULL,
+            revoked_at VARCHAR(40),
+            created_at VARCHAR(40) NOT NULL
+        );
+        """
+    )
+    raw.execute(
+        "INSERT INTO account VALUES "
+        "('22222222222222222222222222', 'pre-v3@example.com', 'hash', '2026-01-01')"
+    )
+    raw.execute(
+
+            "INSERT INTO session VALUES ('11111111111111111111111111', "
+            "'22222222222222222222222222', 'feedface', "
+            "'2099-01-01', NULL, '2026-01-01')"
+
+    )
+    raw.commit()
+    raw.close()
+
+    previous = app_db_url()
+    try:
+        init_db(f"sqlite:///{db_path}")  # create_all makes empty login_session
+        init_db(f"sqlite:///{db_path}")  # second startup runs the merge branch
+        with session_scope() as session:
+            rows = session.execute(select(models.LoginSession)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].token_hash == "feedface"
+        tables = (
+            sqlite3.connect(db_path)
+            .execute("SELECT name FROM sqlite_master WHERE type='table'")
+            .fetchall()
+        )
+        assert ("session",) not in tables
+    finally:
+        init_db(previous)
+
+
+def test_migrate_edge_reason_adds_null_column(tmp_path: Path) -> None:
+    """A pre-reason database gains the nullable column; existing rows
+    stay NULL (grandfathered, AD-32)."""
+    import sqlite3
+
+    db_path = tmp_path / "pre-reason.db"
+    raw = sqlite3.connect(db_path)
+    raw.executescript(
+        """
+        CREATE TABLE account (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            email VARCHAR(320) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        CREATE TABLE campaign (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            owner_id VARCHAR(26) NOT NULL,
+            title VARCHAR(300) NOT NULL,
+            description TEXT NOT NULL,
+            theme VARCHAR(100) NOT NULL,
+            custom_lore TEXT NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        CREATE TABLE edge (
+            id VARCHAR(26) NOT NULL PRIMARY KEY,
+            campaign_id VARCHAR(26) NOT NULL REFERENCES campaign(id),
+            src VARCHAR(26) NOT NULL,
+            dst VARCHAR(26) NOT NULL,
+            type VARCHAR(64) NOT NULL,
+            counter INTEGER NOT NULL,
+            created_at VARCHAR(40) NOT NULL
+        );
+        """
+    )
+    raw.execute(
+
+            "INSERT INTO campaign VALUES ('00000000000000000000000000', "
+            "'22222222222222222222222222', 'T', '', "
+            "'High Fantasy', '', '2026-01-01')"
+
+    )
+    raw.execute(
+
+            "INSERT INTO edge VALUES ('11111111111111111111111111', "
+            "'00000000000000000000000000', '22222222222222222222222222', "
+            "'33333333333333333333333333', 'ally_of', 1, '2026-01-01')"
+
+    )
+    raw.commit()
+    raw.close()
+
+    previous = app_db_url()
+    try:
+        init_db(f"sqlite:///{db_path}")
+        columns = {
+            row[1] for row in sqlite3.connect(db_path).execute("PRAGMA table_info(edge)").fetchall()
+        }
+        assert "reason" in columns
+        with session_scope() as session:
+            edge = session.get(models.Edge, "1" * 26)
+        assert edge is not None and edge.reason is None
+    finally:
+        init_db(previous)
