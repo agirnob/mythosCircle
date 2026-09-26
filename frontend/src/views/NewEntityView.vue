@@ -24,6 +24,7 @@ import { ApiError } from '../api/client'
 import DialPicker from '../components/ui/DialPicker.vue'
 import EdgeComposer from '../components/ui/EdgeComposer.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
+import EntityEditor from '../components/ui/EntityEditor.vue'
 import ErrorState from '../components/ui/ErrorState.vue'
 import KnowledgeChip from '../components/ui/KnowledgeChip.vue'
 import SectionHeader from '../components/ui/SectionHeader.vue'
@@ -175,6 +176,75 @@ const edgeCandidates = computed<{ id: string; name: string; kind: string }[]>(()
 const edgeBusy = ref(false)
 const actionError = ref<string | null>(null)
 const edgeError = ref<string | null>(null)
+const editMode = ref(false)
+const editBusy = ref(false)
+const editError = ref<string | null>(null)
+
+function startEdit() {
+  editError.value = null
+  editMode.value = true
+}
+
+function cancelEdit() {
+  editError.value = null
+  editMode.value = false
+}
+
+async function saveEdit(patch: Record<string, unknown>) {
+  editError.value = null
+  editBusy.value = true
+  try {
+    // AD-36/FR10: one atomic revision — the base pins the snapshot the
+    // editor opened against (409 = the world moved under it).
+    await world.updateEntity(campaignId, entityId, patch, entry.value.world?.revision?.id ?? null)
+    editMode.value = false
+  } catch (err) {
+    editError.value = messageFrom(err, 'Could not save the edit.')
+    if (err instanceof ApiError && err.status === 409) {
+      void world.requestRefetch(campaignId)
+    }
+  } finally {
+    editBusy.value = false
+  }
+}
+
+const relationCounterEdge = ref<string | null>(null)
+const relationCounterInput = ref<number>(1)
+
+function startRelationCounter(edge: { id: string; counter: number }) {
+  relationCounterEdge.value = edge.id
+  relationCounterInput.value = edge.counter
+}
+
+async function saveRelationCounter(edgeId: string) {
+  if (edgeBusy.value) return
+  await setRelationCounter(edgeId, relationCounterInput.value)
+  relationCounterEdge.value = null
+}
+
+async function deleteRelation(edgeId: string) {
+  edgeError.value = null
+  edgeBusy.value = true
+  try {
+    await world.deleteEdge(campaignId, edgeId)
+  } catch (err) {
+    edgeError.value = messageFrom(err, 'Could not delete that relation.')
+  } finally {
+    edgeBusy.value = false
+  }
+}
+
+async function setRelationCounter(edgeId: string, counter: number) {
+  edgeError.value = null
+  edgeBusy.value = true
+  try {
+    await world.updateEdgeCounter(campaignId, edgeId, counter)
+  } catch (err) {
+    edgeError.value = messageFrom(err, 'Could not update that relation.')
+  } finally {
+    edgeBusy.value = false
+  }
+}
 
 function messageFrom(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback
@@ -272,9 +342,7 @@ async function createEdge(edge: {
           <p v-if="worldBlock.alignment" class="mc-muted">{{ worldBlock.alignment }}</p>
           <p v-if="worldBlock.location" class="mc-muted">{{ worldBlock.location }}</p>
           <p class="mc-entity-hero-actions">
-            <RouterLink :to="{ name: 'world', params: { id: campaignId } }" class="mc-btn">
-              Edit
-            </RouterLink>
+            <button v-if="!editMode" type="button" class="mc-btn" @click="startEdit">Edit</button>
             <RouterLink
               :to="{ name: 'forge', params: { id: campaignId } }"
               class="mc-btn mc-btn-secondary"
@@ -284,176 +352,226 @@ async function createEdge(edge: {
           </p>
         </div>
       </header>
-      <section v-if="entity.text">
-        <SectionHeader title="Description" />
-        <p class="mc-body">{{ entity.text }}</p>
-      </section>
 
-      <section v-if="asString(data['appearance'])">
-        <SectionHeader title="Appearance" />
-        <p class="mc-body">{{ asString(data['appearance']) }}</p>
-      </section>
+      <template v-if="editMode">
+        <SectionHeader title="Edit" meta="one revision per save" />
+        <p v-if="editError" class="mc-action-error" role="alert">{{ editError }}</p>
+        <EntityEditor
+          :entity="entity"
+          :dial-levels="dialLevels"
+          :busy="editBusy"
+          @save="saveEdit"
+          @cancel="cancelEdit"
+        />
+      </template>
+      <template v-else>
+        <section v-if="entity.text">
+          <SectionHeader title="Description" />
+          <p class="mc-body">{{ entity.text }}</p>
+        </section>
 
-      <section v-if="asString(data['personality'])">
-        <SectionHeader title="Personality" />
-        <p class="mc-body">{{ asString(data['personality']) }}</p>
-      </section>
+        <section v-if="asString(data['appearance'])">
+          <SectionHeader title="Appearance" />
+          <p class="mc-body">{{ asString(data['appearance']) }}</p>
+        </section>
 
-      <section v-if="asString(data['background'])">
-        <SectionHeader title="Background" />
-        <p class="mc-body">{{ asString(data['background']) }}</p>
-      </section>
+        <section v-if="asString(data['personality'])">
+          <SectionHeader title="Personality" />
+          <p class="mc-body">{{ asString(data['personality']) }}</p>
+        </section>
 
-      <section v-if="asString(data['goals'])">
-        <SectionHeader title="Goals" />
-        <p class="mc-body">{{ asString(data['goals']) }}</p>
-      </section>
+        <section v-if="asString(data['background'])">
+          <SectionHeader title="Background" />
+          <p class="mc-body">{{ asString(data['background']) }}</p>
+        </section>
 
-      <section v-if="asString(data['voice_style']) || asString(data['catchphrases'])">
-        <SectionHeader title="Voice" />
-        <p v-if="asString(data['voice_style'])" class="mc-body">
-          {{ asString(data['voice_style']) }}
-        </p>
-        <p v-if="asString(data['catchphrases'])" class="mc-catchphrases">
-          “{{ asString(data['catchphrases']) }}”
-        </p>
-      </section>
+        <section v-if="asString(data['goals'])">
+          <SectionHeader title="Goals" />
+          <p class="mc-body">{{ asString(data['goals']) }}</p>
+        </section>
 
-      <section v-if="story.secret || story.rumor || story.hook">
-        <SectionHeader title="The story" />
-        <div class="mc-story-grid">
-          <article v-if="story.secret" class="mc-story-card">
-            <h3>Secret</h3>
-            <p>{{ story.secret }}</p>
-          </article>
-          <article v-if="story.rumor" class="mc-story-card">
-            <h3>Rumor</h3>
-            <p>{{ story.rumor }}</p>
-          </article>
-          <article v-if="story.hook" class="mc-story-card">
-            <h3>Party hook</h3>
-            <p>{{ story.hook }}</p>
-          </article>
-        </div>
-        <p class="mc-story-chips">
-          <KnowledgeChip
-            v-if="story.secret"
-            field="secret"
-            :known="knownFields['secret'] ?? false"
-            @toggle="flipKnowledge('secret')"
-          />
-          <KnowledgeChip
-            v-if="story.rumor"
-            field="rumor"
-            :known="knownFields['rumor'] ?? false"
-            @toggle="flipKnowledge('rumor')"
-          />
-          <KnowledgeChip
-            v-if="story.hook"
-            field="party_hook"
-            :known="knownFields['party_hook'] ?? false"
-            @toggle="flipKnowledge('party_hook')"
-          />
-        </p>
-      </section>
+        <section v-if="asString(data['voice_style']) || asString(data['catchphrases'])">
+          <SectionHeader title="Voice" />
+          <p v-if="asString(data['voice_style'])" class="mc-body">
+            {{ asString(data['voice_style']) }}
+          </p>
+          <p v-if="asString(data['catchphrases'])" class="mc-catchphrases">
+            “{{ asString(data['catchphrases']) }}”
+          </p>
+        </section>
 
-      <section
-        v-if="
-          worldBlock.reputation ||
-          worldBlock.factions ||
-          worldBlock.location ||
-          worldBlock.reaction ||
-          worldBlock.onDefeat ||
-          touching.length > 0
-        "
-      >
-        <SectionHeader title="World" />
-        <dl
-          v-if="worldBlock.reputation || worldBlock.factions || worldBlock.location"
-          class="mc-facts"
+        <section v-if="story.secret || story.rumor || story.hook">
+          <SectionHeader title="The story" />
+          <div class="mc-story-grid">
+            <article v-if="story.secret" class="mc-story-card">
+              <h3>Secret</h3>
+              <p>{{ story.secret }}</p>
+            </article>
+            <article v-if="story.rumor" class="mc-story-card">
+              <h3>Rumor</h3>
+              <p>{{ story.rumor }}</p>
+            </article>
+            <article v-if="story.hook" class="mc-story-card">
+              <h3>Party hook</h3>
+              <p>{{ story.hook }}</p>
+            </article>
+          </div>
+          <p class="mc-story-chips">
+            <KnowledgeChip
+              v-if="story.secret"
+              field="secret"
+              :known="knownFields['secret'] ?? false"
+              @toggle="flipKnowledge('secret')"
+            />
+            <KnowledgeChip
+              v-if="story.rumor"
+              field="rumor"
+              :known="knownFields['rumor'] ?? false"
+              @toggle="flipKnowledge('rumor')"
+            />
+            <KnowledgeChip
+              v-if="story.hook"
+              field="party_hook"
+              :known="knownFields['party_hook'] ?? false"
+              @toggle="flipKnowledge('party_hook')"
+            />
+          </p>
+        </section>
+
+        <section
+          v-if="
+            worldBlock.reputation ||
+            worldBlock.factions ||
+            worldBlock.location ||
+            worldBlock.reaction ||
+            worldBlock.onDefeat ||
+            touching.length > 0
+          "
         >
-          <div v-if="worldBlock.location">
-            <dt>Current location</dt>
-            <dd>{{ worldBlock.location }}</dd>
+          <SectionHeader title="World" />
+          <dl
+            v-if="worldBlock.reputation || worldBlock.factions || worldBlock.location"
+            class="mc-facts"
+          >
+            <div v-if="worldBlock.location">
+              <dt>Current location</dt>
+              <dd>{{ worldBlock.location }}</dd>
+            </div>
+            <div v-if="worldBlock.factions">
+              <dt>Factions</dt>
+              <dd>{{ worldBlock.factions }}</dd>
+            </div>
+            <div v-if="worldBlock.reputation">
+              <dt>Reputation</dt>
+              <dd>{{ worldBlock.reputation }}</dd>
+            </div>
+          </dl>
+          <p v-if="worldBlock.reaction" class="mc-body">Reactions — {{ worldBlock.reaction }}</p>
+          <p v-if="worldBlock.onDefeat" class="mc-body">On defeat — {{ worldBlock.onDefeat }}</p>
+          <ul v-if="touching.length > 0" class="mc-rel-list">
+            <li v-for="edge in touching" :key="edge.id" class="mc-rel-row">
+              <span v-if="edge.src === entityId">
+                → {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.dst) }}
+              </span>
+              <span v-else>
+                ← {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.src) }}
+              </span>
+              <template v-if="relationCounterEdge === edge.id">
+                <input
+                  v-model.number="relationCounterInput"
+                  type="number"
+                  class="mc-rel-counter-input"
+                  aria-label="Counter"
+                />
+                <button
+                  type="button"
+                  class="mc-link mc-muted"
+                  :disabled="edgeBusy"
+                  @click="saveRelationCounter(edge.id)"
+                >
+                  Save
+                </button>
+                <button type="button" class="mc-link mc-muted" @click="relationCounterEdge = null">
+                  Cancel
+                </button>
+              </template>
+              <button
+                v-else
+                type="button"
+                class="mc-link mc-muted"
+                :disabled="edgeBusy"
+                @click="startRelationCounter(edge)"
+              >
+                Edit counter
+              </button>
+              <button
+                type="button"
+                class="mc-link mc-muted"
+                :disabled="edgeBusy"
+                @click="deleteRelation(edge.id)"
+              >
+                Delete
+              </button>
+            </li>
+          </ul>
+          <div class="mc-edge-composer-block">
+            <h4 class="mc-edge-composer-title">Add relation</h4>
+            <p v-if="edgeError" class="mc-action-error" role="alert">{{ edgeError }}</p>
+            <EdgeComposer
+              :kinds="tonight.kindsFor(campaignId)"
+              :src-entity="{ id: entity.id, kind: entity.kind, name: entity.name }"
+              :candidates="edgeCandidates"
+              :busy="edgeBusy"
+              @create="createEdge"
+            />
           </div>
-          <div v-if="worldBlock.factions">
-            <dt>Factions</dt>
-            <dd>{{ worldBlock.factions }}</dd>
+        </section>
+
+        <section v-if="tonightEntry.runState || actionError">
+          <SectionHeader title="Tonight" meta="session state" />
+          <p v-if="actionError" class="mc-action-error" role="alert">{{ actionError }}</p>
+          <VerbRow :session="sessionImage" @fire="fireVerb" />
+          <ul v-if="sessionFacts.length > 0" class="mc-session-facts">
+            <li v-for="[key, value] in sessionFacts" :key="key" class="mc-session-fact">
+              <span class="mc-session-key">{{ key }}</span>
+              <span class="mc-session-value">{{ String(value) }}</span>
+            </li>
+          </ul>
+          <p v-else class="mc-muted">No consequences yet.</p>
+          <p v-if="dialLevels.length > 0" class="mc-dial-line">
+            <DialPicker :levels="dialLevels" :current="dial" @change="setDial" />
+          </p>
+        </section>
+
+        <section v-if="graphNodes.length > 0">
+          <SectionHeader title="Relationship web" :meta="`${touching.length}`">
+            <template #actions>
+              <RouterLink
+                :to="{ name: 'graph', params: { id: campaignId }, query: { focus: entityId } }"
+                class="mc-link mc-muted"
+              >
+                Open full graph →
+              </RouterLink>
+            </template>
+          </SectionHeader>
+          <div class="mc-mini-graph">
+            <VueFlowGraph
+              :nodes="graphNodes"
+              :edges="graphEdges"
+              :focus-id="entityId"
+              :one-hop="focusOneHop"
+              :labels-visible="true"
+              :node-name-by-id="nodeNameById"
+              @refocus="onGraphRefocus"
+            />
           </div>
-          <div v-if="worldBlock.reputation">
-            <dt>Reputation</dt>
-            <dd>{{ worldBlock.reputation }}</dd>
-          </div>
-        </dl>
-        <p v-if="worldBlock.reaction" class="mc-body">Reactions — {{ worldBlock.reaction }}</p>
-        <p v-if="worldBlock.onDefeat" class="mc-body">On defeat — {{ worldBlock.onDefeat }}</p>
-        <ul v-if="touching.length > 0" class="mc-rel-list">
-          <li v-for="edge in touching" :key="edge.id">
-            <span v-if="edge.src === entityId">
-              → {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.dst) }}
-            </span>
-            <span v-else>
-              ← {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.src) }}
-            </span>
-          </li>
-        </ul>
-        <div class="mc-edge-composer-block">
-          <h4 class="mc-edge-composer-title">Add relation</h4>
-          <p v-if="edgeError" class="mc-action-error" role="alert">{{ edgeError }}</p>
-          <EdgeComposer
-            :kinds="tonight.kindsFor(campaignId)"
-            :src-entity="{ id: entity.id, kind: entity.kind, name: entity.name }"
-            :candidates="edgeCandidates"
-            :busy="edgeBusy"
-            @create="createEdge"
-          />
-        </div>
-      </section>
+        </section>
 
-      <section v-if="tonightEntry.runState || actionError">
-        <SectionHeader title="Tonight" meta="session state" />
-        <p v-if="actionError" class="mc-action-error" role="alert">{{ actionError }}</p>
-        <VerbRow :session="sessionImage" @fire="fireVerb" />
-        <ul v-if="sessionFacts.length > 0" class="mc-session-facts">
-          <li v-for="[key, value] in sessionFacts" :key="key" class="mc-session-fact">
-            <span class="mc-session-key">{{ key }}</span>
-            <span class="mc-session-value">{{ String(value) }}</span>
-          </li>
-        </ul>
-        <p v-else class="mc-muted">No consequences yet.</p>
-        <p v-if="dialLevels.length > 0" class="mc-dial-line">
-          <DialPicker :levels="dialLevels" :current="dial" @change="setDial" />
-        </p>
-      </section>
-
-      <section v-if="graphNodes.length > 0">
-        <SectionHeader title="Relationship web" :meta="`${touching.length}`">
-          <template #actions>
-            <RouterLink
-              :to="{ name: 'graph', params: { id: campaignId }, query: { focus: entityId } }"
-              class="mc-link mc-muted"
-            >
-              Open full graph →
-            </RouterLink>
-          </template>
-        </SectionHeader>
-        <div class="mc-mini-graph">
-          <VueFlowGraph
-            :nodes="graphNodes"
-            :edges="graphEdges"
-            :focus-id="entityId"
-            :one-hop="focusOneHop"
-            :labels-visible="true"
-            :node-name-by-id="nodeNameById"
-            @refocus="onGraphRefocus"
-          />
-        </div>
-      </section>
-
-      <section v-if="data['stat_block']">
-        <SectionHeader title="Stat block" :meta="'5e'" />
-        <EntityStatBlock :block="data['stat_block']" />
-      </section>
+        <section v-if="data['stat_block']">
+          <SectionHeader title="Stat block" :meta="'5e'" />
+          <EntityStatBlock :block="data['stat_block']" />
+        </section>
+      </template>
     </template>
     <p v-else class="mc-muted">Loading character…</p>
   </div>
@@ -610,6 +728,28 @@ async function createEdge(edge: {
   flex-direction: column;
   gap: 0.4rem;
   color: var(--mc-text-secondary);
+}
+.mc-rel-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+.mc-rel-counter-input {
+  background: var(--mc-input);
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-sm);
+  color: var(--mc-text-primary);
+  width: 4rem;
+  padding: 0.2rem 0.4rem;
+}
+.mc-link {
+  background: none;
+  border: none;
+  color: var(--mc-interactive);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
 }
 .mc-mini-graph {
   /* Definite height: the Vue Flow canvas collapses to 0px in an

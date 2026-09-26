@@ -8,24 +8,26 @@
 :root {
   color-scheme: dark;
 
-  /* Background (§9) */
-  --mc-app-bg: #151619;
-  --mc-surface: #1d1f23;
-  --mc-surface-raised: #24272c;
-  --mc-input: #191b1f;
-  --mc-border: #30343a;
+  /* Background (§9) — consolidation pass 2026-09-27: cooler slate chrome,
+   * the signature accent shifts from the legacy amber to teal so the
+   * rebuild reads as its own surface. */
+  --mc-app-bg: #10141a;
+  --mc-surface: #161b22;
+  --mc-surface-raised: #1c222c;
+  --mc-input: #12161d;
+  --mc-border: #28303c;
 
   /* Text (§9) */
-  --mc-text-primary: #e8e5de;
-  --mc-text-secondary: #9b9da3;
-  --mc-text-muted: #6f737a;
+  --mc-text-primary: #e6e8ee;
+  --mc-text-secondary: #9aa2af;
+  --mc-text-muted: #6b7484;
 
   /* Semantic accents — restrained (§9) */
-  --mc-canonical: #7fa88b;
-  --mc-proposal: #9d94c7;
-  --mc-warning: #c9a86a;
-  --mc-danger: #c97b72;
-  --mc-interactive: #d08a4e;
+  --mc-canonical: #79c29a;
+  --mc-proposal: #a79dd4;
+  --mc-warning: #d4b06a;
+  --mc-danger: #d47a70;
+  --mc-interactive: #35a7c9;
 
   /* Type scale (§10) */
   --mc-page-title-size: 2rem;
@@ -48,6 +50,11 @@ body {
   font-family: system-ui, sans-serif;
   background: var(--mc-app-bg);
   color: var(--mc-text-primary);
+}
+
+:focus-visible {
+  outline: 2px solid var(--mc-interactive);
+  outline-offset: 1px;
 }
 
 button,
