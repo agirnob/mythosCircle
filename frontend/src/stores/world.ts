@@ -138,8 +138,7 @@ export const useWorldStore = defineStore('world', {
           .map((ref) => ref.id),
       )
       const rows = this.mediaFor(campaignId).filter(
-        (row) =>
-          row.entity_id === entityId && row.kind === 'image' && !missing.has(row.id),
+        (row) => row.entity_id === entityId && row.kind === 'image' && !missing.has(row.id),
       )
       return rows.length > 0 ? rows[rows.length - 1]! : null
     },
@@ -171,15 +170,19 @@ export const useWorldStore = defineStore('world', {
       void this.fetchSnapshot(campaignId)
     },
     /**
-     * Relation editing (spec-3-4, FR9): add / edit-counter / delete a
-     * typed edge through the edges REST surface. Each call commits
-     * exactly one backend revision, then lands here as a coalesced
-     * snapshot refetch — the store never mutates world state locally.
-     * ApiError propagates to the caller (the view renders it inline).
+     * Relation editing (spec-3-4, FR9; AD-32): add / edit-counter /
+     * delete a typed edge through the edges REST surface. Every EDGE
+     * now carries a saved reason (AD-32) — authored creation sends a
+     * non-blank ``reason``; the backend rejects blank with a 422 (the
+     * picker blocks blank submit client-side, the backstop stays
+     * armed). Each call commits exactly one backend revision, then
+     * lands here as a coalesced snapshot refetch — the store never
+     * mutates world state locally. ApiError propagates to the caller
+     * (the view renders it inline).
      */
     async addEdge(
       campaignId: string,
-      edge: { src: string; dst: string; type: string; counter: number },
+      edge: { src: string; dst: string; type: string; counter: number; reason: string },
     ): Promise<void> {
       await apiFetch(`/api/campaigns/${encodeURIComponent(campaignId)}/edges`, {
         method: 'POST',

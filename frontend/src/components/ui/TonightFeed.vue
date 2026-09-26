@@ -1,0 +1,89 @@
+<script setup lang="ts">
+/**
+ * Tonight feed (v3 Tier-1; AD-35) — renders the revisions feed's
+ * display-ready event lines VERBATIM. Verb commits and their take-backs
+ * both arrive as `action: "edited"` (AD-27: the feed never distinguishes
+ * undo from edit) — this component renders what the API sends, it never
+ * re-derives the verdict. Groups lines under their revision (one save =
+ * one revision, possibly several events).
+ */
+import type { components } from '../../api/schema'
+
+defineProps<{
+  revisions: components['schemas']['RevisionSummary'][]
+}>()
+
+/** A short display stamp — `YYYY-MM-DD HH:MM` in the DM's local time. */
+function shortTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+</script>
+
+<template>
+  <ol v-if="revisions.length > 0" class="mc-feed">
+    <li v-for="revision in revisions" :key="revision.revision_id" class="mc-feed-revision">
+      <ul class="mc-feed-events">
+        <li
+          v-for="event in revision.events"
+          :key="event.revision_id + event.kind"
+          class="mc-feed-line"
+        >
+          <span class="mc-feed-action">{{ event.action }}</span>
+          <span class="mc-feed-target">{{ event.target_names.join(', ') }}</span>
+          <span class="mc-feed-kind">{{ event.kind }}</span>
+          <time class="mc-feed-time" :datetime="event.created_at">
+            {{ shortTime(event.created_at) }}
+          </time>
+        </li>
+      </ul>
+    </li>
+  </ol>
+  <p v-else class="mc-muted">No changes yet.</p>
+</template>
+
+<style scoped>
+.mc-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mc-gap-sm);
+}
+.mc-feed-revision {
+  margin: 0;
+}
+.mc-feed-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mc-feed-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+.mc-feed-action {
+  font-weight: 600;
+  color: var(--mc-text-secondary);
+}
+.mc-feed-target {
+  color: var(--mc-text-primary);
+}
+.mc-feed-kind {
+  color: var(--mc-text-muted);
+  font-size: var(--mc-meta-size);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mc-feed-time {
+  color: var(--mc-text-muted);
+  font-size: var(--mc-meta-size);
+  white-space: nowrap;
+}
+</style>

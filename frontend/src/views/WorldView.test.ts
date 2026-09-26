@@ -125,7 +125,9 @@ function populatedWorld(): WorldExport {
 function mountView() {
   return mount(WorldView, {
     global: {
-      stubs: { RouterLink: { props: ['to'], template: '<a :data-to="JSON.stringify(to)"><slot /></a>' } },
+      stubs: {
+        RouterLink: { props: ['to'], template: '<a :data-to="JSON.stringify(to)"><slot /></a>' },
+      },
     },
   })
 }
@@ -348,6 +350,7 @@ describe('WorldView', () => {
     await type.setValue('debt')
     await target.setValue('E2')
     await counter.setValue('5')
+    await card.find('input[aria-label="Reason (required)"]').setValue('Lent coin against the toll')
     const callsBefore = apiFetchMock.mock.calls.length
     await card.find('form.add-relation').trigger('submit')
     await flushPromises()
@@ -359,6 +362,7 @@ describe('WorldView', () => {
       dst: 'E2',
       type: 'debt',
       counter: 5,
+      reason: 'Lent coin against the toll',
     })
     // The commit lands back as a coalesced snapshot refetch.
     const refetch = apiFetchMock.mock.calls[callsBefore + 1]!
@@ -378,6 +382,7 @@ describe('WorldView', () => {
     const card = wrapper.findAll('article')[0]
     await card.find('select[aria-label="Direction"]').setValue('inbound')
     await card.find('select[aria-label="Target entity"]').setValue('E2')
+    await card.find('input[aria-label="Reason (required)"]').setValue('Named as heir in the will')
     const callsBefore = apiFetchMock.mock.calls.length
     await card.find('form.add-relation').trigger('submit')
     await flushPromises()
@@ -385,6 +390,7 @@ describe('WorldView', () => {
     const body = JSON.parse(String(apiFetchMock.mock.calls[callsBefore]![1]!.body))
     expect(body.src).toBe('E2')
     expect(body.dst).toBe('E1')
+    expect(body.reason).toBe('Named as heir in the will')
     wrapper.unmount()
   })
 

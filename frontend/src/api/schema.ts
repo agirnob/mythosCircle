@@ -136,6 +136,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/kinds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Kinds
+         * @description The kinds registry (AD-34): renders ``EDGE_KIND_RULES`` + counter
+         *     semantics + dial tables + archetypes, derived from code constants
+         *     under a content-hash version token. Registered before the
+         *     ``/{campaign_id}`` route so the literal path wins the match. The
+         *     endpoint owns no vocabulary and nothing writes it at runtime;
+         *     pickers re-fetch per walk mount and commit live-validates.
+         */
+        get: operations["kinds_api_campaigns_kinds_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}": {
         parameters: {
             query?: never;
@@ -195,10 +220,65 @@ export interface paths {
          *     through the shared mapper (rebase-or-reject, never a silent
          *     overwrite), exactly like the other commit routes.
          *
-         *     Undo appends its own revision (the log is never rewritten) and does
-         *     not restore media rows (``store/undo.py``, spec-4.3).
+         *     Undo appends its own revision (the log is never rewritten). Media
+         *     rows are never RESTORED by undo (``store/undo.py``, spec-4.3); when
+         *     the undo DELETES an entity — the inverse of an entity-CREATION
+         *     revision — its manifest rows are reclaimed inside the store
+         *     transaction and the FILES are reclaimed post-commit here, the
+         *     delete-entity route's rows-first pattern (AD-10).
          */
         post: operations["undo_api_campaigns__campaign_id__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Revisions History
+         * @description The Tonight recent-changes read (AD-35): read-only, owner-gated,
+         *     bounded (default 20, clamped to max 100), newest first. Summaries
+         *     are display-ready ``{revision_id, created_at, actor, action,
+         *     target_names, kind}``; verb commits and their take-backs both map
+         *     to ``edited`` (AD-27 — the feed never distinguishes undo from
+         *     edit). Unknown/foreign campaign is the single 404 (no oracle).
+         */
+        get: operations["revisions_history_api_campaigns__campaign_id__revisions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/run-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Run State
+         * @description The Tonight Tier-2 read (AD-26, AD-28): current run-state rows
+         *     behind the log, owner-gated, read-only — readers stay dumb (the
+         *     store owns the state; this endpoint renders the rows, nothing
+         *     more). Never exports (AD-11 untouched: the exporter reads
+         *     entity/edge only) and never writes. Unknown/foreign campaign is
+         *     the single 404 (no oracle). Rows ordered by rowid (commit) order
+         *     per AD-16.
+         */
+        get: operations["run_state_api_campaigns__campaign_id__run_state_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -282,12 +362,19 @@ export interface paths {
         /**
          * List Campaign Jobs
          * @description Campaign-scoped FIFO list, oldest first, cursor-paginated (AD-9).
+         *
+         *     Ownership (spec-6-4): the ownership 404 fires before cursor decoding
+         *     — a stranger learns nothing, not even via the cursor error surface.
          */
         get: operations["list_campaign_jobs_api_jobs_get"];
         put?: never;
         /**
          * Create Job
          * @description Enqueue a job at the FIFO tail; idempotent by job_id (AD-3, AR28).
+         *
+         *     Ownership (spec-6-4): the caller's session must own the campaign —
+         *     foreign and unknown campaigns are the same 404 raised BEFORE the
+         *     store ever runs (the characters ``_require_campaign`` precedent).
          */
         post: operations["create_job_api_jobs_post"];
         delete?: never;
@@ -306,6 +393,11 @@ export interface paths {
         /**
          * Get Job
          * @description One job plus its current queue position (STATUS_POSITION).
+         *
+         *     Ownership (spec-6-4): there is no campaign_id to gate on, so the
+         *     route resolves the job first (store is owner-blind, AD-3), then gates
+         *     its campaign — a foreign job's 404 is byte-identical to a genuinely
+         *     unknown job's (``_require_owned_job``, no-oracle rule).
          */
         get: operations["get_job_api_jobs__job_id__get"];
         put?: never;
@@ -328,6 +420,10 @@ export interface paths {
         /**
          * Cancel Job Route
          * @description Cancel a queued or running job; frees the queue slot (AR28).
+         *
+         *     Ownership (spec-6-4): the ownership check runs BEFORE any mutation —
+         *     a foreign cancel is a byte-identical 404 and the job's state and row
+         *     are untouched (resolve-then-gate, then cancel).
          */
         post: operations["cancel_job_route_api_jobs__job_id__cancel_post"];
         delete?: never;
@@ -369,6 +465,15 @@ export interface paths {
          *     stay shape-valid (422 naming the break, zero revisions); bare
          *     records merge unconstrained.
          *
+         *     AD-29 bundled save: ``knowledge_flips`` (a list of ``{"field",
+         *     "known"}`` over the closed secret/rumor/party_hook set) is NOT a
+         *     record key — it is extracted before the merge and rides the SAME
+         *     revision as the edit (one save = one undoable step whose take-back
+         *     inverts both halves). A flip-only PATCH (no other content key) is
+         *     legal — the store commits the knowledge-only revision. Malformed
+         *     ``knowledge_flips`` (non-list, non-object item, non-string field,
+         *     non-boolean known) is a 422 with zero revisions.
+         *
          *     Ownership-404-first, mirroring ``delete_entity``: the campaign check
          *     runs BEFORE any body is read, so a foreign/unknown campaign is the
          *     single indistinguishable 404 even with a malformed body. The body is
@@ -379,6 +484,78 @@ export interface paths {
          *     required). 204 body-less, the DELETE precedent.
          */
         patch: operations["update_entity_api_campaigns__campaign_id__entities__entity_id__patch"];
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/entities/{entity_id}/session-verb": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Session Verb
+         * @description One Tier-2a consequence verb as ONE undoable revision (AD-26,
+         *     AD-28) — the Tonight verb-row wire surface (spec-v3-tier2-routes).
+         *
+         *     Body ``{"update": {…}, "base_revision"?: str}``: ``update`` is the
+         *     verb's delta, a strict-JSON object the store MERGES onto the
+         *     entity's current session-state image and commits in full
+         *     (rebuild-faithful, AD-26). The four UX verbs (defeated /
+         *     allegiance / thread / item) are UI affordances over this open image
+         *     — the image itself is open (the AD-27 scar ``{"hp": -12}`` is a
+         *     verb in the take-back tests); no closed verb set at the wire.
+         *
+         *     204 body-less, the undo/PATCH precedent — the UI re-reads state
+         *     from the feed and run-state. A value-identical merge (the double-
+         *     fire of a repeated gesture) commits nothing and still 204s (the
+         *     store's no-op, AD-26/Flow 6). Ownership-404-first: a foreign or
+         *     unknown campaign is the single indistinguishable 404 before any
+         *     body read; malformed/non-object body is a 400; missing or
+         *     non-object ``update`` and a non-string ``base_revision`` are 422 —
+         *     the store's ``InvalidRunStateError``/``StaleRevisionError``/
+         *     ``UnknownEntityError`` map through the shared mapper (422/409/404).
+         */
+        post: operations["session_verb_api_campaigns__campaign_id__entities__entity_id__session_verb_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/entities/{entity_id}/knowledge-toggle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Knowledge Toggle
+         * @description One Tier-2b party-knowledge toggle as its own undoable step
+         *     (AD-29) — flippable secret <-> known either direction at any time.
+         *
+         *     Body ``{"field": "secret"|"rumor"|"party_hook", "known": bool,
+         *     "base_revision"?: str}`` — the DM's gesture IS the target state
+         *     (absolute set, never a flip-relative toggle). ``known: 1``/``0``
+         *     are 422s here and at the store (strict bool contract). The closed
+         *     field set is the store's + the DB CHECK, so a foreign field is the
+         *     store's 422 through the shared mapper.
+         *
+         *     204 body-less (the verb precedent); a repeated same-value flip
+         *     commits nothing (store no-op) and still 204s. Ownership-404-first;
+         *     malformed/non-object body is a 400; missing/non-string ``field``,
+         *     non-boolean ``known``, and a non-string ``base_revision`` are 422.
+         */
+        post: operations["knowledge_toggle_api_campaigns__campaign_id__entities__entity_id__knowledge_toggle_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/campaigns/{campaign_id}/edges": {
@@ -754,6 +931,15 @@ export interface components {
             /** Email */
             email: string;
         };
+        /** ArchetypeExport */
+        ArchetypeExport: {
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Default Dial */
+            default_dial: string;
+        };
         /** CampaignCreate */
         CampaignCreate: {
             /** Title */
@@ -875,10 +1061,14 @@ export interface components {
             type: string;
             /** Counter */
             counter: number;
+            /** Reason */
+            reason?: string | null;
         };
         /**
          * EdgeResponse
          * @description The wire shape of one committed edge (mirrors EdgeExport).
+         *
+         *     ``reason`` is the AD-32 saved why; pre-v3 rows read NULL.
          */
         EdgeResponse: {
             /** Id */
@@ -891,6 +1081,23 @@ export interface components {
             type: string;
             /** Counter */
             counter: number;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * EdgeTypeRule
+         * @description One closed-vocabulary cell: allowed kinds and the AD-23 counter
+         *     semantic (``None`` = any kind).
+         */
+        EdgeTypeRule: {
+            /** Src */
+            src: string[] | null;
+            /** Dst */
+            dst: string[] | null;
+            /** Counter Semantic */
+            counter_semantic: string;
+            /** Counter Bounds */
+            counter_bounds: number[] | null;
         };
         /** EntityExport */
         EntityExport: {
@@ -920,6 +1127,26 @@ export interface components {
             /** Edges */
             edges: components["schemas"]["EdgeExport"][];
             revision: components["schemas"]["RevisionMeta"] | null;
+        };
+        /**
+         * EventSummary
+         * @description One display-ready event summary (AD-35): the Tonight feed renders
+         *     these verbatim. ``actor`` is the sole DM in beta (AD-9: one invited
+         *     user per campaign — no actor column exists to fabricate one).
+         */
+        EventSummary: {
+            /** Revision Id */
+            revision_id: string;
+            /** Created At */
+            created_at: string;
+            /** Actor */
+            actor: string;
+            /** Action */
+            action: string;
+            /** Target Names */
+            target_names: string[];
+            /** Kind */
+            kind: string;
         };
         /** GenericWorldCreate */
         GenericWorldCreate: {
@@ -1001,6 +1228,27 @@ export interface components {
             finished_at: string | null;
             /** Queue Position */
             queue_position: number | null;
+        };
+        /**
+         * KindsResponse
+         * @description The code-wins registry (AD-34): the endpoint owns no vocabulary —
+         *     everything renders the store's constants, cacheable within the
+         *     version token, re-fetched per walk mount. Commit-time live
+         *     validation against the same matrix is the backstop.
+         */
+        KindsResponse: {
+            /** Version */
+            version: string;
+            /** Edge Types */
+            edge_types: string[];
+            /** Kind Rules */
+            kind_rules: {
+                [key: string]: components["schemas"]["EdgeTypeRule"];
+            };
+            /** Dial Levels */
+            dial_levels: string[];
+            /** Archetypes */
+            archetypes: components["schemas"]["ArchetypeExport"][];
         };
         /** LoginRequest */
         LoginRequest: {
@@ -1088,6 +1336,56 @@ export interface components {
             id: string;
             /** Created At */
             created_at: string;
+        };
+        /**
+         * RevisionSummary
+         * @description One revision's display-ready projection: meta + its event summaries.
+         */
+        RevisionSummary: {
+            /** Revision Id */
+            revision_id: string;
+            /** Created At */
+            created_at: string;
+            /** Events */
+            events: components["schemas"]["EventSummary"][];
+        };
+        /**
+         * RevisionsResponse
+         * @description Bounded, newest-first revision history (AD-35: default 20, max
+         *     100). Meta + display-ready event summaries only — never a write
+         *     surface, never world state.
+         */
+        RevisionsResponse: {
+            /** Default */
+            default: number;
+            /** Max */
+            max: number;
+            /** Revisions */
+            revisions: components["schemas"]["RevisionSummary"][];
+        };
+        /**
+         * RunStateResponse
+         * @description Tonight's Tier-2 run-state (AD-28): the chip/cast read — dumb
+         *     joins, never a write surface. ``session`` maps entity id to the
+         *     full session-image (defeated flag, hp delta, allegiance, thread,
+         *     item counters); ``knowledge`` maps entity id to its per-secret
+         *     toggles over the closed secret/rumor/party_hook set. A row that
+         *     does not exist is absent — a fresh world reads two empty maps,
+         *     never an error, never a fabricated default.
+         */
+        RunStateResponse: {
+            /** Session */
+            session: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            /** Knowledge */
+            knowledge: {
+                [key: string]: {
+                    [key: string]: boolean;
+                };
+            };
         };
         /**
          * ThemesResponse
@@ -1356,6 +1654,37 @@ export interface operations {
             };
         };
     };
+    kinds_api_campaigns_kinds_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KindsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_one_api_campaigns__campaign_id__get: {
         parameters: {
             query?: never;
@@ -1488,6 +1817,74 @@ export interface operations {
             };
         };
     };
+    revisions_history_api_campaigns__campaign_id__revisions_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_state_api_campaigns__campaign_id__run_state_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunStateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ensure_generic_api_campaigns_generic_post: {
         parameters: {
             query?: never;
@@ -1593,7 +1990,9 @@ export interface operations {
             };
             header?: never;
             path?: never;
-            cookie?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
         };
         requestBody?: never;
         responses: {
@@ -1622,7 +2021,9 @@ export interface operations {
             query?: never;
             header?: never;
             path?: never;
-            cookie?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
         };
         requestBody: {
             content: {
@@ -1657,7 +2058,9 @@ export interface operations {
             path: {
                 job_id: string;
             };
-            cookie?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
         };
         requestBody?: never;
         responses: {
@@ -1688,7 +2091,9 @@ export interface operations {
             path: {
                 job_id: string;
             };
-            cookie?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
         };
         requestBody?: never;
         responses: {
@@ -1745,6 +2150,70 @@ export interface operations {
         };
     };
     update_entity_api_campaigns__campaign_id__entities__entity_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                entity_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    session_verb_api_campaigns__campaign_id__entities__entity_id__session_verb_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                entity_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    knowledge_toggle_api_campaigns__campaign_id__entities__entity_id__knowledge_toggle_post: {
         parameters: {
             query?: never;
             header?: never;

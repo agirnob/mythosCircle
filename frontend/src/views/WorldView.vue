@@ -203,6 +203,7 @@ const addingFor = ref<string | null>(null)
 const addType = ref<string>(EDGE_VOCAB[0])
 const addTargetId = ref<string>('')
 const addCounter = ref<number>(1)
+const addReason = ref<string>('')
 const addDirection = ref<(typeof EDGE_DIRECTIONS)[number]>('outbound')
 
 const editingEdgeId = ref<string | null>(null)
@@ -721,7 +722,9 @@ watch(
   { immediate: true },
 )
 const canonWorlds = computed(() =>
-  campaigns.campaigns.filter((c: { is_generic?: boolean; id: string }) => !c.is_generic && c.id !== campaignId),
+  campaigns.campaigns.filter(
+    (c: { is_generic?: boolean; id: string }) => !c.is_generic && c.id !== campaignId,
+  ),
 )
 const moveTargetId = ref('')
 const movingId = ref<string | null>(null)
@@ -737,13 +740,10 @@ async function moveCharacter(entityId: string) {
   delete errors[entityId]
   moveErrors.value = errors
   try {
-    await apiFetch(
-      `/api/campaigns/${encodeURIComponent(moveTargetId.value)}/move`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ source_campaign_id: campaignId, entity_id: entityId }),
-      },
-    )
+    await apiFetch(`/api/campaigns/${encodeURIComponent(moveTargetId.value)}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ source_campaign_id: campaignId, entity_id: entityId }),
+    })
     // the world changed in both directions — the snapshot refetches below
   } catch (err) {
     moveErrors.value = {
@@ -867,6 +867,7 @@ function startAdd(entityId: string) {
   addType.value = EDGE_VOCAB[0]
   addTargetId.value = relationTargets(entityId)[0]?.id ?? ''
   addCounter.value = 1
+  addReason.value = ''
   addDirection.value = 'outbound'
 }
 
@@ -875,7 +876,10 @@ function cancelAdd() {
 }
 
 async function submitAdd(entityId: string) {
-  if (!addTargetId.value || relationBusy.value) return
+  // AD-32: every authored edge carries its saved reason — a blank blocks
+  // submit client-side (the backend 422 stays armed as the backstop).
+  const reason = addReason.value.trim()
+  if (!addTargetId.value || !reason || relationBusy.value) return
   relationBusy.value = true
   relationErrors.value[entityId] = ''
   try {
@@ -884,7 +888,13 @@ async function submitAdd(entityId: string) {
       addDirection.value === 'outbound'
         ? [entityId, addTargetId.value]
         : [addTargetId.value, entityId]
-    await world.addEdge(campaignId, { src, dst, type: addType.value, counter: addCounter.value })
+    await world.addEdge(campaignId, {
+      src,
+      dst,
+      type: addType.value,
+      counter: addCounter.value,
+      reason,
+    })
     addingFor.value = null
   } catch (err) {
     relationErrors.value[entityId] =
@@ -1024,9 +1034,7 @@ function startProfileEdit(entity: EntityExport) {
   statBlockInitials.value[entity.id] = JSON.stringify(statBlockDrafts.value[entity.id] ?? {})
   const boss = data['boss']
   bossDrafts.value[entity.id] =
-    typeof boss === 'object' && boss !== null
-      ? blankedBoss(boss as Record<string, unknown>)
-      : null
+    typeof boss === 'object' && boss !== null ? blankedBoss(boss as Record<string, unknown>) : null
   bossInitials.value[entity.id] = JSON.stringify(bossDrafts.value[entity.id] ?? {})
   // Unknown keys edit as one "additional data" JSON object (spec-2.7
   // deferral resolution): keys added/changed land in the PATCH; keys
@@ -1063,14 +1071,8 @@ function isProfileEdited(entityId: string): boolean {
   if (Object.keys(drafts).some((field) => drafts[field] !== initials[field])) return true
   // the structured stat-block draft counts too — a user who edits ONLY
   // the stat block must see an enabled Save (owner bug report 2026-09-17)
-  if (
-    JSON.stringify(bossDrafts.value[entityId] ?? {}) !== bossInitials.value[entityId]
-  )
-    return true
-  return (
-    JSON.stringify(statBlockDrafts.value[entityId] ?? {}) !==
-    statBlockInitials.value[entityId]
-  )
+  if (JSON.stringify(bossDrafts.value[entityId] ?? {}) !== bossInitials.value[entityId]) return true
+  return JSON.stringify(statBlockDrafts.value[entityId] ?? {}) !== statBlockInitials.value[entityId]
 }
 
 async function saveProfile(entity: EntityExport) {
@@ -1085,8 +1087,7 @@ async function saveProfile(entity: EntityExport) {
     if (drafts[field] !== initials[field]) patch[field] = drafts[field]
   }
   const statBlockChanged =
-    JSON.stringify(statBlockDrafts.value[entity.id] ?? {}) !==
-    statBlockInitials.value[entity.id]
+    JSON.stringify(statBlockDrafts.value[entity.id] ?? {}) !== statBlockInitials.value[entity.id]
   if (statBlockChanged) {
     patch['stat_block'] = statBlockDrafts.value[entity.id]
   }
@@ -1388,11 +1389,7 @@ function additionalDataBlock(entity: EntityExport): string {
               >
                 {{ movingId === entity.id ? 'Moving…' : 'Move to world' }}
               </button>
-              <span
-                v-if="moveErrors[entity.id]"
-                class="muted small"
-                style="color: #ff8c8c"
-              >
+              <span v-if="moveErrors[entity.id]" class="muted small" style="color: #ff8c8c">
                 {{ moveErrors[entity.id] }}
               </span>
               <button
@@ -1749,7 +1746,10 @@ function additionalDataBlock(entity: EntityExport): string {
                 />
               </div>
               <div
-                v-if="(entity.data ?? {})['boss'] !== undefined || ['BBEG', 'Monster'].includes(profileDrafts[entity.id].role)"
+                v-if="
+                  (entity.data ?? {})['boss'] !== undefined ||
+                  ['BBEG', 'Monster'].includes(profileDrafts[entity.id].role)
+                "
                 class="field"
               >
                 <span>Boss section</span>
@@ -1892,7 +1892,16 @@ function additionalDataBlock(entity: EntityExport): string {
                   type="number"
                   aria-label="Counter"
                 />
-                <button type="submit" :disabled="relationBusy || !addTargetId">Add</button>
+                <input
+                  v-model="addReason"
+                  class="reason-input"
+                  type="text"
+                  aria-label="Reason (required)"
+                  placeholder="Reason (required)"
+                />
+                <button type="submit" :disabled="relationBusy || !addTargetId || !addReason.trim()">
+                  Add
+                </button>
                 <button type="button" :disabled="relationBusy" @click="cancelAdd">Cancel</button>
               </form>
               <button

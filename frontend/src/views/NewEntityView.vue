@@ -4,11 +4,15 @@
  * property list.
  *
  * Reads the same world-store snapshot + portrait projection as the world
- * view. Editing, regeneration, and portrait generation stay in the existing
- * surfaces (linked from here) until the later rebuild stages — this view
- * never mutates world state.
+ * view, plus the v3 Tonight projections (AD-26..29): the run-state joins
+ * the session image + knowledge toggles onto the sheet, and the ONLY
+ * mutations this surface owns are the Tier-2 gestures — consequence
+ * verbs, knowledge flips, the record's dial (AD-36), and new relations
+ * through the kinds-matrix composer (AD-31/32). Everything else (editing,
+ * regeneration, portraits) stays in the existing surfaces, linked from
+ * here.
  */
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import EntityStatBlock from '../components/ui/EntityStatBlock.vue'
 
 import VueFlowGraph from '../components/graph/VueFlowGraph.vue'
@@ -16,12 +20,18 @@ import { avatarInitial, buildWorldGraph } from '../components/graph/graphModel'
 import type { GraphRenderEdge, GraphRenderNode, OneHop } from '../components/graph/graphModel'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import type { components } from '../api/schema'
+import { ApiError } from '../api/client'
+import DialPicker from '../components/ui/DialPicker.vue'
+import EdgeComposer from '../components/ui/EdgeComposer.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import ErrorState from '../components/ui/ErrorState.vue'
+import KnowledgeChip from '../components/ui/KnowledgeChip.vue'
 import SectionHeader from '../components/ui/SectionHeader.vue'
 import StatusBadge from '../components/ui/StatusBadge.vue'
+import VerbRow from '../components/ui/VerbRow.vue'
 import { asString, edgeLabel } from '../components/profile/profile'
 import { useCampaignsStore } from '../stores/campaigns'
+import { useTonightStore } from '../stores/tonight'
 import { useWorldStore } from '../stores/world'
 
 type EdgeExport = components['schemas']['EdgeExport']
@@ -32,6 +42,7 @@ const entityId = route.params.entityId as string
 
 const world = useWorldStore()
 const campaigns = useCampaignsStore()
+const tonight = useTonightStore()
 const router = useRouter()
 
 /**
@@ -72,12 +83,14 @@ onMounted(() => {
     void campaigns.fetchOne(campaignId)
   }
   void world.fetchMedia(campaignId)
+  // v3 Tonight (AD-34/35): registry refetch per walk mount; the run-state
+  // + feed projections join the sheet.
+  void tonight.fetchKinds(campaignId)
+  void tonight.load(campaignId).catch(() => {})
 })
 
 const entry = computed(() => world.entry(campaignId))
-const entity = computed(
-  () => entry.value.world?.entities.find((e) => e.id === entityId) ?? null,
-)
+const entity = computed(() => entry.value.world?.entities.find((e) => e.id === entityId) ?? null)
 const data = computed(() => (entity.value?.data ?? {}) as Record<string, unknown>)
 
 const titleMeta = computed(() => {
@@ -120,6 +133,129 @@ const worldBlock = computed(() => ({
   onDefeat: asString(integration.value['on_defeat']),
   alignment: asString(data.value['alignment']),
 }))
+
+// ---------------------------------------------------------------------------
+// v3 Tonight (AD-26..29, AD-32/34/36)
+// ---------------------------------------------------------------------------
+
+const tonightEntry = computed(() => tonight.entry(campaignId))
+
+/** The entity's current session image — absent keys read as not applied. */
+const sessionImage = computed<Record<string, unknown>>(
+  () => tonightEntry.value.runState?.session[entityId] ?? {},
+)
+
+/** The per-secret knowledge markers (AD-29) — absent field = secret. */
+const knownFields = computed<Record<string, boolean>>(
+  () => tonightEntry.value.runState?.knowledge[entityId] ?? {},
+)
+
+/** The record's dial (AD-36 top-level key) — authored-or-absent. */
+const dial = computed<string | null>(() => {
+  const value = data.value['dial']
+  return typeof value === 'string' && value !== '' ? value : null
+})
+
+/** The registry's closed dial set (AD-34 payload) — the picker's options. */
+const dialLevels = computed<string[]>(() => tonight.kindsFor(campaignId)?.dial_levels ?? [])
+
+/** The newest session event's revision for THIS entity — the take-back
+ * target (AD-27 surgical, per-transaction inverse; the feed never
+ * distinguishes undo from edit, so the revision id is the handle). */
+const latestSessionRevision = computed<string | null>(() => {
+  const name = entity.value?.name
+  if (!name) return null
+  for (const revision of tonightEntry.value.revisions ?? []) {
+    const hit = revision.events.find(
+      (event) => event.kind === 'session' && event.target_names.includes(name),
+    )
+    if (hit) return revision.revision_id
+  }
+  return null
+})
+
+/** Non-boolean session markers render as small facts (the AD-27 scar
+ * `hp: -12`, allegiance strings, …). */
+const sessionFacts = computed<[string, unknown][]>(() =>
+  Object.entries(sessionImage.value).filter(([, value]) => value !== true && value !== false),
+)
+
+/** Edge-composer candidates: every other entity in the campaign. */
+const edgeCandidates = computed<{ id: string; name: string; kind: string }[]>(() =>
+  (entry.value.world?.entities ?? [])
+    .filter((candidate) => candidate.id !== entityId)
+    .map((candidate) => ({ id: candidate.id, name: candidate.name, kind: candidate.kind })),
+)
+
+const edgeBusy = ref(false)
+const actionError = ref<string | null>(null)
+const edgeError = ref<string | null>(null)
+
+function messageFrom(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback
+}
+
+async function fireVerb(update: Record<string, unknown>) {
+  actionError.value = null
+  try {
+    await tonight.fireVerb(campaignId, entityId, update)
+  } catch (err) {
+    actionError.value = messageFrom(err, 'Could not apply that consequence.')
+  }
+}
+
+async function takeBack() {
+  actionError.value = null
+  try {
+    await tonight.takeBack(campaignId, latestSessionRevision.value)
+  } catch (err) {
+    actionError.value = messageFrom(err, 'Could not rewind that consequence.')
+  }
+}
+
+async function flipKnowledge(field: string) {
+  actionError.value = null
+  const current = knownFields.value[field] ?? false
+  try {
+    await tonight.toggleKnowledge(campaignId, entityId, field, !current)
+  } catch (err) {
+    actionError.value = messageFrom(err, 'Could not flip that knowledge marker.')
+  }
+}
+
+async function setDial(level: string) {
+  actionError.value = null
+  try {
+    // AD-36: the dial is a top-level record key — PATCH it on; the base
+    // pins the snapshot the sheet rendered (409 = the world moved).
+    await world.updateEntity(
+      campaignId,
+      entityId,
+      { dial: level },
+      entry.value.world?.revision?.id ?? null,
+    )
+  } catch (err) {
+    actionError.value = messageFrom(err, 'Could not set the dial.')
+  }
+}
+
+async function createEdge(edge: {
+  src: string
+  dst: string
+  type: string
+  counter: number
+  reason: string
+}) {
+  edgeError.value = null
+  edgeBusy.value = true
+  try {
+    await world.addEdge(campaignId, edge)
+  } catch (err) {
+    edgeError.value = messageFrom(err, 'Could not add that relation.')
+  } finally {
+    edgeBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -130,11 +266,7 @@ const worldBlock = computed(() => ({
       </RouterLink>
     </p>
 
-    <ErrorState
-      v-if="entry.error"
-      title="Could not load this world."
-      :message="entry.error"
-    >
+    <ErrorState v-if="entry.error" title="Could not load this world." :message="entry.error">
       <template #actions>
         <button type="button" class="mc-btn mc-btn-secondary" @click="() => world.load(campaignId)">
           Try again
@@ -175,7 +307,6 @@ const worldBlock = computed(() => ({
             </RouterLink>
           </p>
         </div>
-
       </header>
       <section v-if="entity.text">
         <SectionHeader title="Description" />
@@ -228,6 +359,26 @@ const worldBlock = computed(() => ({
             <p>{{ story.hook }}</p>
           </article>
         </div>
+        <p class="mc-story-chips">
+          <KnowledgeChip
+            v-if="story.secret"
+            field="secret"
+            :known="knownFields['secret'] ?? false"
+            @toggle="flipKnowledge('secret')"
+          />
+          <KnowledgeChip
+            v-if="story.rumor"
+            field="rumor"
+            :known="knownFields['rumor'] ?? false"
+            @toggle="flipKnowledge('rumor')"
+          />
+          <KnowledgeChip
+            v-if="story.hook"
+            field="party_hook"
+            :known="knownFields['party_hook'] ?? false"
+            @toggle="flipKnowledge('party_hook')"
+          />
+        </p>
       </section>
 
       <section
@@ -241,7 +392,10 @@ const worldBlock = computed(() => ({
         "
       >
         <SectionHeader title="World" />
-        <dl v-if="worldBlock.reputation || worldBlock.factions || worldBlock.location" class="mc-facts">
+        <dl
+          v-if="worldBlock.reputation || worldBlock.factions || worldBlock.location"
+          class="mc-facts"
+        >
           <div v-if="worldBlock.location">
             <dt>Current location</dt>
             <dd>{{ worldBlock.location }}</dd>
@@ -262,9 +416,43 @@ const worldBlock = computed(() => ({
             <span v-if="edge.src === entityId">
               → {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.dst) }}
             </span>
-            <span v-else> ← {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.src) }} </span>
+            <span v-else>
+              ← {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.src) }}
+            </span>
           </li>
         </ul>
+        <div class="mc-edge-composer-block">
+          <h4 class="mc-edge-composer-title">Add relation</h4>
+          <p v-if="edgeError" class="mc-action-error" role="alert">{{ edgeError }}</p>
+          <EdgeComposer
+            :kinds="tonight.kindsFor(campaignId)"
+            :src-entity="{ id: entity.id, kind: entity.kind, name: entity.name }"
+            :candidates="edgeCandidates"
+            :busy="edgeBusy"
+            @create="createEdge"
+          />
+        </div>
+      </section>
+
+      <section v-if="tonightEntry.runState || actionError">
+        <SectionHeader title="Tonight" meta="session state" />
+        <p v-if="actionError" class="mc-action-error" role="alert">{{ actionError }}</p>
+        <VerbRow
+          :session="sessionImage"
+          :can-take-back="latestSessionRevision !== null"
+          @fire="fireVerb"
+          @take-back="takeBack"
+        />
+        <ul v-if="sessionFacts.length > 0" class="mc-session-facts">
+          <li v-for="[key, value] in sessionFacts" :key="key" class="mc-session-fact">
+            <span class="mc-session-key">{{ key }}</span>
+            <span class="mc-session-value">{{ String(value) }}</span>
+          </li>
+        </ul>
+        <p v-else class="mc-muted">No consequences yet.</p>
+        <p v-if="dialLevels.length > 0" class="mc-dial-line">
+          <DialPicker :levels="dialLevels" :current="dial" @change="setDial" />
+        </p>
       </section>
 
       <section v-if="graphNodes.length > 0">
@@ -374,6 +562,57 @@ const worldBlock = computed(() => ({
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: var(--mc-gap);
+}
+.mc-story-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mc-gap-sm);
+  margin: 0.5rem 0 0;
+}
+.mc-action-error {
+  margin: 0.5rem 0 0;
+  color: var(--mc-danger);
+  font-size: 0.85rem;
+}
+.mc-session-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mc-gap-sm);
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.mc-session-fact {
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: var(--mc-meta-size);
+}
+.mc-session-key {
+  color: var(--mc-text-muted);
+}
+.mc-session-value {
+  color: var(--mc-text-primary);
+  margin-left: 0.3rem;
+}
+.mc-dial-line {
+  display: flex;
+  align-items: center;
+  gap: var(--mc-gap-sm);
+  margin: 0.75rem 0 0;
+}
+.mc-edge-composer-block {
+  margin-top: 0.75rem;
+  padding: 0.9rem 1rem;
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-sm);
+}
+.mc-edge-composer-title {
+  margin: 0 0 0.6rem;
+  font-size: 0.9rem;
+  font-weight: 600;
 }
 .mc-story-card {
   background: var(--mc-surface);

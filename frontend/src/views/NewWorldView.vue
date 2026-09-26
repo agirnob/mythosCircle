@@ -19,9 +19,11 @@ import PageHeader from '../components/ui/PageHeader.vue'
 import SectionHeader from '../components/ui/SectionHeader.vue'
 import StatusBadge from '../components/ui/StatusBadge.vue'
 import { asString } from '../components/profile/profile'
+import TonightFeed from '../components/ui/TonightFeed.vue'
 import { useAuthStore } from '../stores/auth'
 import { useCampaignsStore } from '../stores/campaigns'
 import { useJobsStore } from '../stores/jobs'
+import { useTonightStore } from '../stores/tonight'
 import { useWorldStore } from '../stores/world'
 import { connectJobSocket } from '../ws'
 
@@ -34,6 +36,7 @@ const campaignId = route.params.id as string
 const world = useWorldStore()
 const campaigns = useCampaignsStore()
 const jobs = useJobsStore()
+const tonight = useTonightStore()
 
 let disconnectSocket: (() => void) | null = null
 let disposed = false
@@ -48,13 +51,25 @@ async function start() {
   }
   void world.fetchMedia(campaignId)
   void jobs.syncList(campaignId).catch(() => {})
+  // v3 Tonight (AD-34/35): the registry REFETCHES per walk mount (never
+  // baked, never served stale past the mount) and the feed/run-state
+  // projections load beside the snapshot.
+  void tonight.fetchKinds(campaignId)
+  void tonight.load(campaignId).catch(() => {})
   disconnectSocket = connectJobSocket(
     campaignId,
     (message) => {
       void world.handleJobMessage(campaignId, message)
+      // A job frame means the world moved — the Tonight feed/run-state
+      // projections refetch beside the snapshot (coalesced; the 404 for a
+      // deleted campaign is the view's not-found flow, never an error).
+      void tonight.load(campaignId).catch(() => {})
     },
     {
-      onReconnect: () => world.requestRefetch(campaignId),
+      onReconnect: () => {
+        world.requestRefetch(campaignId)
+        void tonight.load(campaignId).catch(() => {})
+      },
       onAuthFailure: () => {
         const auth = useAuthStore()
         auth.account = null
@@ -86,15 +101,15 @@ const kinds = computed(() => {
   return [...groups.entries()]
 })
 
-const activeJobs = computed(
-  () => jobs.forCampaign(campaignId).filter((j) => j.state === 'queued' || j.state === 'running'),
+const activeJobs = computed(() =>
+  jobs.forCampaign(campaignId).filter((j) => j.state === 'queued' || j.state === 'running'),
 )
+
+const tonightEntry = computed(() => tonight.entry(campaignId))
 
 function describe(entity: EntityExport): string | undefined {
   const data = entity.data as Record<string, unknown>
-  return (
-    asString(data['personality']) ?? asString(data['description']) ?? entity.text ?? undefined
-  )
+  return asString(data['personality']) ?? asString(data['description']) ?? entity.text ?? undefined
 }
 
 function metaFor(entity: EntityExport): string {
@@ -139,11 +154,7 @@ function preview(list: EntityExport[]): EntityExport[] {
       </template>
     </PageHeader>
 
-    <ErrorState
-      v-if="entry.error"
-      title="Could not load this world."
-      :message="entry.error"
-    >
+    <ErrorState v-if="entry.error" title="Could not load this world." :message="entry.error">
       <template #actions>
         <button type="button" class="mc-btn mc-btn-secondary" @click="() => world.load(campaignId)">
           Try again
@@ -168,6 +179,11 @@ function preview(list: EntityExport[]): EntityExport[] {
           {{ activeJobs.length }} generating
         </StatusBadge>
       </p>
+
+      <section v-if="tonightEntry.revisions && tonightEntry.revisions.length > 0">
+        <SectionHeader title="Tonight" meta="recent changes" />
+        <TonightFeed :revisions="tonightEntry.revisions" />
+      </section>
 
       <EmptyState
         v-if="entities.length === 0"
