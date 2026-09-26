@@ -167,5 +167,23 @@ that re-derives undo-vs-edit would duplicate AD-27's rule and drift.
   creation with reason, dial record set — all verified against the API
   truth; caught and fixed the null-src catch-all filter bug (null
   src/dst cells mean ANY kind — they were hidden from every picker).
+- 2026-09-27 (round 2): Owner dogfood feedback round. Committed 498f749:
+  VerbRow take-back is now the REVERSE VERB (`{defeated: false}`) — an
+  active affordance's next click fires the inverse delta; deterministic
+  from the session image, one revision, and it ends the revision-hunting
+  undo that re-applied the state on take-back-of-take-back (the reported
+  "mark defeated doesn't go back"). Tonight moved to its own page
+  (`/campaigns/:id/tonight`, full feed + state summary) with the overview
+  panel capped at five lines + deep link (the overview was flooding a
+  20-line feed on the walk). Add-character's mirror-gate violations are
+  touch-gated — the fresh-form 24-error wall is now a neutral hint; the
+  submit gate is unchanged (still fully-authored sheets). Sidebar
+  'Character' → 'Add character' (same route as the world view's link).
+  Verified live in the browser: feed cap, take-back round trip, wall.
+  OUT OF SCOPE this round (owner feedback, needs their decision/
+  spec): build-in gaining the registry's dials/archetype pickers (dial
+  threading into the build-in payload is backend work), ask-vs-candidates
+  consolidation, the create-flow dial/relation wiring, and a palette
+  pass — see handover-2026-09-27 §2.
   Dev-sandbox residue: campaign "V3 Dogfood Vale" + the v3dogfood
   account remain in data/mythos.db — deletable by the owner.
