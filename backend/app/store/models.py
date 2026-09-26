@@ -122,6 +122,12 @@ class Edge(Base):
     ``app.store.EDGE_COUNTER_SEMANTICS`` (the code contract, AD-23),
     and the commit path validates the counter's int shape plus its
     semantic range (owner ruling 2026-09-18).
+
+    ``reason`` (AD-32): the saved why of the relationship — required
+    non-blank on create (blank/whitespace/null-prose denied), preserved
+    verbatim on counter-only bumps, ``NULL`` only on pre-v3 rows
+    (grandfathered: never blocking reads, undo, or export). The column
+    stays nullable so pre-reason rows load.
     """
 
     __tablename__ = "edge"
@@ -138,7 +144,62 @@ class Edge(Base):
     dst: Mapped[str] = mapped_column(String(26), index=True)
     type: Mapped[str] = mapped_column(String(64))
     counter: Mapped[int] = mapped_column(default=1)
+    #: AD-32 saved reason — NULL only on pre-v3 rows (grandfathered).
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(40))
+
+
+class EntitySessionState(Base):
+    """Tonight Tier-2a run-state row behind the log (AD-26, AD-28).
+
+    One row per (campaign, entity): the consequence-verb state (defeated
+    flag, hp delta, allegiance, thread, item counters). First-class
+    committed state — written in the SAME transaction as its
+    ``session_state_*`` event (the entity/edge precedent); the row is
+    authoritative for reads, the log for history and undo. ``data`` is
+    the full session-state image (rebuild-faithful payloads carry the
+    same shape). Not exported (AD-11: the exporter reads entity/edge
+    only) and never part of the record.
+    """
+
+    __tablename__ = "entity_session_state"
+    __table_args__ = (UniqueConstraint("campaign_id", "entity_id", name="uq_entity_session_state"),)
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaign.id"), index=True)
+    entity_id: Mapped[str] = mapped_column(String(26), index=True)
+    #: The full resulting session-state image (rebuild-faithful, AD-26).
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+
+class EntityKnowledgeState(Base):
+    """One per-secret party-knowledge toggle (AD-29).
+
+    Each secret/rumor/party_hook field carries one DM toggle ``known``
+    (secret <-> known), flippable either direction at any time, one
+    undoable step each way (one transaction = one undoable step, AD-29).
+    The record never changes — only the marker moves. Not exported
+    (AD-11: exports still carry only the truth); readers join the row.
+    """
+
+    __tablename__ = "entity_knowledge_state"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "entity_id", "field", name="uq_knowledge_field"),
+        CheckConstraint(
+            "field IN ('secret', 'rumor', 'party_hook')",
+            name="ck_knowledge_field",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaign.id"), index=True)
+    entity_id: Mapped[str] = mapped_column(String(26), index=True)
+    field: Mapped[str] = mapped_column(String(64))
+    known: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
 
 
 class Event(Base):
@@ -309,16 +370,19 @@ class Account(Base):
     created_at: Mapped[str] = mapped_column(String(40))
 
 
-class Session(Base):
-    """One login session (AR14/AR29, spec-1.5).
+class LoginSession(Base):
+    """One login session (AR14/AR29, spec-1.5; AD-28).
 
     The cookie carries an opaque random token; the DB stores only its
     SHA-256 hex (a leaked DB never yields usable tokens). ``expires_at``
     is the TTL boundary; ``revoked_at`` non-NULL means the session was
     logged out — revocation is immediate. Sessions are NOT world graph.
+
+    AD-28 (v3): the table renames to ``login_session`` — ``session``
+    henceforth means tonight's table, never the login table.
     """
 
-    __tablename__ = "session"
+    __tablename__ = "login_session"
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True)
     account_id: Mapped[str] = mapped_column(ForeignKey("account.id"), index=True)
@@ -361,4 +425,33 @@ class EdgeInput:
     dst: str
     type: str
     counter: int = 1
+
+    #: AD-32 saved reason — required non-blank on creation; on a
+    # counter-only update a supplied reason re-saves (non-blank
+    # enforced) and an absent one preserves the stored value.
+    reason: str | None = None
     id: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionStateInput:
+    """One Tier-2a run-state set for ``commit_subgraph``/``commit_run_state``
+    (AD-26/AD-28): the FULL resulting session-state image for the entity —
+    the caller merges verb deltas against current state; the store
+    commits the image and its rebuild-faithful event in one transaction.
+    """
+
+    entity_id: str
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class KnowledgeFlipInput:
+    """One party-knowledge toggle set absolutely (AD-29): the DM's
+    gesture is the target state (secret <-> known), flippable either
+    direction; a standalone flip is its own revision, an edit+flip saved
+    together rides the caller's revision."""
+
+    entity_id: str
+    field: str
+    known: bool = False

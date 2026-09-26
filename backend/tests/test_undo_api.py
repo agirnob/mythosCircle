@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.core import ids
 from app.store import (
@@ -97,7 +98,11 @@ def _commit_world(campaign_id: str) -> tuple[str, str]:
                 id=character_id,
             ),
         ],
-        [models.EdgeInput(src=place_id, dst=character_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=character_id, dst=place_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     return place_id, character_id
 
@@ -332,7 +337,11 @@ def test_undo_of_entity_creation_reclaims_media_files_post_commit(
     commit_subgraph(
         campaign_id,
         [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
-        [models.EdgeInput(src=kellan_id, dst=character_id, type="rival_of", counter=1)],
+        [
+            models.EdgeInput(
+                src=kellan_id, dst=character_id, type="rival_of", counter=1, reason="seeded"
+            )
+        ],
         base_revision=_head(campaign_id).id,
     )
     row = add_media(campaign_id, kellan_id, f"{media_new_id()}.png", "image")
@@ -349,3 +358,29 @@ def test_undo_of_entity_creation_reclaims_media_files_post_commit(
     with session_scope() as session:
         entities, _edges = world_state(session, campaign_id)
     assert kellan_id not in {e.id for e in entities}
+
+
+def test_undo_take_back_of_verb_preserves_later_edit(client: Any) -> None:
+    """AC-3 on the wire: defeat, scar edit, then take the DEFEAT back
+    (non-head) — the route's undo serves the surgical inverse; the scar
+    edit stands and the defeat recedes."""
+    _register_login(client)
+    campaign_id = _create_campaign(client)
+    _place_id, character_id = _commit_world(campaign_id)
+
+    from app.store import commit_session_verb, revision_chain
+
+    defeat = commit_session_verb(campaign_id, character_id, update={"defeated": True})
+    _patch_text(client, campaign_id, character_id, "The scarred veteran of the Grayfall siege.")
+    response = client.post(f"/api/campaigns/{campaign_id}/undo", json={"revision_id": defeat.id})
+    assert response.status_code == 204
+    from app.store import session_scope
+
+    with session_scope() as session:
+        _entities, _edges = world_state(session, campaign_id)
+        chain = list(revision_chain(session, campaign_id))
+        row = session.scalars(select(models.EntitySessionState)).first()
+    assert [r.id for r in chain[-3:]] == [defeat.id, chain[-2].id, chain[-1].id]
+    scar = _entity(client, campaign_id, character_id)
+    assert scar["text"] == "The scarred veteran of the Grayfall siege."  # stands
+    assert row is None  # the defeat's row was rewound

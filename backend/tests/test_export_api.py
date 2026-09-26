@@ -99,8 +99,10 @@ def _commit_world(campaign_id: str) -> models.Revision:
             models.EntityInput(id=guild_id, kind="faction", name="The Guild"),
         ],
         edges=[
-            models.EdgeInput(src=vex_id, dst=guild_id, type="debt", counter=50),
-            models.EdgeInput(src=vex_id, dst=guild_id, type="member_of", counter=1),
+            models.EdgeInput(src=vex_id, dst=guild_id, type="debt", counter=50, reason="seeded"),
+            models.EdgeInput(
+                src=vex_id, dst=guild_id, type="member_of", counter=1, reason="seeded"
+            ),
         ],
     )
 
@@ -115,7 +117,9 @@ def _commit_second_wave(campaign_id: str, anchor_id: str, *, base_revision: str)
         entities=[
             models.EntityInput(id=mira_id, kind="character", name="Mira"),
         ],
-        edges=[models.EdgeInput(src=anchor_id, dst=mira_id, type="debt", counter=10)],
+        edges=[
+            models.EdgeInput(src=anchor_id, dst=mira_id, type="debt", counter=10, reason="seeded")
+        ],
         base_revision=base_revision,
     )
 
@@ -196,6 +200,9 @@ def test_export_json_happy(client: Any) -> None:
         ("faction", "The Guild"),
     ]
     assert body["entities"][0]["text"] == "A rogue with a ledger."
+    # AD-32: the export carries the saved why — NULL here would be a
+    # pre-v3 row, but these edges were committed through the current
+    # contract, so the saved why rides verbatim.
     assert body["edges"] == [
         {
             "id": body["edges"][0]["id"],
@@ -203,6 +210,7 @@ def test_export_json_happy(client: Any) -> None:
             "dst": body["entities"][1]["id"],
             "type": "debt",
             "counter": 50,
+            "reason": "seeded",
         },
         {
             "id": body["edges"][1]["id"],
@@ -210,6 +218,7 @@ def test_export_json_happy(client: Any) -> None:
             "dst": body["entities"][1]["id"],
             "type": "member_of",
             "counter": 1,
+            "reason": "seeded",
         },
     ]
 
@@ -384,7 +393,11 @@ def test_export_non_finite_floats_never_500(client: Any) -> None:
             ),
             models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
         ],
-        edges=[models.EdgeInput(src=probe_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=probe_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     body = client.get(f"/api/campaigns/{campaign_id}/export").json()
     assert body["entities"][0]["data"] == {
@@ -424,7 +437,11 @@ def test_export_fence_grows_with_backticks(client: Any) -> None:
             models.EntityInput(id=probe_id, kind="character", name="Probe", data=payload),
             models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
         ],
-        edges=[models.EdgeInput(src=probe_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=probe_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     md = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "markdown"}).text
     # Longest backtick run in the payload is 4, so the opening fence is 5.
@@ -491,11 +508,17 @@ def test_export_markdown_label_uniqueness(client: Any) -> None:
             models.EntityInput(id=all_unsafe, kind="place", name="[[[#]"),
         ],
         edges=[
-            models.EdgeInput(src=vex_a, dst=vex_b, type="debt", counter=50),
-            models.EdgeInput(src=ab1, dst=ab2, type="located_in", counter=1),
-            models.EdgeInput(src=ab2, dst=vex_a, type="located_in", counter=1),
-            models.EdgeInput(src=edges_named, dst=vex_a, type="located_in", counter=1),
-            models.EdgeInput(src=all_unsafe, dst=ab1, type="located_in", counter=1),
+            models.EdgeInput(src=vex_a, dst=vex_b, type="debt", counter=50, reason="seeded"),
+            # located_in: character -> place (AD-31).
+            models.EdgeInput(src=ab2, dst=ab1, type="located_in", counter=1, reason="seeded"),
+            models.EdgeInput(src=vex_a, dst=ab2, type="located_in", counter=1, reason="seeded"),
+            models.EdgeInput(
+                src=vex_a, dst=edges_named, type="located_in", counter=1, reason="seeded"
+            ),
+            models.EdgeInput(src=vex_b, dst=ab1, type="located_in", counter=1, reason="seeded"),
+            models.EdgeInput(
+                src=vex_a, dst=all_unsafe, type="located_in", counter=1, reason="seeded"
+            ),
         ],
     )
     md = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": "markdown"}).text
@@ -700,8 +723,10 @@ def _commit_vespera(campaign_id: str, guild_id: str, base_revision: str) -> str:
             )
         ],
         edges=[
-            models.EdgeInput(src=vespera_id, dst=guild_id, type="debt", counter=5),
-            models.EdgeInput(src=guild_id, dst=vespera_id, type="ally_of", counter=3),
+            models.EdgeInput(src=vespera_id, dst=guild_id, type="debt", counter=5, reason="seeded"),
+            models.EdgeInput(
+                src=guild_id, dst=vespera_id, type="ally_of", counter=3, reason="seeded"
+            ),
         ],
         base_revision=base_revision,
     )
@@ -844,8 +869,12 @@ def test_entity_export_html_escapes_injection(
             models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
         ],
         edges=[
-            models.EdgeInput(src=victim_id, dst=anchor_id, type="located_in", counter=1),
-            models.EdgeInput(src=quote_id, dst=anchor_id, type="located_in", counter=1),
+            models.EdgeInput(
+                src=victim_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            ),
+            models.EdgeInput(
+                src=quote_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            ),
         ],
     )
     row = add_media(campaign_id, quote_id, f"{new_id()}.png", "image")
@@ -972,7 +1001,11 @@ def test_entity_html_non_string_identity_still_visible(client: Any) -> None:
             models.EntityInput(id=odd_id, kind="character", name="Odd", data={"level_cr": 12}),
             models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
         ],
-        edges=[models.EdgeInput(src=odd_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=odd_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     html_body = client.get(
         f"/api/campaigns/{campaign_id}/entities/{odd_id}/export", params={"format": "html"}
@@ -1013,8 +1046,12 @@ def test_entity_html_stat_block_order_is_canonical(client: Any) -> None:
             models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
         ],
         edges=[
-            models.EdgeInput(src=a_id, dst=anchor_id, type="located_in", counter=1),
-            models.EdgeInput(src=b_id, dst=anchor_id, type="located_in", counter=1),
+            models.EdgeInput(
+                src=a_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            ),
+            models.EdgeInput(
+                src=b_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            ),
         ],
     )
 
@@ -1128,8 +1165,12 @@ def _commit_owlbear_cast(campaign_id: str) -> tuple[str, str, str]:
             models.EntityInput(id=anchor_id, kind="place", name="Docks", text="Piers."),
         ],
         edges=[
-            models.EdgeInput(src=sera_id, dst=anchor_id, type="located_in", counter=1),
-            models.EdgeInput(src=gnasher_id, dst=anchor_id, type="located_in", counter=1),
+            models.EdgeInput(
+                src=sera_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            ),
+            models.EdgeInput(
+                src=gnasher_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            ),
         ],
     )
     return sera_id, gnasher_id, anchor_id
@@ -1230,7 +1271,11 @@ def test_owlbear_sparse_place_and_long_combat_keys(client: Any) -> None:
                 data={"stat_block": {"combat": {"armor_class": 15, "hit_points": 40}}},
             ),
         ],
-        edges=[models.EdgeInput(src=long_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=long_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
         base_revision=client.get(f"/api/campaigns/{campaign_id}/export").json()["revision"]["id"],
     )
     metadata = _owlbear(client, campaign_id, long_id).json()
@@ -1353,7 +1398,11 @@ def test_fg_sparse_place_and_long_combat_keys(client: Any) -> None:
                 data={"stat_block": {"combat": {"armor_class": 15, "hit_points": 40}}},
             ),
         ],
-        edges=[models.EdgeInput(src=long_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=long_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
         base_revision=client.get(f"/api/campaigns/{campaign_id}/export").json()["revision"]["id"],
     )
     long_tree = _fg_tree(_fg(client, campaign_id, long_id).content)
@@ -1394,7 +1443,11 @@ def test_fg_escapes_and_404_shapes(client: Any) -> None:
             ),
             models.EntityInput(id=anchor_id, kind="place", name="Pit", text="."),
         ],
-        edges=[models.EdgeInput(src=hostile_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=hostile_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     response = _fg(client, campaign_id, hostile_id)
     assert response.status_code == 200
@@ -1716,7 +1769,11 @@ def _commit_maptool_warrior(campaign_id: str) -> str:
             ),
             models.EntityInput(id=anchor_id, kind="place", name="Gate", text="."),
         ],
-        edges=[models.EdgeInput(src=entity_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     return entity_id
 
@@ -2065,7 +2122,11 @@ def test_maptool_caster_spells_and_bbeg_challenge(client: Any) -> None:
             ),
             models.EntityInput(id=anchor_id, kind="place", name="Keep", text="."),
         ],
-        edges=[models.EdgeInput(src=bbeg_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=bbeg_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
         base_revision=client.get(f"/api/campaigns/{campaign_id}/export").json()["revision"]["id"],
     )
     bbeg_root = ET.fromstring(
@@ -2120,7 +2181,11 @@ def test_maptool_sparse_abilities_and_integral_guards(
             ),
             models.EntityInput(id=anchor_id, kind="place", name="Pit", text="."),
         ],
-        edges=[models.EdgeInput(src=entity_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     root = ET.fromstring(
         _rptok_zip(_maptool(client, campaign_id, entity_id).content).read("content.xml")
@@ -2232,7 +2297,11 @@ def test_maptool_escaping_404_and_bad_format(client: Any) -> None:
             ),
             models.EntityInput(id=anchor_id, kind="place", name="Pit", text="."),
         ],
-        edges=[models.EdgeInput(src=hostile_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=hostile_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     response = _maptool(client, campaign_id, hostile_id)
     content = response.content
@@ -2617,7 +2686,11 @@ def test_owlbear_bbeg_level_and_legendary(client: Any) -> None:
             ),
             models.EntityInput(id=anchor_id, kind="place", name="Lair"),
         ],
-        edges=[models.EdgeInput(src=bbeg_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=bbeg_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     metadata = _owlbear(client, campaign_id, bbeg_id).json()
     assert metadata[_fk("Z001")] == 9
@@ -2663,7 +2736,11 @@ def test_owlbear_bare_skill_names_and_stripped_spells(client: Any) -> None:
             ),
             models.EntityInput(id=anchor_id, kind="place", name="Library"),
         ],
-        edges=[models.EdgeInput(src=odd_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=odd_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     metadata = _owlbear(client, campaign_id, odd_id).json()
     assert metadata[_fk("Z014")] == "Perception +2, History, Arcana"
@@ -2818,7 +2895,11 @@ def _block_sheet(client: Any, data: dict[str, Any]) -> str:
             models.EntityInput(id=hero_id, kind="character", name="Aldric", data=data),
             models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
         ],
-        edges=[models.EdgeInput(src=hero_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=hero_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     return str(
         client.get(
@@ -2963,7 +3044,11 @@ def _structured_actions(client: Any) -> tuple[list[dict[str, str]], str]:
             ),
             models.EntityInput(id=anchor_id, kind="place", name="Anchor"),
         ],
-        edges=[models.EdgeInput(src=aldric_id, dst=anchor_id, type="located_in", counter=1)],
+        edges=[
+            models.EdgeInput(
+                src=aldric_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     metadata = _owlbear(client, campaign_id, aldric_id).json()
     return metadata[_fk("Z035")], aldric_id

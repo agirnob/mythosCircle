@@ -601,3 +601,21 @@ def test_canonical_schema_rejects_unknown_top_level_keys(world: str) -> None:
     assert violations == ["add_character payload must be a JSON object"]
     violations = validate_add_character_payload({"characters": []})
     assert violations and "non-empty" in violations[0]
+
+
+def test_gate_dial_is_an_authorable_record_key(client: TestClient) -> None:
+    """AD-36: ``dial`` is the +1 authorable record key — an authored
+    record carrying the elaboration level passes the closed-key gate;
+    anything else is still DIRECT_UNKNOWN (the sibling pin above)."""
+    world_id = _authed_campaign(client)
+    record = _record("Dialed", dial="pillar")
+    body = client.post("/api/characters", json=_payload(world_id, [_sheet(record)]))
+    assert body.status_code == 202, body.text
+    assert not any("unknown key" in v for v in body.json().get("details", {}).get("violations", []))
+    # The conftest client fixture shares one DB across the module: drain
+    # the queue so no leftover job leaks into another module's
+    # run_next_job claim (the valid-enqueue precedent).
+    from app.store import cancel_job, claim_next_job
+
+    while (claimed := claim_next_job()) is not None:
+        cancel_job(claimed.id)

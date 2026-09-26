@@ -44,6 +44,11 @@ from app.store import (
     UnknownEdgeError,
     UnknownEntityError,
 )
+from app.store.commit import (
+    BlankEdgeReasonError,
+    EdgeKindViolationError,
+    InvalidRunStateError,
+)
 
 __all__ = ["StoreHTTPException", "store_error_as_http"]
 
@@ -119,6 +124,9 @@ def store_error_as_http(exc: Exception) -> NoReturn:
             OrphanEntityError,
             SelfLoopEdgeError,
             InvalidEntityRecordError,
+            BlankEdgeReasonError,
+            EdgeKindViolationError,
+            InvalidRunStateError,
         ),
     ):
         raise HTTPException(status_code=422, detail=str(exc)) from exc

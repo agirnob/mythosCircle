@@ -94,6 +94,8 @@ def init_db(url: str = DEFAULT_DB_URL) -> Engine:
     _migrate_proposed_candidate_status(_engine)
     _migrate_proposed_candidate_provenance(_engine)
     _migrate_proposed_candidate_entity_base(_engine)
+    _migrate_edge_reason(_engine)
+    _migrate_login_session(_engine)
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 
@@ -116,6 +118,50 @@ def _migrate_job_result(engine: Engine) -> None:
         return
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE job ADD COLUMN result JSON"))
+
+
+def _migrate_edge_reason(engine: Engine) -> None:
+    """Add ``edge.reason`` to a pre-v3 database (AD-32).
+
+    Additive and idempotent (the ``_migrate_job_result`` precedent).
+    Existing rows keep ``reason = NULL`` — grandfathered per AD-32:
+    pre-reason rows never block reads, undo, or export; the non-blank
+    contract binds new and retargeted edges only. The owner nukes test
+    databases freely (2026-09-25 verdict), so no backfill: absent
+    reason reads as authored-or-absent.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "edge" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("edge")}
+    if "reason" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE edge ADD COLUMN reason TEXT"))
+
+
+def _migrate_login_session(engine: Engine) -> None:
+    """Rename the login table ``session`` -> ``login_session`` (AD-28).
+
+    ``session`` henceforth means tonight's table. ``create_all`` makes
+    the new name on fresh databases; a database created before v3 still
+    has the old name, so the model's SELECTs would fail with
+    ``no such table: login_session``. One idempotent ALTER RENAME (the
+    owner runs tests against disposable databases — 2026-09-25 verdict —
+    so no downtime choreography is needed: the rename is a metadata
+    write inside one transaction on startup). Runs after
+    ``create_all`` in ``init_db``.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "login_session" in tables or "session" not in tables:
+        return
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE session RENAME TO login_session"))
 
 
 @contextmanager

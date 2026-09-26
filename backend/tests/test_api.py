@@ -96,7 +96,9 @@ def test_store_error_mapper_422_edge_counter_rejection() -> None:
     def probe() -> None:
         store_error_as_http(
             InvalidEdgeCounterError(
-                models.EdgeInput(src="0" * 26, dst="1" * 26, type="debt", counter=bad_counter)
+                models.EdgeInput(
+                    src="0" * 26, dst="1" * 26, type="debt", counter=bad_counter, reason="seeded"
+                )
             )
         )
 

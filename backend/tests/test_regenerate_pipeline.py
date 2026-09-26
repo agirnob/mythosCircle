@@ -116,7 +116,7 @@ def _commit_world(campaign_id: str) -> tuple[str, str]:
             EntityInput(kind="character", name="Mira Vane", data=_record(), id=mira_id),
             EntityInput(kind="faction", name="The Guild", id=guild_id),
         ],
-        [EdgeInput(src=mira_id, dst=guild_id, type="member_of", counter=1)],
+        [EdgeInput(src=mira_id, dst=guild_id, type="member_of", counter=1, reason="seeded")],
         base_revision=None,
     )
     return mira_id, guild_id
@@ -311,8 +311,20 @@ def test_section_regen_candidate_replaces_row_in_place(
     campaign_id, mira_id, guild_id = world
     record = _record(name="Sable Rook")
     record["edges"] = [
-        {"endpoint": guild_id, "direction": "outbound", "type": "rival_of", "counter": 2},
-        {"endpoint": mira_id, "direction": "inbound", "type": "member_of", "counter": 1},
+        {
+            "endpoint": guild_id,
+            "direction": "outbound",
+            "type": "rival_of",
+            "counter": 2,
+            "reason": "seeded relation",
+        },
+        {
+            "endpoint": mira_id,
+            "direction": "inbound",
+            "type": "member_of",
+            "counter": 1,
+            "reason": "seeded relation",
+        },
     ]
     job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
     candidate = stage_candidates(campaign_id, job.id, [record])[0]
@@ -529,7 +541,13 @@ def test_settled_candidate_target_fails_job(
     campaign_id, mira_id, guild_id = world
     record = _record(name="Sable Rook")
     record["edges"] = [
-        {"endpoint": guild_id, "direction": "outbound", "type": "rival_of", "counter": 2},
+        {
+            "endpoint": guild_id,
+            "direction": "outbound",
+            "type": "rival_of",
+            "counter": 2,
+            "reason": "seeded relation",
+        },
     ]
     job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
     candidate = stage_candidates(campaign_id, job.id, [record])[0]
@@ -718,7 +736,7 @@ def test_mid_call_role_unboss_edit_gates_spliced_boss(
     commit_subgraph(
         campaign_id,
         [EntityInput(kind="character", name="Vorgath", data=bbeg_record, id=bbeg_id)],
-        [EdgeInput(src=bbeg_id, dst=guild_id, type="rival_of", counter=1)],
+        [EdgeInput(src=bbeg_id, dst=guild_id, type="rival_of", counter=1, reason="seeded")],
         base_revision=head.id,
     )
     job_id = _enqueue(campaign_id, {"kind": "entity", "id": bbeg_id}, None)
@@ -757,7 +775,13 @@ def test_candidate_target_reroll_preserves_staged_edges_and_refreshes_base(
     record, and the refreshed row accepts cleanly (never stranded)."""
     campaign_id, mira_id, guild_id = world
     staged_edges = [
-        {"endpoint": guild_id, "direction": "outbound", "type": "rival_of", "counter": 2},
+        {
+            "endpoint": guild_id,
+            "direction": "outbound",
+            "type": "rival_of",
+            "counter": 2,
+            "reason": "seeded relation",
+        },
     ]
     record = _record()
     record["edges"] = staged_edges
@@ -803,3 +827,32 @@ def test_candidate_target_reroll_preserves_staged_edges_and_refreshes_base(
     assert by_id[mira_id].data["secret"] == "DM's hand edit"
     assert by_id[mira_id].data["personality"] == "clipped, cold"
     assert (mira_id, guild_id, "rival_of") in {(ed.src, ed.dst, ed.type) for ed in edges}
+
+
+def test_enrich_guide_and_dial_ride_the_prompt(world: tuple[str, str, str]) -> None:
+    """AD-38: an enrich (sections null + guide + dial) flows BOTH the
+    guide box and the closed dial level into the re-roll prompt — the
+    model sees the DM's shape, never a guessed depth."""
+    campaign_id, mira_id, _guild_id = world
+    seen: list[str] = []
+    job_id = enqueue_job(
+        campaign_id,
+        "regenerate",
+        {
+            "target": {"kind": "entity", "id": mira_id},
+            "sections": None,
+            "guide": "Lean into the dockmaster shadow-work.",
+            "dial": "pillar",
+        },
+    ).id
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        seen.append(prompt)
+        return _regen_output(_record(), personality="re-rolled")
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    (prompt,) = seen
+    assert "DIAL (elaboration weight" in prompt
+    assert "pillar" in prompt
+    assert "GUIDE (the DM says what changed" in prompt
+    assert "Lean into the dockmaster shadow-work." in prompt

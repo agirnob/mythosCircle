@@ -229,7 +229,11 @@ def test_delete_campaign_reclaims_media_rows_and_files(
                 models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
                 models.EntityInput(kind="character", name="Mira Vane", id=entity_id),
             ],
-            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+            [
+                models.EdgeInput(
+                    src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+                )
+            ],
         )
         return entity_id
 
@@ -293,7 +297,11 @@ def test_delete_wire_leaves_zero_rows_in_all_ar20_tables(client: Any) -> None:
                 models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
                 models.EntityInput(kind="character", name="Mira Vane", id=entity_id),
             ],
-            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+            [
+                models.EdgeInput(
+                    src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+                )
+            ],
         )
         return entity_id
 
@@ -361,7 +369,11 @@ def test_delete_media_reclaim_failure_still_204(
             models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
             models.EntityInput(kind="character", name="Mira Vane", id=entity_id),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     add_media(mine["id"], entity_id, f"{ids.new_id()}.png", "image")
     response = client.request("DELETE", f"/api/campaigns/{mine['id']}", json={"confirm": True})
@@ -436,3 +448,120 @@ def test_move_foreign_library_404_identical_to_unknown_library(client: Any) -> N
     # loudly) — the deferred-work entry tracks the misattribution; the
     # store is NOT to be pre-fixed here.
     assert foreign_library.json() == unknown_library.json()
+
+
+def test_kinds_renders_the_single_source_registry(client: Any) -> None:
+    """AD-34: GET /api/campaigns/kinds renders the store's matrix, counter
+    semantics, dial levels, and archetypes under a content-hash version
+    token — the endpoint owns no vocabulary."""
+    _register_login(client)
+    resp = client.get("/api/campaigns/kinds")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body["version"], str) and len(body["version"]) == 12
+    assert "part_of" in body["edge_types"]  # the v3 cell
+    rules = body["kind_rules"]
+    assert rules["part_of"]["src"] == ["faction", "place"]
+    assert rules["part_of"]["dst"] == ["faction", "place"]
+    assert rules["controls"]["src"] == ["character", "faction", "place"]  # AD-31
+    assert rules["employs"]["dst"] == ["character", "faction"]
+    assert rules["debt"]["counter_semantic"] == "amount"
+    assert rules["member_of"]["counter_bounds"] is None
+    assert body["dial_levels"] == ["nothing", "draft", "simple", "important", "pillar"]
+    assert len(body["archetypes"]) == 18  # 10 place + 8 faction
+    place = [a for a in body["archetypes"] if a["kind"] == "place"]
+    faction = [a for a in body["archetypes"] if a["kind"] == "faction"]
+    assert len(place) == 10 and len(faction) == 8
+    city = next(a for a in place if a["name"] == "City")
+    assert city["default_dial"] == "important"
+
+
+def test_kinds_version_token_is_deterministic(client: Any) -> None:
+    """The token is a content hash — two calls in the same build agree."""
+    _register_login(client)
+    first = client.get("/api/campaigns/kinds").json()["version"]
+    second = client.get("/api/campaigns/kinds").json()["version"]
+    assert first == second
+
+
+def test_revisions_owner_gated_and_bounded(client: Any) -> None:
+    """AD-35: GET /revisions is owner-only, clamps to max 100, newest
+    first, display-ready summaries."""
+    _register_login(client)
+    created = _create_campaign(client)
+    campaign_id = created.json()["id"]
+    # Seed a world then bump the counter a few times so the feed shows
+    # distinct revisions.
+    from app.core import ids
+    from app.store import commit_subgraph, models
+
+    bar, mira = ids.new_id(), ids.new_id()
+    revision_ids: list[str] = []
+    edge_id: str | None = None
+    for index in range(3):
+        edges = (
+            []
+            if index > 0
+            else [models.EdgeInput(src=mira, dst=bar, type="member_of", counter=1, reason="seeded")]
+        )
+        entities = (
+            [
+                models.EntityInput(kind="faction", name="The Gilded Bar", id=bar),
+                models.EntityInput(kind="character", name="Mira Vane", id=mira),
+            ]
+            if index == 0
+            else []
+        )
+        if index > 0:
+            edges = [
+                models.EdgeInput(
+                    src=mira,
+                    dst=bar,
+                    type="member_of",
+                    counter=index + 1,
+                    id=edge_id,
+                    reason=None,
+                )
+            ]
+        revision = commit_subgraph(
+            campaign_id,
+            entities,
+            edges,
+            base_revision=revision_ids[-1] if revision_ids else None,
+        )
+        if edge_id is None:
+            from app.store import session_scope, world_state
+
+            with session_scope() as session:
+                _entities, edges_live = world_state(session, campaign_id)
+            edge_id = edges_live[0].id
+        revision_ids.append(revision.id)
+    resp = client.get(f"/api/campaigns/{campaign_id}/revisions")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["default"] == 20 and body["max"] == 100
+    assert len(body["revisions"]) == 3
+    assert [r["revision_id"] for r in body["revisions"]] == list(reversed(revision_ids))
+    summary = body["revisions"][-1]  # the seed revision
+    actions = {event["action"] for event in summary["events"]}
+    kinds = {event["kind"] for event in summary["events"]}
+    assert actions == {"created"}
+    assert kinds == {"edge", "entity"}
+    names = sorted(name for event in summary["events"] for name in event["target_names"])
+    assert "The Gilded Bar" in names and "Mira Vane" in names
+    assert all(event["actor"] == "dm" for event in summary["events"])
+    # The counter bumps read as ``edited`` on the edge stream.
+    bump = body["revisions"][0]
+    assert {event["action"] for event in bump["events"]} == {"edited"}
+
+
+def test_revisions_foreign_campaign_404(client: Any) -> None:
+    """The single indistinguishable 404 — no existence oracle."""
+    _register_login(client)
+    resp = client.get(f"/api/campaigns/{'1' * 26}/revisions")
+    assert resp.status_code == 404
+
+
+def test_revisions_require_auth(client: Any) -> None:
+    resp = client.get(f"/api/campaigns/{'1' * 26}/revisions")
+    assert resp.status_code == 401

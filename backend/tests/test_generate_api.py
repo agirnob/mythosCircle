@@ -95,7 +95,7 @@ def _commit_world(campaign_id: str) -> None:
                 id=mira_id,
             ),
         ],
-        [EdgeInput(src=bar_id, dst=mira_id, type="member_of", counter=1)],
+        [EdgeInput(src=bar_id, dst=mira_id, type="member_of", counter=1, reason="seeded")],
     )
 
 
@@ -167,7 +167,14 @@ def _fake_generate_output() -> dict[str, Any]:
                     "reaction_matrix": "buys drinks, sells favors",
                     "on_defeat": "flees, leaving the ledger behind",
                 },
-                "edges": [{"endpoint": "C0", "direction": "outbound", "type": "rival_of"}],
+                "edges": [
+                    {
+                        "endpoint": "C0",
+                        "direction": "outbound",
+                        "type": "rival_of",
+                        "reason": "seeded relation",
+                    }
+                ],
             }
             for i in range(3)
         ]
@@ -178,6 +185,9 @@ def _drain(client: TestClient, campaign_id: str) -> None:
     """Run the one queued job with the canned-output fake provider."""
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        # AD-33: the fill-blank prompt gets one fill per blank ordinal.
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         return json.dumps(_fake_generate_output())
 
     assert run_next_job(provider=provider, settings=SETTINGS) is not None
@@ -321,7 +331,14 @@ def test_candidates_pagination_and_cursor_guards(
         "rumor": "r",
         "party_hook": "h",
         "stat_block": _VALID_STAT_BLOCK,
-        "edges": [{"endpoint": committed.id, "direction": "outbound", "type": "rival_of"}],
+        "edges": [
+            {
+                "endpoint": committed.id,
+                "direction": "outbound",
+                "type": "rival_of",
+                "reason": "seeded relation",
+            }
+        ],
     }
     job = enqueue_job(campaign_id, "generate", {"ask": "list me"})
     stage_candidates(
@@ -402,7 +419,15 @@ def _stage_one(campaign_id: str, mira_id: str, name: str = "Sable Rook") -> str:
             "reaction_matrix": "buys drinks, sells favors",
             "on_defeat": "flees, leaving the ledger behind",
         },
-        "edges": [{"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 1}],
+        "edges": [
+            {
+                "endpoint": mira_id,
+                "direction": "outbound",
+                "type": "rival_of",
+                "counter": 1,
+                "reason": "seeded relation",
+            }
+        ],
     }
     job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
     (row,) = stage_candidates(campaign_id, job.id, [payload])
@@ -506,8 +531,20 @@ def test_accept_route_payload_override_edges_edited_commit(
     staged_payload = listed["candidates"][0]["payload"]
 
     edited_edges = [
-        {"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 9},
-        {"endpoint": mira_id, "direction": "outbound", "type": "ally_of", "counter": 1},
+        {
+            "endpoint": mira_id,
+            "direction": "outbound",
+            "type": "rival_of",
+            "counter": 9,
+            "reason": "seeded relation",
+        },
+        {
+            "endpoint": mira_id,
+            "direction": "outbound",
+            "type": "ally_of",
+            "counter": 1,
+            "reason": "seeded relation",
+        },
     ]
     response = client.post(
         f"/api/campaigns/{campaign_id}/candidates/{candidate_id}/accept",
@@ -582,7 +619,15 @@ def test_accept_route_override_dead_endpoint_422_row_stays_proposed(
     staged_payload = listed["candidates"][0]["payload"]
     altered = dict(
         staged_payload,
-        edges=[{"endpoint": "Z" * 26, "direction": "outbound", "type": "ally_of", "counter": 1}],
+        edges=[
+            {
+                "endpoint": "Z" * 26,
+                "direction": "outbound",
+                "type": "ally_of",
+                "counter": 1,
+                "reason": "seeded relation",
+            }
+        ],
     )
     _assert_envelope(
         client.post(
@@ -901,7 +946,15 @@ def test_accept_route_malformed_payload_422(client: TestClient, job_api: Callabl
         "rumor": "r",
         "party_hook": "p",
         "stat_block": _VALID_STAT_BLOCK,
-        "edges": [{"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 1}],
+        "edges": [
+            {
+                "endpoint": mira_id,
+                "direction": "outbound",
+                "type": "rival_of",
+                "counter": 1,
+                "reason": "seeded relation",
+            }
+        ],
     }
     job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
     (row,) = stage_candidates(campaign_id, job.id, [payload])

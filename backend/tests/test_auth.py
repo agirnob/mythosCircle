@@ -65,7 +65,7 @@ def test_session_token_never_stored(db: None) -> None:
     assert token != session_row.token_hash
     assert session_row.token_hash != ""
     with session_scope() as s:
-        stored = s.scalars(__import__("sqlalchemy").select(models.Session)).all()
+        stored = s.scalars(__import__("sqlalchemy").select(models.LoginSession)).all()
     assert len(stored) == 1
     assert stored[0].token_hash == session_row.token_hash
     assert token not in {row.token_hash for row in stored}

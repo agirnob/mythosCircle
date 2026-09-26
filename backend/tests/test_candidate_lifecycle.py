@@ -89,7 +89,7 @@ def _seed_world(campaign_id: str) -> tuple[str, str]:
             models.EntityInput(kind="faction", name="The Gilded Bar", id=bar_id),
             models.EntityInput(kind="character", name="Mira Vane", id=mira_id),
         ],
-        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
+        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded")],
         base_revision=None,
     )
     return bar_id, mira_id
@@ -123,8 +123,20 @@ def _payload(mira_id: str, bar_id: str, **overrides: Any) -> dict[str, Any]:
             "on_defeat": "flees, leaving the ledger behind",
         },
         "edges": [
-            {"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 2},
-            {"endpoint": bar_id, "direction": "inbound", "type": "member_of", "counter": 1},
+            {
+                "endpoint": mira_id,
+                "direction": "outbound",
+                "type": "rival_of",
+                "counter": 2,
+                "reason": "seeded relation",
+            },
+            {
+                "endpoint": bar_id,
+                "direction": "inbound",
+                "type": "member_of",
+                "counter": 1,
+                "reason": "seeded relation",
+            },
         ],
     }
     payload.update(overrides)
@@ -279,8 +291,20 @@ def test_accept_override_edited_edges_commit(world: str) -> None:
     override = dict(
         candidate.payload,
         edges=[
-            {"endpoint": mira_id, "direction": "outbound", "type": "rival_of", "counter": 7},
-            {"endpoint": bar_id, "direction": "outbound", "type": "ally_of", "counter": 1},
+            {
+                "endpoint": mira_id,
+                "direction": "outbound",
+                "type": "rival_of",
+                "counter": 7,
+                "reason": "seeded relation",
+            },
+            {
+                "endpoint": bar_id,
+                "direction": "outbound",
+                "type": "ally_of",
+                "counter": 1,
+                "reason": "seeded relation",
+            },
         ],
     )
 
@@ -311,7 +335,15 @@ def test_accept_override_bad_edge_endpoint_rejected(world: str) -> None:
     candidate = _stage(world, _payload(mira_id, bar_id))
     override = dict(
         candidate.payload,
-        edges=[{"endpoint": "Z" * 26, "direction": "outbound", "type": "ally_of", "counter": 1}],
+        edges=[
+            {
+                "endpoint": "Z" * 26,
+                "direction": "outbound",
+                "type": "ally_of",
+                "counter": 1,
+                "reason": "seeded relation",
+            }
+        ],
     )
 
     with pytest.raises(InvalidCandidateError, match="resolve to committed world"):
@@ -327,7 +359,15 @@ def test_accept_override_out_of_vocab_edge_rejected(world: str) -> None:
     candidate = _stage(world, _payload(mira_id, bar_id))
     override = dict(
         candidate.payload,
-        edges=[{"endpoint": mira_id, "direction": "outbound", "type": "friends", "counter": 1}],
+        edges=[
+            {
+                "endpoint": mira_id,
+                "direction": "outbound",
+                "type": "friends",
+                "counter": 1,
+                "reason": "seeded relation",
+            }
+        ],
     )
 
     with pytest.raises(InvalidCandidateError, match="closed vocabulary"):
@@ -953,7 +993,7 @@ def test_migrate_provenance_adds_regenerates_entity_id(tmp_path: Path) -> None:
                 EntityInput(kind="character", name="Mira Vane", id=mira_id),
                 EntityInput(kind="faction", name="The Guild", id=bar_id),
             ],
-            [EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
+            [EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded")],
             base_revision=None,
         )
         job = enqueue_job(campaign_id, "generate", {"ask": "regen"})
@@ -1044,7 +1084,13 @@ def test_regen_entity_accept_duplicate_edge_rejected(world: str) -> None:
                 mira_id,
                 bar_id,
                 edges=[
-                    {"endpoint": bar_id, "direction": "outbound", "type": "member_of", "counter": 1}
+                    {
+                        "endpoint": bar_id,
+                        "direction": "outbound",
+                        "type": "member_of",
+                        "counter": 1,
+                        "reason": "seeded relation",
+                    }
                 ],
             )
         ],
@@ -1075,7 +1121,7 @@ def test_regen_entity_accept_deleted_target_rejected(world: str) -> None:
     commit_subgraph(
         world,
         [models.EntityInput(kind="place", name="The Docks", id=other)],
-        [models.EdgeInput(src=other, dst=bar_id, type="located_in", counter=1)],
+        [models.EdgeInput(src=bar_id, dst=other, type="located_in", counter=1, reason="seeded")],
         base_revision=_head(world),
     )
     delete_entity(world, mira_id, cascade=True)
@@ -1467,7 +1513,13 @@ def test_re_roll_after_edit_refreshes_base_and_accepts(world: str) -> None:
     never stranded (the three-way escape's rebase arm)."""
     bar_id, mira_id = _seed_world(world)
     staged_edges = [
-        {"endpoint": bar_id, "direction": "outbound", "type": "rival_of", "counter": 2},
+        {
+            "endpoint": bar_id,
+            "direction": "outbound",
+            "type": "rival_of",
+            "counter": 2,
+            "reason": "seeded relation",
+        },
     ]
     candidate = _stage_regen(
         world,
@@ -1598,7 +1650,7 @@ def test_migrate_entity_base_adds_column_and_staging_writes_it(tmp_path: Path) -
                 ),
                 EntityInput(kind="faction", name="The Guild", id=bar_id),
             ],
-            [EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
+            [EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded")],
             base_revision=None,
         )
         job = enqueue_job(campaign_id, "generate", {"ask": "regen"})

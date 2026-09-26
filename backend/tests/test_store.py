@@ -24,15 +24,18 @@ from app.store import (
     DEFAULT_EDGE_COUNTER_SEMANTIC,
     EDGE_COUNTER_SEMANTICS,
     EDGE_TYPES,
+    BlankEdgeReasonError,
     CorruptEventError,
     CrossCampaignConflictError,
     DanglingEdgeError,
     DuplicateEdgeError,
     DuplicateEntityError,
+    EdgeKindViolationError,
     EdgeRetargetError,
     EmptySubgraphError,
     InvalidEdgeCounterError,
     InvalidEdgeTypeError,
+    InvalidRunStateError,
     InvalidUlidError,
     LiveEdgesError,
     OrphanEntityError,
@@ -43,6 +46,9 @@ from app.store import (
     UnknownEntityError,
     add_media,
     app_db_url,
+    commit_knowledge_toggle,
+    commit_run_state,
+    commit_session_verb,
     commit_subgraph,
     create_campaign,
     delete_edge,
@@ -54,6 +60,7 @@ from app.store import (
     models,
     session_scope,
     undo,
+    update_entity,
 )
 from app.store.read import latest_revision, revision_chain, revision_events, world_state
 
@@ -109,8 +116,8 @@ def _seed_world(campaign_id: str) -> tuple[str, str]:
             models.EntityInput(kind="character", name="Mira Vane", id=mira_id),
         ],
         [
-            models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1),
-            models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=3),
+            models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded"),
+            models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=3, reason="seeded"),
         ],
         base_revision=None,
     )
@@ -194,9 +201,9 @@ def test_commit_new_subgraph_one_revision(world: str) -> None:
             models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id),
         ],
         [
-            models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1),
-            models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=3),
-            models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1),
+            models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded"),
+            models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=3, reason="seeded"),
+            models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1, reason="seeded"),
         ],
         base_revision=None,
     )
@@ -231,7 +238,7 @@ def test_commit_ids_and_timestamps_follow_conventions(world: str) -> None:
             models.EntityInput(kind="faction", name="The Gilded Bar", id=bar_id),
             models.EntityInput(kind="character", name="Mira Vane", id=mira_id),
         ],
-        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
+        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded")],
         base_revision=None,
     )
     with session_scope() as session:
@@ -254,7 +261,7 @@ def test_edge_between_staged_and_existing(world: str) -> None:
     commit_subgraph(
         world,
         [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
-        [models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=1)],
+        [models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=1, reason="seeded")],
         base_revision=_head(world),
     )
     _entities, edges = _state(world)
@@ -319,7 +326,7 @@ def test_dangling_edge_rejects_whole_subgraph(world: str) -> None:
         commit_subgraph(
             world,
             [models.EntityInput(kind="character", name="The Ghost", id=ghost_id)],
-            [models.EdgeInput(src=MISSING_ID, dst=ghost_id, type="ally_of")],
+            [models.EdgeInput(src=MISSING_ID, dst=ghost_id, type="ally_of", reason="seeded")],
             base_revision=_head(world),
         )
     assert excinfo.value.missing_endpoint == MISSING_ID
@@ -335,7 +342,7 @@ def test_dangling_edge_missing_destination_rejected(world: str) -> None:
         commit_subgraph(
             world,
             [],
-            [models.EdgeInput(src=mira_id, dst=MISSING_ID, type="kin_of")],
+            [models.EdgeInput(src=mira_id, dst=MISSING_ID, type="kin_of", reason="seeded")],
             base_revision=_head(world),
         )
     assert excinfo.value.missing_endpoint == MISSING_ID
@@ -349,7 +356,7 @@ def test_invalid_edge_type_rejected(world: str) -> None:
         commit_subgraph(
             world,
             [],
-            [models.EdgeInput(src=bar_id, dst=mira_id, type="sworn_pact")],
+            [models.EdgeInput(src=bar_id, dst=mira_id, type="sworn_pact", reason="seeded")],
             base_revision=_head(world),
         )
     assert "sworn_pact" in str(excinfo.value)
@@ -401,7 +408,7 @@ def test_stale_base_rejected_naming_latest(world: str) -> None:
     commit_subgraph(
         world,
         [models.EntityInput(kind="character", name="A Stranger", id=stranger_id)],
-        [models.EdgeInput(src=stranger_id, dst=bar_id, type="ally_of", counter=1)],
+        [models.EdgeInput(src=stranger_id, dst=bar_id, type="ally_of", counter=1, reason="seeded")],
         base_revision=first,
     )
     latest = _head(world)
@@ -456,7 +463,7 @@ def test_undo_restores_prior_state_with_stable_ulids_and_reclaims_media(
             models.EntityInput(kind="character", name="Mira Vane, the Unbroken", id=mira_id),
             models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id),
         ],
-        [models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=1)],
+        [models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=1, reason="seeded")],
         base_revision=_head(world),
     )
     with session_scope() as session:
@@ -506,7 +513,7 @@ def test_undo_is_redoable(world: str) -> None:
     r1 = commit_subgraph(
         world,
         [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
-        [models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=1)],
+        [models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=1, reason="seeded")],
         base_revision=_head(world),
     )
     with session_scope() as session:
@@ -549,7 +556,7 @@ def test_undo_non_latest_raises(world: str) -> None:
     commit_subgraph(
         world,
         [models.EntityInput(kind="character", name="A Stranger", id=stranger_id)],
-        [models.EdgeInput(src=stranger_id, dst=bar_id, type="ally_of", counter=1)],
+        [models.EdgeInput(src=stranger_id, dst=bar_id, type="ally_of", counter=1, reason="seeded")],
         base_revision=first,
     )
     latest = _head(world)
@@ -647,7 +654,11 @@ def test_edge_counter_invalid_shape_rejects_subgraph(world: str, counter: Any) -
         commit_subgraph(
             world,
             [],
-            [models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=counter)],
+            [
+                models.EdgeInput(
+                    src=mira_id, dst=bar_id, type="debt", counter=counter, reason="seeded"
+                )
+            ],
             base_revision=before_head,
         )
     assert "debt" in str(excinfo.value)
@@ -690,10 +701,12 @@ def test_edge_counter_valid_rows_stored_verbatim(world: str) -> None:
         world,
         [],
         [
-            models.EdgeInput(src=mira_id, dst=bar_id, type="ally_of"),
-            models.EdgeInput(src=bar_id, dst=mira_id, type="kin_of", counter=-5),
-            models.EdgeInput(src=bar_id, dst=mira_id, type="grudge", counter=10),
-            models.EdgeInput(src=bar_id, dst=mira_id, type="debt", counter=1_000_000),
+            models.EdgeInput(src=mira_id, dst=bar_id, type="ally_of", reason="seeded"),
+            models.EdgeInput(src=bar_id, dst=mira_id, type="kin_of", counter=-5, reason="seeded"),
+            models.EdgeInput(src=bar_id, dst=mira_id, type="grudge", counter=10, reason="seeded"),
+            models.EdgeInput(
+                src=bar_id, dst=mira_id, type="debt", counter=1_000_000, reason="seeded"
+            ),
         ],
         base_revision=_head(world),
     )
@@ -731,7 +744,11 @@ def test_edge_counter_semantic_range_rejects_subgraph(
         commit_subgraph(
             world,
             [],
-            [models.EdgeInput(src=mira_id, dst=bar_id, type=edge_type, counter=counter)],
+            [
+                models.EdgeInput(
+                    src=mira_id, dst=bar_id, type=edge_type, counter=counter, reason="seeded"
+                )
+            ],
             base_revision=before_head,
         )
     assert edge_type in str(excinfo.value)
@@ -762,6 +779,10 @@ def test_edge_never_carries_free_text_label() -> None:
     """FR3's 'never free text' is structural: the edge table and input
     dataclass carry no label/text field, and EdgeInput rejects one at
     construction (a relation is the typed edge itself, AD-5)."""
+    # AD-32 (v3): the edge table gains the ``reason`` column — a SAVED
+    # WHY, not free-form labeling: non-blank enforced at the boundary,
+    # null-prose denied. The structurally-free-text ban (no label/text)
+    # still holds.
     assert list(models.Edge.__table__.columns.keys()) == [
         "id",
         "campaign_id",
@@ -769,6 +790,7 @@ def test_edge_never_carries_free_text_label() -> None:
         "dst",
         "type",
         "counter",
+        "reason",
         "created_at",
     ]
     assert set(models.EdgeInput.__dataclass_fields__) == {
@@ -776,10 +798,17 @@ def test_edge_never_carries_free_text_label() -> None:
         "dst",
         "type",
         "counter",
+        "reason",
         "id",
     }
     with pytest.raises(TypeError):
-        models.EdgeInput(src="0" * 26, dst="1" * 26, type="relationship", label="free-form label")  # type: ignore[call-arg]  # no label field exists (FR3)
+        models.EdgeInput(
+            src="0" * 26,
+            dst="1" * 26,
+            type="relationship",
+            label="free-form label",
+            reason="seeded",
+        )  # type: ignore[call-arg]  # no label field exists (FR3)
 
 
 # ---------------------------------------------------------------------------
@@ -794,8 +823,10 @@ def test_no_dangling_edges_after_mixed_commits(world: str) -> None:
         world,
         [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
         [
-            models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=1),
-            models.EdgeInput(src=kellan_id, dst=mira_id, type="grudge", counter=5),
+            models.EdgeInput(
+                src=mira_id, dst=kellan_id, type="rival_of", counter=1, reason="seeded"
+            ),
+            models.EdgeInput(src=kellan_id, dst=mira_id, type="grudge", counter=5, reason="seeded"),
         ],
         base_revision=_head(world),
     )
@@ -896,7 +927,7 @@ def test_new_edge_duplicating_relationship_rejected(world: str) -> None:
         commit_subgraph(
             world,
             [],
-            [models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=9)],
+            [models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=9, reason="seeded")],
             base_revision=head,
         )
 
@@ -915,8 +946,12 @@ def test_duplicate_staged_relationship_rejected(world: str) -> None:
             world,
             [models.EntityInput(kind="character", name="Kellan", id=kellan_id)],
             [
-                models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=1),
-                models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=2),
+                models.EdgeInput(
+                    src=mira_id, dst=kellan_id, type="rival_of", counter=1, reason="seeded"
+                ),
+                models.EdgeInput(
+                    src=mira_id, dst=kellan_id, type="rival_of", counter=2, reason="seeded"
+                ),
             ],
             base_revision=head,
         )
@@ -997,7 +1032,7 @@ def test_corrupt_event_payload_rejected(world: str) -> None:
     rev = commit_subgraph(
         world,
         [models.EntityInput(kind="character", name="Kellan", id=kellan_id)],
-        [models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1)],
+        [models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1, reason="seeded")],
         base_revision=_head(world),
     )
     with session_scope() as session:
@@ -1122,7 +1157,11 @@ def test_concurrent_commits_same_base_exactly_one_wins(world: str) -> None:
             rev = commit_subgraph(
                 world,
                 [models.EntityInput(kind="character", name=label, id=entity_id)],
-                [models.EdgeInput(src=entity_id, dst=bar_id, type="ally_of", counter=1)],
+                [
+                    models.EdgeInput(
+                        src=entity_id, dst=bar_id, type="ally_of", counter=1, reason="seeded"
+                    )
+                ],
                 base_revision=head,
             )
             results[label] = rev.id
@@ -1259,7 +1298,9 @@ def test_undo_mixed_commit_full_inverse_matrix(world: str) -> None:
             models.EntityInput(kind="character", name="Mira Vane, the Unbroken", id=mira_id),
         ],
         [
-            models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=1),
+            models.EdgeInput(
+                src=mira_id, dst=kellan_id, type="rival_of", counter=1, reason="seeded"
+            ),
             models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=7, id=debt_id),
         ],
         base_revision=_head(world),
@@ -1274,21 +1315,54 @@ def test_undo_mixed_commit_full_inverse_matrix(world: str) -> None:
     assert _state(world) == committed
 
 
-@pytest.mark.parametrize("edge_type", sorted(EDGE_TYPES))
-def test_closed_edge_vocabulary_members_committable(world: str, edge_type: str) -> None:
-    """Every member of the closed Phase-1 vocabulary (AD-5) is accepted by
-    a commit — the contract is pinned from the acceptance side, not just
-    the rejection side."""
-    bar_id, mira_id = _seed_world(world)
+@pytest.mark.parametrize(
+    ("edge_type", "src_kind", "dst_kind"),
+    # One LEGAL kind pair per closed-vocabulary member (AD-5, AD-31) —
+    # the acceptance-side pin, per matrix cell. The Gilded Bar is a
+    # faction, Mira a character, so a place enters as a fresh row where
+    # the cell demands one.
+    [
+        ("relationship", "faction", "character"),
+        ("debt", "faction", "character"),
+        ("grudge", "faction", "character"),
+        ("loyalty", "faction", "character"),
+        ("member_of", "faction", "character"),
+        ("located_in", "character", "place"),
+        ("part_of", "faction", "faction"),
+        ("rival_of", "faction", "character"),
+        ("kin_of", "faction", "character"),
+        ("ally_of", "faction", "character"),
+        ("enemy_of", "faction", "character"),
+        ("bases_at", "faction", "place"),
+        ("controls", "faction", "place"),
+        ("employs", "faction", "character"),
+        ("worships", "faction", "character"),
+        ("hails_from", "faction", "place"),
+        ("protects", "faction", "character"),
+    ],
+)
+def test_closed_edge_vocabulary_members_committable(
+    world: str, edge_type: str, src_kind: str, dst_kind: str
+) -> None:
+    """Every member of the closed vocabulary (AD-5, AD-31) is accepted by
+    a commit on a legal kind pair — the contract is pinned from the
+    acceptance side, per cell, not one pair for every type."""
+    src_id, dst_id = ids.new_id(), ids.new_id()
     revision = commit_subgraph(
         world,
-        [],
-        [models.EdgeInput(src=bar_id, dst=mira_id, type=edge_type, counter=1)],
+        [
+            models.EntityInput(kind=src_kind, name="Src Row", id=src_id),
+            models.EntityInput(kind=dst_kind, name="Dst Row", id=dst_id),
+        ],
+        [models.EdgeInput(src=src_id, dst=dst_id, type=edge_type, counter=1, reason="seeded")],
         base_revision=_head(world),
+        allow_orphans=True,
     )
     with session_scope() as session:
         events = list(revision_events(session, world, revision.id))
-    assert [e.type for e in events] == ["edge_created"]
+    # The two fresh rows carry their own entity_created events; the
+    # pinned contract is that the edge itself commits (AD-5 acceptance).
+    assert "edge_created" in [e.type for e in events]
 
 
 def test_events_share_revision_timestamp(world: str) -> None:
@@ -1304,8 +1378,8 @@ def test_events_share_revision_timestamp(world: str) -> None:
             models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id),
         ],
         [
-            models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1),
-            models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1),
+            models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded"),
+            models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1, reason="seeded"),
         ],
         base_revision=None,
     )
@@ -1360,7 +1434,7 @@ def _seed_edgeless_neighbor(campaign_id: str) -> str:
     commit_subgraph(
         campaign_id,
         [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
-        [models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1)],
+        [models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1, reason="seeded")],
         base_revision=_head(campaign_id),
     )
     delete_entity(campaign_id, bar_id, cascade=True, base_revision=_head(campaign_id))
@@ -1419,7 +1493,7 @@ def test_commit_self_loop_rejected(world: str) -> None:
         commit_subgraph(
             world,
             [models.EntityInput(kind="place", name="The Lonely Hill", id=loner_id)],
-            [models.EdgeInput(src=loner_id, dst=loner_id, type="located_in")],
+            [models.EdgeInput(src=loner_id, dst=loner_id, type="located_in", reason="seeded")],
             base_revision=None,
         )
     # An existing entity cannot loop onto itself either.
@@ -1427,7 +1501,7 @@ def test_commit_self_loop_rejected(world: str) -> None:
     with pytest.raises(SelfLoopEdgeError):
         commit_subgraph(
             world,
-            edges=[models.EdgeInput(src=bar_id, dst=bar_id, type="rival_of")],
+            edges=[models.EdgeInput(src=bar_id, dst=bar_id, type="rival_of", reason="seeded")],
             base_revision=_head(world),
         )
     # Nothing was written beyond the seed wave.
@@ -1443,7 +1517,7 @@ def test_commit_connected_staged_create_accepted(world: str) -> None:
     revision = commit_subgraph(
         world,
         [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
-        [models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1)],
+        [models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1, reason="seeded")],
         base_revision=_head(world),
     )
     entities, edges = _state(world)
@@ -1512,8 +1586,10 @@ def test_delete_cascade_confirmed_one_revision_zero_dangling(world: str) -> None
         world,
         [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
         [
-            models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1),
-            models.EdgeInput(src=mira_id, dst=kellan_id, type="rival_of", counter=2),
+            models.EdgeInput(src=kellan_id, dst=bar_id, type="ally_of", counter=1, reason="seeded"),
+            models.EdgeInput(
+                src=mira_id, dst=kellan_id, type="rival_of", counter=2, reason="seeded"
+            ),
         ],
         base_revision=_head(world),
     )
@@ -1558,7 +1634,11 @@ def test_delete_unknown_and_foreign_entity_rejected(world: str) -> None:
             models.EntityInput(kind="place", name="Foreign Tavern", id=foreign_tavern_id),
             models.EntityInput(kind="place", name="Foreign Keep", id=foreign_keep_id),
         ],
-        [models.EdgeInput(src=foreign_keep_id, dst=foreign_tavern_id, type="located_in")],
+        [
+            models.EdgeInput(
+                src=foreign_keep_id, dst=foreign_tavern_id, type="located_in", reason="seeded"
+            )
+        ],
     )
     with pytest.raises(UnknownEntityError):
         delete_entity(world, foreign_tavern_id, base_revision=_head(world))
@@ -1574,7 +1654,7 @@ def test_delete_stale_base_rejected_no_state_change(world: str) -> None:
     commit_subgraph(
         world,
         [models.EntityInput(kind="place", name="New Place", id=new_place_id)],
-        [models.EdgeInput(src=mira_id, dst=new_place_id, type="located_in")],
+        [models.EdgeInput(src=mira_id, dst=new_place_id, type="located_in", reason="seeded")],
         base_revision=_head(world),
     )
     before = _state(world)
@@ -1643,7 +1723,14 @@ def test_delete_edge_one_revision_no_confirm(world: str) -> None:
         events = list(revision_events(session, world, revision.id))
         assert [ev.type for ev in events] == ["edge_deleted"]
         assert events[0].payload["after"] is None
-        assert set(events[0].payload["before"]) == {"src", "dst", "type", "counter", "created_at"}
+        assert set(events[0].payload["before"]) == {
+            "src",
+            "dst",
+            "type",
+            "counter",
+            "reason",
+            "created_at",
+        }
         assert len(list(revision_chain(session, world))) == 2  # seed + delete
     assert _state(world) != before
 
@@ -1695,7 +1782,11 @@ def test_delete_edge_unknown_and_foreign_rejected(world: str) -> None:
             models.EntityInput(kind="place", name="Foreign Tavern", id=foreign_tavern_id),
             models.EntityInput(kind="place", name="Foreign Keep", id=foreign_keep_id),
         ],
-        [models.EdgeInput(src=foreign_keep_id, dst=foreign_tavern_id, type="located_in")],
+        [
+            models.EdgeInput(
+                src=foreign_keep_id, dst=foreign_tavern_id, type="located_in", reason="seeded"
+            )
+        ],
     )
     foreign_edge_id = _edge_id(other_campaign, foreign_keep_id, foreign_tavern_id, "located_in")
     with pytest.raises(UnknownEdgeError):
@@ -1713,7 +1804,7 @@ def test_delete_edge_stale_base_rejected_no_state_change(world: str) -> None:
     commit_subgraph(
         world,
         [models.EntityInput(kind="place", name="New Place", id=new_place_id)],
-        [models.EdgeInput(src=mira_id, dst=new_place_id, type="located_in")],
+        [models.EdgeInput(src=mira_id, dst=new_place_id, type="located_in", reason="seeded")],
         base_revision=_head(world),
     )
     before = _state(world)
@@ -1731,7 +1822,7 @@ def test_entity_live_edges_helper_rowid_ordered(world: str) -> None:
     commit_subgraph(
         world,
         [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
-        [models.EdgeInput(src=kellan_id, dst=mira_id, type="rival_of", counter=1)],
+        [models.EdgeInput(src=kellan_id, dst=mira_id, type="rival_of", counter=1, reason="seeded")],
         base_revision=_head(world),
     )
     with session_scope() as session:
@@ -1805,7 +1896,7 @@ def test_undo_of_entity_creation_reclaims_media_rows_and_files(world: str, tmp_p
     creation = commit_subgraph(
         world,
         [models.EntityInput(kind="character", name="Kellan Ash", id=kellan_id)],
-        [models.EdgeInput(src=kellan_id, dst=mira_id, type="rival_of", counter=1)],
+        [models.EdgeInput(src=kellan_id, dst=mira_id, type="rival_of", counter=1, reason="seeded")],
         base_revision=_head(world),
     )
     portrait = add_media(world, kellan_id, f"{ids.new_id()}.png", "image")
@@ -1827,3 +1918,384 @@ def test_undo_of_entity_creation_reclaims_media_rows_and_files(world: str, tmp_p
     # Files post-commit (AD-10 rows-first): the API layer's reclaim half.
     reclaim_entity_media(media_dir, world, kellan_id)
     assert not (media_dir / world / kellan_id).exists()  # files gone
+
+
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# AD-32/AD-33: the saved edge reason
+# ---------------------------------------------------------------------------
+
+
+def _mira_edge_id(world: str, src: str, dst: str, edge_type: str) -> str:
+    """The live edge's ULID — the store rows carry no id in the tuple
+    helpers, so read the materialized row directly."""
+    with session_scope() as session:
+        entities, edges = world_state(session, world)
+    for edge in edges:
+        if (edge.src, edge.dst, edge.type) == (src, dst, edge_type):
+            return edge.id
+    raise AssertionError(f"no live edge {src} --{edge_type}--> {dst}")
+
+
+@pytest.mark.parametrize(
+    "blank", ["", "   ", "None", "none", "N/A", "n/a", "unknown", "...", "TBD", "n.a."]
+)
+def test_new_edge_blank_reason_rejected(world: str, blank: str) -> None:
+    """AD-32 create contract: a new edge's reason must be non-blank and
+    never null-prose — empty, whitespace-only, and the model's honest
+    no-answer markers (``None``, ``N/A``, ``...``) are the same
+    rejection. A pre-v3 row's NULL is the ONLY legal null (tested
+    below)."""
+    bar_id, mira_id = _seed_world(world)
+    with pytest.raises(BlankEdgeReasonError):
+        commit_subgraph(
+            world,
+            [],
+            [
+                models.EdgeInput(
+                    src=mira_id,
+                    dst=bar_id,
+                    type="ally_of",
+                    counter=1,
+                    reason=blank,
+                )
+            ],
+            base_revision=_head(world),
+        )
+
+
+def test_new_edge_non_string_reason_rejected(world: str) -> None:
+    """A non-string reason is blank, not data."""
+    bar_id, mira_id = _seed_world(world)
+    with pytest.raises(BlankEdgeReasonError):
+        commit_subgraph(
+            world,
+            [],
+            [models.EdgeInput(src=mira_id, dst=bar_id, type="ally_of", reason=7)],  # type: ignore[arg-type]
+            base_revision=_head(world),
+        )
+
+
+def test_counter_bump_preserves_stored_reason(world: str) -> None:
+    """AD-32 counter-only bump: an absent reason preserves the stored
+    value — a bump never re-decides the saved why."""
+    bar_id, mira_id = _seed_world(world)
+    edge_id = _mira_edge_id(world, mira_id, bar_id, "member_of")
+    commit_subgraph(
+        world,
+        [],
+        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=5, id=edge_id)],
+        base_revision=_head(world),
+    )
+    with session_scope() as session:
+        _entities, edges = world_state(session, world)
+    (edge,) = [edge for edge in edges if edge.type == "member_of"]
+    assert edge.reason == "seeded"
+
+
+def test_counter_bump_with_fresh_reason_resaves(world: str) -> None:
+    """A bump MAY supply a fresh reason — it re-saves verbatim."""
+    bar_id, mira_id = _seed_world(world)
+    edge_id = _mira_edge_id(world, mira_id, bar_id, "member_of")
+    commit_subgraph(
+        world,
+        [],
+        [
+            models.EdgeInput(
+                src=mira_id,
+                dst=bar_id,
+                type="member_of",
+                counter=2,
+                reason="the watch answers to the bar's ledger",
+                id=edge_id,
+            )
+        ],
+        base_revision=_head(world),
+    )
+    with session_scope() as session:
+        _entities, edges = world_state(session, world)
+    (edge,) = [edge for edge in edges if edge.type == "member_of"]
+    assert edge.counter == 2
+    assert edge.reason == "the watch answers to the bar's ledger"
+
+
+def test_counter_bump_fresh_blank_reason_rejected(world: str) -> None:
+    """A bump that SUPPLIES a reason must supply a real one — the fresh
+    blank is a rejection, never a silent keep-old."""
+    bar_id, mira_id = _seed_world(world)
+    edge_id = _mira_edge_id(world, mira_id, bar_id, "member_of")
+    with pytest.raises(BlankEdgeReasonError):
+        commit_subgraph(
+            world,
+            [],
+            [
+                models.EdgeInput(
+                    src=mira_id,
+                    dst=bar_id,
+                    type="member_of",
+                    counter=5,
+                    reason="N/A",
+                    id=edge_id,
+                )
+            ],
+            base_revision=_head(world),
+        )
+
+
+def test_pre_v3_null_reason_bump_never_blocks(world: str) -> None:
+    """AC: pre-reason live rows (NULL) are grandfathered — a counter
+    bump without a supplied reason never blocks, and the stored NULL
+    stays NULL; reads/undo/export never trip on it."""
+    bar_id, mira_id = _seed_world(world)
+    edge_id = _mira_edge_id(world, mira_id, bar_id, "member_of")
+    with session_scope() as session:
+        edge = session.get(models.Edge, edge_id)
+        assert edge is not None
+        edge.reason = None  # simulate the pre-v3 live row (AD-32)
+        session.flush()
+    commit_subgraph(
+        world,
+        [],
+        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=9, id=edge_id)],
+        base_revision=_head(world),
+    )
+    with session_scope() as session:
+        _entities, edges = world_state(session, world)
+    (edge,) = [edge for edge in edges if edge.type == "member_of"]
+    assert edge.counter == 9
+    assert edge.reason is None  # grandfathered NULL, never invented
+
+
+def test_kind_violation_rejected_at_commit_backstop(world: str) -> None:
+    """AC: a stale kinds payload commits into the SAME matrix — the
+    commit-time live validation is the backstop (AD-34); a person is
+    never part_of a place (AD-31)."""
+    bar_id, mira_id = _seed_world(world)
+    with pytest.raises(EdgeKindViolationError):
+        commit_subgraph(
+            world,
+            [],
+            [
+                models.EdgeInput(
+                    src=mira_id,
+                    dst=bar_id,
+                    type="part_of",
+                    counter=1,
+                    reason="the bar raised her",
+                )
+            ],
+            base_revision=_head(world),
+        )
+
+
+def test_place_employer_and_place_controller_commit(world: str) -> None:
+    """The v3 matrix delta (AD-31) is committable: a place src may
+    employ (the city hires its watch-captain) and control (the fort
+    holds its valley); part_of nests place-in-place."""
+    bar_id, mira_id = _seed_world(world)
+    town_id, fort_id = ids.new_id(), ids.new_id()
+    rev = commit_subgraph(
+        world,
+        [
+            models.EntityInput(kind="place", name="Greymarch", id=town_id),
+            models.EntityInput(kind="place", name="High Pass Fort", id=fort_id),
+        ],
+        [
+            models.EdgeInput(
+                src=town_id, dst=mira_id, type="employs", counter=1, reason="city watch contract"
+            ),
+            models.EdgeInput(
+                src=fort_id,
+                dst=town_id,
+                type="controls",
+                counter=1,
+                reason="the fort holds the valley",
+            ),
+            models.EdgeInput(
+                src=town_id,
+                dst=fort_id,
+                type="part_of",
+                counter=1,
+                reason="the town answers to the fort",
+            ),
+        ],
+        base_revision=_head(world),
+    )
+    assert rev is not None
+    with session_scope() as session:
+        _entities, edges = world_state(session, world)
+    assert {(e.type, e.src, e.dst) for e in edges} >= {
+        ("employs", town_id, mira_id),
+        ("controls", fort_id, town_id),
+        ("part_of", town_id, fort_id),
+    }
+
+
+# ---------------------------------------------------------------------------
+# AD-26..AD-29: Tonight Tier-2 run-state (verbs, knowledge toggles, take-back)
+# ---------------------------------------------------------------------------
+
+
+def _session_row(world: str, entity_id: str) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.scalars(
+            select(models.EntitySessionState).where(
+                models.EntitySessionState.campaign_id == world,
+                models.EntitySessionState.entity_id == entity_id,
+            )
+        ).first()
+        return dict(row.data) if row is not None else None
+
+
+def _knowledge_rows(world: str, entity_id: str) -> dict[str, bool]:
+    with session_scope() as session:
+        rows = session.scalars(
+            select(models.EntityKnowledgeState).where(
+                models.EntityKnowledgeState.campaign_id == world,
+                models.EntityKnowledgeState.entity_id == entity_id,
+            )
+        ).all()
+    return {row.field: row.known for row in rows}
+
+
+def _event_types(world: str, revision_id: str) -> list[str]:
+    with session_scope() as session:
+        return [event.type for event in revision_events(session, world, revision_id)]
+
+
+def test_verb_commit_materializes_row_and_event(world: str) -> None:
+    """AD-26/AD-28: one consequence verb is ONE committed revision whose
+    event is rebuild-faithful (the FULL resulting image) and whose state
+    row materializes in the same transaction."""
+    _bar_id, mira_id = _seed_world(world)
+    revision = commit_session_verb(world, mira_id, update={"defeated": True})
+    assert _session_row(world, mira_id) == {"defeated": True}
+    assert _event_types(world, revision.id) == ["session_state_created"]
+    with session_scope() as session:
+        event = revision_events(session, world, revision.id)[0]
+    assert event.payload["after"]["data"] == {"defeated": True}
+
+
+def test_verb_merges_onto_existing_image(world: str) -> None:
+    """A second verb merges onto the CURRENT image — hp never erases
+    defeated."""
+    _bar_id, mira_id = _seed_world(world)
+    commit_session_verb(world, mira_id, update={"defeated": True})
+    commit_session_verb(world, mira_id, update={"hp": -12})
+    assert _session_row(world, mira_id) == {"defeated": True, "hp": -12}
+
+
+def test_verb_double_fire_commits_nothing(world: str) -> None:
+    """The double-fire gate (EXPERIENCE Flow 6): a value-identical second
+    fire returns the head unchanged — one revision, one event."""
+    _bar_id, mira_id = _seed_world(world)
+    first = commit_session_verb(world, mira_id, update={"defeated": True})
+    second = commit_session_verb(world, mira_id, update={"defeated": True})
+    assert second.id == first.id
+    with session_scope() as session:
+        assert len(list(revision_chain(session, world))) == 2  # seed + the one verb
+    assert _session_row(world, mira_id) == {"defeated": True}
+
+
+def test_verb_unknown_entity_rejected(world: str) -> None:
+    _bar_id, _mira_id = _seed_world(world)
+    with pytest.raises(UnknownEntityError):
+        commit_session_verb(world, "0" * 26, update={"defeated": True})
+
+
+def test_verb_invalid_state_image_rejected(world: str) -> None:
+    """AD-26: the image is rebuild-faithful — a non-object or
+    non-strict-JSON image is a structured rejection, never a stored
+    blob."""
+    _bar_id, mira_id = _seed_world(world)
+    with pytest.raises(InvalidRunStateError):
+        commit_session_verb(world, mira_id, update="defeated")  # type: ignore[arg-type]
+    with pytest.raises(InvalidRunStateError):
+        commit_session_verb(world, mira_id, update={"flag": object()})
+
+
+def test_toggle_flip_materializes_row_and_event(world: str) -> None:
+    """AD-29: a standalone flip is its own undoable step; the record
+    never changes — only the marker moves."""
+    _bar_id, mira_id = _seed_world(world)
+    revision = commit_knowledge_toggle(world, mira_id, "secret", known=True)
+    assert _knowledge_rows(world, mira_id) == {"secret": True}
+    assert _event_types(world, revision.id) == ["knowledge_state_created"]
+    with session_scope() as session:
+        entity = session.get(models.Entity, mira_id)
+        assert entity is not None
+    assert "known" not in entity.data  # the record is untouched
+
+
+def test_toggle_unknown_field_rejected(world: str) -> None:
+    """The closed toggle set (secret/rumor/party_hook) is a DB CHECK plus
+    a code check — anything else is a structured rejection."""
+    _bar_id, mira_id = _seed_world(world)
+    with pytest.raises(InvalidRunStateError):
+        commit_knowledge_toggle(world, mira_id, "favorite_color", known=True)
+
+
+def test_toggle_unknown_entity_rejected(world: str) -> None:
+    _bar_id, _mira_id = _seed_world(world)
+    with pytest.raises(UnknownEntityError):
+        commit_knowledge_toggle(world, "0" * 26, "secret", known=True)
+
+
+def test_defeat_scar_take_back_surgical(world: str) -> None:
+    """AC-3, the AD-27 arithmetic: defeat, then a scar edit on top, then
+    take the defeat back — history reads three ``edited`` revisions, the
+    scar STANDS, and the defeat rewinds arithmetically (the row is
+    deleted by the created-inverse), never overwriting the later edit."""
+    _bar_id, mira_id = _seed_world(world)
+    defeat = commit_session_verb(world, mira_id, update={"defeated": True})
+    scar = update_entity(world, mira_id, patch={"appearance": "scarred twice across the cheek"})
+    take_back = undo(world, defeat.id)  # non-head → surgical inverse path
+
+    with session_scope() as session:
+        chain = list(revision_chain(session, world))
+    assert [r.id for r in chain[-3:]] == [defeat.id, scar.id, take_back.id]
+    assert _event_types(world, defeat.id) == ["session_state_created"]
+    assert _event_types(world, scar.id) == ["entity_updated"]
+    assert _event_types(world, take_back.id) == ["session_state_deleted"]
+    # The scar stands; the defeat is rewound (its created row is gone).
+    with session_scope() as session:
+        entity = session.get(models.Entity, mira_id)
+    assert entity is not None
+    assert entity.data["appearance"] == "scarred twice across the cheek"
+    assert _session_row(world, mira_id) is None
+
+
+def test_edit_plus_toggle_bundles_one_revision(world: str) -> None:
+    """AD-29 bundle: an edit+flip saved together is ONE revision; the
+    take-back inverts BOTH halves in the same undo step."""
+    _bar_id, mira_id = _seed_world(world)
+    bundle = update_entity(
+        world,
+        mira_id,
+        patch={"appearance": "hooded"},
+        knowledge_flips=[models.KnowledgeFlipInput(entity_id=mira_id, field="secret", known=True)],
+    )
+    assert _event_types(world, bundle.id) == ["entity_updated", "knowledge_state_created"]
+    assert _knowledge_rows(world, mira_id) == {"secret": True}
+    undo_revision = undo(world, bundle.id)
+    with session_scope() as session:
+        entity = session.get(models.Entity, mira_id)
+    assert entity is not None
+    assert "appearance" not in entity.data  # the edit half rewound
+    assert _knowledge_rows(world, mira_id) == {}  # the flip half rewound
+    # AD-27: an undo renders as an edit — the entity half carries
+    # ``entity_updated`` (never a distinct undo event); only the toggle
+    # half shows its flip-back stream event.
+    assert sorted(_event_types(world, undo_revision.id)) == [
+        "entity_updated",
+        "knowledge_state_deleted",
+    ]
+
+
+def test_run_state_commit_empty_is_rejected(world: str) -> None:
+    """commit_run_state with no ops is an empty subgraph — the store's
+    EmptySubgraphError, same as any empty commit."""
+    _bar_id, _mira_id = _seed_world(world)
+    with pytest.raises(EmptySubgraphError):
+        commit_run_state(world)

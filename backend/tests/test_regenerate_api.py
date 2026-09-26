@@ -134,7 +134,7 @@ def _commit_world(campaign_id: str) -> tuple[str, str]:
             EntityInput(kind="character", name="Mira Vane", data=_record(), id=mira_id),
             EntityInput(kind="faction", name="The Guild", id=guild_id),
         ],
-        [EdgeInput(src=mira_id, dst=guild_id, type="member_of", counter=1)],
+        [EdgeInput(src=mira_id, dst=guild_id, type="member_of", counter=1, reason="seeded")],
         base_revision=None,
     )
     return mira_id, guild_id
@@ -199,7 +199,13 @@ def test_post_regenerate_candidate_section_201(
     job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
     payload = _record(name="Sable")
     payload["edges"] = [
-        {"endpoint": guild_id, "direction": "outbound", "type": "rival_of", "counter": 1}
+        {
+            "endpoint": guild_id,
+            "direction": "outbound",
+            "type": "rival_of",
+            "counter": 1,
+            "reason": "seeded relation",
+        }
     ]
     candidate = stage_candidates(campaign_id, job.id, [payload])[0]
 
@@ -228,7 +234,7 @@ def test_post_regenerate_positive_boss_path(client: TestClient, job_api: Callabl
             EntityInput(kind="character", name="The Dread", data=record, id=boss_id),
             EntityInput(kind="faction", name="The Guild", id=guild_id),
         ],
-        [EdgeInput(src=boss_id, dst=guild_id, type="member_of", counter=1)],
+        [EdgeInput(src=boss_id, dst=guild_id, type="member_of", counter=1, reason="seeded")],
         base_revision=None,
     )
     response = _post(client, campaign_id, {"kind": "entity", "id": boss_id}, ["boss"])
@@ -282,7 +288,13 @@ def test_post_regenerate_foreign_candidate_404_zero_rows(
     job = enqueue_job(other, "generate", {"ask": "a rival"})
     payload = _record(name="Sable")
     payload["edges"] = [
-        {"endpoint": guild_id, "direction": "outbound", "type": "rival_of", "counter": 1}
+        {
+            "endpoint": guild_id,
+            "direction": "outbound",
+            "type": "rival_of",
+            "counter": 1,
+            "reason": "seeded relation",
+        }
     ]
     candidate = stage_candidates(other, job.id, [payload])[0]
     response = _post(client, campaign_id, {"kind": "candidate", "id": candidate.id}, None)
@@ -300,7 +312,13 @@ def test_post_regenerate_settled_candidate_422_zero_rows(
     job = enqueue_job(campaign_id, "generate", {"ask": "a rival"})
     payload = _record(name="Sable")
     payload["edges"] = [
-        {"endpoint": guild_id, "direction": "outbound", "type": "rival_of", "counter": 1}
+        {
+            "endpoint": guild_id,
+            "direction": "outbound",
+            "type": "rival_of",
+            "counter": 1,
+            "reason": "seeded relation",
+        }
     ]
     candidate = stage_candidates(campaign_id, job.id, [payload])[0]
     accept_candidate(campaign_id, candidate.id)  # settle accepted
@@ -328,7 +346,7 @@ def test_post_regenerate_non_ar24_target_422_zero_rows(
             ),
             EntityInput(kind="faction", name="The Guild", id=guild_id),
         ],
-        [EdgeInput(src=place_id, dst=guild_id, type="located_in", counter=1)],
+        [EdgeInput(src=guild_id, dst=place_id, type="located_in", counter=1, reason="seeded")],
         base_revision=None,
     )
     response = _post(client, campaign_id, {"kind": "entity", "id": place_id}, None)
@@ -373,4 +391,58 @@ def test_post_regenerate_bad_sections_422_zero_rows(
         response = _post(client, campaign_id, {"kind": "entity", "id": mira_id}, sections)
         assert response.status_code == 422
         assert response.json()["code"] == "validation_error"
+    _zero_jobs(campaign_id)
+
+
+def test_post_regenerate_enrich_shaped_request_201(
+    client: TestClient, job_api: Callable[[], str]
+) -> None:
+    """AD-38: the enrich is a shaped regenerate — sections null + a guide
+    box + a closed dial level ride the same envelope and enqueue 201."""
+    campaign_id = job_api()
+    mira_id, _guild_id = _commit_world(campaign_id)
+    response = client.post(
+        "/api/jobs",
+        json={
+            "campaign_id": campaign_id,
+            "kind": "regenerate",
+            "payload": {
+                "target": {"kind": "entity", "id": mira_id},
+                "sections": None,
+                "guide": "Lean into the dockmaster shadow-work.",
+                "dial": "pillar",
+            },
+        },
+    )
+    assert response.status_code != 404, response.text
+    assert response.status_code == 201
+    assert response.json()["state"] == "queued"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "target": {"kind": "entity", "id": "1" * 26},
+            "dial": "epic",  # outside the closed DIAL_LEVELS set
+        },
+        {
+            "target": {"kind": "entity", "id": "1" * 26},
+            "guide": "   ",  # blank guide box
+        },
+    ],
+)
+def test_post_regenerate_enrich_malformed_422_zero_rows(
+    client: TestClient, job_api: Callable[[], str], payload: dict[str, Any]
+) -> None:
+    """An out-of-set dial or a blank guide is a 422 at enqueue — zero
+    rows, never a guessed dialect."""
+    campaign_id = job_api()
+    _commit_world(campaign_id)
+    response = client.post(
+        "/api/jobs",
+        json={"campaign_id": campaign_id, "kind": "regenerate", "payload": payload},
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
     _zero_jobs(campaign_id)

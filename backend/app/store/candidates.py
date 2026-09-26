@@ -727,9 +727,18 @@ def _accept_edge(new_entity_id: str, candidate_id: str, edge: Any) -> models.Edg
         raise InvalidCandidateError(
             f"candidate {candidate_id}: edge counter must be an int, got {counter!r}"
         )
+    # AD-32: the staged reason rides the accept into the commit path,
+    # where the non-blank contract is the live authority — a staged edge
+    # whose reason is blank (or null-prose) rejects the accept with
+    # BlankEdgeReasonError (422), never a silent blank row.
+    reason = edge.get("reason")
     if direction == "outbound":
-        return models.EdgeInput(src=new_entity_id, dst=endpoint, type=edge_type, counter=counter)
-    return models.EdgeInput(src=endpoint, dst=new_entity_id, type=edge_type, counter=counter)
+        return models.EdgeInput(
+            src=new_entity_id, dst=endpoint, type=edge_type, counter=counter, reason=reason
+        )
+    return models.EdgeInput(
+        src=endpoint, dst=new_entity_id, type=edge_type, counter=counter, reason=reason
+    )
 
 
 def reject_candidate(campaign_id: str, candidate_id: str) -> models.ProposedCandidate:

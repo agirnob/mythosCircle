@@ -47,17 +47,24 @@ router = APIRouter()
 
 
 class EdgeResponse(BaseModel):
-    """The wire shape of one committed edge (mirrors EdgeExport)."""
+    """The wire shape of one committed edge (mirrors EdgeExport).
+
+    ``reason`` is the AD-32 saved why; pre-v3 rows read NULL."""
 
     id: str
     src: str
     dst: str
     type: str
     counter: int
+    reason: str | None = None
 
 
-def _edge_response(edge_id: str, src: str, dst: str, edge_type: str, counter: int) -> EdgeResponse:
-    return EdgeResponse(id=edge_id, src=src, dst=dst, type=edge_type, counter=counter)
+def _edge_response(
+    edge_id: str, src: str, dst: str, edge_type: str, counter: int, reason: str | None = None
+) -> EdgeResponse:
+    return EdgeResponse(
+        id=edge_id, src=src, dst=dst, type=edge_type, counter=counter, reason=reason
+    )
 
 
 def _require_campaign(current_id: str, campaign_id: str) -> None:
@@ -168,16 +175,22 @@ async def create_edge(
     dst = _required_str(payload, "dst")
     edge_type = _required_str(payload, "type")
     counter = _required_counter(payload) if "counter" in payload else 1
+    # AD-32: an authored edge carries its saved why — blank/whitespace/
+    # null-prose rejects 422 client-side (the picker demands it) and the
+    # store is the live backstop.
+    reason = _required_str(payload, "reason")
     base_revision = _optional_base(payload)
     try:
         commit_subgraph(
             campaign_id,
-            edges=[models.EdgeInput(src=src, dst=dst, type=edge_type, counter=counter)],
+            edges=[
+                models.EdgeInput(src=src, dst=dst, type=edge_type, counter=counter, reason=reason)
+            ],
             base_revision=_resolved_base(base_revision, campaign_id),
         )
     except StoreError as exc:
         store_error_as_http(exc)
-    return _edge_response(*_created_edge(campaign_id, src, dst, edge_type, counter))
+    return _edge_response(*_created_edge(campaign_id, src, dst, edge_type, counter, reason))
 
 
 @router.patch("/api/campaigns/{campaign_id}/edges/{edge_id}", response_model=EdgeResponse)
@@ -198,13 +211,22 @@ async def update_edge(
     live = _live_edge(campaign_id, edge_id)
     payload = await _object_body(request)
     counter = _required_counter(payload)
+    # AD-32 retarget semantics: src/dst/type are immutable (AD-2), a
+    # counter-only bump preserves the stored reason; a bump may supply a
+    # fresh reason, which re-saves (non-blank enforced at the store).
+    reason = _optional_str(payload, "reason")
     base_revision = _optional_base(payload)
     try:
         commit_subgraph(
             campaign_id,
             edges=[
                 models.EdgeInput(
-                    src=live.src, dst=live.dst, type=live.type, counter=counter, id=live.id
+                    src=live.src,
+                    dst=live.dst,
+                    type=live.type,
+                    counter=counter,
+                    reason=reason if reason is not None else live.reason,
+                    id=live.id,
                 )
             ],
             base_revision=_resolved_base(base_revision, campaign_id),
@@ -212,8 +234,17 @@ async def update_edge(
     except StoreError as exc:
         store_error_as_http(exc)
     # Built from held data — no post-commit re-read that a concurrent
-    # delete could turn into a misleading failure.
-    return _edge_response(live.id, live.src, live.dst, live.type, counter)
+    # delete could turn into a misleading failure. The response echoes
+    # the EFFECTIVE reason: a supplied fresh reason re-saved, otherwise
+    # the stored value (pre-v3 NULL included).
+    return _edge_response(
+        live.id,
+        live.src,
+        live.dst,
+        live.type,
+        counter,
+        reason if reason is not None else live.reason,
+    )
 
 
 @router.delete("/api/campaigns/{campaign_id}/edges/{edge_id}", status_code=204)
@@ -239,9 +270,20 @@ def delete_campaign_edge(
         store_error_as_http(exc)
 
 
+def _optional_str(payload: dict[str, Any], key: str) -> str | None:
+    """An optional string key: absent or null -> None; a non-string
+    value is a 422 (the counter helper's shape discipline)."""
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail=f"{key} must be a string.")
+    return value
+
+
 def _created_edge(
-    campaign_id: str, src: str, dst: str, edge_type: str, counter: int
-) -> tuple[str, str, str, str, int]:
+    campaign_id: str, src: str, dst: str, edge_type: str, counter: int, reason: str | None = None
+) -> tuple[str, str, str, str, int, str | None]:
     """Locate the freshly committed edge; the id is the store's answer.
 
     ``commit_subgraph`` returns only the revision, so the route matches
@@ -255,7 +297,7 @@ def _created_edge(
         _, edges = world_state(session, campaign_id)
         for edge in edges:
             if edge.src == src and edge.dst == dst and edge.type == edge_type:
-                return edge.id, src, dst, edge_type, edge.counter
+                return edge.id, src, dst, edge_type, edge.counter, edge.reason
     raise HTTPException(status_code=500, detail="Edge committed but not found on re-read.")
 
 

@@ -45,8 +45,6 @@ from app.pipeline.build_in import (
     build_wave2_prompt,
     build_wave_schema,
     canonicalize_entity_kind,
-    edge_kind_ok,
-    normalize_entity_name,
 )
 from app.pipeline.fencing import json_error
 from app.pipeline.knowledge import validate_stat_block
@@ -84,6 +82,8 @@ from app.store import (
     world_edges,
     world_entities,
 )
+from app.store.commit import edge_kind_ok
+from app.store.direct import normalize_entity_name
 
 SETTINGS = LLMSettings(endpoint="http://test/v1", model="test-model")
 
@@ -191,8 +191,14 @@ def _wave1_output() -> dict[str, Any]:
             },
         ],
         "edges": [
-            {"src": "E0", "dst": "E1", "type": "member_of", "counter": 1},
-            {"src": "E1", "dst": "E0", "type": "debt", "counter": 3},
+            {
+                "src": "E0",
+                "dst": "E1",
+                "type": "member_of",
+                "counter": 1,
+                "reason": "seeded relation",
+            },
+            {"src": "E1", "dst": "E0", "type": "debt", "counter": 3, "reason": "seeded relation"},
         ],
     }
 
@@ -226,9 +232,15 @@ def _wave2_output() -> dict[str, Any]:
             },
         ],
         "edges": [
-            {"src": "N0", "dst": "C0", "type": "relationship"},
-            {"src": "N1", "dst": "C1", "type": "ally_of", "counter": 2},
-            {"src": "N0", "dst": "N1", "type": "relationship"},
+            {"src": "N0", "dst": "C0", "type": "relationship", "reason": "seeded relation"},
+            {
+                "src": "N1",
+                "dst": "C1",
+                "type": "ally_of",
+                "counter": 2,
+                "reason": "seeded relation",
+            },
+            {"src": "N0", "dst": "N1", "type": "relationship", "reason": "seeded relation"},
         ],
     }
 
@@ -253,9 +265,15 @@ def _wave2_output_orphan() -> dict[str, Any]:
             },
         ],
         "edges": [
-            {"src": "N0", "dst": "C0", "type": "relationship"},
-            {"src": "N1", "dst": "C1", "type": "ally_of", "counter": 2},
-            {"src": "N2", "dst": "N1", "type": "relationship"},
+            {"src": "N0", "dst": "C0", "type": "relationship", "reason": "seeded relation"},
+            {
+                "src": "N1",
+                "dst": "C1",
+                "type": "ally_of",
+                "counter": 2,
+                "reason": "seeded relation",
+            },
+            {"src": "N2", "dst": "N1", "type": "relationship", "reason": "seeded relation"},
         ],
     }
 
@@ -505,7 +523,13 @@ def test_wave2_and_anchor_repair_carry_schemas(world: str) -> None:
     responses_repair = [
         json.dumps(_wave1_output()),
         json.dumps(_wave2_output_orphan()),
-        json.dumps({"edges": [{"src": "N2", "dst": "C0", "type": "relationship"}]}),
+        json.dumps(
+            {
+                "edges": [
+                    {"src": "N2", "dst": "C0", "type": "relationship", "reason": "seeded relation"}
+                ]
+            }
+        ),
     ]
 
     def fake_repair(prompt: str, settings: LLMSettings) -> str:
@@ -540,7 +564,7 @@ def test_wave_envelope_schema_pins_wire_literals() -> None:
     assert entities["required"] == ["ref", "kind", "name"]
     assert entities["additionalProperties"] is False
     edges = envelope["properties"]["edges"]["items"]
-    assert edges["required"] == ["src", "dst", "type"]
+    assert edges["required"] == ["src", "dst", "type", "reason"]  # AD-32
     assert edges["additionalProperties"] is False
     # BAD_TYPE_WIRE: the edge type is an enum single-sourced from the
     # store vocabulary — an invented type is unemittable on
@@ -587,7 +611,7 @@ def test_anchor_repair_schema_pins_wire_literals() -> None:
     assert envelope["additionalProperties"] is False
     assert "entities" not in envelope["properties"]
     edges = envelope["properties"]["edges"]["items"]
-    assert edges["required"] == ["src", "dst", "type"]
+    assert edges["required"] == ["src", "dst", "type", "reason"]  # AD-32
     assert edges["additionalProperties"] is False
     assert edges["properties"]["src"] == {"enum": ["C0", "C1", "N0", "N1", "N2"]}
     assert edges["properties"]["dst"] == {"enum": ["C0", "C1", "N0", "N1", "N2"]}
@@ -830,9 +854,9 @@ def test_self_loop_edges_dropped_at_boundary(world: str) -> None:
             {"ref": "E1", "kind": "place", "name": "Alone"},
         ],
         "edges": [
-            {"src": "E0", "dst": "E0", "type": "ally_of"},
-            {"src": "E0", "dst": "E1", "type": "ally_of"},
-            {"src": "E1", "dst": "E1", "type": "ally_of"},
+            {"src": "E0", "dst": "E0", "type": "ally_of", "reason": "seeded relation"},
+            {"src": "E0", "dst": "E1", "type": "ally_of", "reason": "seeded relation"},
+            {"src": "E1", "dst": "E1", "type": "ally_of", "reason": "seeded relation"},
         ],
     }
     _entities, edges = _validate_subgraph(1, output)
@@ -1178,7 +1202,7 @@ def test_stale_base_between_waves_rebases_onto_the_edit(world: str) -> None:
                 [models.EntityInput(kind="place", name="DM's New Keep", id=keep_id)],
                 # Mira (character) located_in her keep (place) — the AD-5
                 # vocabulary reads character -> place.
-                [models.EdgeInput(src=mira.id, dst=keep_id, type="located_in")],
+                [models.EdgeInput(src=mira.id, dst=keep_id, type="located_in", reason="seeded")],
                 base_revision=head.id if head is not None else None,
             )
         return responses.pop(0)
@@ -1210,7 +1234,9 @@ def test_retrieval_cap_and_determinism(world: str) -> None:
             for i in range(30)
         ],
         [
-            models.EdgeInput(src=citizen_ids[i], dst=citizen_ids[i + 1], type="ally_of")
+            models.EdgeInput(
+                src=citizen_ids[i], dst=citizen_ids[i + 1], type="ally_of", reason="seeded"
+            )
             for i in range(29)
         ],
         base_revision=None,
@@ -2348,8 +2374,14 @@ def test_classless_spells_repaired_and_frail_tiny_conformed(world: str) -> None:
     )
     output["edges"].extend(
         [
-            {"src": "E0", "dst": "E2", "type": "member_of", "counter": 1},
-            {"src": "E2", "dst": "E0", "type": "debt", "counter": 3},
+            {
+                "src": "E0",
+                "dst": "E2",
+                "type": "member_of",
+                "counter": 1,
+                "reason": "seeded relation",
+            },
+            {"src": "E2", "dst": "E0", "type": "debt", "counter": 3, "reason": "seeded relation"},
         ]
     )
     responses = [
@@ -2459,7 +2491,15 @@ def test_flat_record_is_relocated_not_dropped() -> None:
             },
             {"ref": "E1", "kind": "place", "name": "City of Gallorb", "text": "soot and copper"},
         ],
-        "edges": [{"src": "E0", "dst": "E1", "type": "located_in", "counter": 1}],
+        "edges": [
+            {
+                "src": "E0",
+                "dst": "E1",
+                "type": "located_in",
+                "counter": 1,
+                "reason": "seeded relation",
+            }
+        ],
     }
     entities, _edges = _validate_subgraph(1, parsed)
     sanberi = entities[0]
@@ -2490,7 +2530,15 @@ def test_nested_record_wins_over_a_flat_duplicate() -> None:
             },
             {"ref": "E1", "kind": "place", "name": "Greymarch"},
         ],
-        "edges": [{"src": "E0", "dst": "E1", "type": "located_in", "counter": 1}],
+        "edges": [
+            {
+                "src": "E0",
+                "dst": "E1",
+                "type": "located_in",
+                "counter": 1,
+                "reason": "seeded relation",
+            }
+        ],
     }
     entities, _edges = _validate_subgraph(1, parsed)
     assert entities[0].data["role"] == "NPC"
@@ -2523,7 +2571,15 @@ def test_role_word_kind_seeds_the_record_role() -> None:
             {"ref": "E0", "kind": "monster", "name": "The Doom", "text": "a giant"},
             {"ref": "E1", "kind": "place", "name": "Gallorb"},
         ],
-        "edges": [{"src": "E0", "dst": "E1", "type": "located_in", "counter": 1}],
+        "edges": [
+            {
+                "src": "E0",
+                "dst": "E1",
+                "type": "located_in",
+                "counter": 1,
+                "reason": "seeded relation",
+            }
+        ],
     }
     entities, edges = _validate_subgraph(1, parsed)
     assert len(edges) == 1
@@ -2539,7 +2595,9 @@ def test_wave_duplicate_edge_rows_collapse_to_one() -> None:
     Same pair with a different type or counter is NOT a duplicate."""
     output = _wave1_output()
     output["edges"].append(dict(output["edges"][0]))
-    output["edges"].append({"src": "E0", "dst": "E1", "type": "member_of", "counter": 2})
+    output["edges"].append(
+        {"src": "E0", "dst": "E1", "type": "member_of", "counter": 2, "reason": "seeded relation"}
+    )
     _entities, edges = _validate_subgraph(1, output)
     assert [(edge.src, edge.dst, edge.type, edge.counter) for edge in edges] == [
         (edges[0].src, edges[0].dst, "member_of", 1),
@@ -3086,6 +3144,14 @@ def _record_chunk_response(positions: list[int]) -> str:
     )
 
 
+def _reason_fill_response(count: int) -> str:
+    """A valid AD-33 reason-fill reply covering every frozen edge index
+    (0..count-1) — the single-field contract: index + reason only."""
+    return json.dumps(
+        {"reasons": [{"index": index, "reason": "seeded relation"} for index in range(count)]}
+    )
+
+
 def test_record_repair_chunk_split(world: str) -> None:
     """CHUNK_SPLIT: 14 flagged records repair in 4 chunk calls (4+4+4+2)
     whose merged patches commit — the old single 14-record response
@@ -3099,24 +3165,30 @@ def test_record_repair_chunk_split(world: str) -> None:
         calls.append(prompt)
         if len(calls) == 1:
             return json.dumps(output)
+        if len(calls) == 6:
+            return _reason_fill_response(28)  # 14 member_of + 14 debt
         chunk_index = len(calls) - 2  # 0-based among the repair calls
         first = 1 + chunk_index * 4
         return _record_chunk_response(list(range(first, min(first + 4, 15))))
 
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
-    assert len(calls) == 5  # wave 1 + 4 record-repair chunks
-    repair_calls = calls[1:]
+    assert len(calls) == 6  # wave 1 + 4 record-repair chunks + the AD-33 reason fill
+    repair_calls = calls[1:5]
     expected_chunks = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14]]
     for prompt, expected in zip(repair_calls, expected_chunks, strict=True):
         for position in expected:
             assert f"E{position} ('Hero{position}')" in prompt
         for other in [p for chunk in expected_chunks for p in chunk if p not in expected]:
             assert f"E{other} ('Hero{other}')" not in prompt
+    assert "REASON FILL" in calls[5]  # the edges' blank whys get one bounded fill
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     with session_scope() as session:
         entities = world_entities(session, world)
+        edges = world_edges(session, world)
     assert len(entities) == 15
+    assert len(edges) == 28  # nothing dropped: every blank reason was filled
+    assert all(edge.reason == "seeded relation" for edge in edges)
     hero7 = next(e for e in entities if e.name == "Hero7")
     assert hero7.data["appearance"] and hero7.data["stat_block"] == _MIRA_STAT_BLOCK
 
@@ -3132,6 +3204,7 @@ def test_record_repair_chunk_retry_isolated(world: str) -> None:
         malformed,
         _record_chunk_response([1, 2, 3, 4]),
         _record_chunk_response([5]),
+        _reason_fill_response(10),  # 5 member_of + 5 debt
     ]
     calls: list[str] = []
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
@@ -3141,11 +3214,12 @@ def test_record_repair_chunk_retry_isolated(world: str) -> None:
         return responses.pop(0)
 
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
-    assert len(calls) == 4  # wave 1 + bad chunk + its retry + the other chunk
+    assert len(calls) == 5  # wave 1 + bad chunk + its retry + other chunk + reason fill
     assert "YOUR PREVIOUS INVALID RESPONSE" in calls[2]
     assert "JSON error:" in calls[2]
     assert "E5 ('Hero5')" not in calls[2]  # the retry re-elicits only its chunk
     assert "YOUR PREVIOUS INVALID RESPONSE" not in calls[3]  # no retry burned there
+    assert "REASON FILL" in calls[4]  # one bounded fill for the blank whys
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     with session_scope() as session:
@@ -3182,7 +3256,11 @@ def test_record_repair_small_wave_single_call(world: str) -> None:
     chunking boundary changes nothing below it (existing single-record
     ``len(calls) == 2`` pins cover the rest)."""
     output = _recordless_wave1_output(4)
-    responses = [json.dumps(output), _record_chunk_response([1, 2, 3, 4])]
+    responses = [
+        json.dumps(output),
+        _record_chunk_response([1, 2, 3, 4]),
+        _reason_fill_response(8),  # 4 member_of + 4 debt
+    ]
     calls: list[str] = []
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
 
@@ -3191,7 +3269,7 @@ def test_record_repair_small_wave_single_call(world: str) -> None:
         return responses.pop(0)
 
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
-    assert len(calls) == 2  # wave 1 + the single record repair
+    assert len(calls) == 3  # wave 1 + the single record repair + the reason fill
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
 
@@ -3336,7 +3414,9 @@ def _anchor_repair_healed_edges() -> dict[str, Any]:
     """The edges-only repair healing the orphan output: one N2->C0 edge so
     every entity anchors. No entity list is emitted — the wave's entities
     stay frozen from the first attempt."""
-    return {"edges": [{"src": "N2", "dst": "C0", "type": "relationship"}]}
+    return {
+        "edges": [{"src": "N2", "dst": "C0", "type": "relationship", "reason": "seeded relation"}]
+    }
 
 
 def test_wave2_anchor_repair_heals_and_commits(world: str) -> None:
@@ -3467,7 +3547,7 @@ def test_wave2_anchor_repair_ignores_renamed_entities(world: str) -> None:
             {"ref": "N1", "kind": "character", "name": "Captain Harlow the Renamed"},
             {"ref": "N2", "kind": "character", "name": "Nowhere Man"},
         ],
-        "edges": [{"src": "N2", "dst": "C0", "type": "relationship"}],
+        "edges": [{"src": "N2", "dst": "C0", "type": "relationship", "reason": "seeded relation"}],
     }
     responses = [
         json.dumps(_wave1_output()),
@@ -3511,7 +3591,7 @@ def test_wave2_orphan_message_without_core() -> None:
                 "data": {**_character_record("Captain Harlow"), "stat_block": _MIRA_STAT_BLOCK},
             },
         ],
-        "edges": [{"src": "N0", "dst": "N1", "type": "relationship"}],
+        "edges": [{"src": "N0", "dst": "N1", "type": "relationship", "reason": "seeded relation"}],
     }
     with pytest.raises(_OrphanRetryError) as excinfo:
         _validate_subgraph(2, parsed, context=(), core_count=0)
@@ -3711,7 +3791,13 @@ def test_chunked_wave1_generates_merges_and_wires(world: str) -> None:
             return json.dumps(_places_chunk_output(0, 16))
         if "PART 2 of 2" in prompt:
             return json.dumps(_places_chunk_output(16, 4))
-        return json.dumps({"edges": [{"src": "E0", "dst": "E19", "type": "located_in"}]})
+        return json.dumps(
+            {
+                "edges": [
+                    {"src": "E0", "dst": "E19", "type": "located_in", "reason": "seeded relation"}
+                ]
+            }
+        )
 
     job_id = _enqueue(world, places=places)
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
@@ -3753,7 +3839,16 @@ def test_wiring_failure_degrades_to_chunk_edges(world: str) -> None:
         if "PART 1 of 2" in prompt:
             return json.dumps(
                 _places_chunk_output(
-                    0, 16, edges=[{"src": "E0", "dst": "E1", "type": "relationship"}]
+                    0,
+                    16,
+                    edges=[
+                        {
+                            "src": "E0",
+                            "dst": "E1",
+                            "type": "relationship",
+                            "reason": "seeded relation",
+                        }
+                    ],
                 )
             )
         if "PART 2 of 2" in prompt:
@@ -3845,7 +3940,13 @@ def test_anchor_repair_malformed_json_retries_once(world: str) -> None:
         json.dumps(_wave1_output()),
         json.dumps(_wave2_output_orphan()),
         "{edges: [oops",
-        json.dumps({"edges": [{"src": "N2", "dst": "C0", "type": "relationship"}]}),
+        json.dumps(
+            {
+                "edges": [
+                    {"src": "N2", "dst": "C0", "type": "relationship", "reason": "seeded relation"}
+                ]
+            }
+        ),
     ]
     calls: list[str] = []
 
@@ -3884,7 +3985,9 @@ def test_wave2_anchors_into_the_compact_core_tier(world: str) -> None:
                 "entities": [
                     {"ref": "N0", "kind": "place", "name": "The Late Annex", "text": "past the cap"}
                 ],
-                "edges": [{"src": "N0", "dst": "C24", "type": "located_in"}],
+                "edges": [
+                    {"src": "N0", "dst": "C24", "type": "located_in", "reason": "seeded relation"}
+                ],
             }
         )
 
@@ -4003,7 +4106,9 @@ def test_wave2_all_twins_commit_nothing(world: str) -> None:
                     {"ref": "N0", "kind": "faction", "name": "The Gilded Bar"},
                     {"ref": "N1", "kind": "character", "name": "Mira Vane"},
                 ],
-                "edges": [{"src": "N1", "dst": "N0", "type": "member_of"}],
+                "edges": [
+                    {"src": "N1", "dst": "N0", "type": "member_of", "reason": "seeded relation"}
+                ],
             }
         ),
     ]
@@ -4093,7 +4198,13 @@ def test_wave_edge_counter_out_of_range_fails_job(world: str) -> None:
     amount range) — the job fails loudly instead of committing a counter
     Phase-3 arithmetic would misread."""
     output = _wave1_output()
-    output["edges"][1] = {"src": "E1", "dst": "E0", "type": "debt", "counter": -1}
+    output["edges"][1] = {
+        "src": "E1",
+        "dst": "E0",
+        "type": "debt",
+        "counter": -1,
+        "reason": "seeded relation",
+    }
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
     run_next_job(provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS)
     job, _position = job_status(job_id)
@@ -4107,7 +4218,13 @@ def test_wave_edge_counter_must_be_an_integer(world: str) -> None:
     """Non-integer wave counters stay a named wave failure — the shape
     guard is unchanged by the range ruling (wave 1: edge 1 counter)."""
     output = _wave1_output()
-    output["edges"][1] = {"src": "E1", "dst": "E0", "type": "debt", "counter": 3.0}
+    output["edges"][1] = {
+        "src": "E1",
+        "dst": "E0",
+        "type": "debt",
+        "counter": 3.0,
+        "reason": "seeded relation",
+    }
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
     run_next_job(provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS)
     job, _position = job_status(job_id)
@@ -4137,15 +4254,37 @@ def test_upsert_drops_duplicate_relationships(world: str) -> None:
         }
 
     responses1 = [
-        json.dumps(_two_factions({"src": "E0", "dst": "E1", "type": "member_of", "counter": 1}))
+        json.dumps(
+            _two_factions(
+                {
+                    "src": "E0",
+                    "dst": "E1",
+                    "type": "member_of",
+                    "counter": 1,
+                    "reason": "seeded relation",
+                }
+            )
+        )
     ]
     _enqueue(world, places=["Greymarch"], notes="")
     run_next_job(provider=lambda prompt, settings: responses1.pop(0), settings=SETTINGS)
     responses2 = [
         json.dumps(
             _two_factions(
-                {"src": "E0", "dst": "E1", "type": "member_of", "counter": 9},
-                {"src": "E1", "dst": "E0", "type": "rival_of", "counter": 2},
+                {
+                    "src": "E0",
+                    "dst": "E1",
+                    "type": "member_of",
+                    "counter": 9,
+                    "reason": "seeded relation",
+                },
+                {
+                    "src": "E1",
+                    "dst": "E0",
+                    "type": "rival_of",
+                    "counter": 2,
+                    "reason": "seeded relation",
+                },
             )
         )
     ]
@@ -4213,12 +4352,14 @@ def test_repair_sampling_respects_operator_pins(world: str) -> None:
 
 
 def test_edge_kind_ok_rules_pin() -> None:
-    """EDGE_KIND_RULES (owner decision 2026-09-12 + 2026-09-13 expansion):
-    the single table both layers read. member_of/loyalty never touch a
-    place; located_in must point at a place; the six role-bearing types
-    (bases_at, hails_from, controls, employs, worships, protects) keep
-    people/groups as sources and places out of the social kinds; the
-    catch-alls stay unrestricted."""
+    """EDGE_KIND_RULES (owner decision 2026-09-12 + 2026-09-13 expansion,
+    AD-31 v3 delta): the single table both layers read. member_of/loyalty
+    never touch a place; located_in must point at a place; the role-bearing
+    types keep places out of the social kinds EXCEPT as employers and
+    rulers (a city employs its watch-captain, a fort holds its valley);
+    ``part_of`` is the v3 hierarchical-containment cell for places and
+    factions only — a person is never part of a place; the catch-alls
+    stay unrestricted."""
     assert edge_kind_ok("member_of", "character", "faction")
     assert edge_kind_ok("member_of", "faction", "faction")
     assert not edge_kind_ok("member_of", "place", "faction")
@@ -4238,12 +4379,24 @@ def test_edge_kind_ok_rules_pin() -> None:
     assert not edge_kind_ok("hails_from", "character", "faction")
     assert edge_kind_ok("controls", "faction", "place")
     assert edge_kind_ok("controls", "character", "faction")
-    assert not edge_kind_ok("controls", "place", "faction")
+    # AD-31: a place may control a place (the fort holds its valley) but
+    # people/groups remain out as targets; a faction is never controlled.
+    assert edge_kind_ok("controls", "place", "place")
+    assert edge_kind_ok("controls", "place", "faction")
     assert not edge_kind_ok("controls", "faction", "character")
     assert edge_kind_ok("employs", "faction", "character")
     assert edge_kind_ok("employs", "character", "character")
-    assert not edge_kind_ok("employs", "place", "character")
+    # AD-31: a place may be the employer (the city hires its watch-captain)
+    # but places are never employees and never worshippers.
+    assert edge_kind_ok("employs", "place", "character")
+    assert edge_kind_ok("employs", "place", "faction")
     assert not edge_kind_ok("employs", "character", "place")
+    assert edge_kind_ok("part_of", "place", "place")
+    assert edge_kind_ok("part_of", "place", "faction")
+    assert edge_kind_ok("part_of", "faction", "place")
+    assert edge_kind_ok("part_of", "faction", "faction")
+    assert not edge_kind_ok("part_of", "character", "place")
+    assert not edge_kind_ok("part_of", "character", "faction")
     assert edge_kind_ok("worships", "character", "faction")
     assert edge_kind_ok("worships", "faction", "faction")
     assert not edge_kind_ok("worships", "place", "faction")
@@ -4265,7 +4418,8 @@ def test_prompts_carry_edge_kind_guidance(world: str) -> None:
     assert "- located_in: any -> place" in prompt
     assert "- bases_at: character|faction -> place" in prompt
     assert "where X is found at tale-time" in prompt
-    assert "- controls: character|faction -> faction|place" in prompt
+    assert "- controls: character|faction|place -> faction|place" in prompt
+    assert "- part_of: faction|place -> faction|place" in prompt
     assert "EDGE VOCABULARY" in prompt and "debt: amount" in prompt
     prompt2 = build_wave2_prompt(seed, "notes", ([], []), core_count=0)
     assert "- member_of: character|faction -> character|faction" in prompt2
@@ -4277,10 +4431,24 @@ def test_wave1_kind_invalid_edges_repaired(world: str) -> None:
     located_in) gets ONE bounded edges-only repair; the corrected edge
     commits, nothing is dropped, the job result carries no audit."""
     output = _wave1_output()
-    output["edges"].append({"src": "E0", "dst": "E1", "type": "located_in", "counter": 1})
+    output["edges"].append(
+        {"src": "E0", "dst": "E1", "type": "located_in", "counter": 1, "reason": "seeded relation"}
+    )
     responses = [
         json.dumps(output),
-        json.dumps({"edges": [{"src": "E0", "dst": "E1", "type": "relationship", "counter": 1}]}),
+        json.dumps(
+            {
+                "edges": [
+                    {
+                        "src": "E0",
+                        "dst": "E1",
+                        "type": "relationship",
+                        "counter": 1,
+                        "reason": "seeded relation",
+                    }
+                ]
+            }
+        ),
     ]
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
     run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
@@ -4299,10 +4467,24 @@ def test_wave1_kind_residual_dropped_with_audit(world: str) -> None:
     the job result audit — the wave still succeeds (wave-1 edges are
     best-effort)."""
     output = _wave1_output()
-    output["edges"].append({"src": "E0", "dst": "E1", "type": "located_in", "counter": 1})
+    output["edges"].append(
+        {"src": "E0", "dst": "E1", "type": "located_in", "counter": 1, "reason": "seeded relation"}
+    )
     responses = [
         json.dumps(output),
-        json.dumps({"edges": [{"src": "E0", "dst": "E1", "type": "located_in", "counter": 1}]}),
+        json.dumps(
+            {
+                "edges": [
+                    {
+                        "src": "E0",
+                        "dst": "E1",
+                        "type": "located_in",
+                        "counter": 1,
+                        "reason": "seeded relation",
+                    }
+                ]
+            }
+        ),
     ]
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
     run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
@@ -4320,7 +4502,9 @@ def test_wave1_kind_repair_failure_degrades_to_drop(world: str) -> None:
     """The repair call itself dies (provider error) — the rejected edges
     drop with the audit, the build never fails over edges."""
     output = _wave1_output()
-    output["edges"].append({"src": "E0", "dst": "E1", "type": "located_in", "counter": 1})
+    output["edges"].append(
+        {"src": "E0", "dst": "E1", "type": "located_in", "counter": 1, "reason": "seeded relation"}
+    )
     calls = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
@@ -4342,10 +4526,24 @@ def test_wave1_mutual_member_of_repaired_to_single_direction(world: str) -> None
     """The graph rule: both member_of directions are rejected and the
     repair keeps exactly one — membership is hierarchical."""
     output = _wave1_output()
-    output["edges"].append({"src": "E1", "dst": "E0", "type": "member_of", "counter": 2})
+    output["edges"].append(
+        {"src": "E1", "dst": "E0", "type": "member_of", "counter": 2, "reason": "seeded relation"}
+    )
     responses = [
         json.dumps(output),
-        json.dumps({"edges": [{"src": "E0", "dst": "E1", "type": "member_of", "counter": 1}]}),
+        json.dumps(
+            {
+                "edges": [
+                    {
+                        "src": "E0",
+                        "dst": "E1",
+                        "type": "member_of",
+                        "counter": 1,
+                        "reason": "seeded relation",
+                    }
+                ]
+            }
+        ),
     ]
     job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
     run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
@@ -4361,11 +4559,28 @@ def test_wave2_kind_invalid_edges_repaired(world: str) -> None:
     """Wave-2 happy path: a character -> character located_in gets the one
     repair and commits corrected."""
     wave2 = _wave2_output()
-    wave2["edges"][1] = {"src": "N1", "dst": "C1", "type": "located_in"}
+    wave2["edges"][1] = {
+        "src": "N1",
+        "dst": "C1",
+        "type": "located_in",
+        "reason": "seeded relation",
+    }
     responses = [
         json.dumps(_wave1_output()),
         json.dumps(wave2),
-        json.dumps({"edges": [{"src": "N1", "dst": "C1", "type": "ally_of", "counter": 2}]}),
+        json.dumps(
+            {
+                "edges": [
+                    {
+                        "src": "N1",
+                        "dst": "C1",
+                        "type": "ally_of",
+                        "counter": 2,
+                        "reason": "seeded relation",
+                    }
+                ]
+            }
+        ),
     ]
     job_id = _enqueue(world, notes="Captain Harlow docks at the Rat")
     run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
@@ -4383,11 +4598,22 @@ def test_wave2_kind_invalid_edges_fail_after_repair(world: str) -> None:
     """Wave-2's edges are load-bearing: still-invalid after the ONE repair
     FAILS the job naming the edge — the wave-1 core stays committed."""
     wave2 = _wave2_output()
-    wave2["edges"][1] = {"src": "N1", "dst": "C1", "type": "located_in"}
+    wave2["edges"][1] = {
+        "src": "N1",
+        "dst": "C1",
+        "type": "located_in",
+        "reason": "seeded relation",
+    }
     responses = [
         json.dumps(_wave1_output()),
         json.dumps(wave2),
-        json.dumps({"edges": [{"src": "N1", "dst": "C1", "type": "located_in"}]}),
+        json.dumps(
+            {
+                "edges": [
+                    {"src": "N1", "dst": "C1", "type": "located_in", "reason": "seeded relation"}
+                ]
+            }
+        ),
     ]
     job_id = _enqueue(world, notes="Captain Harlow docks at the Rat")
     run_next_job(provider=lambda prompt, settings: responses.pop(0), settings=SETTINGS)
@@ -4419,8 +4645,8 @@ def test_wave2_mutual_member_of_against_world_fixed(world: str) -> None:
                     }
                 ],
                 "edges": [
-                    {"src": "C0", "dst": "C1", "type": "member_of"},
-                    {"src": "N0", "dst": "C0", "type": "relationship"},
+                    {"src": "C0", "dst": "C1", "type": "member_of", "reason": "seeded relation"},
+                    {"src": "N0", "dst": "C0", "type": "relationship", "reason": "seeded relation"},
                 ],
             }
         ),
@@ -4486,10 +4712,10 @@ def test_canonicalize_edges_collapses_mirrors() -> None:
     (the rebase path re-runs it)."""
     a, b, c = "A", "B", "C"
     edges = [
-        models.EdgeInput(src=a, dst=b, type="relationship", counter=1),
-        models.EdgeInput(src=b, dst=a, type="relationship", counter=3),
-        models.EdgeInput(src=a, dst=b, type="debt", counter=1),
-        models.EdgeInput(src=a, dst=c, type="relationship", counter=1),
+        models.EdgeInput(src=a, dst=b, type="relationship", counter=1, reason="seeded"),
+        models.EdgeInput(src=b, dst=a, type="relationship", counter=3, reason="seeded"),
+        models.EdgeInput(src=a, dst=b, type="debt", counter=1, reason="seeded"),
+        models.EdgeInput(src=a, dst=c, type="relationship", counter=1, reason="seeded"),
     ]
     canonical = _canonicalize_edges(edges)
     assert len(canonical) == 3
@@ -4506,8 +4732,8 @@ def test_canonicalize_edges_collapses_mirrors() -> None:
     # validation; by commit time none exist, and the collapse would keep
     # the stronger counter either way.
     mutual = [
-        models.EdgeInput(src=a, dst=b, type="member_of", counter=1),
-        models.EdgeInput(src=b, dst=a, type="member_of", counter=1),
+        models.EdgeInput(src=a, dst=b, type="member_of", counter=1, reason="seeded"),
+        models.EdgeInput(src=b, dst=a, type="member_of", counter=1, reason="seeded"),
     ]
     assert len(_canonicalize_edges(mutual)) == 1
 
@@ -4584,20 +4810,26 @@ def test_normalize_edge_directions_flips_slips() -> None:
     }
     rows: list[dict[str, Any]] = [
         # inverted slot — flip expected
-        {"src": "E0", "dst": "E1", "type": "bases_at", "counter": 1},
+        {"src": "E0", "dst": "E1", "type": "bases_at", "counter": 1, "reason": "seeded relation"},
         # inverted located_in — flip expected
-        {"src": "E3", "dst": "E2", "type": "located_in", "counter": 1},
+        {"src": "E3", "dst": "E2", "type": "located_in", "counter": 1, "reason": "seeded relation"},
         # already legal — untouched
-        {"src": "E1", "dst": "E0", "type": "bases_at", "counter": 1},
+        {"src": "E1", "dst": "E0", "type": "bases_at", "counter": 1, "reason": "seeded relation"},
         # legal relationship — untouched
-        {"src": "E1", "dst": "E2", "type": "relationship", "counter": 1},
+        {
+            "src": "E1",
+            "dst": "E2",
+            "type": "relationship",
+            "counter": 1,
+            "reason": "seeded relation",
+        },
         # illegal both ways (place member_of place / place hails_from faction) — untouched
-        {"src": "E0", "dst": "E3", "type": "member_of", "counter": 1},
-        {"src": "E0", "dst": "E5", "type": "hails_from", "counter": 1},
+        {"src": "E0", "dst": "E3", "type": "member_of", "counter": 1, "reason": "seeded relation"},
+        {"src": "E0", "dst": "E5", "type": "hails_from", "counter": 1, "reason": "seeded relation"},
         # container-first habit (d10: "The Blackwater Compact -> Harlow"):
         # exactly one faction endpoint makes the character the member —
         # canonical direction member -> container, flipped
-        {"src": "E4", "dst": "E1", "type": "member_of", "counter": 1},
+        {"src": "E4", "dst": "E1", "type": "member_of", "counter": 1, "reason": "seeded relation"},
     ]
     _normalize_edge_directions(1, rows, ref_kinds)
     assert (rows[0]["src"], rows[0]["dst"]) == ("E1", "E0")
@@ -4620,12 +4852,28 @@ def test_edge_row_usable_shared_boundary() -> None:
     model writing a NAME where a ref belongs — drops at the boundary with
     a log instead of killing a 100-entity wave."""
     valid = frozenset({"E0", "E1"})
-    assert _edge_row_usable({"src": "E0", "dst": "E1", "type": "member_of", "counter": 1}, valid)
-    assert not _edge_row_usable({"src": "E0", "dst": "Agda", "type": "member_of"}, valid)
-    assert not _edge_row_usable({"src": "E0", "dst": "E1", "type": "teleports_to"}, valid)
-    assert not _edge_row_usable({"src": "E0", "dst": "E0", "type": "member_of"}, valid)
+    assert _edge_row_usable(
+        {"src": "E0", "dst": "E1", "type": "member_of", "counter": 1, "reason": "seeded relation"},
+        valid,
+    )
     assert not _edge_row_usable(
-        {"src": "E0", "dst": "E1", "type": "member_of", "counter": "3"}, valid
+        {"src": "E0", "dst": "Agda", "type": "member_of", "reason": "seeded relation"}, valid
+    )
+    assert not _edge_row_usable(
+        {"src": "E0", "dst": "E1", "type": "teleports_to", "reason": "seeded relation"}, valid
+    )
+    assert not _edge_row_usable(
+        {"src": "E0", "dst": "E0", "type": "member_of", "reason": "seeded relation"}, valid
+    )
+    assert not _edge_row_usable(
+        {
+            "src": "E0",
+            "dst": "E1",
+            "type": "member_of",
+            "counter": "3",
+            "reason": "seeded relation",
+        },
+        valid,
     )
     assert not _edge_row_usable("not a row", valid)
 
@@ -4637,12 +4885,12 @@ def test_cap_relationship_rows_world_level() -> None:
     First rows win; slot rows pass through; the wave-2 anchor repair is
     exempt by not calling this boundary."""
     rows = [
-        {"src": "E0", "dst": "E1", "type": "relationship"},
-        {"src": "E0", "dst": "E2", "type": "member_of"},
-        {"src": "E1", "dst": "E2", "type": "relationship"},
-        {"src": "E2", "dst": "E3", "type": "relationship"},
-        {"src": "E3", "dst": "E0", "type": "bases_at"},
-        {"src": "E3", "dst": "E1", "type": "relationship"},
+        {"src": "E0", "dst": "E1", "type": "relationship", "reason": "seeded relation"},
+        {"src": "E0", "dst": "E2", "type": "member_of", "reason": "seeded relation"},
+        {"src": "E1", "dst": "E2", "type": "relationship", "reason": "seeded relation"},
+        {"src": "E2", "dst": "E3", "type": "relationship", "reason": "seeded relation"},
+        {"src": "E3", "dst": "E0", "type": "bases_at", "reason": "seeded relation"},
+        {"src": "E3", "dst": "E1", "type": "relationship", "reason": "seeded relation"},
     ]
     capped = _cap_relationship_rows(rows)
     assert [r["type"] for r in capped] == [
@@ -4662,13 +4910,167 @@ def test_wiring_filter_enforces_relationship_cap() -> None:
     orphan's corrective anchor edges are never capped)."""
     valid = frozenset({"E0", "E1", "E2", "E3"})
     flood = [
-        {"src": "E0", "dst": "E1", "type": "relationship", "counter": 1},
-        {"src": "E1", "dst": "E2", "type": "relationship", "counter": 1},
-        {"src": "E2", "dst": "E3", "type": "relationship", "counter": 1},
-        {"src": "E3", "dst": "E0", "type": "relationship", "counter": 1},
-        {"src": "E0", "dst": "E2", "type": "member_of", "counter": 1},
+        {
+            "src": "E0",
+            "dst": "E1",
+            "type": "relationship",
+            "counter": 1,
+            "reason": "seeded relation",
+        },
+        {
+            "src": "E1",
+            "dst": "E2",
+            "type": "relationship",
+            "counter": 1,
+            "reason": "seeded relation",
+        },
+        {
+            "src": "E2",
+            "dst": "E3",
+            "type": "relationship",
+            "counter": 1,
+            "reason": "seeded relation",
+        },
+        {
+            "src": "E3",
+            "dst": "E0",
+            "type": "relationship",
+            "counter": 1,
+            "reason": "seeded relation",
+        },
+        {"src": "E0", "dst": "E2", "type": "member_of", "counter": 1, "reason": "seeded relation"},
     ]
     kept = _filter_wiring_edges(flood, valid)
     assert [row["type"] for row in kept] == ["relationship", "relationship", "member_of"]
     assert sum(1 for row in kept if row["type"] == "relationship") == 2
     assert kept[2]["type"] == "member_of"  # slot rows are never capped
+
+
+# ---------------------------------------------------------------------------
+# AD-32/AD-33: the fill-blank reason repair + the verbatim corpus capture
+# ---------------------------------------------------------------------------
+
+
+_CORPUS_BLANK_REASON_WAVE = (
+    Path(__file__).parent / "fixtures" / "model_outputs" / "blank-reason-wave-2026-09-19.json"
+)
+
+
+def test_blank_reason_fill_partial_drop_with_audit(world: str, caplog: Any) -> None:
+    """AD-33 drop-with-audit: a fill that covers only ONE of the blank
+    ordinals leaves the other blank — that edge DROPS with an info audit
+    naming it while the filled edge commits; the wave still completes
+    (edgeless is legal, owner verdict 2026-09-11)."""
+    output = _wave1_output()
+    for edge in output["edges"]:
+        edge.pop("reason", None)
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return json.dumps(output)
+        assert "REASON FILL" in prompt, prompt[:80]
+        return json.dumps({"reasons": [{"index": 0, "reason": "the ledger binds her"}]})
+
+    with caplog.at_level("INFO", logger="app.pipeline.build_in"):
+        assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 2  # wave + one bounded fill
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        edges = world_edges(session, world)
+    assert len(edges) == 1  # the unfilled edge dropped with audit
+    (edge,) = edges
+    assert edge.reason == "the ledger binds her"
+    assert any(
+        "reason still blank" in record.message and "debt" in record.message
+        for record in caplog.records
+    )
+
+
+def test_blank_reason_fill_lying_prose_drops_all(world: str, caplog: Any) -> None:
+    """A null-prose fill ('N/A') is a MISSING fill, not an answer — every
+    blank edge drops with audit and the wave commits edgeless."""
+    output = _wave1_output()
+    for edge in output["edges"]:
+        edge.pop("reason", None)
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps(
+                {"reasons": [{"index": 0, "reason": "N/A"}, {"index": 1, "reason": "..."}]}
+            )
+        return json.dumps(output)
+
+    with caplog.at_level("INFO", logger="app.pipeline.build_in"):
+        assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded"
+    with session_scope() as session:
+        edges = world_edges(session, world)
+    assert edges == []
+    assert sum("reason still blank" in record.message for record in caplog.records) == 2
+
+
+def test_corpus_blank_reason_wave_filled_end_to_end(world: str) -> None:
+    """VERBATIM corpus, 2026-09-19 capture (gemma-4-26B build-in wave-1
+    chunk: 16 entities, 11 edges, NO reason anywhere): the RAW
+    CONTRADICTION guard asserts the capture is still the contradictory
+    output (a hand-cleaned fixture fails here), then the WHOLE chain runs
+    — wave -> the layer-2 kind repair (the one captured ``worships ->
+    place`` violation drops with audit) -> ONE fill-blank call that must
+    name and fill every surviving frozen edge -> a commit whose edges all
+    carry the saved why. The kind + reason folds are exercised end-to-end,
+    never in isolation."""
+    import re as _re
+
+    fixture = json.loads(_CORPUS_BLANK_REASON_WAVE.read_text())
+    assert {"entities", "edges"} <= set(fixture)
+    # Raw contradiction: the captured edges name no why at all.
+    assert fixture["edges"]
+    assert all(not edge.get("reason") for edge in fixture["edges"])
+
+    places = [e["name"] for e in fixture["entities"] if e["kind"] == "place"]
+    factions = [e["name"] for e in fixture["entities"] if e["kind"] == "faction"]
+    figures = [e["name"] for e in fixture["entities"] if e["kind"] == "character"]
+    assert (len(places), len(factions), len(figures)) == (9, 5, 2)  # the capture's roster
+
+    job_id = _enqueue(world, places=places, factions=factions, key_figures=figures)
+    calls: list[str] = []
+    filled: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return json.dumps(fixture)
+        if "kind rules" in prompt:
+            # The captured worships->place violation: repaired to nothing
+            # (the mock's bounded repair drops the residual violation).
+            return json.dumps({"edges": []})
+        if "REASON FILL" in prompt:
+            frozen = [int(index) for index in _re.findall(r"- index (\d+):", prompt)]
+            assert frozen == list(range(10))  # 11 captured - 1 kind-drop
+            filled[:] = [f"{edge!r}" for edge in frozen]
+            return json.dumps(
+                {
+                    "reasons": [
+                        {"index": index, "reason": "the covenant binds them"} for index in frozen
+                    ]
+                }
+            )
+        raise AssertionError(f"unexpected repair call: {prompt[:100]}")
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert len(calls) == 3  # wave + kind repair + the one reason fill
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    with session_scope() as session:
+        entities = world_entities(session, world)
+        edges = world_edges(session, world)
+    assert len(entities) == 16
+    assert len(edges) == 10  # the worships->place row dropped at the kind layer
+    assert "worships" not in {edge.type for edge in edges}
+    assert all(edge.reason == "the covenant binds them" for edge in edges)

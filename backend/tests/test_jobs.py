@@ -153,7 +153,11 @@ def test_enqueue_budgets_come_from_env(world: str, monkeypatch: pytest.MonkeyPat
                 kind="character", name="Mira", data={"appearance": "sharp"}, id=entity_id
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     job = enqueue_job(world, "image", {"entity_id": entity_id})
     assert job.max_llm_calls == 5 and job.max_media_calls == 2
@@ -199,7 +203,11 @@ def test_enqueue_image_foreign_entity_is_404(world: str) -> None:
                 kind="character", name="Stranger", data={"appearance": "x"}, id=entity_id
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     with pytest.raises(UnknownEntityError):
         enqueue_job(world, "image", {"entity_id": entity_id})
@@ -230,7 +238,11 @@ def test_enqueue_image_blank_appearance_is_422(world: str, appearance: object) -
                 kind="character", name="Faceless", data={"appearance": appearance}, id=entity_id
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     with pytest.raises(InvalidJobInputError):
         enqueue_job(world, "image", {"entity_id": entity_id})
@@ -252,7 +264,11 @@ def test_enqueue_image_dict_appearance_accepted(world: str) -> None:
                 id=entity_id,
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     job = enqueue_job(world, "image", {"entity_id": entity_id})
     assert job.kind == "image" and job.state == "queued"
@@ -273,7 +289,11 @@ def _commit_with_appearance(world: str, appearance: str) -> str:
                 id=entity_id,
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     return entity_id
 
@@ -316,7 +336,7 @@ def test_enqueue_image_accepts_p1_options(world: str) -> None:
         "unknown-key",
     ],
 )
-def test_enqueue_image_rejects_malformed_p1_options(world: str, payload: dict) -> None:
+def test_enqueue_image_rejects_malformed_p1_options(world: str, payload: dict[str, Any]) -> None:
     """Every malformed P1 option is a 422 at enqueue, zero rows (the
     gate canonicalizes, never silently drops)."""
     entity_id = _commit_with_appearance(world, "sharp")
@@ -347,7 +367,11 @@ def _commit_boss(world: str, role: str = "BBEG", data: dict[str, Any] | None = N
             models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
             models.EntityInput(kind="character", name="Vashka", data=data, id=entity_id),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     return entity_id
 
@@ -768,7 +792,11 @@ def test_enqueue_generate_keeps_settings_default_budget(world: str) -> None:
             models.EntityInput(kind="place", name="Anchor", id=anchor_id),
             models.EntityInput(kind="character", name="Mira", id=entity_id),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     job = enqueue_job(world, "generate", {"ask": "who watches the watchtower?"})
     assert job.max_llm_calls == 64

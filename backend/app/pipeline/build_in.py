@@ -49,6 +49,7 @@ import dataclasses
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from types import MappingProxyType
 from typing import Any, NamedTuple, cast
 
@@ -106,7 +107,11 @@ from app.store.candidates import (
     canonicalize_reaction_matrix,
     payload_section_violations,
 )
-from app.store.commit import EDGE_KIND_RULES, edge_kind_ok  # noqa: F401 - re-exported
+from app.store.commit import (  # noqa: F401 - re-exported
+    EDGE_KIND_RULES,
+    edge_kind_ok,
+    edge_reason_ok,
+)
 from app.store.db import session_scope
 from app.store.direct import normalize_entity_name  # noqa: F401 - re-exported
 from app.store.read import campaign_seed, latest_revision
@@ -289,10 +294,18 @@ _EDGE_GUIDANCE: Mapping[str, str] = MappingProxyType(
         "bases_at": "X's home, post, or haunt — where X is found at tale-time",
         "hails_from": "X's origin or home district — where X comes from, not where X is now",
         "controls": (
-            "X rules or holds Y — people and groups control places and "
-            "organizations, never the reverse"
+            "X rules or holds Y — people, groups, and places rule; the "
+            "controlled side is a place or an organization"
         ),
-        "employs": "X employs, commands, or retains Y — a place is never an employer or employee",
+        "employs": (
+            "X employs, commands, or retains Y — a city may employ its "
+            "watch-captain; places are never employees"
+        ),
+        "part_of": (
+            "X is a constituent part of Y — districts of a city, cults in "
+            "a temple network; people are never part of a place (use "
+            "located_in); ONE direction only"
+        ),
         "worships": (
             "X serves or reveres Y — faith, cult, devotion; a place is never a "
             "worshipper or worshipped"
@@ -341,12 +354,19 @@ def _kind_violation_reason(edge_type: str, src_kind: str, dst_kind: str) -> str:
         return "nothing is a member of a place — use located_in"
     if edge_type == "loyalty":
         return "a place holds and receives no loyalty"
-    if edge_type in ("employs", "worships"):
-        return f"{edge_type} is only between people and groups — never a place"
-    if edge_type == "controls":
+    if edge_type == "employs":
         if src_kind == "place":
-            return "a place controls nothing — people and groups rule"
+            return f"employs must target a person or group (character/faction), not a {dst_kind}"
+        return (
+            "employs is between people, groups, and places-as-employers — "
+            f"a {src_kind} cannot employ"
+        )
+    if edge_type == "worships":
+        return "worships is only between people and groups — never a place"
+    if edge_type == "controls":
         return f"controls targets a place or organization, not a {dst_kind}"
+    if edge_type == "part_of":
+        return "part_of is for places and factions only — people are located_in places"
     if edge_type == "protects":
         return f"a place protects nothing (got {src_kind} -> {dst_kind})"
     return f"{edge_type} is not allowed between {src_kind} and {dst_kind}"
@@ -1459,7 +1479,19 @@ def _declared_edges(
             if relationship in staged:
                 continue  # duplicate collapse: first declared row wins
             staged.add(relationship)
-            edges.append(models.EdgeInput(src=src, dst=dst, type=edge_type, counter=counter))
+            # AD-32: a declared relation may carry the DM's own why
+            # (``reason`` on the relation row); otherwise the commit
+            # contract needs one — derive a deterministic fallback from
+            # the declaration itself, never a blank.
+            raw_reason = raw.get("reason")
+            reason = (
+                raw_reason.strip()
+                if isinstance(raw_reason, str) and raw_reason.strip()
+                else f"declared {edge_type} relation"
+            )
+            edges.append(
+                models.EdgeInput(src=src, dst=dst, type=edge_type, counter=counter, reason=reason)
+            )
     return edges
 
 
@@ -2736,6 +2768,12 @@ def _run_wave2(
     )
     if cancelled:
         return None
+    # AD-33 fill-blank (the saved-reason class): one bounded attempt per
+    # blank batch, take-only-X merge, then drop-with-audit — the >=1-core-
+    # anchor floor then fails a thin roster loud at commit, naming the edge.
+    edges_2 = _fill_blank_reasons(
+        job, budget, provider, settings, 2, edges_2, entities_2, context=anchor_context
+    )
     # Cancel-race poll: a cancel during the wave-2 call/validation must
     # not commit wave 2 — the failed wave writes nothing.
     if not _job_still_running(job):
@@ -3045,6 +3083,11 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     if declared:
         logger.info("build_in: %d declared edge(s) applied (job %s)", len(declared), job.id)
     edges_1 = [*edges_1, *declared]
+    # AD-33 fill-blank: one bounded reason repair for blank edge whys,
+    # then drop-with-audit; wave 1 stays edgeless-legal (owner verdict).
+    edges_1 = _fill_blank_reasons(
+        job, budget, provider, settings, 1, edges_1, entities_1, context=()
+    )
     # Edgeless wave-1 commits through the store's FR2 backstop explicitly
     # (owner verdict 2026-09-11): the pipeline no longer requires internal
     # wiring, so the commit must not either — the DM prunes. Every other
@@ -3825,12 +3868,16 @@ def build_wave_schema(
                         **({"maxItems": max_edges} if max_edges is not None else {}),
                         "items": {
                             "type": "object",
-                            "required": ["src", "dst", "type"],
+                            "required": ["src", "dst", "type", "reason"],
                             "properties": {
                                 "src": {"type": "string"},
                                 "dst": {"type": "string"},
                                 "type": {"enum": sorted(EDGE_TYPES)},
                                 "counter": {"type": "integer"},
+                                # AD-32: every edge carries its saved why;
+                                # a blank is the fill-blank repair class,
+                                # not a boundary error.
+                                "reason": {"type": "string"},
                             },
                             "additionalProperties": False,
                         },
@@ -3896,12 +3943,13 @@ def build_anchor_repair_schema(new_refs: Sequence[str], core_refs: Sequence[str]
                         "type": "array",
                         "items": {
                             "type": "object",
-                            "required": ["src", "dst", "type"],
+                            "required": ["src", "dst", "type", "reason"],
                             "properties": {
                                 "src": {"enum": endpoints},
                                 "dst": {"enum": endpoints},
                                 "type": {"enum": sorted(EDGE_TYPES)},
                                 "counter": {"type": "integer"},
+                                "reason": {"type": "string"},
                             },
                             "additionalProperties": False,
                         },
@@ -3951,7 +3999,8 @@ def _build_anchor_repair_prompt(
         'Respond with one JSON object: {"edges": [...]} containing ONLY the additional',
         "edges needed so every orphan above has >= 1 edge to a CORE entity.",
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
-        '  "counter": <integer, default 1>}.',
+        '  "counter": <integer, default 1>,',
+        '  "reason": "<one non-blank sentence: why this relation holds>"}.',
         "src/dst must be a frozen new-entity ref or a core ref from the rosters above.",
         "Edges must connect two different entities — no self-loops.",
         "",
@@ -4316,14 +4365,213 @@ def _resolve_edges(
                 edge_type,
             )
             continue
+        # AD-32: the wave's per-edge reason passes through as staged —
+        # blank/missing is NOT a boundary error (the fill-blank repair
+        # owns it; AD-33), so the raw prose rides verbatim.
+        raw_reason = raw.get("reason")
+        reason = raw_reason.strip() if isinstance(raw_reason, str) else None
         edge_inputs.append(
-            models.EdgeInput(src=src_id, dst=dst_id, type=edge_type, counter=counter)
+            models.EdgeInput(src=src_id, dst=dst_id, type=edge_type, counter=counter, reason=reason)
         )
         if src_position is not None and dst_id in core_ids:
             anchored_positions.add(src_position)
         if dst_position is not None and src_id in core_ids:
             anchored_positions.add(dst_position)
     return edge_inputs, anchored_positions
+
+
+# ---------------------------------------------------------------------------
+# AD-33 fill-blank repair (the saved-reason class): one bounded call,
+# single-field schema, take-only-X merge, then drop-with-audit.
+# ---------------------------------------------------------------------------
+
+
+def build_reason_fill_schema(count: int) -> dict[str, Any]:
+    """The single-field reply schema for the fill-blank reason repair
+    (AD-33: the saved JSON returns with ONLY the missing field asked
+    for, grammar-enforced where backends allow). ``index`` is a closed
+    enum of exactly the edges that were asked about — a reply about any
+    other edge is unemittable on grammar-enforcing backends and
+    discarded by the take-only-X merge everywhere else."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "reason_fill",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "required": ["reasons"],
+                "properties": {
+                    "reasons": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["index", "reason"],
+                            "properties": {
+                                "index": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": max(count - 1, 0),
+                                },
+                                "reason": {"type": "string", "minLength": 1},
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _parse_reason_reply(text: str, *, what: str) -> list[Any]:
+    """Parse the fill-blank reply (``{"reasons": [...]}``) — one bounded
+    JSON contract, the edges-only parse's sibling."""
+    stripped = _strip_fence(text)
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise WaveJsonError(f"{what}: output is not valid JSON ({exc})") from exc
+    if not isinstance(parsed, dict):
+        raise JobPayloadError(f"{what}: output must be a JSON object with a 'reasons' list")
+    reasons = parsed.get("reasons")
+    if not isinstance(reasons, list):
+        raise JobPayloadError(f"{what}: output must be a JSON object with a 'reasons' list")
+    return reasons
+
+
+def _fill_blank_reasons(
+    job: models.Job,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    wave: int,
+    edges: list[models.EdgeInput],
+    entity_inputs: Sequence[models.EntityInput],
+    context: Sequence[ContextRef] = (),
+) -> list[models.EdgeInput]:
+    """The AD-33 fill-blank class for edge reasons: one bounded attempt
+    per blank batch — the saved wave edges are the base, the single-field
+    reply supplies reason only, and the merge is take-only-X (a reply
+    that rewrites anything else is discarded wholesale). A reply that is
+    still blank/null-prose drops that edge WITH AUDIT (info log naming
+    src/type/dst); the >=1-edge anchor floors then judge thin rosters
+    loud (wave 1 commits edgeless by owner verdict, so a drop there is
+    clean; wave 2's orphan rule re-checks at commit).
+
+    Malformed replies stay the existing re-derive repair classes; this
+    helper never re-elicits — one attempt, then the boundary decisions
+    above. Cancellation between the call and the merge returns the
+    edges untouched (the caller's cancel poll owns the no-commit).
+    """
+    blanks = [(index, edge) for index, edge in enumerate(edges) if not edge_reason_ok(edge.reason)]
+    if not blanks:
+        return edges
+    labels: dict[str, str] = {}
+    for position, entity in enumerate(entity_inputs):
+        labels[entity.id or ""] = f"{entity.name!r} (E{position + 1})"
+    for position, ref in enumerate(context):
+        labels[ref.id] = f"{ref.name!r} (C{position})"
+    frozen = "\n".join(
+        f"- index {index}: {labels.get(edge.src, edge.src)} --{edge.type}--> "
+        f"{labels.get(edge.dst, edge.dst)}"
+        for index, edge in blanks
+    )
+    what = f"wave {wave}: reason fill"
+    prompt = "\n".join(
+        [
+            f"Your wave-{wave} response left {len(blanks)} edge(s) without a saved reason.",
+            "",
+            "FROZEN EDGES (already recorded — supply ONLY their reasons):",
+            frozen,
+            "",
+            "REASON FILL — respond with exactly one JSON object, nothing else.",
+            'Respond with one JSON object: {"reasons": [{"index": <frozen index>,',
+            '  "reason": "<one non-blank sentence: why this relation holds>"}]} —',
+            "one entry per frozen index above, same order or keyed by index; never",
+            "restate any other field. A blank, 'None', 'N/A', or unknown is not an",
+            "answer — write the concrete in-world why or omit the entry.",
+        ]
+    )
+    if not _job_still_running(job):
+        return edges
+    try:
+        reply_text = budget.call(
+            partial(
+                provider,
+                prompt,
+                settings=dataclasses.replace(
+                    settings,
+                    response_format=build_reason_fill_schema(len(blanks)),
+                    max_tokens=min(1024, settings.max_tokens),
+                ),
+            )
+        )
+    except WaveJsonError:
+        # One bounded structural retry (the C taxonomy): a single-token
+        # slip must not cost every reason.
+        retry_note = (
+            'Return ONLY the one JSON object: {"reasons": [{"index": <n>, '
+            '"reason": "..."}]} — valid JSON, no prose, no fences.'
+        )
+        reply_text = budget.call(
+            partial(
+                provider,
+                prompt + "\n\nRETRY NOTE: " + retry_note,
+                settings=dataclasses.replace(
+                    settings,
+                    response_format=build_reason_fill_schema(len(blanks)),
+                    max_tokens=min(1024, settings.max_tokens),
+                ),
+            )
+        )
+    try:
+        reasons = _parse_reason_reply(reply_text, what=what)
+    except (WaveJsonError, JobPayloadError):
+        # A malformed reply repairs nothing: every blank edge drops with
+        # audit below (drop-with-audit, AD-33).
+        reasons = []
+    fills: dict[int, str] = {}
+    for row in reasons:
+        if not isinstance(row, dict):
+            continue
+        index = row.get("index")
+        reason = row.get("reason")
+        if type(index) is not int or not isinstance(reason, str):
+            continue
+        if not edge_reason_ok(reason):
+            continue  # a lying fill is missing, not a fill
+        # Take-only-X: only the reason moves; the frozen edge stays.
+        fills[index] = reason.strip()
+    out: list[models.EdgeInput] = []
+    for index, edge in enumerate(edges):
+        if not edge_reason_ok(edge.reason):
+            fill = fills.get(index)
+            if fill is None:
+                logger.info(
+                    "wave %d: dropping edge %s --%s--> %s: reason still blank after the "
+                    "fill attempt (drop-with-audit, AD-33; job %s)",
+                    wave,
+                    edge.src,
+                    edge.type,
+                    edge.dst,
+                    job.id,
+                )
+                continue  # drop-with-audit
+            out.append(
+                models.EdgeInput(
+                    src=edge.src,
+                    dst=edge.dst,
+                    type=edge.type,
+                    counter=edge.counter,
+                    reason=fill,
+                    id=edge.id,
+                )
+            )
+        else:
+            out.append(edge)
+    return out
 
 
 def _validate_subgraph(

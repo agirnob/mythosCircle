@@ -249,7 +249,11 @@ def test_post_video_prompt_draft_201_with_supplied_prompt_render(
                 id=entity_id,
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     draft = client.post(
         "/api/jobs",
@@ -292,7 +296,11 @@ def test_post_video_prompt_bad_payload_422(client: TestClient, job_api: Callable
                 id=npc_id,
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=npc_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=npc_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     response = client.post(
         "/api/jobs",

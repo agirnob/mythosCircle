@@ -15,6 +15,7 @@ AD-2 compensating-commit surface: one undo revision, latest-or-named
 target, no body on success.
 """
 
+import hashlib
 import json as _json
 import logging
 from typing import Annotated, Any
@@ -28,6 +29,7 @@ from app.core.pagination import InvalidCursorError, decode_cursor, encode_cursor
 from app.core.settings import configured_media_dir
 from app.media.service import reclaim_campaign_media, reclaim_entity_media
 from app.store import StoreError, models
+from app.store import commit as store_commit
 from app.store.campaigns import (
     create_campaign,
     delete_campaign,
@@ -38,7 +40,7 @@ from app.store.campaigns import (
     update_campaign,
 )
 from app.store.db import session_scope
-from app.store.read import latest_revision, revision_events
+from app.store.read import latest_revision, revision_chain, revision_events, world_entities
 from app.store.undo import undo as store_undo
 
 logger = logging.getLogger(__name__)
@@ -146,6 +148,84 @@ def list_themes(
     """The themes a campaign may carry — registered before the
     ``/{campaign_id}`` route so the literal path wins the match."""
     return ThemesResponse(themes=seed_themes())
+
+
+class EdgeTypeRule(BaseModel):
+    """One closed-vocabulary cell: allowed kinds and the AD-23 counter
+    semantic (``None`` = any kind)."""
+
+    src: list[str] | None
+    dst: list[str] | None
+    counter_semantic: str
+    counter_bounds: list[int] | None
+
+
+class ArchetypeExport(BaseModel):
+    kind: str
+    name: str
+    default_dial: str
+
+
+class KindsResponse(BaseModel):
+    """The code-wins registry (AD-34): the endpoint owns no vocabulary —
+    everything renders the store's constants, cacheable within the
+    version token, re-fetched per walk mount. Commit-time live
+    validation against the same matrix is the backstop."""
+
+    version: str
+    edge_types: list[str]
+    kind_rules: dict[str, EdgeTypeRule]
+    dial_levels: list[str]
+    archetypes: list[ArchetypeExport]
+
+
+@router.get("/api/campaigns/kinds", response_model=KindsResponse)
+def kinds(
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> KindsResponse:
+    """The kinds registry (AD-34): renders ``EDGE_KIND_RULES`` + counter
+    semantics + dial tables + archetypes, derived from code constants
+    under a content-hash version token. Registered before the
+    ``/{campaign_id}`` route so the literal path wins the match. The
+    endpoint owns no vocabulary and nothing writes it at runtime;
+    pickers re-fetch per walk mount and commit live-validates."""
+    rule_payload: dict[str, dict[str, Any]] = {}
+    for edge_type in sorted(store_commit.EDGE_TYPES):
+        src, dst = store_commit.EDGE_KIND_RULES.get(edge_type, (None, None))
+        bounds = store_commit.edge_counter_bounds(edge_type)
+        rule_payload[edge_type] = {
+            "src": sorted(src) if src is not None else None,
+            "dst": sorted(dst) if dst is not None else None,
+            "counter_semantic": store_commit.edge_counter_semantic(edge_type),
+            "counter_bounds": list(bounds) if bounds is not None else None,
+        }
+    token = _matrix_version(rule_payload)
+    return KindsResponse(
+        version=token,
+        edge_types=sorted(store_commit.EDGE_TYPES),
+        kind_rules={edge_type: EdgeTypeRule(**rule) for edge_type, rule in rule_payload.items()},
+        dial_levels=list(store_commit.DIAL_LEVELS),
+        archetypes=[
+            ArchetypeExport(kind=kind, name=name, default_dial=dial)
+            for kind, name, dial in store_commit.ARCHETYPES
+        ],
+    )
+
+
+def _matrix_version(rule_payload: dict[str, Any]) -> str:
+    """The registry's content-hash version token (AD-34): a code change
+    to the matrix (or dial/archetype tables) is a new payload — pickers
+    re-fetch per walk mount; a stale bundle is never authoritative."""
+    canonical = _json.dumps(
+        {
+            "rules": rule_payload,
+            "dial": list(store_commit.DIAL_LEVELS),
+            "archetypes": [list(a) for a in store_commit.ARCHETYPES],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
 @router.get("/api/campaigns/{campaign_id}")
@@ -302,6 +382,110 @@ async def undo(
             logger.exception(
                 "post-undo media reclaim failed for %s/%s", campaign_id, deleted_entity_id
             )
+
+
+# ---------------------------------------------------------------------------
+# v3 registry + Tonight Tier-1 reads (AD-34, AD-35)
+# ---------------------------------------------------------------------------
+
+
+class EventSummary(BaseModel):
+    """One display-ready event summary (AD-35): the Tonight feed renders
+    these verbatim. ``actor`` is the sole DM in beta (AD-9: one invited
+    user per campaign — no actor column exists to fabricate one)."""
+
+    revision_id: str
+    created_at: str
+    actor: str
+    action: str
+    target_names: list[str]
+    kind: str
+
+
+class RevisionSummary(BaseModel):
+    """One revision's display-ready projection: meta + its event summaries."""
+
+    revision_id: str
+    created_at: str
+    events: list[EventSummary]
+
+
+class RevisionsResponse(BaseModel):
+    """Bounded, newest-first revision history (AD-35: default 20, max
+    100). Meta + display-ready event summaries only — never a write
+    surface, never world state."""
+
+    default: int
+    max: int
+    revisions: list[RevisionSummary]
+
+
+@router.get("/api/campaigns/{campaign_id}/revisions", response_model=RevisionsResponse)
+def revisions_history(
+    campaign_id: str,
+    current: Annotated[models.Account, Depends(get_current_account)],
+    limit: int = Query(default=20, ge=1, le=100),
+) -> RevisionsResponse:
+    """The Tonight recent-changes read (AD-35): read-only, owner-gated,
+    bounded (default 20, clamped to max 100), newest first. Summaries
+    are display-ready ``{revision_id, created_at, actor, action,
+    target_names, kind}``; verb commits and their take-backs both map
+    to ``edited`` (AD-27 — the feed never distinguishes undo from
+    edit). Unknown/foreign campaign is the single 404 (no oracle)."""
+    if get_campaign(current.id, campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    clamped = min(max(limit, 1), 100)
+    with session_scope() as session:
+        entities = world_entities(session, campaign_id)
+        names = {entity.id: entity.name for entity in entities}
+        chain = list(revision_chain(session, campaign_id))
+        summaries: list[RevisionSummary] = []
+        for revision in reversed(chain[-clamped:]):
+            events = revision_events(session, campaign_id, revision.id)
+            event_summaries = [_event_summary(revision, event, names) for event in events]
+            summaries.append(
+                RevisionSummary(
+                    revision_id=revision.id,
+                    created_at=revision.created_at,
+                    events=event_summaries,
+                )
+            )
+        return RevisionsResponse(default=20, max=100, revisions=summaries)
+
+
+def _event_summary(
+    revision: models.Revision, event: models.Event, names: dict[str, str]
+) -> EventSummary:
+    """One display-ready line (AD-35). ``kind`` names the stream
+    (entity/edge/session/knowledge); ``target_names`` resolves the
+    payload against the committed roster — an id that names no current
+    row (deleted since) falls back to the raw id, never a crash."""
+    stream = event.type.split("_", 1)[0]
+    target_ids: list[str] = []
+    if stream == "edge":
+        snapshot = event.payload.get("after") or event.payload.get("before") or {}
+        for endpoint in (snapshot.get("src"), snapshot.get("dst")):
+            if isinstance(endpoint, str):
+                target_ids.append(endpoint)
+    else:
+        target_ids.append(str(event.payload.get("id")))
+    target_names = [names.get(tid, tid) for tid in target_ids]
+    if event.type.startswith(("session_state_", "knowledge_state_")) or event.type.endswith(
+        "_updated"
+    ):
+        action = "edited"
+    elif event.type.endswith("_created"):
+        action = "created"
+    else:
+        action = "deleted"
+    return EventSummary(
+        revision_id=revision.id,
+        created_at=event.created_at,
+        actor="dm",
+        action=action,
+        target_names=target_names,
+        kind=stream,
+    )
 
 
 class GenericWorldCreate(BaseModel):

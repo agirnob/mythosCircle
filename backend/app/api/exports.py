@@ -99,6 +99,10 @@ class EdgeExport(BaseModel):
     dst: str
     type: str
     counter: int
+    #: AD-32 saved why — pre-v3 rows read NULL (grandfathered, never
+    #: blocking); import/re-roll round-trips carry it verbatim (AD-36
+    #: depth agreement: writer/renderer/exporter agree).
+    reason: str | None = None
 
 
 class WorldExport(BaseModel):
@@ -206,6 +210,7 @@ def _build_export(
                 dst=edge.dst,
                 type=edge.type,
                 counter=edge.counter,
+                reason=edge.reason,
             )
             for edge in edges
         ],

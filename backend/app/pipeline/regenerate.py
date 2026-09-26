@@ -58,6 +58,7 @@ from app.pipeline.statblocks import (
 from app.pipeline.worker import JobPayloadError
 from app.store import (
     BOSS_ROLES,
+    DIAL_LEVELS,
     EDGE_TYPES,
     JobStateConflictError,
     complete_job,
@@ -151,10 +152,13 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
     payload = job.payload
     if (
         not isinstance(payload, dict)
-        or set(payload) > {"target", "sections"}
+        or bool(set(payload) - {"target", "sections", "guide", "dial"})
         or not isinstance(payload.get("target"), dict)
     ):
-        raise JobPayloadError("regenerate: job payload must be {'target': ..., 'sections': ...}")
+        raise JobPayloadError(
+            "regenerate: job payload must be "
+            "{'target': ..., 'sections': ...|null, 'guide'?: str, 'dial'?: <dial level>}"
+        )
     target = payload["target"]
     if set(target) != {"kind", "id"}:
         raise JobPayloadError("regenerate: target must be {'kind': ..., 'id': ...}")
@@ -162,6 +166,18 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
     target_id = target["id"]
     if target_kind not in ("entity", "candidate") or not isinstance(target_id, str):
         raise JobPayloadError("regenerate: target kind/id are malformed")
+    # AD-38 shaped request: guide + dial ride the envelope; the enqueue
+    # gate is not trusted across queue delay — the same checks re-run here
+    # before any call (dial stays inside the closed registry, never
+    # invented).
+    guide = payload.get("guide")
+    if guide is not None and (not isinstance(guide, str) or not guide.strip()):
+        raise JobPayloadError("regenerate: guide must be a non-blank string when present")
+    dial = payload.get("dial")
+    if dial is not None and dial not in DIAL_LEVELS:
+        raise JobPayloadError(
+            f"regenerate: dial {dial!r} is outside the closed set: {sorted(DIAL_LEVELS)}"
+        )
 
     with session_scope() as session:
         seed = campaign_seed(session, job.campaign_id)
@@ -179,7 +195,14 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
     context_entities, context_edges = retrieve_neighborhood(
         job.campaign_id, seed_ids=seeds, entity_cap=DEFAULT_ENTITY_CAP
     )
-    prompt = build_regenerate_prompt(seed, record, requested, (context_entities, context_edges))
+    prompt = build_regenerate_prompt(
+        seed,
+        record,
+        requested,
+        (context_entities, context_edges),
+        guide=guide,
+        dial=dial,
+    )
     text = budget.call(lambda: provider(prompt, settings=settings))
 
     try:
@@ -515,16 +538,21 @@ def build_regenerate_prompt(
     record: dict[str, Any],
     requested: Sequence[str],
     context: tuple[Sequence[models.Entity], Sequence[models.Edge]],
+    *,
+    guide: str | None = None,
+    dial: str | None = None,
 ) -> str:
     """The regenerate prompt (AR6/AR27/AD-16): pure and byte-deterministic.
 
     A function of the campaign seed fields, the target record (with the
     to-preserve sections embedded verbatim), the requested section list,
-    and the retrieved neighborhood's serialized hard truths — no ids,
-    timestamps, or job state, ever. The model returns ONE full sectioned
-    record: requested sections re-rolled, everything else byte-identical
-    (identity anchor + edges + unknown keys untouched), in the same
-    single-candidate envelope the generate runner parses.
+    the retrieved neighborhood's serialized hard truths, and — AD-38 —
+    the shaped request's guide text and dial level (an enrich is this
+    same call with ``sections: null``, a guide box line, and the dial).
+    No ids, timestamps, or job state, ever. The model returns ONE full
+    sectioned record: requested sections re-rolled, everything else
+    byte-identical (identity anchor + edges + unknown keys untouched),
+    in the same single-candidate envelope the generate runner parses.
     """
     entities, edges = context
     # Canonical order for the requested SET: the builder is a pure function
@@ -548,6 +576,21 @@ def build_regenerate_prompt(
         "",
         "REQUESTED SECTIONS (regenerate exactly these; do not touch any other)",
         requested_label,
+        (
+            "\nDIAL (elaboration weight for the re-rolled sections; the record's"
+            "\nlive setting — inherit it, never invent one):\n"
+            f"{dial or '(not set — elaborate to the record existing depth)'}"
+        ),
+        *(
+            [
+                "",
+                "GUIDE (the DM says what changed or what they want more of —",
+                "honor it inside the requested sections):",
+                guide,
+            ]
+            if guide is not None
+            else []
+        ),
         "",
         "COMMITTED WORLD CONTEXT",
         serialize_context(entities, edges),

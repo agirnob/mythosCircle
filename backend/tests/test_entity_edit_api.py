@@ -125,7 +125,7 @@ def _seed_world(campaign_id: str) -> tuple[str, str]:
             models.EntityInput(kind="faction", name="The Gilded Bar", id=bar_id),
             models.EntityInput(kind="character", name="Mira Vane", data=_ar24_record(), id=mira_id),
         ],
-        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
+        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded")],
         base_revision=None,
     )
     return bar_id, mira_id
@@ -667,7 +667,7 @@ def test_patch_stale_base_409_then_head_succeeds(client: Any) -> None:
     commit_subgraph(
         mine["id"],
         [models.EntityInput(kind="place", name="Stale Maker", id=stale_maker_id)],
-        [models.EdgeInput(src=stale_maker_id, dst=bar_id, type="located_in")],
+        [models.EdgeInput(src=bar_id, dst=stale_maker_id, type="located_in", reason="seeded")],
         base_revision=seed_head,
     )
     response = _patch(

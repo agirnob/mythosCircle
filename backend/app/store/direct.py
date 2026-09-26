@@ -58,13 +58,15 @@ DICE_RE = re.compile(DICE_PATTERN)
 
 #: The AR24 record key set a fully-authored record may carry — the
 #: authorable set (candidates.py AR24 sections + the four AR19 fields +
-#: the stat block). Anything else is DIRECT_UNKNOWN_KEY.
+#: the stat block + the AD-36 ``dial`` elaboration key). Anything else
+#: is DIRECT_UNKNOWN_KEY.
 RECORD_KEYS: frozenset[str] = (
     frozenset({"name", "role", "stat_block", "world_integration", "boss", "personality"})
     | frozenset({"secret", "rumor", "party_hook"})
     | frozenset(IDENTITY_FIELDS)
     | frozenset(LORE_FIELDS)
     | frozenset(BOSS_FIELDS)
+    | frozenset({"dial"})
 )
 
 #: The AR25 stat-block sections the canonical template knows. Unknown

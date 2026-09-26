@@ -59,7 +59,7 @@ def _seed_graph(campaign_id: str) -> None:
             models.EntityInput(kind="faction", name="The Gilded Bar", id=bar_id),
             models.EntityInput(kind="character", name="Mira Vane", id=mira_id),
         ],
-        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
+        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded")],
         base_revision=None,
     )
     enqueue_job(campaign_id, "text", {"prompt": "build"})

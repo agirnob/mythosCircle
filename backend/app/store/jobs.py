@@ -952,11 +952,15 @@ def _validate_regenerate_payload(
     """Enforce the spec-3.5 regenerate payload contract (422/404, zero rows).
 
     Payload is ``{"target": {"kind": "entity"|"candidate", "id": <ULID>},
-    "sections": [AR24 content section, ...] | null}`` — ``sections``
+    "sections": [AR24 content section, ...] | null, "guide"?: str,
+    "dial"?: <DIAL_LEVELS member>}`` — ``sections``
     absent or null means the whole character; a non-empty list means
     exactly those regenerable content sections (the closed
     ``REGEN_SECTIONS`` set; an empty list is "regenerate nothing" and
-    rejected). The target is resolved inside the enqueue transaction:
+    rejected). The AD-38 shaped request rides the same envelope:
+    ``guide`` (the DM's box text) and ``dial`` (a closed ``DIAL_LEVELS``
+    member — the record's elaboration setting, never invented at run
+    time). The target is resolved inside the enqueue transaction:
     unknown or foreign entity/candidate id -> ``UnknownEntityError`` /
     ``CandidateNotFoundError`` (404); a settled candidate -> 422; a
     target without an AR24 sectioned record (``payload_section_violations``
@@ -966,6 +970,7 @@ def _validate_regenerate_payload(
     before any row is written (function-local import: store.candidates
     imports this module, the db.py-precedented direction).
     """
+    from app.store import DIAL_LEVELS
     from app.store.candidates import (
         BOSS_ROLES,
         REGEN_SECTIONS,
@@ -975,9 +980,18 @@ def _validate_regenerate_payload(
 
     if not isinstance(payload, dict):
         raise InvalidJobInputError("regenerate payload must be a JSON object")
-    if set(payload) > {"target", "sections"}:
+    if set(payload) - {"target", "sections", "guide", "dial"}:
         raise InvalidJobInputError(
-            "regenerate payload must be exactly {'target': ..., 'sections': ...|null}"
+            "regenerate payload must be {'target': ..., 'sections': ...|null, "
+            "'guide'?: str, 'dial'?: <dial level>}"
+        )
+    guide = payload.get("guide")
+    if guide is not None and (not isinstance(guide, str) or not guide.strip()):
+        raise InvalidJobInputError("regenerate guide must be a non-blank string when present")
+    dial = payload.get("dial")
+    if dial is not None and dial not in DIAL_LEVELS:
+        raise InvalidJobInputError(
+            f"regenerate dial {dial!r} is outside the closed set: {sorted(DIAL_LEVELS)}"
         )
     target = payload.get("target")
     if not isinstance(target, dict) or set(target) != {"kind", "id"}:

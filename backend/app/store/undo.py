@@ -34,6 +34,7 @@ from typing import Any
 
 from sqlalchemy import literal_column, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core import ids, time
 from app.store import models
@@ -62,8 +63,8 @@ def _undo(session: Session, campaign_id: str, revision_id: str) -> models.Revisi
         raise UnknownCampaignError(campaign_id)
 
     latest = latest_revision(session, campaign_id)
-    if latest is None or latest.id != revision_id:
-        raise StaleRevisionError(latest.id if latest is not None else None)
+    if latest is None:
+        raise StaleRevisionError(None)
 
     events = session.scalars(
         select(models.Event)
@@ -73,6 +74,23 @@ def _undo(session: Session, campaign_id: str, revision_id: str) -> models.Revisi
         )
         .order_by(literal_column("rowid"))
     ).all()
+    if not events:
+        raise CorruptEventError(revision_id, "target revision has no events")
+
+    # AD-27 take-back: a verb/toggle revision is taken back SURGICALLY
+    # even when a later commit is the head — the inverse appends onto
+    # CURRENT state, so a same-field later edit is preserved
+    # arithmetically, never overwritten (the scar edit between the
+    # defeat and its take-back stands). Anything else still requires
+    # the head: an image-inverting undo of a non-head revision would
+    # silently rewind later canon edits.
+    if latest.id != revision_id and (
+        not events
+        or any(
+            not event.type.startswith(("session_state_", "knowledge_state_")) for event in events
+        )
+    ):
+        raise StaleRevisionError(latest.id)
 
     # Preflight before any mutation: payload shape AND expected row state.
     # A corrupt log is rejected with zero state touched; the undo revision
@@ -99,22 +117,55 @@ def _preflight(session: Session, events: Sequence[models.Event]) -> None:
     for event in events:
         payload = event.payload
         _require_keys(event, payload)
-        is_entity = event.type.startswith("entity")
-        row = (
-            session.get(models.Entity, payload["id"])
-            if is_entity
-            else session.get(models.Edge, payload["id"])
-        )
-        if event.type in ("entity_created", "entity_updated", "edge_created", "edge_updated"):
+        row = _state_row(session, event, payload)
+        if event.type in (
+            "entity_created",
+            "entity_updated",
+            "edge_created",
+            "edge_updated",
+            "session_state_created",
+            "session_state_updated",
+            "knowledge_state_created",
+            "knowledge_state_updated",
+        ):
             # The inverse deletes/updates this row; it must exist.
             if row is None:
                 raise CorruptEventError(event.id, "row missing for inverse")
-        elif event.type in ("entity_deleted", "edge_deleted"):
+        elif event.type in (
+            "entity_deleted",
+            "edge_deleted",
+            "session_state_deleted",
+            "knowledge_state_deleted",
+        ):
             # The inverse recreates this row; it must be absent (redo path).
             if row is not None:
                 raise CorruptEventError(event.id, "row already exists for inverse recreate")
         else:
             raise CorruptEventError(event.id, f"unknown event type {event.type!r}")
+
+
+def _state_row(session: Session, event: models.Event, payload: dict[str, Any]) -> Any:
+    """The materialized row an event's inverse targets, or None."""
+    if event.type.startswith("entity"):
+        return session.get(models.Entity, payload["id"])
+    if event.type.startswith("edge"):
+        return session.get(models.Edge, payload["id"])
+    if event.type.startswith("session_state_"):
+        return session.scalars(
+            select(models.EntitySessionState).where(
+                models.EntitySessionState.campaign_id == event.campaign_id,
+                models.EntitySessionState.entity_id == payload["id"],
+            )
+        ).first()
+    if event.type.startswith("knowledge_state_"):
+        return session.scalars(
+            select(models.EntityKnowledgeState).where(
+                models.EntityKnowledgeState.campaign_id == event.campaign_id,
+                models.EntityKnowledgeState.entity_id == payload["id"],
+                models.EntityKnowledgeState.field == payload.get("field"),
+            )
+        ).first()
+    return None
 
 
 def _apply_inverse(
@@ -165,6 +216,7 @@ def _apply_inverse(
                 dst=before["dst"],
                 type=before["type"],
                 counter=before["counter"],
+                reason=before.get("reason"),
                 created_at=before["created_at"],
             )
         )
@@ -176,13 +228,67 @@ def _apply_inverse(
             {"id": payload["id"], "before": None, "after": before},
             created_at,
         )
+    elif event.type == "session_state_created":
+        _inverse_session_state_created(session, campaign_id, revision_id, created_at, event)
+    elif event.type == "session_state_updated":
+        _inverse_session_state_updated(session, campaign_id, revision_id, created_at, event)
+    elif event.type == "session_state_deleted":
+        # Redo branch: recreate the run-state row from its before image.
+        before = payload["before"]
+        session.add(
+            models.EntitySessionState(
+                id=ids.new_id(),
+                campaign_id=campaign_id,
+                entity_id=payload["id"],
+                data=before["data"],
+                created_at=created_at,
+                updated_at=before["updated_at"],
+            )
+        )
+        _add_event(
+            session,
+            campaign_id,
+            revision_id,
+            "session_state_created",
+            {"id": payload["id"], "before": None, "after": before},
+            created_at,
+        )
+    elif event.type == "knowledge_state_created":
+        _inverse_knowledge_state_created(session, campaign_id, revision_id, created_at, event)
+    elif event.type == "knowledge_state_updated":
+        _inverse_knowledge_state_updated(session, campaign_id, revision_id, created_at, event)
+    elif event.type == "knowledge_state_deleted":
+        before = payload["before"]
+        session.add(
+            models.EntityKnowledgeState(
+                id=ids.new_id(),
+                campaign_id=campaign_id,
+                entity_id=payload["id"],
+                field=before["field"],
+                known=before["known"],
+                created_at=created_at,
+                updated_at=before["updated_at"],
+            )
+        )
+        _add_event(
+            session,
+            campaign_id,
+            revision_id,
+            "knowledge_state_created",
+            {"id": payload["id"], "field": before["field"], "before": None, "after": before},
+            created_at,
+        )
     else:
         # Unreachable — _preflight rejects unknown types before any apply.
         raise CorruptEventError(event.id, f"unknown event type {event.type!r}")
 
 
 _ENTITY_KEYS = ("kind", "name", "text", "data", "created_at")
-_EDGE_KEYS = ("src", "dst", "type", "counter", "created_at")
+_EDGE_KEYS = ("src", "dst", "type", "counter", "reason", "created_at")
+#: AD-28 run-state snapshot keys (rebuild-faithful, AD-26). The payload
+#: ``id`` names the ENTITY; the knowledge payload also carries ``field``.
+_SESSION_KEYS = ("data", "updated_at")
+_KNOWLEDGE_KEYS = ("field", "known", "updated_at")
 #: Required payload snapshot fields per known event type (AD-1).
 _REQUIRED: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
     "entity_created": (("after", _ENTITY_KEYS),),
@@ -191,6 +297,15 @@ _REQUIRED: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
     "edge_created": (("after", _EDGE_KEYS),),
     "edge_updated": (("before", _EDGE_KEYS), ("after", _EDGE_KEYS)),
     "edge_deleted": (("before", _EDGE_KEYS),),
+    # AD-26/AD-28 run-state event families join the same preflight
+    # contract (reject never guess). The undo of a verb/toggle revision
+    # applies the SURGICAL inverse (AD-27 arithmetic), never an image.
+    "session_state_created": (("after", _SESSION_KEYS),),
+    "session_state_updated": (("before", _SESSION_KEYS), ("after", _SESSION_KEYS)),
+    "session_state_deleted": (("before", _SESSION_KEYS),),
+    "knowledge_state_created": (("after", _KNOWLEDGE_KEYS),),
+    "knowledge_state_updated": (("before", _KNOWLEDGE_KEYS), ("after", _KNOWLEDGE_KEYS)),
+    "knowledge_state_deleted": (("before", _KNOWLEDGE_KEYS),),
 }
 
 
@@ -306,6 +421,7 @@ def _inverse_edge_update(
     row.dst = before["dst"]
     row.type = before["type"]
     row.counter = before["counter"]
+    row.reason = before.get("reason")
     _add_event(
         session,
         campaign_id,
@@ -314,3 +430,186 @@ def _inverse_edge_update(
         {"id": payload["id"], "before": payload["after"], "after": before},
         created_at,
     )
+
+
+def _inverse_session_state_created(
+    session: Session,
+    campaign_id: str,
+    revision_id: str,
+    created_at: str,
+    event: models.Event,
+) -> None:
+    """The inverse of a verb's state-row creation deletes the row."""
+    payload = event.payload
+    row = session.scalars(
+        select(models.EntitySessionState).where(
+            models.EntitySessionState.campaign_id == campaign_id,
+            models.EntitySessionState.entity_id == payload["id"],
+        )
+    ).first()
+    if row is None:
+        raise CorruptEventError(event.id, "run-state row missing for inverse")
+    session.delete(row)
+    _add_event(
+        session,
+        campaign_id,
+        revision_id,
+        "session_state_deleted",
+        {"id": payload["id"], "before": payload["after"], "after": None},
+        created_at,
+    )
+
+
+def _inverse_session_state_updated(
+    session: Session,
+    campaign_id: str,
+    revision_id: str,
+    created_at: str,
+    event: models.Event,
+) -> None:
+    """The SURGICAL inverse of a verb commit (AD-27): the verb's own
+    deltas invert arithmetically onto CURRENT state — a same-field later
+    edit is preserved, never overwritten (enrich's hp 35 plus a −12
+    inverse lands 23, not 40)."""
+    payload = event.payload
+    row = session.scalars(
+        select(models.EntitySessionState).where(
+            models.EntitySessionState.campaign_id == campaign_id,
+            models.EntitySessionState.entity_id == payload["id"],
+        )
+    ).first()
+    if row is None:
+        raise CorruptEventError(event.id, "run-state row missing for inverse")
+    before = payload["before"]["data"]
+    after = payload["after"]["data"]
+    current = dict(row.data) if isinstance(row.data, dict) else {}
+    undone = _surgical_inverse(before, after, current)
+    row.data = undone
+    flag_modified(row, "data")
+    row.updated_at = created_at
+    _add_event(
+        session,
+        campaign_id,
+        revision_id,
+        "session_state_updated",
+        {
+            "id": payload["id"],
+            "before": payload["after"],
+            "after": {"data": undone, "updated_at": created_at},
+        },
+        created_at,
+    )
+
+
+def _inverse_knowledge_state_created(
+    session: Session,
+    campaign_id: str,
+    revision_id: str,
+    created_at: str,
+    event: models.Event,
+) -> None:
+    """The inverse of a toggle's row creation deletes the row."""
+    payload = event.payload
+    row = session.scalars(
+        select(models.EntityKnowledgeState).where(
+            models.EntityKnowledgeState.campaign_id == campaign_id,
+            models.EntityKnowledgeState.entity_id == payload["id"],
+            models.EntityKnowledgeState.field == payload["field"],
+        )
+    ).first()
+    if row is None:
+        raise CorruptEventError(event.id, "knowledge row missing for inverse")
+    session.delete(row)
+    _add_event(
+        session,
+        campaign_id,
+        revision_id,
+        "knowledge_state_deleted",
+        {"id": payload["id"], "field": payload["field"], "before": payload["after"], "after": None},
+        created_at,
+    )
+
+
+def _inverse_knowledge_state_updated(
+    session: Session,
+    campaign_id: str,
+    revision_id: str,
+    created_at: str,
+    event: models.Event,
+) -> None:
+    """The inverse of a toggle: flip back when the marker still holds
+    this transaction's result; a later flip stands (one undoable step
+    per transaction, AD-29)."""
+    payload = event.payload
+    row = session.scalars(
+        select(models.EntityKnowledgeState).where(
+            models.EntityKnowledgeState.campaign_id == campaign_id,
+            models.EntityKnowledgeState.entity_id == payload["id"],
+            models.EntityKnowledgeState.field == payload["field"],
+        )
+    ).first()
+    if row is None:
+        raise CorruptEventError(event.id, "knowledge row missing for inverse")
+    before = payload["before"]
+    after = payload["after"]
+    if row.known == after["known"]:
+        # The marker still holds this transaction's result: flip back.
+        row.known = before["known"]
+        undone = {**after, "known": before["known"], "updated_at": created_at}
+    else:
+        # A later commit already moved the marker; the take-back leaves
+        # it (surgical precedence, AD-27).
+        undone = {**after, "known": row.known, "updated_at": created_at}
+    row.updated_at = created_at
+    _add_event(
+        session,
+        campaign_id,
+        revision_id,
+        "knowledge_state_updated",
+        {
+            "id": payload["id"],
+            "field": payload["field"],
+            "before": after,
+            "after": undone,
+        },
+        created_at,
+    )
+
+
+def _surgical_inverse(
+    before: dict[str, Any], after: dict[str, Any], current: dict[str, Any]
+) -> dict[str, Any]:
+    """AD-27 arithmetic: per-key inverse of exactly this transaction's
+    delta onto CURRENT state. Numeric keys subtract the verb's delta;
+    scalar keys restore the prior value only when the current value
+    still holds the verb's result (a later same-field edit stands);
+    keys the verb added are removed only when untouched since."""
+    result = dict(current)
+    for key in set(before) | set(after):
+        if key in before and key in after:
+            prev, applied = before[key], after[key]
+            cur_value = current.get(key)
+            if (
+                isinstance(cur_value, (int, float))
+                and not isinstance(cur_value, bool)
+                and isinstance(prev, (int, float))
+                and not isinstance(prev, bool)
+                and isinstance(applied, (int, float))
+                and not isinstance(applied, bool)
+            ):
+                # Additive arithmetic: current + (before - applied).
+                result[key] = cur_value + (prev - applied)
+            elif current.get(key) == after[key]:
+                result[key] = before[key]
+            # else: a later edit owns the field — it stands.
+        elif key in after and key not in before:
+            # The verb added this key; the inverse removes it only when
+            # untouched since.
+            if current.get(key) == after[key]:
+                result.pop(key, None)
+        elif key in before and key not in after:
+            # The verb removed the key; the inverse restores it only
+            # when nothing re-added it.
+            if current.get(key) is None:
+                result[key] = before[key]
+    return result

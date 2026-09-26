@@ -42,6 +42,7 @@ EDGE_TYPES: frozenset[str] = frozenset(
         "loyalty",
         "member_of",
         "located_in",
+        "part_of",
         "rival_of",
         "kin_of",
         "ally_of",
@@ -80,12 +81,20 @@ EDGE_KIND_RULES: MappingProxyType[str, tuple[frozenset[str] | None, frozenset[st
             "bases_at": (frozenset({"character", "faction"}), frozenset({"place"})),
             "hails_from": (frozenset({"character", "faction"}), frozenset({"place"})),
             "controls": (
-                frozenset({"character", "faction"}),
+                frozenset({"character", "faction", "place"}),
                 frozenset({"place", "faction"}),
             ),
             "employs": (
+                frozenset({"character", "faction", "place"}),
                 frozenset({"character", "faction"}),
-                frozenset({"character", "faction"}),
+            ),
+            # AD-31 (v3): part_of is hierarchical containment for the two
+            # org-like kinds — a district part_of its city, a cult
+            # part_of its temple-network. People are NOT part of places
+            # (they are located_in); the neutral counter must be 1.
+            "part_of": (
+                frozenset({"place", "faction"}),
+                frozenset({"place", "faction"}),
             ),
             "worships": (
                 frozenset({"character", "faction"}),
@@ -154,6 +163,22 @@ def edge_counter_bounds(edge_type: str) -> tuple[int, int] | None:
     """The inclusive counter range for an edge type's semantic, or None
     for the unbounded neutral default (AD-23, owner ruling 2026-09-18)."""
     return EDGE_COUNTER_RANGES.get(edge_counter_semantic(edge_type))
+
+
+#: AD-32's null-prose denylist: prose that names nothing counts as blank.
+#: The model's honest no-answer markers (measured live: "None", "N/A",
+#: "...") must never poison the saved-why column.
+NULL_PROSE_REASONS: frozenset[str] = frozenset(
+    {"none", "n/a", "na", "unknown", "...", "tbd", "null", "n.a.", "none."}
+)
+
+
+def edge_reason_ok(reason: Any) -> bool:
+    """The AD-32 saved-reason contract: non-blank and not null-prose."""
+    if not isinstance(reason, str):
+        return False
+    stripped = reason.strip()
+    return bool(stripped) and stripped.lower() not in NULL_PROSE_REASONS
 
 
 #: SQLite's INTEGER is signed 64-bit; representability is part of the
@@ -367,6 +392,58 @@ class LiveEdgesError(StoreError):
         self.affected = affected
 
 
+class BlankEdgeReasonError(StoreError):
+    """An edge staged without its saved why (AD-32).
+
+    Blank means empty, whitespace-only, or null-prose (``none``, ``n/a``,
+    ``unknown``, ``...``) — prose that names nothing poisons the saved
+    why. The contract binds new edges; a counter-only bump preserves the
+    stored reason, and a pre-v3 row's NULL is grandfathered (never
+    blocking reads, undo, or export).
+    """
+
+    def __init__(self, edge: models.EdgeInput) -> None:
+        super().__init__(
+            f"edge {edge.src} --{edge.type}--> {edge.dst} requires a saved "
+            "reason (AD-32): blank, whitespace, and null-prose (none / n/a "
+            "/ unknown / ...) are rejected"
+        )
+        self.edge = edge
+
+
+class EdgeKindViolationError(StoreError):
+    """An edge pairs kinds its matrix cell forbids (AD-30/AD-31/AD-34).
+
+    The commit-time backstop against a stale registry payload: the same
+    deterministic ``edge_kind_ok`` the prompts, the layer-2 validator,
+    and the pin test read — a picker offering what commit drops is
+    unrepresentable past this boundary.
+    """
+
+    def __init__(self, edge: models.EdgeInput, src_kind: str, dst_kind: str) -> None:
+        super().__init__(
+            f"edge kind violation: {edge.src} ({src_kind}) --{edge.type}--> "
+            f"{edge.dst} ({dst_kind}) is outside the closed matrix (AD-31)"
+        )
+        self.edge = edge
+
+
+class UnknownRunStateError(StoreError):
+    """A verb/toggle target entity does not exist in this campaign's world."""
+
+    def __init__(self, campaign_id: str, entity_id: str) -> None:
+        super().__init__(f"unknown run-state target entity: {entity_id}")
+        self.campaign_id = campaign_id
+        self.entity_id = entity_id
+
+
+class InvalidRunStateError(StoreError):
+    """A run-state update is malformed: a non-object image, a non-bool
+    toggle, a field outside the closed set, or non-strict-JSON data
+    (AD-26: verb/toggle payloads are rebuild-faithful full-state
+    images, shape-checked here)."""
+
+
 class SelfLoopEdgeError(StoreError):
     """An edge whose endpoints are the same entity (FR2, AD-23).
 
@@ -391,6 +468,195 @@ class SelfLoopEdgeError(StoreError):
 
 
 # ---------------------------------------------------------------------------
+# v3 registry constants + Tonight Tier-2 run-state (AD-26..AD-29, AD-34)
+# ---------------------------------------------------------------------------
+
+#: The closed per-secret toggle set (AD-29): the AR19 triple, flippable
+#: secret <-> known, one undoable step each way. DB CHECK mirrors it.
+KNOWLEDGE_FIELDS: frozenset[str] = frozenset({"secret", "rumor", "party_hook"})
+
+#: The dial levels (AD-36, v3 registry): the generation-elaboration
+#: record key. Rendered by GET /kinds; a record predating the key reads
+#: dial as authored-or-absent, never as an error (AD-36).
+DIAL_LEVELS: tuple[str, ...] = ("nothing", "draft", "simple", "important", "pillar")
+
+#: The registry's closed archetypes (the .working archetype-templates
+#: contract, 10 place + 8 faction): (kind, name, default dial). The
+#: kinds endpoint renders them; nothing writes them at runtime (AD-34).
+ARCHETYPES: tuple[tuple[str, str, str], ...] = (
+    ("place", "City", "important"),
+    ("place", "Town", "simple"),
+    ("place", "Village", "simple"),
+    ("place", "Hamlet", "draft"),
+    ("place", "Tavern / Inn", "draft"),
+    ("place", "Temple / Sanctuary", "important"),
+    ("place", "Ruin / Dungeon", "draft"),
+    ("place", "Fort / Garrison", "important"),
+    ("place", "Market / Quarter", "simple"),
+    ("place", "Wasteland / Frontier", "draft"),
+    ("faction", "Cult", "pillar"),
+    ("faction", "Guild", "important"),
+    ("faction", "Thieves' guild", "pillar"),
+    ("faction", "Noble house", "important"),
+    ("faction", "Military order", "important"),
+    ("faction", "Merchant cartel", "simple"),
+    ("faction", "Religious order", "important"),
+    ("faction", "Hermetic society", "draft"),
+)
+
+
+def _validate_state_image(data: Any) -> None:
+    """AD-26: a session-state image is a strict-JSON object (string keys,
+    JSON-representable values). Rebuild-faithful payloads demand a shape
+    the log alone can rebuild."""
+    if not isinstance(data, dict):
+        raise InvalidRunStateError("session state must be an object")
+    try:
+        json.dumps(data, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise InvalidRunStateError(f"session state must be strict JSON: {exc}") from exc
+
+
+def _resolve_state_image(session: Session, campaign_id: str, entity_id: str) -> dict[str, Any]:
+    """The entity's current session-state image (empty when absent)."""
+    row = session.scalars(
+        select(models.EntitySessionState).where(
+            models.EntitySessionState.campaign_id == campaign_id,
+            models.EntitySessionState.entity_id == entity_id,
+        )
+    ).first()
+    return dict(row.data) if row is not None else {}
+
+
+def commit_run_state(
+    campaign_id: str,
+    *,
+    session_ops: Sequence[models.SessionStateInput] = (),
+    knowledge_flips: Sequence[models.KnowledgeFlipInput] = (),
+    base_revision: str | None = None,
+) -> models.Revision:
+    """Commit Tonight Tier-2 run-state through the single commit path
+    (AD-26, AD-28): rows + rebuild-faithful events in ONE transaction,
+    exactly one revision — never a second writer.
+
+    ``session_ops`` set the FULL resulting state image per entity (the
+    caller merges verb deltas against current state); ``knowledge_flips``
+    set a toggle absolutely. A run-state-only commit is legal (a
+    standalone flip is its own undoable step, AD-29).
+
+    Rejects (no state change) with ``UnknownCampaignError``,
+    ``UnknownRunStateError``, ``InvalidRunStateError``, or
+    ``StaleRevisionError``.
+    """
+    with session_scope() as session:
+        return _commit(
+            session,
+            campaign_id,
+            [],
+            [],
+            base_revision,
+            session_ops=list(session_ops),
+            knowledge_flips=list(knowledge_flips),
+        )
+
+
+def commit_session_verb(
+    campaign_id: str,
+    entity_id: str,
+    *,
+    update: dict[str, Any],
+    base_revision: str | None = None,
+) -> models.Revision:
+    """One Tier-2a consequence verb (mark defeated / flip allegiance /
+    resolve thread / spend item) as ONE undoable revision (AD-26, AD-28).
+
+    ``update`` is the verb's delta; the store merges it onto the current
+    session-state image and commits the full resulting image (rebuild-
+    faithful, AD-26). A value-identical merge commits nothing and
+    returns the head — the second fire of a double-clicked verb changes
+    nothing (EXPERIENCE Flow 6's double-fire gate).
+
+    Rejects (no state change) with ``UnknownCampaignError``,
+    ``UnknownEntityError``, ``InvalidRunStateError``, or
+    ``StaleRevisionError``.
+    """
+    with session_scope() as session:
+        if session.get(models.Campaign, campaign_id) is None:
+            raise UnknownCampaignError(campaign_id)
+        entity = session.scalars(
+            select(models.Entity).where(
+                models.Entity.campaign_id == campaign_id,
+                models.Entity.id == entity_id,
+            )
+        ).first()
+        if entity is None:
+            raise UnknownEntityError(entity_id)
+        _validate_state_image(update)
+        current = _resolve_state_image(session, campaign_id, entity_id)
+        merged = {**current, **update}
+        latest = latest_revision(session, campaign_id)
+        if (
+            json.dumps(merged, sort_keys=True, allow_nan=False)
+            == json.dumps(current, sort_keys=True, allow_nan=False)
+            and latest is not None
+        ):
+            return latest
+        if base_revision is None:
+            base_revision = latest.id if latest is not None else None
+        return _commit(
+            session,
+            campaign_id,
+            [],
+            [],
+            base_revision,
+            session_ops=[models.SessionStateInput(entity_id=entity_id, data=merged)],
+        )
+
+
+def commit_knowledge_toggle(
+    campaign_id: str,
+    entity_id: str,
+    field: str,
+    *,
+    known: bool,
+    base_revision: str | None = None,
+) -> models.Revision:
+    """Flip one secret/rumor/party_hook party-knowledge toggle as its own
+    undoable step (AD-29).
+
+    A standalone flip is its own revision; an edit+flip saved together
+    bundles into the caller's revision via ``update_entity``/
+    ``commit_subgraph`` (one transaction = one undoable step). Flippable
+    either direction at any time; the record never changes — only the
+    marker moves.
+    """
+    with session_scope() as session:
+        if session.get(models.Campaign, campaign_id) is None:
+            raise UnknownCampaignError(campaign_id)
+        entity = session.scalars(
+            select(models.Entity).where(
+                models.Entity.campaign_id == campaign_id,
+                models.Entity.id == entity_id,
+            )
+        ).first()
+        if entity is None:
+            raise UnknownEntityError(entity_id)
+        if base_revision is None:
+            latest = latest_revision(session, campaign_id)
+            base_revision = latest.id if latest is not None else None
+        return _commit(
+            session,
+            campaign_id,
+            [],
+            [],
+            base_revision,
+            knowledge_flips=[
+                models.KnowledgeFlipInput(entity_id=entity_id, field=field, known=known)
+            ],
+        )
+
+
+# ---------------------------------------------------------------------------
 # Commit path
 # ---------------------------------------------------------------------------
 
@@ -402,6 +668,8 @@ def commit_subgraph(
     base_revision: str | None = None,
     *,
     allow_orphans: bool = False,
+    session_ops: Sequence[models.SessionStateInput] = (),
+    knowledge_flips: Sequence[models.KnowledgeFlipInput] = (),
 ) -> models.Revision:
     """Commit a staged subgraph atomically; returns the new revision.
 
@@ -430,6 +698,8 @@ def commit_subgraph(
             list(edges),
             base_revision,
             allow_orphans=allow_orphans,
+            session_ops=list(session_ops),
+            knowledge_flips=list(knowledge_flips),
         )
 
 
@@ -441,10 +711,12 @@ def _commit(
     base_revision: str | None,
     *,
     allow_orphans: bool = False,
+    session_ops: Sequence[models.SessionStateInput] = (),
+    knowledge_flips: Sequence[models.KnowledgeFlipInput] = (),
 ) -> models.Revision:
     if session.get(models.Campaign, campaign_id) is None:
         raise UnknownCampaignError(campaign_id)
-    if not entities and not edges:
+    if not entities and not edges and not session_ops and not knowledge_flips:
         raise EmptySubgraphError("refusing to commit an empty subgraph")
 
     latest = latest_revision(session, campaign_id)
@@ -476,6 +748,9 @@ def _commit(
         staged.append((entity.id or ids.new_id(), entity, existing))
 
     known_ids = set(entity_rows) | {staged_id for staged_id, _, _ in staged}
+    # The kind per staged entity ULID — the AD-34 commit-time kind
+    # backstop resolves endpoint kinds from the staged inputs first.
+    staged_kinds: dict[str, str] = {staged_id: entity.kind for staged_id, entity, _ in staged}
     relationship_rows = {(row.src, row.dst, row.type): row for row in edge_rows.values()}
     seen_edge_ids: set[str] = set()
     staged_relationships: set[tuple[str, str, str]] = set()
@@ -491,6 +766,23 @@ def _commit(
         for endpoint in (edge.src, edge.dst):
             if endpoint not in known_ids:
                 raise DanglingEdgeError(edge, endpoint)
+        # AD-34 commit-time backstop: the LIVE matrix is the authority
+        # even when a stale kinds payload offered something else. Kinds
+        # resolve from the staged inputs first, then the committed rows;
+        # an unresolvable kind skips the check (the dangling check above
+        # owns endpoint existence).
+        src_kind = staged_kinds.get(edge.src) or (
+            entity_rows[edge.src].kind if edge.src in entity_rows else None
+        )
+        dst_kind = staged_kinds.get(edge.dst) or (
+            entity_rows[edge.dst].kind if edge.dst in entity_rows else None
+        )
+        if (
+            src_kind is not None
+            and dst_kind is not None
+            and not edge_kind_ok(edge.type, src_kind, dst_kind)
+        ):
+            raise EdgeKindViolationError(edge, src_kind, dst_kind)
         if edge.src == edge.dst:
             # A self-loop is not an edge "into existing world state" —
             # the pipeline forbids them and the store is the backstop
@@ -519,6 +811,16 @@ def _commit(
                 raise EdgeRetargetError(edge, existing_edge)
         else:
             _reject_duplicate_relationship(edge, relationship_rows, staged_relationships)
+            # AD-32: a new edge carries its saved why — blank, whitespace,
+            # and null-prose are a structured rejection, never a guessed
+            # default.
+            if not edge_reason_ok(edge.reason):
+                raise BlankEdgeReasonError(edge)
+        if edge.id is not None and edge.reason is not None and not edge_reason_ok(edge.reason):
+            # A counter-only bump that SUPPLIES a reason must supply a
+            # real one; a bump without one preserves the stored value
+            # (or a pre-v3 row's NULL — grandfathered, AD-32).
+            raise BlankEdgeReasonError(edge)
 
     # FR2 no-orphans (store-level backstop, spec-2.5): every *newly
     # created* entity must participate in at least one edge whose other
@@ -546,6 +848,22 @@ def _commit(
         ]
         if orphans:
             raise OrphanEntityError(orphans)
+
+    # AD-26 shape contract: verb/toggle payloads are rebuild-faithful
+    # full-state images — an object of strict-JSON scalars, named
+    # entities that exist (staged or committed), and a closed knowledge
+    # field set. Rejected with zero revisions, never flushed raw.
+    for op in session_ops:
+        if op.entity_id not in known_ids:
+            raise UnknownRunStateError(campaign_id, op.entity_id)
+        _validate_state_image(op.data)
+    for flip in knowledge_flips:
+        if flip.entity_id not in known_ids:
+            raise UnknownRunStateError(campaign_id, flip.entity_id)
+        if flip.field not in KNOWLEDGE_FIELDS:
+            raise InvalidRunStateError(f"knowledge field not in the closed set: {flip.field!r}")
+        if type(flip.known) is not bool:
+            raise InvalidRunStateError(f"known must be a bool, got {flip.known!r}")
 
     now = time.now()
     revision = models.Revision(
@@ -610,6 +928,7 @@ def _commit(
                     dst=edge.dst,
                     type=edge.type,
                     counter=edge.counter,
+                    reason=edge.reason.strip() if edge.reason is not None else None,
                     created_at=now,
                 )
             )
@@ -618,6 +937,11 @@ def _commit(
         else:
             before = _edge_snapshot(existing_edge)
             existing_edge.counter = edge.counter
+            if edge.reason is not None:
+                # AD-32: a supplied reason re-saves (non-blank enforced
+                # above); an absent one preserves the stored value — a
+                # pre-v3 row keeps its NULL (grandfathered).
+                existing_edge.reason = edge.reason.strip()
             after = _edge_snapshot(existing_edge)
             event_type = "edge_updated"
         _add_event(
@@ -626,6 +950,88 @@ def _commit(
             revision.id,
             event_type,
             {"id": edge_id, "before": before, "after": after},
+            now,
+        )
+
+    # AD-26/AD-28: Tier-2 run-state rides the SAME revision and the SAME
+    # transaction as any entities/edges in this commit (the bundled save
+    # gesture). Rows are authoritative for reads; the events carry
+    # rebuild-faithful full-state images so the log alone rebuilds.
+    for op in session_ops:
+        state_row = session.scalars(
+            select(models.EntitySessionState).where(
+                models.EntitySessionState.campaign_id == campaign_id,
+                models.EntitySessionState.entity_id == op.entity_id,
+            )
+        ).first()
+        if state_row is None:
+            before = None
+            session.add(
+                models.EntitySessionState(
+                    id=ids.new_id(),
+                    campaign_id=campaign_id,
+                    entity_id=op.entity_id,
+                    data=op.data,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            after = _session_state_input_snapshot(op, now)
+            event_type = "session_state_created"
+        else:
+            before = _session_state_snapshot(state_row)
+            state_row.data = dict(op.data)
+            # Force the UPDATE even when the new image compares ``==`` —
+            # the row and the log must never diverge (the entity.data
+            # flag_modified precedent).
+            flag_modified(state_row, "data")
+            state_row.updated_at = now
+            after = _session_state_snapshot(state_row)
+            event_type = "session_state_updated"
+        _add_event(
+            session,
+            campaign_id,
+            revision.id,
+            event_type,
+            {"id": op.entity_id, "before": before, "after": after},
+            now,
+        )
+
+    for flip in knowledge_flips:
+        knowledge_row = session.scalars(
+            select(models.EntityKnowledgeState).where(
+                models.EntityKnowledgeState.campaign_id == campaign_id,
+                models.EntityKnowledgeState.entity_id == flip.entity_id,
+                models.EntityKnowledgeState.field == flip.field,
+            )
+        ).first()
+        if knowledge_row is None:
+            before = None
+            session.add(
+                models.EntityKnowledgeState(
+                    id=ids.new_id(),
+                    campaign_id=campaign_id,
+                    entity_id=flip.entity_id,
+                    field=flip.field,
+                    known=flip.known,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            after = _knowledge_input_snapshot(flip, now)
+            event_type = "knowledge_state_created"
+        else:
+            before = _knowledge_snapshot(knowledge_row)
+            knowledge_row.known = flip.known
+            knowledge_row.updated_at = now
+            after = _knowledge_snapshot(knowledge_row)
+            event_type = "knowledge_state_updated"
+        _add_event(
+            session,
+            campaign_id,
+            revision.id,
+            event_type,
+            {"id": flip.entity_id, "field": flip.field, "before": before, "after": after},
             now,
         )
 
@@ -827,6 +1233,7 @@ def update_entity(
     *,
     patch: dict[str, Any],
     base_revision: str | None = None,
+    knowledge_flips: Sequence[models.KnowledgeFlipInput] = (),
 ) -> models.Revision:
     """Hand-edit one committed entity through the commit path
     (spec-3.6, FR10) — the store's first direct committed-entity content
@@ -864,7 +1271,9 @@ def update_entity(
     ``StaleRevisionError``, or ``InvalidEntityRecordError``.
     """
     with session_scope() as session:
-        return _update_entity(session, campaign_id, entity_id, patch, base_revision)
+        return _update_entity(
+            session, campaign_id, entity_id, patch, base_revision, knowledge_flips
+        )
 
 
 def _update_entity(
@@ -873,6 +1282,7 @@ def _update_entity(
     entity_id: str,
     patch: dict[str, Any],
     base_revision: str | None,
+    knowledge_flips: Sequence[models.KnowledgeFlipInput] = (),
 ) -> models.Revision:
     if session.get(models.Campaign, campaign_id) is None:
         raise UnknownCampaignError(campaign_id)
@@ -1002,6 +1412,8 @@ def _update_entity(
         base_revision = latest.id if latest is not None else None
 
     name_value = content.get("name", current_data.get("name"))
+    # AD-29 bundled save gesture: the edit and the party-knowledge flip
+    # land as ONE revision — take-back inverts both halves.
     return _commit(
         session,
         campaign_id,
@@ -1016,6 +1428,7 @@ def _update_entity(
         ],
         [],
         base_revision,
+        knowledge_flips=list(knowledge_flips),
     )
 
 
@@ -1113,6 +1526,7 @@ def _edge_snapshot(row: models.Edge) -> dict[str, Any]:
         "dst": row.dst,
         "type": row.type,
         "counter": row.counter,
+        "reason": row.reason,
         "created_at": row.created_at,
     }
 
@@ -1123,8 +1537,25 @@ def _edge_input_snapshot(edge: models.EdgeInput, created_at: str) -> dict[str, A
         "dst": edge.dst,
         "type": edge.type,
         "counter": edge.counter,
+        "reason": edge.reason.strip() if edge.reason is not None else None,
         "created_at": created_at,
     }
+
+
+def _session_state_snapshot(row: models.EntitySessionState) -> dict[str, Any]:
+    return {"data": row.data, "updated_at": row.updated_at}
+
+
+def _session_state_input_snapshot(op: models.SessionStateInput, updated_at: str) -> dict[str, Any]:
+    return {"data": op.data, "updated_at": updated_at}
+
+
+def _knowledge_snapshot(row: models.EntityKnowledgeState) -> dict[str, Any]:
+    return {"field": row.field, "known": row.known, "updated_at": row.updated_at}
+
+
+def _knowledge_input_snapshot(flip: models.KnowledgeFlipInput, updated_at: str) -> dict[str, Any]:
+    return {"field": flip.field, "known": flip.known, "updated_at": updated_at}
 
 
 def _add_event(

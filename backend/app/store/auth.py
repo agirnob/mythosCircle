@@ -90,7 +90,7 @@ def verify_login(email: str, password: str) -> models.Account | None:
         return account
 
 
-def create_session(account_id: str) -> tuple[str, models.Session]:
+def create_session(account_id: str) -> tuple[str, models.LoginSession]:
     """Create a session; returns (raw_token, session_row).
 
     The raw token goes to the cookie; only its SHA-256 is stored.
@@ -102,7 +102,7 @@ def create_session(account_id: str) -> tuple[str, models.Session]:
         time.now_plus_days(ttl_days) if ttl_days else time.now_plus_days(_NEVER_EXPIRE_DAYS)
     )
     with session_scope() as session:
-        session_row = models.Session(
+        session_row = models.LoginSession(
             id=ids.new_id(),
             account_id=account_id,
             token_hash=token_hash,
@@ -123,7 +123,7 @@ def get_session_account(token: str) -> models.Account | None:
     token_hash = _sha256(token)
     with session_scope() as session:
         session_row = session.scalars(
-            select(models.Session).where(models.Session.token_hash == token_hash)
+            select(models.LoginSession).where(models.LoginSession.token_hash == token_hash)
         ).first()
         if session_row is None:
             return None
@@ -140,7 +140,7 @@ def revoke_session(token: str) -> None:
     token_hash = _sha256(token)
     with session_scope() as session:
         session_row = session.scalars(
-            select(models.Session).where(models.Session.token_hash == token_hash)
+            select(models.LoginSession).where(models.LoginSession.token_hash == token_hash)
         ).first()
         if session_row is not None and session_row.revoked_at is None:
             session_row.revoked_at = time.now()

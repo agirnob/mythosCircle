@@ -1,0 +1,332 @@
+{
+  "entities": [
+    {
+      "ref": "E0",
+      "kind": "place",
+      "name": "Sablemark",
+      "text": "The largest fortification on the ash-steppe, a soot-stained bastion of iron and frozen stone that serves as the last bastion of civilization before the wastes."
+    },
+    {
+      "ref": "E1",
+      "kind": "place",
+      "name": "The Ragged Spur",
+      "text": "A lawless shantytown built into the jagged cliffs overlooking the edge of the steppe, populated by outcasts and scavengers."
+    },
+    {
+      "ref": "E2",
+      "kind": "place",
+      "name": "Emberwall",
+      "text": "A massive, heat-conducting barrier of volcanic glass and enchanted iron designed to keep the freezing ash-winds at bay."
+    },
+    {
+      "ref": "E3",
+      "kind": "place",
+      "name": "Grayfall Shrine",
+      "text": "A crumbling cathedral of weeping stone where the faithful pray to silent gods for warmth."
+    },
+    {
+      "ref": "E4",
+      "kind": "place",
+      "name": "The Saltworks",
+      "text": "A sprawling, industrial complex of brine pools and drying racks used to harvest the precious mineral from the frozen lakes."
+    },
+    {
+      "ref": "E5",
+      "kind": "place",
+      "name": "Morrow Bridge",
+      "text": "A precarious stone span that connects the main settlement to the trade routes of the deep steppe."
+    },
+    {
+      "ref": "E6",
+      "kind": "place",
+      "name": "The Pyre Grounds",
+      "text": "A ritualistic clearing where the dead are burned to prevent the ash-rot from rising."
+    },
+    {
+      "ref": "E7",
+      "kind": "place",
+      "name": "Cinder Hall",
+      "text": "The seat of local governance and the high command of the town's defensive forces."
+    },
+    {
+      "ref": "E8",
+      "kind": "place",
+      "name": "The Drift Road",
+      "text": "A treacherous, shifting path carved through the heavy ash-drifts, constantly being rebuilt by laborers."
+    },
+    {
+      "ref": "E9",
+      "kind": "faction",
+      "name": "The Ashwardens",
+      "text": "A paramilitary order dedicated to patrolling the perimeter and culling ash-tainted creatures."
+    },
+    {
+      "ref": "E10",
+      "kind": "faction",
+      "name": "The Salt Company",
+      "text": "A wealthy, ruthless conglomerate that holds a monopoly on the salt trade and controls much of the town's economy."
+    },
+    {
+      "ref": "E11",
+      "kind": "faction",
+      "name": "The Pale Cartel",
+      "text": "A shadowy network of smugglers and black-market dealers who move contraband through the Drift Road."
+    },
+    {
+      "ref": "E12",
+      "kind": "faction",
+      "name": "The Bone-Ringers",
+      "text": "A cult of necro-scavengers who believe the ash is a vessel for ancestral spirits."
+    },
+    {
+      "ref": "E13",
+      "kind": "faction",
+      "name": "The Longhouse Freeband",
+      "text": "A loose confederation of nomadic traders and survivalists who refuse to live under Sablemark's law."
+    },
+    {
+      "ref": "E14",
+      "kind": "character",
+      "name": "Vethra Ironkettle",
+      "data": {
+        "role": "NPC",
+        "level_cr": "level 7",
+        "race_type": "Dwarf",
+        "class_profession": "Fighter",
+        "alignment": "LN",
+        "personality": "Stoic, pragmatic, and obsessed with structural integrity.",
+        "secret": "She is secretly funneling gold to the Ashwardens to keep her family safe.",
+        "rumor": "They say her armor is forged from the heart of a fallen star.",
+        "party_hook": "Needs someone to escort a shipment of tempered steel through the Drift Road.",
+        "appearance": "A stout dwarf with soot-stained skin, braided copper hair, and heavy plate armor etched with geometric runes.",
+        "background": "Former master mason of the Emberwall.",
+        "goals": "To ensure the structural stability of the town's defenses.",
+        "relationships": "Respected by the Ashwardens; distrusted by the Salt Company.",
+        "voice_style": "Gravelly, low-pitched, and punctuated by heavy breaths.",
+        "catchphrases": "Steady footing, steady life.",
+        "stat_block": {
+          "identity": {
+            "role": "NPC",
+            "race": "Dwarf",
+            "class": "Fighter",
+            "level": 7
+          },
+          "attributes": {
+            "str": 18,
+            "dex": 12,
+            "con": 16,
+            "int": 10,
+            "wis": 14,
+            "cha": 10
+          },
+          "combat": {
+            "ac": 18,
+            "hp": 64
+          },
+          "skills": [
+            [
+              "Athletics",
+              6
+            ],
+            [
+              "Insight",
+              4
+            ]
+          ],
+          "actions": [
+            {
+              "name": "Multiattack",
+              "description": "Vethra makes two attacks with her warhammer."
+            },
+            {
+              "name": "Warhammer",
+              "to_hit": 7,
+              "description": "Melee Weapon Attack: +7 to hit, reach 5 ft., one target. Hit: 10 (1d8 + 6) bludgeoning damage.",
+              "damage": [
+                {
+                  "dice": "1d8",
+                  "count": 1,
+                  "sides": 8,
+                  "bonus": 6,
+                  "average": 10,
+                  "type": "bludgeoning"
+                }
+              ]
+            }
+          ],
+          "traits": [
+            {
+              "name": "Dwarven Resilience",
+              "description": "Advantage on saving throws against poison and resistance to poison damage."
+            }
+          ]
+        },
+        "world_integration": {
+          "reputation": "Respected laborer",
+          "factions": "The Ashwardens",
+          "current_location": "Emberwall",
+          "reaction_matrix": "E9: Respectful, E10: Hostile",
+          "on_defeat": "She retreats to the inner sanctum of Emberwall."
+        }
+      }
+    },
+    {
+      "ref": "E15",
+      "kind": "character",
+      "name": "Constable Rem",
+      "data": {
+        "role": "NPC",
+        "level_cr": "level 4",
+        "race_type": "Human",
+        "class_profession": "Rogue",
+        "alignment": "LE",
+        "personality": "Cynical, observant, and transactional.",
+        "secret": "He takes bribes from the Pale Cartel to look the other way.",
+        "rumor": "He knows where every body in the Pyre Grounds is buried.",
+        "party_hook": "Offers information on local gang activity in exchange for 'favors'.",
+        "appearance": "A lean human with sharp features, wearing a weathered leather duster and a belt full of heavy iron keys.",
+        "background": "Former street urchin turned lawman.",
+        "goals": "Maintaining order (and his own pocketbook).",
+        "relationships": "Works for the town but answers to the highest bidder.",
+        "voice_style": "A raspy whisper that forces people to lean in.",
+        "catchphrases": "Law is expensive.",
+        "stat_block": {
+          "identity": {
+            "role": "NPC",
+            "race": "Human",
+            "class": "Rogue",
+            "level": 4
+          },
+          "attributes": {
+            "str": 10,
+            "dex": 17,
+            "con": 12,
+            "int": 14,
+            "wis": 13,
+            "cha": 12
+          },
+          "combat": {
+            "ac": 15,
+            "hp": 31
+          },
+          "skills": [
+            [
+              "Deception",
+              5
+            ],
+            [
+              "Perception",
+              4
+            ],
+            [
+              "Stealth",
+              7
+            ]
+          ],
+          "actions": [
+            {
+              "name": "Sneak Attack",
+              "description": "Once per turn, Rem deals an extra 7 (2d6) damage when he has advantage."
+            },
+            {
+              "name": "Shortsword",
+              "to_hit": 6,
+              "description": "Melee Weapon Attack: +6 to hit, reach 5 ft., one target. Hit: 6 (1d6 + 3) piercing damage.",
+              "damage": [
+                {
+                  "dice": "1d6",
+                  "count": 1,
+                  "sides": 6,
+                  "bonus": 3,
+                  "average": 6,
+                  "type": "piercing"
+                }
+              ]
+            }
+          ],
+          "traits": [
+            {
+              "name": "Cunning Action",
+              "description": "Rem can take a Bonus Action on each of his turns to Dash, Disengage, or Hide."
+            }
+          ]
+        },
+        "world_integration": {
+          "reputation": "Unreliable authority",
+          "factions": "The Pale Cartel",
+          "current_location": "E7",
+          "reaction_matrix": "E11: Friendly, E09: Suspicious",
+          "on_defeat": "He disappears into the shadows of the alleyways."
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src": "E0",
+      "dst": "E2",
+      "type": "located_in",
+      "counter": 1
+    },
+    {
+      "src": "E9",
+      "dst": "E0",
+      "type": "protects",
+      "counter": 5
+    },
+    {
+      "src": "E14",
+      "dst": "E9",
+      "type": "ally_of",
+      "counter": 3
+    },
+    {
+      "src": "E14",
+      "dst": "E2",
+      "type": "bases_at",
+      "counter": 1
+    },
+    {
+      "src": "E15",
+      "dst": "E11",
+      "type": "member_of",
+      "counter": 1
+    },
+    {
+      "src": "E15",
+      "dst": "E7",
+      "type": "bases_at",
+      "counter": 1
+    },
+    {
+      "src": "E10",
+      "dst": "E4",
+      "type": "controls",
+      "counter": 8
+    },
+    {
+      "src": "E11",
+      "dst": "E8",
+      "type": "controls",
+      "counter": 4
+    },
+    {
+      "src": "E12",
+      "dst": "E6",
+      "type": "worships",
+      "counter": 5
+    },
+    {
+      "src": "E13",
+      "dst": "E1",
+      "type": "hails_from",
+      "counter": 1
+    },
+    {
+      "src": "E10",
+      "dst": "E14",
+      "type": "enemy_of",
+      "counter": 3
+    }
+  ]
+}

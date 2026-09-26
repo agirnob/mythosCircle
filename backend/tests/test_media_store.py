@@ -68,7 +68,11 @@ def _commit_entity(campaign_id: str, name: str = "Mira Vane") -> str:
             models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
             models.EntityInput(kind="character", name=name, id=entity_id),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
         base_revision=_head(campaign_id),
     )
     return entity_id

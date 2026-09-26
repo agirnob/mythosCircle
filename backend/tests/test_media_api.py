@@ -86,7 +86,11 @@ def _commit_entity(campaign_id: str, appearance: object, name: str = "Mira Vane"
                 kind="character", name=name, data={"appearance": appearance}, id=entity_id
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
         base_revision=base,
     )
     return entity_id
@@ -270,7 +274,15 @@ def test_media_file_route_foreign_campaign_is_404(
                 id=foreign_entity_id,
             ),
         ],
-        [models.EdgeInput(src=foreign_anchor, dst=foreign_entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=foreign_entity_id,
+                dst=foreign_anchor,
+                type="located_in",
+                counter=1,
+                reason="seeded",
+            )
+        ],
     )
     add_media(other_id, foreign_entity_id, filename, "image")
     foreign_file = tmp_path / "media" / other_id / foreign_entity_id / filename
@@ -339,7 +351,11 @@ def _commit_boss(campaign_id: str, data: dict[str, Any] | None = None, name: str
             models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
             models.EntityInput(kind="character", name=name, data=data, id=entity_id),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
         base_revision=base,
     )
     return entity_id
@@ -480,7 +496,15 @@ def test_video_file_route_foreign_campaign_is_404(
                 id=foreign_entity_id,
             ),
         ],
-        [models.EdgeInput(src=foreign_anchor, dst=foreign_entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=foreign_entity_id,
+                dst=foreign_anchor,
+                type="located_in",
+                counter=1,
+                reason="seeded",
+            )
+        ],
     )
     add_media(other_id, foreign_entity_id, filename, "video")
     foreign_file = tmp_path / "media" / other_id / foreign_entity_id / filename
@@ -660,7 +684,15 @@ def test_delete_media_foreign_or_unknown_campaign_is_404(
                 id=foreign_entity_id,
             ),
         ],
-        [models.EdgeInput(src=foreign_anchor, dst=foreign_entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=foreign_entity_id,
+                dst=foreign_anchor,
+                type="located_in",
+                counter=1,
+                reason="seeded",
+            )
+        ],
     )
     foreign_row = add_media(other_id, foreign_entity_id, f"{ids.new_id()}.png", "image")
     foreign_file = tmp_path / "media" / other_id / foreign_entity_id / foreign_row.filename

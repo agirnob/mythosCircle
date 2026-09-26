@@ -119,7 +119,11 @@ def _commit_with_data(world: str, data: dict[str, Any], name: str = "Vashka") ->
             models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
             models.EntityInput(kind="character", name=name, data=data, id=entity_id),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     return entity_id
 

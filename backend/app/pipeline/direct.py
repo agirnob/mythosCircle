@@ -133,7 +133,20 @@ def _resolve_declared_edges(
             if relationship in staged:
                 continue  # duplicate collapse: one declared row per relationship
             staged.add(relationship)
-            edges.append(models.EdgeInput(src=src_id, dst=dst, type=edge_type, counter=counter))
+            # AD-32: a declared relation may carry the DM's own why;
+            # otherwise a deterministic fallback from the declaration —
+            # never a blank (the commit path would reject it).
+            raw_reason = raw.get("reason")
+            reason = (
+                raw_reason.strip()
+                if isinstance(raw_reason, str) and raw_reason.strip()
+                else f"declared {edge_type} relation"
+            )
+            edges.append(
+                models.EdgeInput(
+                    src=src_id, dst=dst, type=edge_type, counter=counter, reason=reason
+                )
+            )
     return edges
 
 

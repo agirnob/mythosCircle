@@ -70,7 +70,7 @@ def _seed_world(campaign_id: str) -> tuple[str, str]:
             models.EntityInput(kind="faction", name="The Gilded Bar", id=bar_id),
             models.EntityInput(kind="character", name="Mira Vane", id=mira_id),
         ],
-        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1)],
+        [models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded")],
         base_revision=None,
     )
     return bar_id, mira_id
@@ -115,7 +115,7 @@ def test_add_edge_commits_one_revision(client: Any) -> None:
         revisions_before = len(list(revision_chain(session, mine["id"])))
     resp = client.post(
         f"/api/campaigns/{mine['id']}/edges",
-        json={"src": mira, "dst": bar, "type": "debt", "counter": 3},
+        json={"src": mira, "dst": bar, "type": "debt", "counter": 3, "reason": "seeded"},
     )
     assert resp.status_code == 201
     body = resp.json()
@@ -146,7 +146,7 @@ def test_add_self_loop_422(client: Any) -> None:
         revisions_before = len(list(revision_chain(session, mine["id"])))
     resp = client.post(
         f"/api/campaigns/{mine['id']}/edges",
-        json={"src": bar, "dst": bar, "type": "loyalty", "counter": 1},
+        json={"src": bar, "dst": bar, "type": "loyalty", "counter": 1, "reason": "seeded"},
     )
     assert resp.status_code == 422
     assert _edge_ids(mine["id"]) == ids_before
@@ -165,12 +165,19 @@ def test_add_stale_base_409_then_head_succeeds(client: Any) -> None:
     stale = "0" * 26
     resp = client.post(
         f"/api/campaigns/{mine['id']}/edges",
-        json={"src": mira, "dst": bar, "type": "debt", "counter": 3, "base_revision": stale},
+        json={
+            "src": mira,
+            "dst": bar,
+            "type": "debt",
+            "counter": 3,
+            "reason": "seeded",
+            "base_revision": stale,
+        },
     )
     assert resp.status_code == 409
     resp = client.post(
         f"/api/campaigns/{mine['id']}/edges",
-        json={"src": mira, "dst": bar, "type": "debt", "counter": 3},
+        json={"src": mira, "dst": bar, "type": "debt", "counter": 3, "reason": "seeded"},
     )
     assert resp.status_code == 201
 
@@ -182,7 +189,7 @@ def test_add_invalid_type_422(client: Any) -> None:
     bar, mira = _seed_world(mine["id"])
     resp = client.post(
         f"/api/campaigns/{mine['id']}/edges",
-        json={"src": mira, "dst": bar, "type": "friends", "counter": 1},
+        json={"src": mira, "dst": bar, "type": "friends", "counter": 1, "reason": "seeded"},
     )
     assert resp.status_code == 422
 
@@ -401,7 +408,13 @@ def test_add_edge_counter_semantic_bounds_422(client: Any) -> None:
     for edge_type, counter in [("debt", 0), ("ally_of", 10)]:
         resp = client.post(
             f"/api/campaigns/{mine['id']}/edges",
-            json={"src": mira, "dst": bar, "type": edge_type, "counter": counter},
+            json={
+                "src": mira,
+                "dst": bar,
+                "type": edge_type,
+                "counter": counter,
+                "reason": "seeded",
+            },
         )
         assert resp.status_code == 201, (edge_type, counter)
         added.add(resp.json()["id"])
@@ -456,3 +469,67 @@ def test_patch_foreign_campaign_404(client: Any) -> None:
         headers={"Content-Type": "application/json"},
     )
     assert resp.status_code == 404
+
+
+def test_add_edge_blank_reason_422(client: Any) -> None:
+    """AD-32 wire: an authored edge must carry its saved why — blank,
+    whitespace, and null-prose reject 422 (the picker's client-side
+    demand, server-enforced) before any row."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    bar, mira = _seed_world(mine["id"])
+    for blank in ("", "   ", "None", "N/A", "..."):
+        resp = client.post(
+            f"/api/campaigns/{mine['id']}/edges",
+            json={"src": mira, "dst": bar, "type": "debt", "counter": 1, "reason": blank},
+        )
+        assert resp.status_code == 422, blank
+        assert resp.json()["code"] == "validation_error"
+
+
+def test_add_edge_missing_reason_422(client: Any) -> None:
+    """A body without ``reason`` at all is the same 422 — the wire never
+    guesses a why."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    bar, mira = _seed_world(mine["id"])
+    resp = client.post(
+        f"/api/campaigns/{mine['id']}/edges",
+        json={"src": mira, "dst": bar, "type": "debt", "counter": 1},
+    )
+    assert resp.status_code == 422
+    assert "reason" in resp.json()["message"]
+
+
+def test_edit_counter_preserves_stored_reason(client: Any) -> None:
+    """AD-32: a counter-only bump keeps the saved why and ECHOES it."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    bar, mira = _seed_world(mine["id"])
+    edge_id = next(iter(_edge_ids(mine["id"])))
+    resp = client.patch(
+        f"/api/campaigns/{mine['id']}/edges/{edge_id}",
+        json={"counter": 42},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reason"] == "seeded"
+
+
+def test_edit_counter_fresh_reason_resaves_and_echoes(client: Any) -> None:
+    """A bump may re-save the why; the response echoes the EFFECTIVE
+    (fresh) reason, never the stale held row."""
+    _register_login(client)
+    mine = _create_campaign(client)
+    bar, mira = _seed_world(mine["id"])
+    edge_id = next(iter(_edge_ids(mine["id"])))
+    resp = client.patch(
+        f"/api/campaigns/{mine['id']}/edges/{edge_id}",
+        json={"counter": 42, "reason": "the ledger grew"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reason"] == "the ledger grew"
+    # And the store row truly re-saved it (the echo is not a lie).
+    with session_scope() as session:
+        row = session.get(models.Edge, edge_id)
+    assert row is not None
+    assert row.reason == "the ledger grew"

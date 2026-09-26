@@ -81,8 +81,8 @@ def _seed_world(campaign_id: str) -> tuple[str, str]:
             models.EntityInput(kind="character", name="Mira Vane", id=mira_id),
         ],
         [
-            models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1),
-            models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=3),
+            models.EdgeInput(src=mira_id, dst=bar_id, type="member_of", counter=1, reason="seeded"),
+            models.EdgeInput(src=mira_id, dst=bar_id, type="debt", counter=3, reason="seeded"),
         ],
         base_revision=None,
     )
@@ -245,7 +245,7 @@ def test_delete_stale_base_revision_409_then_current_head_succeeds(client: Any) 
     commit_subgraph(
         mine["id"],
         [models.EntityInput(kind="place", name="Stale Maker", id=stale_maker_id)],
-        [models.EdgeInput(src=stale_maker_id, dst=bar_id, type="located_in")],
+        [models.EdgeInput(src=bar_id, dst=stale_maker_id, type="located_in", reason="seeded")],
         base_revision=seed_head,
     )
     response = client.request(

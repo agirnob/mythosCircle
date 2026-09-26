@@ -108,7 +108,7 @@ def _commit_world(campaign_id: str) -> tuple[list[models.Entity], list[models.Ed
                 id=mira_id,
             ),
         ],
-        [EdgeInput(src=bar_id, dst=mira_id, type="member_of", counter=1)],
+        [EdgeInput(src=bar_id, dst=mira_id, type="member_of", counter=1, reason="seeded")],
     )
     with session_scope() as session:
         return list(world_entities(session, campaign_id)), list(world_edges(session, campaign_id))
@@ -147,8 +147,19 @@ def _generate_output(total: int = 3) -> dict[str, Any]:
                     "on_defeat": "flees, leaving the ledger behind",
                 },
                 "edges": [
-                    {"endpoint": "C0", "direction": "outbound", "type": "rival_of", "counter": 1},
-                    {"endpoint": "C1", "direction": "inbound", "type": "member_of"},
+                    {
+                        "endpoint": "C0",
+                        "direction": "outbound",
+                        "type": "rival_of",
+                        "counter": 1,
+                        "reason": "seeded relation",
+                    },
+                    {
+                        "endpoint": "C1",
+                        "direction": "inbound",
+                        "type": "member_of",
+                        "reason": "seeded relation",
+                    },
                 ],
             }
             for index in range(total)
@@ -168,9 +179,20 @@ def _run(
     max_llm_calls: int | None = None,
     ask: str = "a rival for Mira",
 ) -> str:
-    """Enqueue one generate job and drain it with ``provider``."""
+    """Enqueue one generate job and drain it with ``provider``. The
+    wrapper answers the AD-33 REASON FILL prompt (one fill per blank
+    ordinal) so fixture providers keep scripting only the wave/repair
+    calls they mean to test."""
+
+    def _dispatch(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+        completion = provider(prompt, settings)
+        assert isinstance(completion, str)
+        return completion
+
     job_id = enqueue_job(world, "generate", {"ask": ask}, max_llm_calls=max_llm_calls).id
-    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    assert run_next_job(provider=_dispatch, settings=SETTINGS) == job_id
     return job_id
 
 
@@ -216,7 +238,16 @@ def test_happy_path_stages_three_candidates(world: str) -> None:
     names the staged ids; progress 1.0; the world graph untouched."""
     before_entities, before_edges = _commit_world(world)
     before_revision_count = _revision_count(world)
-    job_id = _run(world, lambda prompt, settings: json.dumps(_generate_output()))
+    job_id = _run(
+        world,
+        (
+            lambda prompt, settings: (
+                json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                if "REASON FILL" in prompt
+                else json.dumps(_generate_output())
+            )
+        ),
+    )
 
     job, _position = job_status(job_id)
     assert job.state == "succeeded" and job.progress == 1.0
@@ -777,7 +808,16 @@ def test_fewer_than_two_fails_naming_count(world: str) -> None:
     """FEWER_THAN_TWO: only one candidate arrives -> the job fails with a
     structured error naming the count; nothing staged."""
     _commit_world(world)
-    job_id = _run(world, lambda prompt, settings: json.dumps(_generate_output(1)))
+    job_id = _run(
+        world,
+        (
+            lambda prompt, settings: (
+                json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                if "REASON FILL" in prompt
+                else json.dumps(_generate_output(1))
+            )
+        ),
+    )
     job, _position = job_status(job_id)
     assert job.state == "failed"
     assert "1 valid candidate(s) survived validation, need 2" in (job.error or "")
@@ -805,7 +845,12 @@ def test_bad_edge_candidate_dropped_two_staged(world: str) -> None:
     _commit_world(world)
     output = _generate_output()
     output["candidates"][1]["edges"] = [
-        {"endpoint": "C99", "direction": "outbound", "type": "rival_of"}
+        {
+            "endpoint": "C99",
+            "direction": "outbound",
+            "type": "rival_of",
+            "reason": "seeded relation",
+        }
     ]
     job_id = _run(world, lambda prompt, settings: json.dumps(output))
     job, _position = job_status(job_id)
@@ -829,8 +874,20 @@ def test_counter_out_of_semantic_range_drops_candidate(world: str) -> None:
     _commit_world(world)
     output = _generate_output()
     output["candidates"][1]["edges"] = [
-        {"endpoint": "C0", "direction": "outbound", "type": "grudge", "counter": 0},
-        {"endpoint": "C1", "direction": "inbound", "type": "ally_of", "counter": 11},
+        {
+            "endpoint": "C0",
+            "direction": "outbound",
+            "type": "grudge",
+            "counter": 0,
+            "reason": "seeded relation",
+        },
+        {
+            "endpoint": "C1",
+            "direction": "inbound",
+            "type": "ally_of",
+            "counter": 11,
+            "reason": "seeded relation",
+        },
     ]
     job_id = _run(world, lambda prompt, settings: json.dumps(output))
     job, _position = job_status(job_id)
@@ -902,6 +959,8 @@ def test_wave_malformed_json_retries_once_and_recovers(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         if len(calls) == 1:
             return "{candidates: [oops"
@@ -928,6 +987,8 @@ def test_generate_json_retry_rolls_the_pinned_seed(world: str) -> None:
     responses = ["{candidates: [oops", json.dumps(_generate_output())]
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         seen_seeds.append(settings.seed)
         return responses.pop(0)
 
@@ -947,6 +1008,8 @@ def test_wave_second_malformed_fails_loud(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         return "{candidates: [oops"
 
@@ -964,7 +1027,16 @@ def test_generate_result_carries_context_banner(world: str) -> None:
     cap. A 2-entity world fits the AR6 cap: everything requested was
     included, no truncation."""
     _commit_world(world)
-    job_id = _run(world, lambda prompt, settings: json.dumps(_generate_output()))
+    job_id = _run(
+        world,
+        (
+            lambda prompt, settings: (
+                json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                if "REASON FILL" in prompt
+                else json.dumps(_generate_output())
+            )
+        ),
+    )
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert job.result is not None
@@ -1007,7 +1079,13 @@ def _commit_over_cap_world(campaign_id: str) -> tuple[str, list[str]]:
         # edge: chain the places with located_in (place -> place is the
         # vocabulary's legal containment shape).
         [
-            EdgeInput(src=all_ids[index], dst=all_ids[index + 1], type="located_in", counter=1)
+            EdgeInput(
+                src=all_ids[index],
+                dst=all_ids[index + 1],
+                type="located_in",
+                counter=1,
+                reason="seeded",
+            )
             for index in range(len(all_ids) - 1)
         ],
     )
@@ -1019,7 +1097,16 @@ def test_context_banner_reports_truncation_over_the_cap(world: str) -> None:
     included 24, truncated True, cap 24) — the silent-loss complaint is
     now diagnosable from the job result alone."""
     _commit_over_cap_world(world)
-    job_id = _run(world, lambda prompt, settings: json.dumps(_generate_output()))
+    job_id = _run(
+        world,
+        (
+            lambda prompt, settings: (
+                json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                if "REASON FILL" in prompt
+                else json.dumps(_generate_output())
+            )
+        ),
+    )
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert job.result is not None
@@ -1039,9 +1126,14 @@ def test_ask_target_boost_defeats_rowid_bias(world: str) -> None:
     first."""
     _commit_over_cap_world(world)
     calls: list[str] = []
+
+    def _provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(_generate_output())
+
     job_id = _run(
         world,
-        lambda prompt, settings: calls.append(prompt) or json.dumps(_generate_output()),
+        _provider,
         ask="The Old Mill has fallen quiet — who sees to it now?",
     )
     job, _position = job_status(job_id)
@@ -1062,6 +1154,8 @@ def test_rowid_bias_fill_prefers_newest_without_boost(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         return json.dumps(_generate_output())
 
@@ -1135,6 +1229,8 @@ def test_worker_opened_journal_round_trips_the_attempts(
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         journal.record(
             prompt=prompt,
@@ -1182,7 +1278,14 @@ def test_bad_edge_all_candidates_fails(world: str) -> None:
     _commit_world(world)
     output = _generate_output()
     for candidate in output["candidates"]:
-        candidate["edges"] = [{"endpoint": "C99", "direction": "outbound", "type": "rival_of"}]
+        candidate["edges"] = [
+            {
+                "endpoint": "C99",
+                "direction": "outbound",
+                "type": "rival_of",
+                "reason": "seeded relation",
+            }
+        ]
     job_id = _run(world, lambda prompt, settings: json.dumps(output))
     job, _position = job_status(job_id)
     assert job.state == "failed"
@@ -1197,7 +1300,14 @@ def test_uninvented_edge_type_dropped(world: str) -> None:
     _commit_world(world)
     output = _generate_output()
     for candidate in output["candidates"]:
-        candidate["edges"] = [{"endpoint": "C0", "direction": "outbound", "type": "teleports"}]
+        candidate["edges"] = [
+            {
+                "endpoint": "C0",
+                "direction": "outbound",
+                "type": "teleports",
+                "reason": "seeded relation",
+            }
+        ]
     job_id = _run(world, lambda prompt, settings: json.dumps(output))
     job, _position = job_status(job_id)
     assert job.state == "failed"  # no candidate keeps a valid edge
@@ -1252,6 +1362,8 @@ def test_malformed_repair_output_drops_candidate(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         return json.dumps(output) if len(calls) == 1 else "garbage"
 
@@ -1284,6 +1396,8 @@ def test_invalid_stat_block_repaired_in_one_pass(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         if len(calls) == 1:
             return json.dumps(output)
@@ -1310,6 +1424,8 @@ def test_still_invalid_stats_dropped_two_survive(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         if len(calls) == 1:
             return json.dumps(output)
@@ -1343,6 +1459,8 @@ def test_still_invalid_stats_below_two_fails(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         if len(calls) == 1:
             return json.dumps(output)
@@ -1379,6 +1497,8 @@ def test_second_repair_pass_rescues_candidate(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         if len(calls) == 1:
             return json.dumps(output)
@@ -1407,6 +1527,8 @@ def test_missing_stat_block_repaired(world: str) -> None:
     del output["candidates"][2]["stat_block"]
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         if "VIOLATIONS TO FIX" in prompt:
             return json.dumps({"stat_blocks": [{"ref": "E2", "stat_block": _VALID_STAT_BLOCK}]})
         return json.dumps(output)
@@ -1430,6 +1552,8 @@ def test_budget_exceeded_fails_before_repair_http(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         return json.dumps(output)
 
@@ -1531,7 +1655,13 @@ def _candidate_record(world_id: str, name: str = "Corvin Ashe") -> dict[str, Any
             "party_hook": "p",
             "stat_block": _VALID_STAT_BLOCK,
             "edges": [
-                {"endpoint": entity.id, "direction": "outbound", "type": "rival_of", "counter": 1}
+                {
+                    "endpoint": entity.id,
+                    "direction": "outbound",
+                    "type": "rival_of",
+                    "counter": 1,
+                    "reason": "seeded relation",
+                }
             ],
         }
 
@@ -1610,6 +1740,8 @@ def test_cancel_before_staging_is_noop(world: str) -> None:
     job_id = _enqueue(world)
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         cancel_job(job_id)  # lands during the generate call, before the poll
         return json.dumps(_generate_output())
 
@@ -1633,6 +1765,8 @@ def test_cancel_after_staging_discards_ghost_rows(
     real_progress = report_progress
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         return json.dumps(_generate_output())
 
     def cancel_then_progress(job_id_: str, progress: float) -> Any:
@@ -1779,8 +1913,13 @@ def test_oversized_context_ref_drops_edge(world: str) -> None:
     _commit_world(world)
     output = _generate_output()
     output["candidates"][1]["edges"] = [
-        {"endpoint": "C" + "9" * 5000, "direction": "outbound", "type": "rival_of"},
-        {"endpoint": "C1", "direction": "inbound", "type": "rival_of"},
+        {
+            "endpoint": "C" + "9" * 5000,
+            "direction": "outbound",
+            "type": "rival_of",
+            "reason": "seeded relation",
+        },
+        {"endpoint": "C1", "direction": "inbound", "type": "rival_of", "reason": "seeded relation"},
     ]
     job_id = _run(world, lambda prompt, settings: json.dumps(output))
     job, _position = job_status(job_id)
@@ -1847,7 +1986,7 @@ def test_unhashable_edge_type_dropped_cleanly(world: str) -> None:
     output = _generate_output()
     output["candidates"][1]["edges"] = [
         {"endpoint": "C0", "direction": "outbound", "type": ["rival_of"]},
-        {"endpoint": "C1", "direction": "inbound", "type": "rival_of"},
+        {"endpoint": "C1", "direction": "inbound", "type": "rival_of", "reason": "seeded relation"},
     ]
     job_id = _run(world, lambda prompt, settings: json.dumps(output))
     job, _position = job_status(job_id)
@@ -1872,6 +2011,8 @@ def test_drop_reasons_carry_names_and_one_numbering(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         if len(calls) == 1:
             return json.dumps(output)
@@ -1901,6 +2042,8 @@ def test_dropped_summary_on_partial_success(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         if len(calls) == 1:
             return json.dumps(output)
@@ -1922,7 +2065,16 @@ def test_dropped_summary_on_partial_success(world: str) -> None:
 def test_dropped_summary_absent_when_all_valid(world: str) -> None:
     """A clean 3-of-3 run stages with an empty dropped list."""
     _commit_world(world)
-    job_id = _run(world, lambda prompt, settings: json.dumps(_generate_output()))
+    job_id = _run(
+        world,
+        (
+            lambda prompt, settings: (
+                json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                if "REASON FILL" in prompt
+                else json.dumps(_generate_output())
+            )
+        ),
+    )
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
     assert job.result is not None and job.result["dropped"] == []
@@ -1969,7 +2121,13 @@ def test_runner_revalidates_ask_on_claim(world: str) -> None:
     blank = _raw_generate_job(world, "   ")
     assert (
         run_next_job(
-            provider=lambda prompt, settings: json.dumps(_generate_output()),
+            provider=(
+                lambda prompt, settings: (
+                    json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                    if "REASON FILL" in prompt
+                    else json.dumps(_generate_output())
+                )
+            ),
             settings=SETTINGS,
         )
         == blank
@@ -1981,7 +2139,14 @@ def test_runner_revalidates_ask_on_claim(world: str) -> None:
     overlong = _raw_generate_job(world, "x" * (GENERATE_MAX_ASK_LENGTH + 1))
     assert (
         run_next_job(
-            provider=lambda prompt, settings: json.dumps(_generate_output()), settings=SETTINGS
+            provider=(
+                lambda prompt, settings: (
+                    json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                    if "REASON FILL" in prompt
+                    else json.dumps(_generate_output())
+                )
+            ),
+            settings=SETTINGS,
         )
         == overlong
     )
@@ -2004,7 +2169,14 @@ def test_runner_guard_empty_world_at_claim(world: str) -> None:
     undo(world, latest.id)
     assert (
         run_next_job(
-            provider=lambda prompt, settings: json.dumps(_generate_output()), settings=SETTINGS
+            provider=(
+                lambda prompt, settings: (
+                    json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                    if "REASON FILL" in prompt
+                    else json.dumps(_generate_output())
+                )
+            ),
+            settings=SETTINGS,
         )
         == emptied
     )
@@ -2038,7 +2210,16 @@ def test_mid_run_campaign_delete_does_not_wedge_worker(world: str) -> None:
     _commit_world(doomed)
     # A prior generate run leaves staged rows on the doomed campaign —
     # the delete must cascade them away, not leave ghost rows.
-    _run(doomed, lambda prompt, settings: json.dumps(_generate_output()))
+    _run(
+        doomed,
+        (
+            lambda prompt, settings: (
+                json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                if "REASON FILL" in prompt
+                else json.dumps(_generate_output())
+            )
+        ),
+    )
     assert _candidate_count(doomed) == 3
     job_id = enqueue_job(doomed, "generate", {"ask": "a rival for Mira"}).id
 
@@ -2067,7 +2248,14 @@ def test_mid_run_campaign_delete_does_not_wedge_worker(world: str) -> None:
     survivor = enqueue_job(world, "generate", {"ask": "another rival"}).id
     assert (
         run_next_job(
-            provider=lambda prompt, settings: json.dumps(_generate_output()), settings=SETTINGS
+            provider=(
+                lambda prompt, settings: (
+                    json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                    if "REASON FILL" in prompt
+                    else json.dumps(_generate_output())
+                )
+            ),
+            settings=SETTINGS,
         )
         == survivor
     )
@@ -2096,7 +2284,14 @@ def test_status_read_error_does_not_wedge_job(world: str, monkeypatch: pytest.Mo
     monkeypatch.setattr(store_module, "job_status", flaky_status)
     assert (
         run_next_job(
-            provider=lambda prompt, settings: json.dumps(_generate_output()), settings=SETTINGS
+            provider=(
+                lambda prompt, settings: (
+                    json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
+                    if "REASON FILL" in prompt
+                    else json.dumps(_generate_output())
+                )
+            ),
+            settings=SETTINGS,
         )
         == job_id
     )
@@ -2216,6 +2411,8 @@ def test_repair_prompt_carries_record_dpr_target(world: str) -> None:
     calls: list[str] = []
 
     def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            return json.dumps({"reasons": [{"index": i, "reason": "seeded"} for i in range(6)]})
         calls.append(prompt)
         if len(calls) == 1:
             return json.dumps(output)

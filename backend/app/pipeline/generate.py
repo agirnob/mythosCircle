@@ -48,6 +48,7 @@ from typing import Any
 import app.store as store
 from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
+from app.pipeline.build_in import build_reason_fill_schema
 from app.pipeline.fencing import strip_fence, strip_trailing_commas
 from app.pipeline.knowledge import ROLES
 from app.pipeline.retrieval import (
@@ -333,6 +334,16 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
             drops.append((index, candidate["name"], f"duplicate of E{first}"))
     valid = deduped
 
+    # AD-33 fill-blank (the saved-reason class): one bounded attempt per
+    # blank batch across the surviving candidates — the staged edges are
+    # the base, the single-field reply supplies reason only, take-only-X.
+    # A still-blank edge drops with audit; a candidate left with zero
+    # edges drops naming it (BAD_EDGE) — the >=2-candidate floor then
+    # fails a thin wave loud.
+    valid = _fill_candidate_blank_reasons(
+        job, budget, provider, settings, valid, drops, context_entities
+    )
+
     if len(valid) < MIN_CANDIDATES:
         detail = (
             " | ".join(f"E{index} ({name!r}): {reason}" for index, name, reason in drops)
@@ -517,7 +528,8 @@ def build_generate_prompt(
         "           when the role is BBEG or Monster and OMITTED entirely for NPC (never",
         "           an empty boss object); every other section above is always required,",
         '  "edges": [{"endpoint": "C<index>", "direction": "outbound"|"inbound",',
-        '             "type": "<vocabulary member>", "counter": <integer, default 1>}]}.',
+        '             "type": "<vocabulary member>", "counter": <integer, default 1>,',
+        '             "reason": "<one non-blank sentence: why this relation holds>"}]},',
         'Fill every boss field for a BBEG/Monster — use "None." where a field does not',
         "apply (e.g. a monster without legendary actions).",
         "Every edge connects the candidate to exactly one committed entity: endpoint",
@@ -754,6 +766,161 @@ def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[st
         "type": edge_type,
         "counter": counter,
     }
+
+
+def _endpoint_label(endpoint: Any, context_entities: Sequence[models.Entity]) -> str:
+    """The committed entity an endpoint id names, for the frozen list."""
+    if isinstance(endpoint, str):
+        for entity in context_entities:
+            if entity.id == endpoint:
+                return entity.name
+        return endpoint
+    return "?"
+
+
+def _fill_candidate_blank_reasons(
+    job: models.Job,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    valid: list[tuple[int, dict[str, Any]]],
+    drops: list[tuple[int, str, str]],
+    context_entities: Sequence[models.Entity],
+) -> list[tuple[int, dict[str, Any]]]:
+    """The AD-33 fill-blank class on the generate path: one bounded call
+    for every surviving candidate's blank-reason edges. The saved staged
+    edge records are the base; the single-field reply supplies reason
+    only and the merge is take-only-X. A still-blank edge drops with
+    audit (info log); a candidate left with zero edges drops naming the
+    edge (BAD_EDGE). Malformed replies repair nothing (drop, never
+    guess); a lying fill counts as missing."""
+    blanks: list[tuple[int, int, str, str]] = []
+    for index, candidate in valid:
+        edges = candidate.get("edges", [])
+        if not isinstance(edges, list):
+            continue
+        for edge_index, edge in enumerate(edges):
+            if isinstance(edge, dict) and not store.edge_reason_ok(edge.get("reason")):
+                blanks.append(
+                    (
+                        index,
+                        edge_index,
+                        _endpoint_label(edge.get("endpoint"), context_entities),
+                        str(edge.get("type", "?")),
+                    )
+                )
+    if not blanks:
+        return valid
+    frozen = "\n".join(
+        f"- ordinal {ordinal}: E{cand} edge {edge_index}: {src} --{edge_type}--> (committed)"
+        for ordinal, (cand, edge_index, src, edge_type) in enumerate(blanks)
+    )
+    prompt = "\n".join(
+        [
+            f"Your response left {len(blanks)} edge(s) without a saved reason.",
+            "",
+            "FROZEN EDGES (already recorded — supply ONLY their reasons):",
+            frozen,
+            "",
+            "REASON FILL — respond with exactly one JSON object, nothing else:",
+            '{"reasons": [{"index": <the frozen ordinal>,',
+            '  "reason": "<one non-blank sentence: why this relation holds>"}]}',
+            "A blank, 'None', 'N/A', or unknown is not an answer — write the",
+            "concrete in-world why or omit the entry.",
+        ]
+    )
+    import dataclasses
+
+    filled_settings = dataclasses.replace(
+        settings, response_format=build_reason_fill_schema(len(blanks))
+    )
+    try:
+        reply_text = budget.call(partial(provider, prompt, settings=filled_settings))
+    except WaveJsonError:
+        # One bounded structural retry (the C taxonomy).
+        reply_text = budget.call(
+            partial(
+                provider,
+                prompt + "\n\nRETRY NOTE: Return ONLY the one JSON object "
+                '{"reasons": [{"index": <n>, "reason": "..."}]} — valid JSON, no prose.',
+                settings=filled_settings,
+            )
+        )
+    try:
+        reasons = _parse_reason_reply(reply_text)
+    except (WaveJsonError, JobPayloadError):
+        reasons = []  # a malformed reply repairs nothing: drop-with-audit below
+    fills: dict[int, str] = {}
+    for row in reasons:
+        if not isinstance(row, dict):
+            continue
+        fill_index = row.get("index")
+        fill_reason = row.get("reason")
+        if type(fill_index) is not int or not isinstance(fill_reason, str):
+            continue
+        if not store.edge_reason_ok(fill_reason):
+            continue  # a lying fill is missing, not a fill
+        fills[fill_index] = fill_reason.strip()
+    kept: list[tuple[int, dict[str, Any]]] = []
+    for index, candidate in valid:
+        edges = candidate.get("edges")
+        if not isinstance(edges, list):
+            edges = []
+        new_edges: list[dict[str, Any]] = []
+        for edge_index, edge in enumerate(edges):
+            if not isinstance(edge, dict) or store.edge_reason_ok(edge.get("reason")):
+                new_edges.append(edge)
+                continue
+            ordinal = _blank_ordinal(blanks, index, edge_index)
+            fill = fills.get(ordinal) if ordinal is not None else None
+            if fill is None:
+                logger.info(
+                    "generate E%s edge %d (%s) dropped: reason still blank after the fill "
+                    "attempt (drop-with-audit, AD-33; job %s)",
+                    index,
+                    edge_index,
+                    edge.get("type"),
+                    job.id,
+                )
+                continue  # drop-with-audit
+            new_edges.append({**edge, "reason": fill})
+        if not new_edges:
+            drops.append(
+                (
+                    index,
+                    str(candidate.get("name", f"E{index}")),
+                    "no edge with a saved reason survived (BAD_EDGE)",
+                )
+            )
+            continue
+        kept.append((index, {**candidate, "edges": new_edges}))
+    return kept
+
+
+def _blank_ordinal(
+    blanks: list[tuple[int, int, str, str]], candidate_index: int, edge_index: int
+) -> int | None:
+    """The frozen-list ordinal of one (candidate, edge) blank, or None."""
+    for order, (c_idx, e_idx, _src, _etype) in enumerate(blanks):
+        if c_idx == candidate_index and e_idx == edge_index:
+            return order
+    return None
+
+
+def _parse_reason_reply(text: str) -> list[Any]:
+    """Parse the fill-blank reply (``{"reasons": [...]}``) — one bounded
+    JSON contract."""
+    stripped = strip_trailing_commas(strip_fence(text))
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise WaveJsonError(f"generate: reason-fill reply is not valid JSON ({exc})") from exc
+    if not isinstance(parsed, dict):
+        raise JobPayloadError("reason-fill: reply must be a JSON object with a 'reasons' list")
+    reasons = parsed.get("reasons")
+    if not isinstance(reasons, list):
+        raise JobPayloadError("reason-fill: reply must have a 'reasons' list")
+    return reasons
 
 
 def _canonical_block(block: Any) -> Any:

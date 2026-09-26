@@ -127,7 +127,11 @@ def test_run_video_prompt_job_runs_the_draft_runner(world: str) -> None:
             models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
             models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     seen: list[str] = []
 
@@ -165,7 +169,11 @@ def test_run_video_prompt_job_fails_cleanly_when_llm_down(world: str) -> None:
             models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
             models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
 
     def down(prompt: str, settings: LLMSettings) -> str:
@@ -369,7 +377,11 @@ def test_run_image_job_runs_portrait_runner(
                 id=entity_id,
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
     seen_prompts: list[str] = []
@@ -424,7 +436,11 @@ def test_run_video_job_runs_reveal_runner(
             models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
             models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
     seen_prompts: list[str] = []
@@ -486,7 +502,11 @@ def test_run_video_job_non_mp4_fails_cleanly(
             models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
             models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
     VIDEO_SETTINGS = VideoSettings(endpoint="http://video.test/v1", model="vid-model")
@@ -543,7 +563,11 @@ def test_run_video_job_comfyui_backend_dispatch(
                 models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
                 models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
             ],
-            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+            [
+                models.EdgeInput(
+                    src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+                )
+            ],
         )
         portrait = _attach_portrait(world, entity_id, tmp_path / "media")
         COMFYUI_SETTINGS = ComfyUIVideoSettings(endpoint="http://comfy.test:7896")
@@ -627,7 +651,11 @@ def test_comfyui_video_real_provider_end_to_end_with_mock_transport(
                 models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
                 models.EntityInput(kind="character", name="Vashka", data=boss_data, id=entity_id),
             ],
-            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+            [
+                models.EdgeInput(
+                    src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+                )
+            ],
         )
         portrait = _attach_portrait(world, entity_id, tmp_path / "media")
         input_dir = tmp_path / "comfy-input"
@@ -730,7 +758,11 @@ def test_run_image_job_provider_failure_fails_job_cleanly(
                 id=entity_id,
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
     )
     monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
 
@@ -785,7 +817,11 @@ def test_run_image_job_comfyui_backend_dispatch(
                     id=entity_id,
                 ),
             ],
-            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+            [
+                models.EdgeInput(
+                    src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+                )
+            ],
         )
         COMFYUI_SETTINGS = ComfyUIImageSettings(endpoint="http://comfy.test:7896")
         seen_prompts: list[str] = []
@@ -863,7 +899,11 @@ def test_comfyui_real_provider_end_to_end_with_mock_transport(
                     id=entity_id,
                 ),
             ],
-            [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+            [
+                models.EdgeInput(
+                    src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+                )
+            ],
         )
         workflow_path = tmp_path / "krea2.json"
         workflow_path.write_text(
@@ -1022,8 +1062,20 @@ def _build_in_wave1_json() -> str:
                 },
             ],
             "edges": [
-                {"src": "E0", "dst": "E1", "type": "member_of", "counter": 1},
-                {"src": "E1", "dst": "E0", "type": "debt", "counter": 3},
+                {
+                    "src": "E0",
+                    "dst": "E1",
+                    "type": "member_of",
+                    "counter": 1,
+                    "reason": "seeded relation",
+                },
+                {
+                    "src": "E1",
+                    "dst": "E0",
+                    "type": "debt",
+                    "counter": 3,
+                    "reason": "seeded relation",
+                },
             ],
         }
     )

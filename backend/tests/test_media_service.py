@@ -148,7 +148,11 @@ def _commit_with_appearance(world: str, appearance: object, name: str = "Mira Va
                 id=entity_id,
             ),
         ],
-        [models.EdgeInput(src=anchor_id, dst=entity_id, type="located_in", counter=1)],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=anchor_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
         base_revision=base,
     )
     return entity_id
