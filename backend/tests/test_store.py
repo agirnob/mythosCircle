@@ -2242,6 +2242,111 @@ def test_toggle_unknown_entity_rejected(world: str) -> None:
         commit_knowledge_toggle(world, "0" * 26, "secret", known=True)
 
 
+def test_toggle_same_value_is_a_noop_reverse_is_new_step(world: str) -> None:
+    """AD-29 one undoable step each way: a repeated same-value flip is
+    NOT a step — the head returns, zero revisions; flipping the OTHER
+    way is a fresh step (one new revision)."""
+    _bar_id, mira_id = _seed_world(world)
+    first = commit_knowledge_toggle(world, mira_id, "secret", known=True)
+    assert _event_types(world, first.id) == ["knowledge_state_created"]
+    again = commit_knowledge_toggle(world, mira_id, "secret", known=True)
+    assert again.id == first.id  # the double-fire commits nothing
+    flipped = commit_knowledge_toggle(world, mira_id, "secret", known=False)
+    assert flipped.id != first.id
+    assert _knowledge_rows(world, mira_id) == {"secret": False}
+    with session_scope() as session:
+        chain = list(revision_chain(session, world))
+    assert [r.id for r in chain[-2:]] == [first.id, flipped.id]
+
+
+def test_toggle_non_bool_known_rejected_even_on_existing_row(world: str) -> None:
+    """The no-op path must never swallow a type violation: ``1`` for
+    ``true`` reads as CHANGED (identity-compare) and reaches the store's
+    strict bool contract."""
+    _bar_id, mira_id = _seed_world(world)
+    commit_knowledge_toggle(world, mira_id, "secret", known=True)
+    with pytest.raises(InvalidRunStateError):
+        commit_knowledge_toggle(world, mira_id, "secret", known=1)  # type: ignore[arg-type]
+
+
+def test_update_entity_flip_only_bundle_commits_one_revision(world: str) -> None:
+    """AD-29: a bundled save whose edit is empty is a legal knowledge-
+    only revision — the value-identical guard must NOT swallow the flip
+    (a flip-only PATCH is the dedicated toggle route's sibling)."""
+    _bar_id, mira_id = _seed_world(world)
+    revision = update_entity(
+        world,
+        mira_id,
+        patch={},
+        knowledge_flips=[models.KnowledgeFlipInput(entity_id=mira_id, field="secret", known=True)],
+    )
+    assert _event_types(world, revision.id) == ["knowledge_state_created"]
+    assert _knowledge_rows(world, mira_id) == {"secret": True}
+    with session_scope() as session:
+        chain = list(revision_chain(session, world))
+    assert chain[-1].id == revision.id
+
+
+def test_update_entity_resave_repeats_unchanged_flip_noop(world: str) -> None:
+    """PATCH idempotence extends to the bundle: a re-save of the same
+    form (identical content + unchanged flips) commits NOTHING — the
+    head returns, the flip emits no event."""
+    _bar_id, mira_id = _seed_world(world)
+    bundle = update_entity(
+        world,
+        mira_id,
+        patch={"appearance": "scarred twice across the cheek"},
+        knowledge_flips=[models.KnowledgeFlipInput(entity_id=mira_id, field="secret", known=True)],
+    )
+    assert _event_types(world, bundle.id) == ["entity_updated", "knowledge_state_created"]
+    resave = update_entity(
+        world,
+        mira_id,
+        patch={"appearance": "scarred twice across the cheek"},
+        knowledge_flips=[models.KnowledgeFlipInput(entity_id=mira_id, field="secret", known=True)],
+    )
+    assert resave.id == bundle.id
+    with session_scope() as session:
+        chain = list(revision_chain(session, world))
+    assert chain[-1].id == bundle.id
+    assert _knowledge_rows(world, mira_id) == {"secret": True}
+
+
+def test_update_entity_bundle_only_changed_flips_commit(world: str) -> None:
+    """A re-save changing ONE flip of a repeated pair commits only the
+    changed one — the unchanged flip emits nothing (filtered, not
+    repeated)."""
+    _bar_id, mira_id = _seed_world(world)
+    bundle = update_entity(
+        world,
+        mira_id,
+        patch={"appearance": "scarred twice across the cheek"},
+        knowledge_flips=[
+            models.KnowledgeFlipInput(entity_id=mira_id, field="secret", known=True),
+            models.KnowledgeFlipInput(entity_id=mira_id, field="rumor", known=True),
+        ],
+    )
+    assert _event_types(world, bundle.id) == [
+        "entity_updated",
+        "knowledge_state_created",
+        "knowledge_state_created",
+    ]
+    resave = update_entity(
+        world,
+        mira_id,
+        patch={"appearance": "scarred twice across the cheek"},
+        knowledge_flips=[
+            models.KnowledgeFlipInput(entity_id=mira_id, field="secret", known=True),
+            models.KnowledgeFlipInput(entity_id=mira_id, field="rumor", known=False),
+        ],
+    )
+    assert resave.id != bundle.id
+    with session_scope() as session:
+        events = [e.type for e in revision_events(session, world, resave.id)]
+    assert events == ["knowledge_state_updated"]
+    assert _knowledge_rows(world, mira_id) == {"secret": True, "rumor": False}
+
+
 def test_defeat_scar_take_back_surgical(world: str) -> None:
     """AC-3, the AD-27 arithmetic: defeat, then a scar edit on top, then
     take the defeat back — history reads three ``edited`` revisions, the
@@ -2337,11 +2442,9 @@ def test_migrate_login_session_renames_pre_v3_table(tmp_path: Path) -> None:
         "('22222222222222222222222222', 'pre-v3@example.com', 'hash', '2026-01-01')"
     )
     raw.execute(
-
-            "INSERT INTO session VALUES ('11111111111111111111111111', "
-            "'22222222222222222222222222', 'deadbeef', "
-            "'2099-01-01', NULL, '2026-01-01')"
-
+        "INSERT INTO session VALUES ('11111111111111111111111111', "
+        "'22222222222222222222222222', 'deadbeef', "
+        "'2099-01-01', NULL, '2026-01-01')"
     )
     raw.commit()
     raw.close()
@@ -2395,11 +2498,9 @@ def test_migrate_login_session_merges_when_both_tables_exist(tmp_path: Path) -> 
         "('22222222222222222222222222', 'pre-v3@example.com', 'hash', '2026-01-01')"
     )
     raw.execute(
-
-            "INSERT INTO session VALUES ('11111111111111111111111111', "
-            "'22222222222222222222222222', 'feedface', "
-            "'2099-01-01', NULL, '2026-01-01')"
-
+        "INSERT INTO session VALUES ('11111111111111111111111111', "
+        "'22222222222222222222222222', 'feedface', "
+        "'2099-01-01', NULL, '2026-01-01')"
     )
     raw.commit()
     raw.close()
@@ -2458,18 +2559,14 @@ def test_migrate_edge_reason_adds_null_column(tmp_path: Path) -> None:
         """
     )
     raw.execute(
-
-            "INSERT INTO campaign VALUES ('00000000000000000000000000', "
-            "'22222222222222222222222222', 'T', '', "
-            "'High Fantasy', '', '2026-01-01')"
-
+        "INSERT INTO campaign VALUES ('00000000000000000000000000', "
+        "'22222222222222222222222222', 'T', '', "
+        "'High Fantasy', '', '2026-01-01')"
     )
     raw.execute(
-
-            "INSERT INTO edge VALUES ('11111111111111111111111111', "
-            "'00000000000000000000000000', '22222222222222222222222222', "
-            "'33333333333333333333333333', 'ally_of', 1, '2026-01-01')"
-
+        "INSERT INTO edge VALUES ('11111111111111111111111111', "
+        "'00000000000000000000000000', '22222222222222222222222222', "
+        "'33333333333333333333333333', 'ally_of', 1, '2026-01-01')"
     )
     raw.commit()
     raw.close()

@@ -528,6 +528,26 @@ def _resolve_state_image(session: Session, campaign_id: str, entity_id: str) -> 
     return dict(row.data) if row is not None else {}
 
 
+def _flip_changed(session: Session, campaign_id: str, flip: models.KnowledgeFlipInput) -> bool:
+    """True when a knowledge flip changes the committed row (AD-29).
+
+    Identity-compared, never ``!=``: the committed ``known`` is a Python
+    bool while a caller's ``1``/``0``/truthy value must NOT read as
+    unchanged — that would silently drop a type violation that ``_commit``
+    is contractually obliged to reject. A missing row is always a change
+    (a create); an existing row with the same value is the repeated-
+    gesture no-op (one undoable step each way — a repeat is not a step).
+    """
+    row = session.scalars(
+        select(models.EntityKnowledgeState).where(
+            models.EntityKnowledgeState.campaign_id == campaign_id,
+            models.EntityKnowledgeState.entity_id == flip.entity_id,
+            models.EntityKnowledgeState.field == flip.field,
+        )
+    ).first()
+    return row is None or row.known is not flip.known
+
+
 def commit_run_state(
     campaign_id: str,
     *,
@@ -628,7 +648,9 @@ def commit_knowledge_toggle(
     bundles into the caller's revision via ``update_entity``/
     ``commit_subgraph`` (one transaction = one undoable step). Flippable
     either direction at any time; the record never changes — only the
-    marker moves.
+    marker moves. A flip that repeats the committed value is the double-
+    fire no-op (the verb precedent, AD-26/Flow 6): the head returns, no
+    revision, no history pollution.
     """
     with session_scope() as session:
         if session.get(models.Campaign, campaign_id) is None:
@@ -641,6 +663,16 @@ def commit_knowledge_toggle(
         ).first()
         if entity is None:
             raise UnknownEntityError(entity_id)
+        flip = models.KnowledgeFlipInput(entity_id=entity_id, field=field, known=known)
+        if not _flip_changed(session, campaign_id, flip):
+            # The repeated gesture — return the head. ``_flip_changed``
+            # identity-compares, so a non-bool ``known`` (``1`` for
+            # ``true``) still counts as changed and reaches ``_commit``'s
+            # strict type rejection below; the type contract is not
+            # bypassed by the no-op path.
+            latest = latest_revision(session, campaign_id)
+            if latest is not None:
+                return latest
         if base_revision is None:
             latest = latest_revision(session, campaign_id)
             base_revision = latest.id if latest is not None else None
@@ -650,9 +682,7 @@ def commit_knowledge_toggle(
             [],
             [],
             base_revision,
-            knowledge_flips=[
-                models.KnowledgeFlipInput(entity_id=entity_id, field=field, known=known)
-            ],
+            knowledge_flips=[flip],
         )
 
 
@@ -1378,16 +1408,24 @@ def _update_entity(
             )
 
     latest = latest_revision(session, campaign_id)
+    # AD-29 bundled save: flips repeating the committed row are no-ops —
+    # only the CHANGED flips ride the edit's revision (a re-save of the
+    # same form emits nothing). ``_flip_changed`` identity-compares, so a
+    # non-bool ``known`` (``1`` for ``true``) is still "changed" and
+    # reaches ``_commit``'s strict type rejection — the no-op path never
+    # swallows a type violation.
+    changed_flips = [flip for flip in knowledge_flips if _flip_changed(session, campaign_id, flip)]
     # Canonical-JSON compare, not Python ``==``: ``==`` conflates
     # ``1 == True == 1.0`` although they serialize differently on the
     # wire — a real ``1`` → ``true`` edit would be silently swallowed
     # here (204, edit dropped). ``allow_nan=False`` cannot raise: the
     # strict-JSON boundary above already rejected non-serializable data.
-    if (
+    content_unchanged = (
         json.dumps(merged, sort_keys=True, allow_nan=False)
         == json.dumps(current_data, sort_keys=True, allow_nan=False)
         and new_text == entity.text
-    ):
+    )
+    if content_unchanged and not changed_flips:
         # A value-identical PATCH is an idempotent retry: 204, no
         # revision, no history pollution (NOOP_PATCH). An EXPLICIT
         # stale base still rejects — ``_check_base`` is unconditional
@@ -1413,7 +1451,19 @@ def _update_entity(
 
     name_value = content.get("name", current_data.get("name"))
     # AD-29 bundled save gesture: the edit and the party-knowledge flip
-    # land as ONE revision — take-back inverts both halves.
+    # land as ONE revision — take-back inverts both halves. When the
+    # merge is byte-identical but a flip CHANGED (an identical re-save
+    # with a real toggle), the commit carries the flip alone — never a
+    # redundant ``entity_updated`` event for content that did not move.
+    if content_unchanged:
+        return _commit(
+            session,
+            campaign_id,
+            [],
+            [],
+            base_revision,
+            knowledge_flips=changed_flips,
+        )
     return _commit(
         session,
         campaign_id,
@@ -1428,7 +1478,7 @@ def _update_entity(
         ],
         [],
         base_revision,
-        knowledge_flips=list(knowledge_flips),
+        knowledge_flips=changed_flips,
     )
 
 

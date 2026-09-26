@@ -22,6 +22,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import literal_column, select
 
 from app.api.auth import get_current_account
 from app.api.common import store_error_as_http
@@ -485,6 +486,55 @@ def _event_summary(
         action=action,
         target_names=target_names,
         kind=stream,
+    )
+
+
+class RunStateResponse(BaseModel):
+    """Tonight's Tier-2 run-state (AD-28): the chip/cast read — dumb
+    joins, never a write surface. ``session`` maps entity id to the
+    full session-image (defeated flag, hp delta, allegiance, thread,
+    item counters); ``knowledge`` maps entity id to its per-secret
+    toggles over the closed secret/rumor/party_hook set. A row that
+    does not exist is absent — a fresh world reads two empty maps,
+    never an error, never a fabricated default."""
+
+    session: dict[str, dict[str, Any]]
+    knowledge: dict[str, dict[str, bool]]
+
+
+@router.get("/api/campaigns/{campaign_id}/run-state", response_model=RunStateResponse)
+def run_state(
+    campaign_id: str,
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> RunStateResponse:
+    """The Tonight Tier-2 read (AD-26, AD-28): current run-state rows
+    behind the log, owner-gated, read-only — readers stay dumb (the
+    store owns the state; this endpoint renders the rows, nothing
+    more). Never exports (AD-11 untouched: the exporter reads
+    entity/edge only) and never writes. Unknown/foreign campaign is
+    the single 404 (no oracle). Rows ordered by rowid (commit) order
+    per AD-16."""
+    if get_campaign(current.id, campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    with session_scope() as session:
+        session_rows = session.scalars(
+            select(models.EntitySessionState)
+            .where(models.EntitySessionState.campaign_id == campaign_id)
+            .order_by(literal_column("rowid"))
+        ).all()
+        knowledge_rows = session.scalars(
+            select(models.EntityKnowledgeState)
+            .where(models.EntityKnowledgeState.campaign_id == campaign_id)
+            .order_by(literal_column("rowid"))
+        ).all()
+    knowledge: dict[str, dict[str, bool]] = {}
+    for row in knowledge_rows:
+        knowledge.setdefault(row.entity_id, {})[row.field] = row.known
+    return RunStateResponse(
+        session={
+            row.entity_id: dict(row.data) if row.data is not None else {} for row in session_rows
+        },
+        knowledge=knowledge,
     )
 
 
