@@ -22,4 +22,22 @@ describe('router', () => {
     expect(resolved.query.focus).toBe('E1')
     expect(resolved.meta.requiresAuth).toBe(true)
   })
+
+  it('resolves the overview route under its campaign (rebuild stage 2)', () => {
+    expect(router.resolve({ name: 'overview', params: { id: 'X' } }).path).toBe(
+      '/campaigns/X/overview',
+    )
+  })
+
+  it('resolves the entity detail route under its campaign (rebuild stage 3)', () => {
+    const resolved = router.resolve({ name: 'entity', params: { id: 'X', entityId: 'E1' } })
+    expect(resolved.path).toBe('/campaigns/X/entities/E1')
+    expect(resolved.meta.requiresAuth).toBe(true)
+  })
+
+  it('resolves the ask route under its campaign (rebuild stage 4)', () => {
+    const resolved = router.resolve({ name: 'ask', params: { id: 'X' } })
+    expect(resolved.path).toBe('/campaigns/X/ask')
+    expect(resolved.meta.requiresAuth).toBe(true)
+  })
 })

@@ -1,0 +1,58 @@
+/**
+ * Design tokens — mythosCircle frontend rebuild (§9).
+ *
+ * Single source of truth for color, type, and spacing. Components consume
+ * these variables; no hardcoded palette values outside this file.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Background (§9) */
+  --mc-app-bg: #151619;
+  --mc-surface: #1d1f23;
+  --mc-surface-raised: #24272c;
+  --mc-input: #191b1f;
+  --mc-border: #30343a;
+
+  /* Text (§9) */
+  --mc-text-primary: #e8e5de;
+  --mc-text-secondary: #9b9da3;
+  --mc-text-muted: #6f737a;
+
+  /* Semantic accents — restrained (§9) */
+  --mc-canonical: #7fa88b;
+  --mc-proposal: #9d94c7;
+  --mc-warning: #c9a86a;
+  --mc-danger: #c97b72;
+  --mc-interactive: #d08a4e;
+
+  /* Type scale (§10) */
+  --mc-page-title-size: 2rem;
+  --mc-section-title-size: 1.125rem;
+  --mc-entity-name-size: 1rem;
+  --mc-meta-size: 0.72rem;
+  --mc-body-size: 0.95rem;
+
+  /* Shape + spacing */
+  --mc-radius: 10px;
+  --mc-radius-sm: 6px;
+  --mc-gap: 1rem;
+  --mc-gap-sm: 0.5rem;
+  --mc-shell-width: 1200px;
+  --mc-sidebar-width: 220px;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: var(--mc-app-bg);
+  color: var(--mc-text-primary);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}

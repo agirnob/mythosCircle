@@ -26,9 +26,32 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      // Rebuild Stage 2: campaign overview (NewWorldView). The existing
+      // 'world' route stays intact as the full record surface.
+      path: '/campaigns/:id/overview',
+      name: 'overview',
+      component: () => import('./views/NewWorldView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/campaigns/:id/world',
       name: 'world',
       component: () => import('./views/WorldView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      // Rebuild Stage 3: DM-readable entity detail (NewEntityView).
+      path: '/campaigns/:id/entities/:entityId',
+      name: 'entity',
+      component: () => import('./views/NewEntityView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      // Rebuild Stage 4: plain-language ask with staged proposals (NewAskView).
+      // The existing 'candidates' route stays intact for re-roll/editing.
+      path: '/campaigns/:id/ask',
+      name: 'ask',
+      component: () => import('./views/NewAskView.vue'),
       meta: { requiresAuth: true },
     },
     {

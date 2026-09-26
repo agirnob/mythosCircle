@@ -1,122 +1,61 @@
 <script setup lang="ts">
-import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 
+import AppShell from './components/shell/AppShell.vue'
 import { useAuthStore } from './stores/auth'
 
-const auth = useAuthStore()
-const router = useRouter()
 const route = useRoute()
-
-async function logout() {
-  await auth.logout()
-  await router.push({ name: 'login' })
-}
+const auth = useAuthStore()
 </script>
 
 <template>
-  <div class="shell">
-    <header>
-      <RouterLink :to="{ name: 'campaigns' }" class="brand">mythosCircle</RouterLink>
-      <nav v-if="auth.isAuthenticated">
-        <span class="account">{{ auth.account?.email }}</span>
-        <RouterLink :to="{ name: 'forge-global' }" class="nav-link">Forge</RouterLink>
-        <button type="button" @click="logout">Log out</button>
-      </nav>
-    </header>
-    <main>
-      <!-- Keyed by fullPath: a param-only change (world/A -> world/B)
-           remounts the view instead of reusing a stale instance. -->
-      <RouterView :key="route.fullPath" />
-    </main>
-  </div>
+  <!-- Stage-1 shell (§7): sidebar workspace around the existing routes. -->
+  <AppShell v-if="auth.isAuthenticated">
+    <!-- Keyed by fullPath: a param-only change remounts the view. -->
+    <RouterView :key="route.fullPath" />
+  </AppShell>
+  <RouterView v-else :key="route.fullPath" />
 </template>
 
 <style>
-:root {
-  color-scheme: dark;
-}
-body {
-  margin: 0;
-  font-family: system-ui, sans-serif;
-  background: #14161a;
-  color: #e8e6e3;
-}
-.shell {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 1rem;
-}
-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1.5rem;
-}
-.brand {
-  font-weight: 700;
-  color: inherit;
-  text-decoration: none;
-}
-nav {
-  display: flex;
-  gap: 1rem;
-  align-items: center;
-}
-.nav-link {
-  color: inherit;
-  text-decoration: none;
-  opacity: 0.9;
-}
-.nav-link:hover {
-  text-decoration: underline;
-}
-button,
-input,
-textarea {
-  font: inherit;
-}
-.card {
-  background: #1d2026;
-  border: 1px solid #2c3038;
-  border-radius: 8px;
-  padding: 1rem;
-  margin-bottom: 1rem;
-}
-.error {
-  color: #ff7b72;
-}
-.muted {
-  color: #9aa0a6;
-}
-.cta {
-  white-space: nowrap;
-  padding: 0.5rem 0.75rem;
-  border-radius: 6px;
-  background: #2f6feb;
-  color: #fff;
-  text-decoration: none;
-}
-.cta.secondary {
-  background: transparent;
-  border: 1px solid #2c3038;
-  color: #9aa0a6;
-}
-.mono {
-  font-family: ui-monospace, monospace;
-  font-size: 0.85rem;
-}
-.small {
-  font-size: 0.85rem;
-}
-.back {
+.mc-btn {
   display: inline-block;
-  margin-top: 0.5rem;
-  color: #2f6feb;
+  white-space: nowrap;
+  padding: 0.55rem 0.9rem;
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-interactive);
+  color: #151619;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.mc-btn:hover {
+  filter: brightness(1.08);
+}
+.mc-btn-secondary {
+  background: transparent;
+  border-color: var(--mc-border);
+  color: var(--mc-text-secondary);
+  font-weight: 500;
+}
+.mc-btn-secondary:hover {
+  color: var(--mc-text-primary);
+}
+.mc-input,
+.mc-textarea {
+  width: 100%;
+  background: var(--mc-input);
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-sm);
+  color: var(--mc-text-primary);
+  padding: 0.6rem 0.75rem;
+}
+.mc-link {
+  color: var(--mc-interactive);
   text-decoration: none;
 }
-.lore {
-  border-left: 3px solid #2c3038;
-  padding-left: 0.75rem;
-  white-space: pre-wrap;
+.mc-muted {
+  color: var(--mc-text-muted);
 }
 </style>
