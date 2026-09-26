@@ -187,3 +187,8 @@ that re-derives undo-vs-edit would duplicate AD-27's rule and drift.
   pass — see handover-2026-09-27 §2.
   Dev-sandbox residue: campaign "V3 Dogfood Vale" + the v3dogfood
   account remain in data/mythos.db — deletable by the owner.
+- 2026-09-27 (consolidation): owner picked 'consolidate the rebuild'.
+  c551ef2: EntityEditor (in-place AR24 editor + dial + stat block) on the
+  detail; World-section relation counter edit/delete; palette pass.
+  En-route bug fixed: buildPatch emitted the text REF object instead of
+  its string (every save failed); pinned in EntityEditor.test.ts.
