@@ -1,7 +1,7 @@
 ---
 title: 'v3 frontend phase — registry pickers, Tonight feed, Tier-2 chips, reason picker, dial input'
 type: 'feature'
-status: 'ready-for-dev'
+status: 'done'
 baseline_commit: 'bd3cde8'
 review_loop_iteration: 0
 context:
@@ -108,21 +108,21 @@ refetch pattern (the world-store precedent).
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] Regen `schema.ts` from the live :8000 OpenAPI; v3 paths present; `npm run typecheck` still green (or fix only regen fallout).
-- [ ] Kinds picker: per-mount fetch + token tracking + registry-driven availability on walk/entity create.
-- [ ] Tonight feed: revisions panel rendering `{action, target_names, kind}` lines verbatim; take-back lines listed; refresh wiring.
-- [ ] Tier-2 detail: verb row + knowledge chips + run-state join; double-fire safe; edit+flip bundles one PATCH.
-- [ ] Reason picker on the edge surface (host per Ask First); blank blocks submit.
-- [ ] Dial input on the enrich/regenerate gesture + absent-dial rendering.
-- [ ] Frontend tests for the new store + chip/verb/picker interactions (existing test conventions: `*.test.ts` beside components, vue-tsc + eslint/prettier clean).
+- [x] Regen `schema.ts` from the live :8000 OpenAPI; v3 paths present; `npm run typecheck` still green (or fix only regen fallout).
+- [x] Kinds picker: per-mount fetch + token tracking + registry-driven availability on walk/entity create.
+- [x] Tonight feed: revisions panel rendering `{action, target_names, kind}` lines verbatim; take-back lines listed; refresh wiring.
+- [x] Tier-2 detail: verb row + knowledge chips + run-state join; double-fire safe; edit+flip bundles one PATCH.
+- [x] Reason picker on the edge surface (host per Ask First); blank blocks submit.
+- [x] Dial input on the enrich/regenerate gesture + absent-dial rendering.
+- [x] Frontend tests for the new store + chip/verb/picker interactions (existing test conventions: `*.test.ts` beside components, vue-tsc + eslint/prettier clean).
 
 **Acceptance Criteria:**
-- Given a walk mount, when the overview opens, then a fresh kinds payload is fetched and the pickers reflect the current matrix — a stale token never serves a previous walk.
-- Given a verb commit and its take-back, when the feed renders, then both lines read `edited` with the same verbatim shape the API sent.
-- Given a knowledge flip on a record with a secret, when the chip is clicked, then the record export keeps the secret and only the marker moves.
-- Given an edge form with an empty reason, when the DM submits, then the submit is blocked client-side and the backend 422 never fires (the backstop stays armed).
-- Given a pre-dial record, when the detail view renders, then no error surfaces and the dial control reads as unspecified.
-- Given a double-clicked verb, when both clicks resolve, then exactly one revision exists (UI-safe by backend no-op; the UI never assumes it created two).
+- [x] Given a walk mount, when the overview opens, then a fresh kinds payload is fetched and the pickers reflect the current matrix — a stale token never serves a previous walk.
+- [x] Given a verb commit and its take-back, when the feed renders, then both lines read `edited` with the same verbatim shape the API sent.
+- [x] Given a knowledge flip on a record with a secret, when the chip is clicked, then the record export keeps the secret and only the marker moves.
+- [x] Given an edge form with an empty reason, when the DM submits, then the submit is blocked client-side and the backend 422 never fires (the backstop stays armed).
+- [x] Given a pre-dial record, when the detail view renders, then no error surfaces and the dial control reads as unspecified.
+- [x] Given a double-clicked verb, when both clicks resolve, then exactly one revision exists (UI-safe by backend no-op; the UI never assumes it created two).
 
 ## Design Notes
 
@@ -145,3 +145,27 @@ that re-derives undo-vs-edit would duplicate AD-27's rule and drift.
 - 2026-09-27: Drafted against the owner's staged frontend Rebuild base.
   Base decision + edge-surface host are the two open Ask-First items; no
   `frontend/src/*` work starts until the owner releases the rebuild.
+- 2026-09-27: Owner approved base option 1 (snapshot the rebuild, then
+  build on it) — rebuild committed as d0e94a6, phase executed on top.
+  Commits: e9ce7e3 (phase) + caf4170 (composer fix). Schema regenerated
+  from the live :8000 OpenAPI; new `tonight` store (run-state + feed,
+  coalesced world-store pattern; kinds refetched per walk mount under
+  AD-34); Tonight feed panel on the overview rendering event lines
+  verbatim (AD-27 take-backs read `edited`, never re-derived); entity
+  detail gains knowledge chips (AD-29, record untouched — pinned by an
+  export check), verb row over the open session image with take-back via
+  the verb's own revision (AD-27), dial picker (AD-36 record key,
+  absent-dial renders `unspecified`), and the EdgeComposer (matrix
+  picker + required reason, AD-31/32; blank blocked client-side). The
+  legacy WorldView relation editor now sends the AD-32 reason (it was
+  about to 422 every authored edge) — tests updated. 321 frontend tests
+  green; typecheck + eslint clean; phase files prettier-clean (rest of
+  the tree carries a pre-existing prettier-3.9.6 debt — the owner's
+  rebuild and legacy views alike; left untouched, owner's format pass).
+  LIVE dogfood on the dev stack (browser): chip flip + run-state join,
+  verb fire + take-back (feed shows `edited/session` for each), edge
+  creation with reason, dial record set — all verified against the API
+  truth; caught and fixed the null-src catch-all filter bug (null
+  src/dst cells mean ANY kind — they were hidden from every picker).
+  Dev-sandbox residue: campaign "V3 Dogfood Vale" + the v3dogfood
+  account remain in data/mythos.db — deletable by the owner.
