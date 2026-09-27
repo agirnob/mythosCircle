@@ -150,7 +150,8 @@ def test_chat_completion_empty_content_rejected() -> None:
 
     with pytest.raises(ProviderError) as excinfo:
         chat_completion("hi", settings=DEFAULT, transport=httpx.MockTransport(handler))
-    assert excinfo.value.kind == "http"
+    assert excinfo.value.kind == "empty"
+    assert "no content" in str(excinfo.value)
 
 
 def test_chat_completion_malformed_payload_raises_provider_error() -> None:

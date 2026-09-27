@@ -42,9 +42,11 @@ class ProviderError(Exception):
 
     ``kind`` is ``"connection"`` (unreachable/timeout), ``"http"``
     (non-2xx response), ``"timeout"`` (poll exhaustion — the
-    ComfyUI provider's only caller, spec-4.4), or ``"truncated"`` (the
-    model hit the generation ceiling mid-answer, 2026-09-10); ``status_code``
-    is set for http errors so the error message can surface the server's
+    ComfyUI provider's only caller, spec-4.4), ``"truncated"`` (the
+    model hit the generation ceiling mid-answer, 2026-09-10), or
+    ``"empty"`` (a healthy 200 whose assistant content is blank — the
+    reasoning channel consumed the whole budget); ``status_code`` is set
+    for http errors so the error message can surface the server's
     status.
     """
 
@@ -57,6 +59,11 @@ class ProviderError(Exception):
             message = "provider timed out waiting for generation"
         elif kind == "truncated":
             message = "provider stopped at the max_tokens ceiling (output is incomplete)"
+        elif kind == "empty":
+            message = (
+                "model returned no content — the reasoning channel may have "
+                "consumed the whole completion budget"
+            )
         else:
             message = "provider connection error"
         super().__init__(message)
@@ -173,7 +180,10 @@ def _complete(
             usage,
         )
     if not isinstance(content, str) or not content.strip():
-        return _CallOutcome(None, finish_reason, "http", response.status_code, usage)
+        # A healthy 200 with blank content — a reasoning model that
+        # burned its whole budget in thinking and never answered. Its
+        # own error kind, never a misleading HTTP/connection label.
+        return _CallOutcome(None, finish_reason, "empty", response.status_code, usage)
     return _CallOutcome(content, finish_reason, None, None, usage)
 
 

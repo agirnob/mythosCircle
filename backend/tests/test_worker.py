@@ -355,6 +355,34 @@ def test_run_connection_error_fails_job(world: str) -> None:
     assert "connection" in (job.error or "")
 
 
+def test_run_truncation_error_surfaces_its_own_message(world: str) -> None:
+    """Runner 2026-09-27: a reasoning-budget wall (finish_reason=length /
+    blank content) surfaced as 'provider connection error' because the
+    worker collapsed every ProviderError kind into the connection text.
+    Each kind's own message must reach the job error — truncation names
+    the ceiling, empty names the missing content, never a connection."""
+
+    def truncated(prompt: str, settings: LLMSettings) -> str:
+        raise ProviderError("truncated")
+
+    job_id = _enqueue_text(world)
+    run_next_job(provider=truncated, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "max_tokens" in (job.error or "")
+    assert "connection" not in (job.error or "")
+
+    def empty(prompt: str, settings: LLMSettings) -> str:
+        raise ProviderError("empty")
+
+    job_id = _enqueue_text(world)
+    run_next_job(provider=empty, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "no content" in (job.error or "")
+    assert "connection" not in (job.error or "")
+
+
 def test_run_image_job_runs_portrait_runner(
     world: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -349,11 +349,15 @@ def _text_prompt(payload: dict[str, Any]) -> str:
 
 
 def _error_message(exc: Exception) -> str:
-    """A stable, user-facing error string for ``fail_job``."""
-    if isinstance(exc, ProviderError) and exc.kind == "http":
-        return f"llm call failed: provider returned HTTP {exc.status_code}"
+    """A stable, user-facing error string for ``fail_job``.
+
+    ProviderError already carries the truthful per-kind text (HTTP
+    status, timeout, the truncation ceiling, blank content) — the old
+    catch-all collapsed every kind into "provider connection error,"
+    so a reasoning-budget wall or a 500 read as a network failure
+    (2026-09-27)."""
     if isinstance(exc, ProviderError):
-        return "llm call failed: provider connection error"
+        return f"llm call failed: {exc}"
     if isinstance(exc, (BudgetExceededError, JobPayloadError, ValueError)):
         return str(exc)
     return f"worker error: {exc.__class__.__name__}: {exc}"
