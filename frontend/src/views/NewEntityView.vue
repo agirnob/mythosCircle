@@ -30,7 +30,7 @@ import KnowledgeChip from '../components/ui/KnowledgeChip.vue'
 import SectionHeader from '../components/ui/SectionHeader.vue'
 import StatusBadge from '../components/ui/StatusBadge.vue'
 import VerbRow from '../components/ui/VerbRow.vue'
-import { asString, edgeLabel } from '../components/profile/profile'
+import { REGEN_SECTIONS, asString, edgeLabel } from '../components/profile/profile'
 import { useCampaignsStore } from '../stores/campaigns'
 import { useJobsStore } from '../stores/jobs'
 import { useTonightStore } from '../stores/tonight'
@@ -54,12 +54,33 @@ const regenDial = ref<string | null>(null)
 const regenBusy = ref(false)
 const regenError = ref<string | null>(null)
 const regenQueued = ref(false)
+/** Whole character (null sections) vs an explicit chip-selected set. */
+const regenWhole = ref(true)
+const regenSections = ref<Set<string>>(new Set())
+
+function selectWhole() {
+  regenWhole.value = true
+  regenSections.value = new Set()
+}
+
+function toggleRegenSection(section: string) {
+  regenWhole.value = false
+  const next = new Set(regenSections.value)
+  if (next.has(section)) {
+    next.delete(section)
+  } else {
+    next.add(section)
+  }
+  regenSections.value = next
+}
 
 async function queueRegenerate() {
   regenError.value = null
   regenBusy.value = true
+  const sections =
+    regenWhole.value || regenSections.value.size === 0 ? null : [...regenSections.value].sort()
   try {
-    await jobs.submitRegenerate(campaignId, { kind: 'entity', id: entityId }, null, {
+    await jobs.submitRegenerate(campaignId, { kind: 'entity', id: entityId }, sections, {
       dial: regenDial.value,
       guide: regenGuide.value,
     })
@@ -384,6 +405,26 @@ async function createEdge(edge: {
               Stages a re-roll proposal — nothing overwrites until you accept it. The dial levels
               the shaped request (AD-38); the guide steers it.
             </p>
+            <div class="mc-regen-scope" role="group" aria-label="Re-roll scope">
+              <button
+                type="button"
+                class="mc-regen-chip"
+                :class="{ 'mc-regen-chip-active': regenWhole }"
+                @click="selectWhole"
+              >
+                Whole character
+              </button>
+              <button
+                v-for="section in REGEN_SECTIONS"
+                :key="section"
+                type="button"
+                class="mc-regen-chip"
+                :class="{ 'mc-regen-chip-active': !regenWhole && regenSections.has(section) }"
+                @click="toggleRegenSection(section)"
+              >
+                {{ section.replaceAll('_', ' ') }}
+              </button>
+            </div>
             <p v-if="regenQueued" class="mc-regen-queued">
               Queued — watch the feed for the proposal.
             </p>
@@ -602,7 +643,9 @@ async function createEdge(edge: {
             <span v-else>
               ← {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.src) }}
             </span>
-            <span v-if="edge.reason" class="mc-rel-reason">{{ edge.reason }}</span>
+            <span v-if="edge.reason" class="mc-rel-reason" :title="edge.reason" tabindex="0">
+              ⓘ
+            </span>
             <template v-if="relationCounterEdge === edge.id">
               <input
                 v-model.number="relationCounterInput"
@@ -834,6 +877,25 @@ async function createEdge(edge: {
   color: var(--mc-canonical);
   margin: 0;
 }
+.mc-regen-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mc-gap-sm);
+}
+.mc-regen-chip {
+  padding: 0.3rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--mc-border);
+  background: var(--mc-surface);
+  color: var(--mc-text-secondary);
+  font-size: var(--mc-meta-size);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.mc-regen-chip-active {
+  border-color: var(--mc-interactive);
+  color: var(--mc-text-primary);
+}
 .mc-regen-field {
   display: flex;
   flex-direction: column;
@@ -846,7 +908,10 @@ async function createEdge(edge: {
 .mc-rel-reason {
   color: var(--mc-text-muted);
   font-size: 0.8rem;
-  font-style: italic;
+  cursor: help;
+  border: 1px solid var(--mc-border);
+  border-radius: 999px;
+  padding: 0 0.35rem;
 }
 .mc-rel-counter-input {
   background: var(--mc-input);

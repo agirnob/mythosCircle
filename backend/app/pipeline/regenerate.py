@@ -267,7 +267,9 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
         # and ``entity_base_data`` refreshes to the SAME record the payload
         # was spliced from — the row is accept-able after a hand edit,
         # never stranded (the staging window closes by construction).
-        row = _roll_candidate_payload(job.campaign_id, target_id, raw, requested)
+        row = _roll_candidate_payload(
+            job.campaign_id, target_id, raw, requested, dial=dial
+        )
         rows = [row]
     else:
         # Spec-3.6 MID_CALL_EDIT: the splice source moves to staging time
@@ -280,7 +282,9 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
         # the payload — the exact AR4/NFR2 failure this story exists to
         # prevent). Prompt/retrieval keep reading the run-start record
         # (AR6 determinism untouched); only the splice source moves.
-        rows = _stage_entity_payload(job.campaign_id, job.id, target_id, raw, requested)
+        rows = _stage_entity_payload(
+            job.campaign_id, job.id, target_id, raw, requested, dial=dial
+        )
     try:
         report_progress(job.id, 1.0)
         complete_job(
@@ -337,6 +341,8 @@ def _stage_entity_payload(
     target_id: str,
     raw: dict[str, Any],
     requested: Sequence[str],
+    *,
+    dial: str | None = None,
 ) -> list[models.ProposedCandidate]:
     """The entity-target regenerated candidate, staged in ONE transaction
     (spec-3.6 MID_CALL_EDIT): the target record is read fresh, the
@@ -357,6 +363,12 @@ def _stage_entity_payload(
             )
         fresh_record = copy.deepcopy(entity.data)
         payload = _splice(fresh_record, raw, requested)
+        # AD-36: the dial is the DM's live setting from the shaped request
+        # — authoritative, applied AFTER the splice (the splice preserves
+        # the base's unknown keys, and the entity's stale dial would win
+        # otherwise; 2026-09-27: a draft re-roll inherited pillar).
+        if dial is not None:
+            payload["dial"] = dial
         payload["edges"] = []
         return _stage_candidates(
             session,
@@ -369,7 +381,12 @@ def _stage_entity_payload(
 
 
 def _roll_candidate_payload(
-    campaign_id: str, target_id: str, raw: dict[str, Any], requested: Sequence[str]
+    campaign_id: str,
+    target_id: str,
+    raw: dict[str, Any],
+    requested: Sequence[str],
+    *,
+    dial: str | None = None,
 ) -> models.ProposedCandidate:
     """A candidate-target re-roll, spliced and replaced in ONE transaction
     (spec-3.6 RE_ROLL_AFTER_EDIT): the row is re-resolved fresh; for a
@@ -409,6 +426,8 @@ def _roll_candidate_payload(
         else:
             base_record = copy.deepcopy(staged_payload)
         payload = _splice(base_record, raw, requested)
+        if dial is not None:
+            payload["dial"] = dial
         return _replace_candidate_payload(session, campaign_id, target_id, payload)
 
 
@@ -505,10 +524,23 @@ def _validate_output(raw: dict[str, Any], record: dict[str, Any], requested: Seq
     the job (MODEL_SHAPE_VIOLATION, zero rows); the assembly would ignore
     such edits anyway, but failing keeps the contract honest (the DM
     asked for exactly one section, not a silent rewrite).
+
+    The AR24-shape demand binds ONLY a target that already satisfies it
+    (AD-37 + owner verdict 2026-09-27): a FLAT target — bare build-in
+    character, place/faction by design — has no sections to preserve and
+    regeneration IS the enrich that grows it; its output shape is the
+    model's to write (the whole record is the change set), and only the
+    byte-identical preservation rule below still applies.
     """
-    violations = payload_section_violations(raw)
+    is_flat = payload_section_violations(record) != []
+    violations: list[str] = [] if is_flat else payload_section_violations(raw)
     for key, value in record.items():
         if key in requested:
+            continue
+        if key == "dial":
+            # AD-36: the dial is the shaped request's own field — the
+            # re-rolled record legitimately carries the DM's chosen level,
+            # never a byte-identical requirement.
             continue
         if raw.get(key) != value:
             violations.append(
@@ -531,6 +563,21 @@ def _trim_section(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: (v.strip() if isinstance(v, str) else v) for k, v in value.items()}
     return value
+
+
+#: Per-level elaboration floor (AD-38 teeth): the dial is only prose in
+#: the prompt, so it must be CONCRETE — a draft and a pillar re-roll get
+#: measurably different instructions, not the same sentence with a label.
+_DIAL_GUIDANCE: dict[str, str] = {
+    "nothing": "minimal — terse essentials only, one line per section",
+    "draft": "compact — one short paragraph per section, the least a playable sheet needs",
+    "simple": "solid — one grounded paragraph per section, no padding",
+    "important": "deep — two paragraphs per section with concrete names and details",
+    "pillar": (
+        "maximum — two to three dense paragraphs per section: named"
+        " characters, places, textures, hooks"
+    ),
+}
 
 
 def build_regenerate_prompt(
@@ -559,10 +606,33 @@ def build_regenerate_prompt(
     # of the set, so its bytes are deterministic for the same set (AR6/AD-16).
     requested = [section for section in SECTION_ORDER if section in set(requested)]
     requested_label = ", ".join(requested) or "(none)"
+    # A whole re-roll (every section requested) may NOT show the target's
+    # section contents: embedding them invites the copy-echo class the
+    # 2026-09-27 dogfood caught (draft and pillar re-rolls of Serra both
+    # returned the identical 43-char text — the model echoed the target).
+    # Only the identity anchor + edges + unknown keys stay visible; every
+    # section is written FRESH. Partial re-rolls keep the full target
+    # (the preserved sections must echo byte-identical).
+    whole = len(requested) == len(SECTION_ORDER)
+    target_for_prompt = (
+        {key: value for key, value in record.items() if key not in REGEN_SECTIONS}
+        if whole
+        else record
+    )
     lines = [
-        "You are re-rolling part of an existing TTRPG world character:",
-        "regenerate exactly the requested sections of the TARGET RECORD below,",
-        "keeping every other section byte-for-byte identical to it.",
+        "You are re-rolling an existing TTRPG world character:",
+        (
+            "regenerate exactly the requested sections of the TARGET RECORD below,"
+            if not whole
+            else "re-roll EVERY section of the TARGET RECORD below,"
+        ),
+        (
+            "keeping every other section byte-for-byte identical to it."
+            if not whole
+            else "writing every section FRESH — the target's section contents are"
+            " deliberately NOT provided, so never echo; keep the facts consistent"
+            " with the COMMITTED WORLD CONTEXT."
+        ),
         "Respond with exactly one JSON object — nothing else.",
         "",
         "CAMPAIGN SEED",
@@ -571,15 +641,27 @@ def build_regenerate_prompt(
         f"theme: {campaign_seed.theme}",
         f"custom lore: {campaign_seed.custom_lore}",
         "",
-        "TARGET RECORD (the character's full committed sectioned profile)",
-        serialize_record(record),
+        (
+            "TARGET RECORD (the character's full committed sectioned profile)"
+            if not whole
+            else "TARGET RECORD (identity anchor + edges + unknown keys only — every"
+            " section is being re-rolled, so section contents are NOT shown)"
+        ),
+        serialize_record(target_for_prompt),
         "",
-        "REQUESTED SECTIONS (regenerate exactly these; do not touch any other)",
+        (
+            "REQUESTED SECTIONS (regenerate exactly these; do not touch any other)"
+            if not whole
+            else "REQUESTED SECTIONS (ALL — the whole record is re-rolled)"
+        ),
         requested_label,
         (
             "\nDIAL (elaboration weight for the re-rolled sections; the record's"
             "\nlive setting — inherit it, never invent one):\n"
             f"{dial or '(not set — elaborate to the record existing depth)'}"
+            + (
+                f"\nElaboration floor: {_DIAL_GUIDANCE[dial]}" if dial in _DIAL_GUIDANCE else ""
+            )
         ),
         *(
             [

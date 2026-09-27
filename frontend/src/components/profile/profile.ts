@@ -20,12 +20,7 @@
  */
 
 /** The AR24 identity-anchor fields (AR19 'name'/'role' stay separate). */
-export const IDENTITY_FIELDS = [
-  'level_cr',
-  'race_type',
-  'class_profession',
-  'alignment',
-] as const
+export const IDENTITY_FIELDS = ['level_cr', 'race_type', 'class_profession', 'alignment'] as const
 
 /** The AR19 core narrative fields the AR24 record carries at top level. */
 export const CORE_FIELDS = ['personality', 'secret', 'rumor', 'party_hook'] as const
@@ -90,6 +85,28 @@ export const EDGE_VOCAB: readonly string[] = [
 ]
 
 export const EDGE_DIRECTIONS = ['outbound', 'inbound'] as const
+
+/**
+ * The AR24 content sections a re-roll may target (mirror of
+ * backend store/candidates.py REGEN_SECTIONS) — the Regenerate panel's
+ * per-section chips. Ordered for display; 'boss' only applies to
+ * BBEG/Monster roles (the backend enforces).
+ */
+export const REGEN_SECTIONS = [
+  'personality',
+  'secret',
+  'rumor',
+  'party_hook',
+  'appearance',
+  'background',
+  'goals',
+  'relationships',
+  'voice_style',
+  'catchphrases',
+  'stat_block',
+  'world_integration',
+  'boss',
+] as const
 
 /**
  * Frontend mirror of 2.6's `_edge_label` (AD-23): neutral types render

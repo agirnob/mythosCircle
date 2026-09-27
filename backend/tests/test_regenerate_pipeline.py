@@ -46,7 +46,7 @@ from app.store import (
     update_entity,
 )
 from app.store.db import session_scope
-from app.store.read import latest_revision, revision_chain, world_state
+from app.store.read import campaign_seed, latest_revision, revision_chain, world_state
 
 SETTINGS = LLMSettings(endpoint="http://test/v1", model="test-model")
 
@@ -150,6 +150,74 @@ def _staged(campaign_id: str) -> list[models.ProposedCandidate]:
 def _revision_count(campaign_id: str) -> int:
     with session_scope() as session:
         return len(list(revision_chain(session, campaign_id)))
+
+
+def test_whole_reroll_prompt_redacts_section_contents(
+    world: tuple[str, str, str],
+) -> None:
+    """Whole-re-roll prompt (2026-09-27): the target's SECTION CONTENTS are
+    redacted so the model cannot copy-echo them — draft and pillar
+    re-rolls of the same character both returned the byte-identical
+    43-char text because the full target was embedded and echoed. The
+    identity anchor, edges, and unknown keys stay visible; a PARTIAL
+    re-roll keeps the full record (those sections must echo)."""
+    campaign_id, _mira_id, _guild_id = world
+    with session_scope() as session:
+        seed = campaign_seed(session, campaign_id)
+    record = _record()
+    prompt = build_regenerate_prompt(seed, record, SECTION_ORDER, ([], []))
+    assert "once ran with the Guild" not in prompt  # secret content redacted
+    assert "kind eyes, silver-streaked hair" not in prompt  # appearance redacted
+    assert '"identity": {' not in prompt.replace(" ", "") or "stat_block" not in prompt
+    # identity anchor + unknown keys stay:
+    assert '"name": "Mira Vane"' in prompt
+    assert '"level_cr": "level 5"' in prompt
+    assert '"ambient_theme"' in prompt
+    # The dial guidance has per-level teeth for a set dial:
+    with session_scope() as session:
+        seed = campaign_seed(session, campaign_id)
+    deep = build_regenerate_prompt(seed, record, SECTION_ORDER, ([], []), dial="pillar")
+    assert "two to three dense paragraphs" in deep
+    # A PARTIAL re-roll embeds the full record (preserved sections echo):
+    partial = build_regenerate_prompt(seed, record, ["secret"], ([], []))
+    assert "once ran with the Guild" in partial
+
+
+def test_dial_stamped_from_request_not_model_echo(
+    world: tuple[str, str, str],
+) -> None:
+    """AD-36: the re-rolled record carries the REQUEST's dial — the DM's
+    live setting, authoritative — never the model's echo of the target
+    (2026-09-27: a draft re-roll inherited the record's pillar verbatim)
+    and never a byte-identical violation (the dial is the shaped
+    request's own field)."""
+    campaign_id, mira_id, _guild_id = world
+    with session_scope() as session:
+        entity = session.get(models.Entity, mira_id)
+        assert entity is not None and isinstance(entity.data, dict)
+        entity.data = {**entity.data, "dial": "important"}
+        session.commit()
+
+    job_id = enqueue_job(
+        campaign_id,
+        "regenerate",
+        {"target": {"kind": "entity", "id": mira_id}, "dial": "draft"},
+        max_llm_calls=4,
+    ).id
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        # The model ECHOES the target's dial (important) instead of the
+        # request's (draft) — the pipeline must override it.
+        return _regen_output(_record(), dial="important")
+
+    run_next_job(provider=provider, settings=SETTINGS)
+    _job, _position = job_status(job_id)
+    staged = _staged(campaign_id)
+    assert len(staged) == 1
+    payload = staged[0].payload
+    data = payload.get("data", payload) if isinstance(payload, dict) else {}
+    assert data.get("dial") == "draft"
+    assert _job.state == "succeeded"
 
 
 def test_bare_record_accepted_and_one_bounded_retry(
