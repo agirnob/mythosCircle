@@ -58,3 +58,51 @@ describe('EntityEditor', () => {
     expect(wrapper.emitted('save')).toBeUndefined()
   })
 })
+
+describe('EntityEditor — flat kinds (place/faction)', () => {
+  const keep = {
+    id: 'P1',
+    name: 'Rustwater Keep',
+    kind: 'place',
+    text: 'A garrison keep on the old ford.',
+    media: [],
+    data: { archetype: 'Fortress', dial: 'simple' },
+  }
+
+  it('renders the flat kind editor — no identity/stat block — with the archetype picker', () => {
+    const wrapper = mount(EntityEditor, {
+      props: {
+        entity: keep,
+        dialLevels: ['draft', 'simple'],
+        archetypes: [
+          { kind: 'place', name: 'Fortress', default_dial: 'draft' },
+          { kind: 'place', name: 'Ruined site', default_dial: 'simple' },
+        ],
+        busy: false,
+      },
+    })
+    const text = wrapper.text()
+    expect(text).toContain('Description')
+    expect(wrapper.find('input[aria-label="Archetype"]')).toBeTruthy()
+    // The character-only machinery never renders for a place.
+    expect(text).not.toContain('Stat block')
+    expect(text).not.toContain('World integration')
+    expect(wrapper.find('select[aria-label="Role"]').exists()).toBe(false)
+  })
+
+  it('saves archetype + dial on the place record, never a stat block', async () => {
+    const wrapper = mount(EntityEditor, {
+      props: {
+        entity: keep,
+        dialLevels: ['draft', 'simple'],
+        archetypes: [{ kind: 'place', name: 'Fortress', default_dial: 'draft' }],
+        busy: false,
+      },
+    })
+    await wrapper.find('form').trigger('submit')
+    const patch = wrapper.emitted('save')![0]![0] as Record<string, unknown>
+    expect(patch['archetype']).toBe('Fortress')
+    expect(patch['dial']).toBe('simple')
+    expect('stat_block' in patch).toBe(true) // emitted; the parent/store treats null as delete-noop for flat kinds
+  })
+})

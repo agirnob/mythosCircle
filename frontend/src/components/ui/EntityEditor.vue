@@ -25,6 +25,8 @@ type EntityExport = components['schemas']['EntityExport']
 const props = defineProps<{
   entity: EntityExport
   dialLevels: string[]
+  /** Registry archetypes ({kind, name, default_dial}) — place/faction only. */
+  archetypes?: { kind: string; name: string; default_dial: string }[]
   busy?: boolean
 }>()
 
@@ -43,6 +45,7 @@ const identity = ref<Record<string, string>>({})
 const worldInt = ref<Record<string, string>>({})
 const statBlock = ref<Record<string, unknown> | null>(null)
 const dial = ref<string | null>(null)
+const archetype = ref<string>('')
 
 /** String values for a key set — blanks read as empty, absent as blank. */
 function picks(data: Record<string, unknown>, keys: readonly string[]): Record<string, string> {
@@ -75,6 +78,8 @@ function initialize() {
       : null
   const level = data['dial']
   dial.value = typeof level === 'string' ? level : null
+  const arch = data['archetype']
+  archetype.value = typeof arch === 'string' ? arch : ''
 }
 
 watch(() => props.entity, initialize, { immediate: true })
@@ -92,7 +97,24 @@ function buildPatch(): Record<string, unknown> {
   patch['world_integration'] = integration
   patch['stat_block'] = statBlock.value
   if (dial.value !== null) patch['dial'] = dial.value
+  if (archetype.value !== '' && !isCharacter()) patch['archetype'] = archetype.value
   return patch
+}
+
+function isCharacter(): boolean {
+  return props.entity.kind === 'character'
+}
+
+/** The archetypes registry offers for this kind (AD-34 payload). */
+function archetypesForKind(): string[] {
+  return (props.archetypes ?? [])
+    .filter((entry) => entry.kind === props.entity.kind)
+    .map((entry) => entry.name)
+}
+
+/** The flat-kind display label (place/faction). */
+function genericLabel(): string {
+  return props.entity.kind === 'place' ? 'Places' : 'Factions'
 }
 
 function save() {
@@ -108,65 +130,93 @@ function save() {
       <input v-model="name" class="mc-edit-input" aria-label="Name" />
     </label>
     <label class="mc-edit-field">
-      <span class="mc-edit-label">Text</span>
-      <textarea v-model="text" class="mc-edit-textarea" rows="3" aria-label="Text"></textarea>
+      <span class="mc-edit-label">{{ isCharacter() ? 'Text' : 'Description' }}</span>
+      <textarea
+        v-model="text"
+        class="mc-edit-textarea"
+        rows="4"
+        :aria-label="isCharacter() ? 'Text' : 'Description'"
+      ></textarea>
     </label>
 
-    <div class="mc-edit-grid">
-      <label v-for="key in ['role', ...IDENTITY_FIELDS]" :key="key" class="mc-edit-field">
-        <span class="mc-edit-label">{{ FIELD_LABELS[key] ?? key }}</span>
-        <select
-          v-if="key === 'role'"
-          v-model="identity.role"
-          class="mc-edit-input"
-          :aria-label="FIELD_LABELS['role']"
-        >
+    <template v-if="isCharacter()">
+      <div class="mc-edit-grid">
+        <label v-for="key in ['role', ...IDENTITY_FIELDS]" :key="key" class="mc-edit-field">
+          <span class="mc-edit-label">{{ FIELD_LABELS[key] ?? key }}</span>
+          <select
+            v-if="key === 'role'"
+            v-model="identity.role"
+            class="mc-edit-input"
+            :aria-label="FIELD_LABELS['role']"
+          >
+            <option value="">—</option>
+            <option v-for="role in ROLES" :key="role" :value="role">{{ role }}</option>
+          </select>
+          <input
+            v-else
+            v-model="identity[key]"
+            class="mc-edit-input"
+            :aria-label="FIELD_LABELS[key] ?? key"
+          />
+        </label>
+
+        <label v-for="key in CORE_FIELDS" :key="key" class="mc-edit-field">
+          <span class="mc-edit-label">{{ FIELD_LABELS[key] ?? key }}</span>
+          <textarea
+            v-model="story[key]"
+            rows="2"
+            class="mc-edit-textarea"
+            :aria-label="FIELD_LABELS[key] ?? key"
+          ></textarea>
+        </label>
+
+        <label v-for="key in LORE_FIELDS" :key="key" class="mc-edit-field">
+          <span class="mc-edit-label">{{ FIELD_LABELS[key] ?? key }}</span>
+          <textarea
+            v-model="lore[key]"
+            rows="2"
+            class="mc-edit-textarea"
+            :aria-label="FIELD_LABELS[key] ?? key"
+          ></textarea>
+        </label>
+      </div>
+
+      <div class="mc-edit-field">
+        <span class="mc-edit-label">World integration</span>
+        <div class="mc-edit-grid">
+          <label v-for="key in WORLD_INTEGRATION_FIELDS" :key="key" class="mc-edit-field">
+            <span class="mc-edit-label">{{ FIELD_LABELS[key] ?? key }}</span>
+            <textarea
+              v-model="worldInt[key]"
+              rows="2"
+              class="mc-edit-textarea"
+              :aria-label="FIELD_LABELS[key] ?? key"
+            ></textarea>
+          </label>
+        </div>
+      </div>
+
+      <div class="mc-edit-field">
+        <span class="mc-edit-label">Stat block</span>
+        <StatBlockEditor v-model="statBlock" />
+      </div>
+    </template>
+
+    <template v-else>
+      <div v-if="archetypesForKind().length > 0" class="mc-edit-field">
+        <span class="mc-edit-label">Archetype</span>
+        <select v-model="archetype" class="mc-edit-input" aria-label="Archetype">
           <option value="">—</option>
-          <option v-for="role in ROLES" :key="role" :value="role">{{ role }}</option>
+          <option v-for="archName in archetypesForKind()" :key="archName" :value="archName">
+            {{ archName }}
+          </option>
         </select>
-        <input
-          v-else
-          v-model="identity[key]"
-          class="mc-edit-input"
-          :aria-label="FIELD_LABELS[key] ?? key"
-        />
-      </label>
-
-      <label v-for="key in CORE_FIELDS" :key="key" class="mc-edit-field">
-        <span class="mc-edit-label">{{ FIELD_LABELS[key] ?? key }}</span>
-        <textarea
-          v-model="story[key]"
-          rows="2"
-          class="mc-edit-textarea"
-          :aria-label="FIELD_LABELS[key] ?? key"
-        ></textarea>
-      </label>
-
-      <label v-for="key in LORE_FIELDS" :key="key" class="mc-edit-field">
-        <span class="mc-edit-label">{{ FIELD_LABELS[key] ?? key }}</span>
-        <textarea
-          v-model="lore[key]"
-          rows="2"
-          class="mc-edit-textarea"
-          :aria-label="FIELD_LABELS[key] ?? key"
-        ></textarea>
-      </label>
-
-      <label v-for="key in WORLD_INTEGRATION_FIELDS" :key="key" class="mc-edit-field">
-        <span class="mc-edit-label">{{ FIELD_LABELS[key] ?? key }}</span>
-        <textarea
-          v-model="worldInt[key]"
-          rows="2"
-          class="mc-edit-textarea"
-          :aria-label="FIELD_LABELS[key] ?? key"
-        ></textarea>
-      </label>
-    </div>
-
-    <div class="mc-edit-field">
-      <span class="mc-edit-label">Stat block</span>
-      <StatBlockEditor v-model="statBlock" />
-    </div>
+      </div>
+      <p class="mc-muted mc-edit-note">
+        {{ genericLabel() }} carry their truth in the description; the dial sets the elaboration
+        depth for enrich/regenerate (AD-36).
+      </p>
+    </template>
 
     <p v-if="dialLevels.length > 0" class="mc-edit-dial">
       <DialPicker :levels="dialLevels" :current="dial" @change="(level) => (dial = level)" />
@@ -193,7 +243,7 @@ function save() {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  max-width: 640px;
+  max-width: 860px;
 }
 .mc-edit-field {
   display: flex;
@@ -223,6 +273,10 @@ function save() {
   display: flex;
   align-items: center;
   gap: var(--mc-gap-sm);
+}
+.mc-edit-note {
+  font-size: 0.85rem;
+  margin: 0 0 0.5rem;
 }
 .mc-edit-actions {
   display: flex;

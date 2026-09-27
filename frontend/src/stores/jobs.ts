@@ -201,15 +201,20 @@ export const useJobsStore = defineStore('jobs', {
      * (whole-character re-roll, staging a NEW proposal) or the proposed
      * candidate (whole or per-section re-roll, replacing its own row).
      * `sections` null = whole character; a non-empty list = exactly
-     * those AR24 content sections.
+     * those AR24 content sections. v3 (AD-33/36/38): `dial` and `guide`
+     * ride the envelope — the enqueue re-validates both, and the dial
+     * levels the shaped regenerate request.
      */
     async submitRegenerate(
       campaignId: string,
       target: { kind: 'entity' | 'candidate'; id: string },
       sections: string[] | null,
+      options?: { dial?: string | null; guide?: string | null },
     ) {
       const payload: Record<string, unknown> = { target }
       if (sections !== null) payload['sections'] = sections
+      if (options?.dial) payload['dial'] = options.dial
+      if (options?.guide && options.guide.trim() !== '') payload['guide'] = options.guide.trim()
       const job = await apiFetch<Job>('/api/jobs', {
         method: 'POST',
         body: JSON.stringify({

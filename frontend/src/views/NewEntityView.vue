@@ -32,6 +32,7 @@ import StatusBadge from '../components/ui/StatusBadge.vue'
 import VerbRow from '../components/ui/VerbRow.vue'
 import { asString, edgeLabel } from '../components/profile/profile'
 import { useCampaignsStore } from '../stores/campaigns'
+import { useJobsStore } from '../stores/jobs'
 import { useTonightStore } from '../stores/tonight'
 import { useWorldStore } from '../stores/world'
 
@@ -44,6 +45,31 @@ const entityId = route.params.entityId as string
 const world = useWorldStore()
 const campaigns = useCampaignsStore()
 const tonight = useTonightStore()
+const jobs = useJobsStore()
+
+/** Regenerate panel (AD-38): dial + guide ride the shaped request. */
+const regenOpen = ref(false)
+const regenGuide = ref('')
+const regenDial = ref<string | null>(null)
+const regenBusy = ref(false)
+const regenError = ref<string | null>(null)
+const regenQueued = ref(false)
+
+async function queueRegenerate() {
+  regenError.value = null
+  regenBusy.value = true
+  try {
+    await jobs.submitRegenerate(campaignId, { kind: 'entity', id: entityId }, null, {
+      dial: regenDial.value,
+      guide: regenGuide.value,
+    })
+    regenQueued.value = true
+  } catch (err) {
+    regenError.value = err instanceof ApiError ? err.message : 'Could not queue the regeneration.'
+  } finally {
+    regenBusy.value = false
+  }
+}
 const router = useRouter()
 
 /**
@@ -343,13 +369,60 @@ async function createEdge(edge: {
           <p v-if="worldBlock.location" class="mc-muted">{{ worldBlock.location }}</p>
           <p class="mc-entity-hero-actions">
             <button v-if="!editMode" type="button" class="mc-btn" @click="startEdit">Edit</button>
-            <RouterLink
-              :to="{ name: 'forge', params: { id: campaignId } }"
+            <button
+              v-if="!regenOpen"
+              type="button"
               class="mc-btn mc-btn-secondary"
+              @click="regenOpen = true"
             >
               Regenerate
-            </RouterLink>
+            </button>
           </p>
+          <div v-if="regenOpen" class="mc-regen-panel">
+            <p class="mc-regen-title">Regenerate {{ entity.name }}</p>
+            <p class="mc-muted">
+              Stages a re-roll proposal — nothing overwrites until you accept it. The dial levels
+              the shaped request (AD-38); the guide steers it.
+            </p>
+            <p v-if="regenQueued" class="mc-regen-queued">
+              Queued — watch the feed for the proposal.
+            </p>
+            <p v-if="regenError" class="mc-action-error" role="alert">{{ regenError }}</p>
+            <p v-if="dialLevels.length > 0" class="mc-dial-line">
+              <DialPicker
+                :levels="dialLevels"
+                :current="regenDial"
+                @change="(level) => (regenDial = level)"
+              />
+            </p>
+            <label class="mc-regen-field">
+              <span class="mc-edit-label">Guide (optional)</span>
+              <textarea
+                v-model="regenGuide"
+                rows="2"
+                class="mc-edit-textarea"
+                aria-label="Regeneration guide"
+              ></textarea>
+            </label>
+            <p class="mc-regen-actions">
+              <button
+                type="button"
+                class="mc-btn mc-btn-secondary"
+                :disabled="regenBusy"
+                @click="regenOpen = false"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                class="mc-btn"
+                :disabled="regenBusy || regenQueued"
+                @click="queueRegenerate"
+              >
+                {{ regenBusy ? 'Queueing…' : 'Queue regeneration' }}
+              </button>
+            </p>
+          </div>
         </div>
       </header>
 
@@ -359,6 +432,7 @@ async function createEdge(edge: {
         <EntityEditor
           :entity="entity"
           :dial-levels="dialLevels"
+          :archetypes="tonight.kindsFor(campaignId)?.archetypes ?? []"
           :busy="editBusy"
           @save="saveEdit"
           @cancel="cancelEdit"
@@ -438,95 +512,6 @@ async function createEdge(edge: {
           </p>
         </section>
 
-        <section
-          v-if="
-            worldBlock.reputation ||
-            worldBlock.factions ||
-            worldBlock.location ||
-            worldBlock.reaction ||
-            worldBlock.onDefeat ||
-            touching.length > 0
-          "
-        >
-          <SectionHeader title="World" />
-          <dl
-            v-if="worldBlock.reputation || worldBlock.factions || worldBlock.location"
-            class="mc-facts"
-          >
-            <div v-if="worldBlock.location">
-              <dt>Current location</dt>
-              <dd>{{ worldBlock.location }}</dd>
-            </div>
-            <div v-if="worldBlock.factions">
-              <dt>Factions</dt>
-              <dd>{{ worldBlock.factions }}</dd>
-            </div>
-            <div v-if="worldBlock.reputation">
-              <dt>Reputation</dt>
-              <dd>{{ worldBlock.reputation }}</dd>
-            </div>
-          </dl>
-          <p v-if="worldBlock.reaction" class="mc-body">Reactions — {{ worldBlock.reaction }}</p>
-          <p v-if="worldBlock.onDefeat" class="mc-body">On defeat — {{ worldBlock.onDefeat }}</p>
-          <ul v-if="touching.length > 0" class="mc-rel-list">
-            <li v-for="edge in touching" :key="edge.id" class="mc-rel-row">
-              <span v-if="edge.src === entityId">
-                → {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.dst) }}
-              </span>
-              <span v-else>
-                ← {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.src) }}
-              </span>
-              <template v-if="relationCounterEdge === edge.id">
-                <input
-                  v-model.number="relationCounterInput"
-                  type="number"
-                  class="mc-rel-counter-input"
-                  aria-label="Counter"
-                />
-                <button
-                  type="button"
-                  class="mc-link mc-muted"
-                  :disabled="edgeBusy"
-                  @click="saveRelationCounter(edge.id)"
-                >
-                  Save
-                </button>
-                <button type="button" class="mc-link mc-muted" @click="relationCounterEdge = null">
-                  Cancel
-                </button>
-              </template>
-              <button
-                v-else
-                type="button"
-                class="mc-link mc-muted"
-                :disabled="edgeBusy"
-                @click="startRelationCounter(edge)"
-              >
-                Edit counter
-              </button>
-              <button
-                type="button"
-                class="mc-link mc-muted"
-                :disabled="edgeBusy"
-                @click="deleteRelation(edge.id)"
-              >
-                Delete
-              </button>
-            </li>
-          </ul>
-          <div class="mc-edge-composer-block">
-            <h4 class="mc-edge-composer-title">Add relation</h4>
-            <p v-if="edgeError" class="mc-action-error" role="alert">{{ edgeError }}</p>
-            <EdgeComposer
-              :kinds="tonight.kindsFor(campaignId)"
-              :src-entity="{ id: entity.id, kind: entity.kind, name: entity.name }"
-              :candidates="edgeCandidates"
-              :busy="edgeBusy"
-              @create="createEdge"
-            />
-          </div>
-        </section>
-
         <section v-if="tonightEntry.runState || actionError">
           <SectionHeader title="Tonight" meta="session state" />
           <p v-if="actionError" class="mc-action-error" role="alert">{{ actionError }}</p>
@@ -571,7 +556,103 @@ async function createEdge(edge: {
           <SectionHeader title="Stat block" :meta="'5e'" />
           <EntityStatBlock :block="data['stat_block']" />
         </section>
+        <section v-else-if="entity.kind === 'character'">
+          <SectionHeader title="Stat block" :meta="'5e'" />
+          <p class="mc-muted">
+            No stat block yet — Edit to add one (it commits right into the record).
+          </p>
+        </section>
       </template>
+
+      <section
+        v-if="
+          worldBlock.reputation ||
+          worldBlock.factions ||
+          worldBlock.location ||
+          worldBlock.reaction ||
+          worldBlock.onDefeat ||
+          touching.length > 0
+        "
+      >
+        <SectionHeader title="World" />
+        <dl
+          v-if="worldBlock.reputation || worldBlock.factions || worldBlock.location"
+          class="mc-facts"
+        >
+          <div v-if="worldBlock.location">
+            <dt>Current location</dt>
+            <dd>{{ worldBlock.location }}</dd>
+          </div>
+          <div v-if="worldBlock.factions">
+            <dt>Factions</dt>
+            <dd>{{ worldBlock.factions }}</dd>
+          </div>
+          <div v-if="worldBlock.reputation">
+            <dt>Reputation</dt>
+            <dd>{{ worldBlock.reputation }}</dd>
+          </div>
+        </dl>
+        <p v-if="worldBlock.reaction" class="mc-body">Reactions — {{ worldBlock.reaction }}</p>
+        <p v-if="worldBlock.onDefeat" class="mc-body">On defeat — {{ worldBlock.onDefeat }}</p>
+        <ul v-if="touching.length > 0" class="mc-rel-list">
+          <li v-for="edge in touching" :key="edge.id" class="mc-rel-row">
+            <span v-if="edge.src === entityId">
+              → {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.dst) }}
+            </span>
+            <span v-else>
+              ← {{ edgeLabel(edge.type, edge.counter) }} · {{ nameOf(edge.src) }}
+            </span>
+            <span v-if="edge.reason" class="mc-rel-reason">{{ edge.reason }}</span>
+            <template v-if="relationCounterEdge === edge.id">
+              <input
+                v-model.number="relationCounterInput"
+                type="number"
+                class="mc-rel-counter-input"
+                aria-label="Counter"
+              />
+              <button
+                type="button"
+                class="mc-link mc-muted"
+                :disabled="edgeBusy"
+                @click="saveRelationCounter(edge.id)"
+              >
+                Save
+              </button>
+              <button type="button" class="mc-link mc-muted" @click="relationCounterEdge = null">
+                Cancel
+              </button>
+            </template>
+            <button
+              v-else
+              type="button"
+              class="mc-link mc-muted"
+              :disabled="edgeBusy"
+              @click="startRelationCounter(edge)"
+            >
+              Edit counter
+            </button>
+            <button
+              type="button"
+              class="mc-link mc-muted"
+              :disabled="edgeBusy"
+              @click="deleteRelation(edge.id)"
+            >
+              Delete
+            </button>
+          </li>
+        </ul>
+        <div v-if="editMode" class="mc-edge-composer-block">
+          <h4 class="mc-edge-composer-title">Add relation</h4>
+          <p v-if="edgeError" class="mc-action-error" role="alert">{{ edgeError }}</p>
+          <EdgeComposer
+            :kinds="tonight.kindsFor(campaignId)"
+            :src-entity="{ id: entity.id, kind: entity.kind, name: entity.name }"
+            :candidates="edgeCandidates"
+            :busy="edgeBusy"
+            @create="createEdge"
+          />
+        </div>
+      </section>
     </template>
     <p v-else class="mc-muted">Loading character…</p>
   </div>
@@ -734,6 +815,38 @@ async function createEdge(edge: {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.4rem;
+}
+.mc-regen-panel {
+  margin: 0.5rem 0 1rem;
+  padding: 1rem 1.1rem;
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.mc-regen-title {
+  margin: 0;
+  font-weight: 600;
+}
+.mc-regen-queued {
+  color: var(--mc-canonical);
+  margin: 0;
+}
+.mc-regen-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.mc-regen-actions {
+  display: flex;
+  gap: var(--mc-gap-sm);
+}
+.mc-rel-reason {
+  color: var(--mc-text-muted);
+  font-size: 0.8rem;
+  font-style: italic;
 }
 .mc-rel-counter-input {
   background: var(--mc-input);

@@ -8,6 +8,8 @@
 import { computed } from 'vue'
 import { ref, watch } from 'vue'
 
+import SpellCards from './ui/SpellCards.vue'
+
 const props = defineProps<{
   modelValue: Record<string, unknown> | null
   /** True when the parent owns the identity block (the fully-authored
@@ -74,7 +76,7 @@ interface TraitRow {
 }
 const traits = ref<TraitRow[]>([])
 
-const spellText = ref('')
+const spellRows = ref<string[]>([])
 
 // --- Load: canonical block -> rows --------------------------------------------
 
@@ -179,9 +181,9 @@ function load(block: Record<string, unknown> | null) {
     : []
 
   const rawSpells = block?.['spells']
-  spellText.value = Array.isArray(rawSpells)
-    ? rawSpells.filter((s): s is string => typeof s === 'string').join('\n')
-    : ''
+  spellRows.value = Array.isArray(rawSpells)
+    ? rawSpells.filter((spell): spell is string => typeof spell === 'string')
+    : []
 }
 
 /** The JSON of the last value WE emitted. The parent writes it back
@@ -304,10 +306,7 @@ function emitBlock(): Record<string, unknown> | null {
     }))
   if (traitList.length > 0) block.traits = traitList
 
-  const spells = spellText.value
-    .split(/\r?\n/)
-    .map((line: string) => line.trim())
-    .filter(Boolean)
+  const spells = spellRows.value.map((spell: string) => spell.trim()).filter(Boolean)
   if (spells.length > 0) block.spells = spells
 
   return Object.keys(block).length > 0 ? block : null
@@ -427,7 +426,7 @@ function emitUpdate() {
     </div>
 
     <h4>Spells (one per line)</h4>
-    <textarea v-model="spellText" rows="3"></textarea>
+    <SpellCards v-model="spellRows" />
   </div>
 </template>
 
