@@ -20,9 +20,13 @@ import pytest
 
 from app.core import ids
 from app.core.settings import LLMSettings
-from app.pipeline.regenerate import SECTION_ORDER, build_regenerate_prompt, serialize_record
+from app.pipeline.regenerate import (
+    SECTION_ORDER,
+    build_regenerate_prompt,
+    serialize_record,
+)
 from app.pipeline.statblocks import stat_block_rules_text
-from app.pipeline.worker import run_next_job
+from app.pipeline.worker import JobPayloadError, run_next_job
 from app.store import (
     EdgeInput,
     EntityInput,
@@ -185,6 +189,60 @@ def test_whole_reroll_prompt_redacts_section_contents(
     partial = build_regenerate_prompt(seed, record, ["stat_block"], ([], []))
     assert '"ac": 13' not in partial  # the fixture's block value — redacted
     assert "once ran with the Guild" in partial  # secret unrequested -> visible
+
+
+def test_reroll_context_never_leaks_the_target_s_sections() -> None:
+    """The 2026-09-27 leak: the target IS the neighborhood seed, and the
+    WORLD CONTEXT block serializes each entity's FULL data — the TARGET
+    RECORD redaction was defeated when the model read the seed's secret
+    from the context and returned it byte-identical. The requested keys
+    must be scrubbed from the target's context row."""
+    record = _record()
+    secret = "once ran with the Guild"
+    target = models.Entity(
+        id=ids.new_id(),
+        campaign_id="C" * 26,
+        kind="character",
+        name=record["name"],
+        text="some description",
+        data=dict(record),
+        created_at="2026-01-01T00:00:00Z",
+    )
+    # The context as built by regenerate's runner call site (the target
+    # scrubbed, the fix), then the same WITHOUT the scrub (the leak):
+    from app.pipeline.regenerate import _with_scrubbed_data
+
+    scrubbed_ctx = [_with_scrubbed_data(target, {"secret", "stat_block"})]
+    prompt = build_regenerate_prompt(
+        _seed_campaign(id_suffix="A", created_at="2026-01-01T00:00:00Z"),
+        record,
+        ["secret", "stat_block"],
+        (scrubbed_ctx, []),
+    )
+    assert secret not in prompt
+    assert "kind eyes, silver-streaked hair" in prompt  # unrequested data stays in context
+    # The unsrubbed variant leaks (proving the scrub is the fix):
+    leaky = build_regenerate_prompt(
+        _seed_campaign(id_suffix="B", created_at="2026-01-01T00:00:00Z"),
+        record,
+        ["secret"],
+        ([target], []),
+    )
+    assert secret in leaky
+
+
+def test_splice_fails_loud_when_a_requested_section_is_missing() -> None:
+    """An omitted requested section must NEVER silently keep the base's
+    old text (the whole-re-roll staleness class, 2026-09-27: the secret
+    that should have been re-rolled came back byte-identical)."""
+    from app.pipeline.regenerate import SECTION_ORDER, _splice
+
+    record = _record()
+    raw = json.loads(json.dumps(record))
+    del raw["secret"]
+    with pytest.raises(JobPayloadError) as excinfo:
+        _splice(record, raw, SECTION_ORDER)
+    assert "omitted requested section" in str(excinfo.value)
 
 
 def test_dial_stamped_from_request_not_model_echo(

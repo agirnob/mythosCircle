@@ -195,6 +195,16 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
     context_entities, context_edges = retrieve_neighborhood(
         job.campaign_id, seed_ids=seeds, entity_cap=DEFAULT_ENTITY_CAP
     )
+    # The redaction must not leak through the context: the target IS the
+    # neighborhood seed (level 0), and serialize_context embeds each
+    # entity's FULL data — the TARGET RECORD redaction was defeated in
+    # practice when the model read the seed's secret from the WORLD
+    # CONTEXT block and returned it byte-identical (measured 2026-09-27).
+    if requested:
+        context_entities = [
+            _with_scrubbed_data(entity, set(requested)) if entity.id == target_id else entity
+            for entity in context_entities
+        ]
     prompt = build_regenerate_prompt(
         seed,
         record,
@@ -305,6 +315,14 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
         raise
 
 
+def _with_scrubbed_data(entity: models.Entity, keys: set[str]) -> models.Entity:
+    """A shallow entity copy whose data has the keys removed — the context
+    serializer runs on the copy, position ids/edges unchanged."""
+    clone = copy.copy(entity)
+    clone.data = {key: value for key, value in (entity.data or {}).items() if key not in keys}
+    return clone
+
+
 def _splice(
     base_record: dict[str, Any], raw: dict[str, Any], requested: Sequence[str]
 ) -> dict[str, Any]:
@@ -313,10 +331,17 @@ def _splice(
     sections, unknown keys, and edges come from the base record, never
     from the model (byte-identical is an assembly invariant, not a model
     promise)."""
+    missing = [section for section in requested if section not in raw]
+    if missing:
+        raise JobPayloadError(
+            "regenerate: the model omitted requested section(s): "
+            + ", ".join(sorted(missing))
+            + " — the re-roll must write EVERY requested section (silently"
+            " keeping the old text was the 2026-09-27 staleness class)"
+        )
     payload = dict(base_record)
     for section in requested:
-        if section in raw:
-            payload[section] = _trim_section(raw[section])
+        payload[section] = _trim_section(raw[section])
     # Boss gating at splice time mirrors ``_requested_sections`` at run
     # start (spec-3.6 MID_CALL_EDIT): the requested list is frozen from
     # the RUN-START record, but a mid-call hand edit can move the fresh
