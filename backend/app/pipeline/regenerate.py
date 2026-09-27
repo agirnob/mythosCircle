@@ -267,9 +267,7 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
         # and ``entity_base_data`` refreshes to the SAME record the payload
         # was spliced from — the row is accept-able after a hand edit,
         # never stranded (the staging window closes by construction).
-        row = _roll_candidate_payload(
-            job.campaign_id, target_id, raw, requested, dial=dial
-        )
+        row = _roll_candidate_payload(job.campaign_id, target_id, raw, requested, dial=dial)
         rows = [row]
     else:
         # Spec-3.6 MID_CALL_EDIT: the splice source moves to staging time
@@ -282,9 +280,7 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
         # the payload — the exact AR4/NFR2 failure this story exists to
         # prevent). Prompt/retrieval keep reading the run-start record
         # (AR6 determinism untouched); only the splice source moves.
-        rows = _stage_entity_payload(
-            job.campaign_id, job.id, target_id, raw, requested, dial=dial
-        )
+        rows = _stage_entity_payload(job.campaign_id, job.id, target_id, raw, requested, dial=dial)
     try:
         report_progress(job.id, 1.0)
         complete_job(
@@ -592,7 +588,8 @@ def build_regenerate_prompt(
     """The regenerate prompt (AR6/AR27/AD-16): pure and byte-deterministic.
 
     A function of the campaign seed fields, the target record (with the
-    to-preserve sections embedded verbatim), the requested section list,
+    requested sections' contents REDACTED so the model cannot copy-echo
+    them — measured live 2026-09-27), the requested section list,
     the retrieved neighborhood's serialized hard truths, and — AD-38 —
     the shaped request's guide text and dial level (an enrich is this
     same call with ``sections: null``, a guide box line, and the dial).
@@ -606,18 +603,18 @@ def build_regenerate_prompt(
     # of the set, so its bytes are deterministic for the same set (AR6/AD-16).
     requested = [section for section in SECTION_ORDER if section in set(requested)]
     requested_label = ", ".join(requested) or "(none)"
-    # A whole re-roll (every section requested) may NOT show the target's
-    # section contents: embedding them invites the copy-echo class the
-    # 2026-09-27 dogfood caught (draft and pillar re-rolls of Serra both
-    # returned the identical 43-char text — the model echoed the target).
-    # Only the identity anchor + edges + unknown keys stay visible; every
-    # section is written FRESH. Partial re-rolls keep the full target
-    # (the preserved sections must echo byte-identical).
+    # The REQUESTED sections' contents are NEVER shown in the target: a
+    # copy-echo class measured twice on 2026-09-27 (whole re-rolls echoed
+    # the 43-char source; a stat_block re-roll echoed the exact block) —
+    # the model sees its own prior text and re-emits it instead of
+    # writing fresh. Requested sections are redacted (identity anchor,
+    # unrequested sections, edges, and unknown keys stay — those must
+    # echo byte-identical); with every section requested that leaves the
+    # anchor + unknown keys.
     whole = len(requested) == len(SECTION_ORDER)
+    redact = set(requested)
     target_for_prompt = (
-        {key: value for key, value in record.items() if key not in REGEN_SECTIONS}
-        if whole
-        else record
+        {key: value for key, value in record.items() if key not in redact} if redact else record
     )
     lines = [
         "You are re-rolling an existing TTRPG world character:",
@@ -632,6 +629,15 @@ def build_regenerate_prompt(
             else "writing every section FRESH — the target's section contents are"
             " deliberately NOT provided, so never echo; keep the facts consistent"
             " with the COMMITTED WORLD CONTEXT."
+        ),
+        (
+            "The REQUESTED sections' current contents are deliberately omitted"
+            " from the TARGET RECORD — write each one FRESH in new words; never"
+            " echo the old text. Your re-rolled sections must be visibly"
+            " different while staying consistent with the COMMITTED WORLD"
+            " CONTEXT and the rules below."
+            if not whole
+            else ""
         ),
         "Respond with exactly one JSON object — nothing else.",
         "",
@@ -659,9 +665,7 @@ def build_regenerate_prompt(
             "\nDIAL (elaboration weight for the re-rolled sections; the record's"
             "\nlive setting — inherit it, never invent one):\n"
             f"{dial or '(not set — elaborate to the record existing depth)'}"
-            + (
-                f"\nElaboration floor: {_DIAL_GUIDANCE[dial]}" if dial in _DIAL_GUIDANCE else ""
-            )
+            + (f"\nElaboration floor: {_DIAL_GUIDANCE[dial]}" if dial in _DIAL_GUIDANCE else "")
         ),
         *(
             [

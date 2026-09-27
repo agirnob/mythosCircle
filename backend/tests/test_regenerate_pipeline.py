@@ -178,9 +178,13 @@ def test_whole_reroll_prompt_redacts_section_contents(
         seed = campaign_seed(session, campaign_id)
     deep = build_regenerate_prompt(seed, record, SECTION_ORDER, ([], []), dial="pillar")
     assert "two to three dense paragraphs" in deep
-    # A PARTIAL re-roll embeds the full record (preserved sections echo):
-    partial = build_regenerate_prompt(seed, record, ["secret"], ([], []))
-    assert "once ran with the Guild" in partial
+    # A PARTIAL re-roll redacts ONLY the requested section (the stat_block
+    # echo class, 2026-09-27: a stat_block re-roll returned the exact
+    # block because its content was embedded) — unrequested sections stay
+    # visible (their byte-identical echo is the contract):
+    partial = build_regenerate_prompt(seed, record, ["stat_block"], ([], []))
+    assert '"ac": 13' not in partial  # the fixture's block value — redacted
+    assert "once ran with the Guild" in partial  # secret unrequested -> visible
 
 
 def test_dial_stamped_from_request_not_model_echo(
@@ -713,8 +717,18 @@ def test_build_regenerate_prompt_deterministic() -> None:
     # Serialization is canonical; ids and timestamps never leak.
     assert context[0][0].id not in first
     assert seed_a.id not in first and seed_a.created_at not in first
-    assert "TARGET RECORD" in first and serialize_record(record) in first
+    assert "TARGET RECORD" in first
+    # The requested sections' contents are REDACTED (copy-echo guard,
+    # 2026-09-27) — only the unrequested sections serialize at full size:
+    assert "once ran with the Guild" in first  # secret unrequested -> embedded
+    expected_redacted = serialize_record(
+        {k: v for k, v in record.items() if k not in ("background", "personality")}
+    )
+    assert expected_redacted in first
     assert "background, personality" in first
+    # The requested contents are never embedded:
+    assert "heir to the Gilded Bar" not in first  # background redacted
+    assert "warm, watchful" not in first  # personality redacted
     assert "CAMPAIGN SEED" in first and "COMMITTED WORLD CONTEXT" in first
     assert "EDGE VOCABULARY" in first and "debt: amount" in first
     assert '"candidates"' in first and "byte-identical" in first
