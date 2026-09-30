@@ -10,6 +10,12 @@ Living-world NPC and world generator for TTRPG Game Masters. The DM remains the 
 - Campaigns are private to their invited user. Do not introduce public campaign endpoints.
 - Subagents may run in parallel.
 
+## Open Code Review in Codex
+
+- For an Open Code Review request, use the plugin's `open-code-review-delegate` skill by default. Run `ocr delegate preview --format json` for the requested Git target, then `ocr delegate rule --format json` for every reviewable file and review the selected diffs in Codex.
+- Use OCR-managed `ocr review` only when the user explicitly requests it and an OCR LLM provider is configured. The Codex session does not supply an API endpoint or key to the OCR CLI.
+- If the working tree is clean and no review target is named, review `HEAD` with `--commit HEAD`; report the chosen target.
+
 ## Project layout and checks
 
 - Backend: `backend/app/{api,core,store,pipeline,providers,media}` and `backend/tests/`.
