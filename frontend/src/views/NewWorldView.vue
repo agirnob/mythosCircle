@@ -6,7 +6,7 @@
  * The overview previews each kind; the World route lists every entity and
  * offers campaign exports. Both read the same world-store snapshot.
  */
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import type { components } from '../api/schema'
@@ -31,6 +31,7 @@ const router = useRouter()
 const campaignId = route.params.id as string
 const props = withDefaults(defineProps<{ mode?: 'overview' | 'directory' }>(), { mode: 'overview' })
 const isDirectory = computed(() => props.mode === 'directory')
+const search = ref('')
 
 const world = useWorldStore()
 const campaigns = useCampaignsStore()
@@ -88,6 +89,24 @@ const kinds = computed(() => {
   }
   return [...groups.entries()]
 })
+const directoryKinds = computed(() => {
+  const term = search.value.trim().toLocaleLowerCase()
+  if (!term) return kinds.value
+  return kinds.value
+    .map(
+      ([kind, list]) =>
+        [
+          kind,
+          list.filter((entity) =>
+            [entity.name, kind, describe(entity) ?? ''].some((value) =>
+              value.toLocaleLowerCase().includes(term),
+            ),
+          ),
+        ] as [string, EntityExport[]],
+    )
+    .filter(([, list]) => list.length > 0)
+})
+const recentEntities = computed(() => entities.value.slice(-3).reverse())
 
 const activeJobs = computed(() =>
   jobs.forCampaign(campaignId).filter((j) => j.state === 'queued' || j.state === 'running'),
@@ -115,10 +134,6 @@ function relationInfo(entity: EntityExport): string {
   return location ? `${rel} · ${location}` : rel
 }
 
-function preview(list: EntityExport[]): EntityExport[] {
-  return isDirectory.value ? list : list.slice(0, 6)
-}
-
 function sectionTitle(kind: string): string {
   if (kind === 'character') return 'Characters'
   if (kind === 'place') return 'Places'
@@ -136,12 +151,32 @@ function worldExportUrl(format: 'markdown' | 'html'): string {
     <p class="mc-eyebrow">{{ isDirectory ? 'World directory' : 'Campaign atlas' }}</p>
     <PageHeader
       :title="isDirectory ? 'World' : (campaigns.current?.title ?? 'Loading world…')"
-      :description="isDirectory ? (campaigns.current?.title ?? 'Loading world…') : (campaigns.current?.description || campaigns.current?.theme)"
+      :description="
+        isDirectory
+          ? `Every person, place, and faction in ${campaigns.current?.title ?? 'this campaign'}.`
+          : campaigns.current?.description || campaigns.current?.theme
+      "
     >
       <template #actions>
-        <a v-if="isDirectory" :href="worldExportUrl('markdown')" download class="mc-btn mc-btn-secondary">Export Markdown</a>
-        <a v-if="isDirectory" :href="worldExportUrl('html')" download class="mc-btn mc-btn-secondary">Export HTML</a>
-        <RouterLink v-if="!isDirectory" :to="{ name: 'forge', params: { id: campaignId } }" class="mc-btn">
+        <a
+          v-if="isDirectory"
+          :href="worldExportUrl('markdown')"
+          download
+          class="mc-btn mc-btn-secondary"
+          >Export Markdown</a
+        >
+        <a
+          v-if="isDirectory"
+          :href="worldExportUrl('html')"
+          download
+          class="mc-btn mc-btn-secondary"
+          >Export HTML</a
+        >
+        <RouterLink
+          v-if="!isDirectory"
+          :to="{ name: 'ask', params: { id: campaignId } }"
+          class="mc-btn"
+        >
           Ask the world…
         </RouterLink>
         <RouterLink
@@ -182,58 +217,116 @@ function worldExportUrl(format: 'markdown' | 'html'): string {
 
       <div class="mc-overview-layout" :class="{ 'mc-overview-layout-directory': isDirectory }">
         <div class="mc-overview-main">
-      <EmptyState
-        v-if="entities.length === 0"
-        title="An empty world, full of possibility"
-        body="Build it from your notes, or ask for the first character."
-      >
-        <template #actions>
-          <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }" class="mc-btn">
-            Guided Build
-          </RouterLink>
-          <RouterLink
-            :to="{ name: 'forge', params: { id: campaignId } }"
-            class="mc-btn mc-btn-secondary"
+          <EmptyState
+            v-if="entities.length === 0"
+            title="An empty world, full of possibility"
+            body="Build it from your notes, or ask for the first character."
           >
-            Ask the world…
-          </RouterLink>
-        </template>
-      </EmptyState>
-
-      <template v-else>
-        <section v-for="[kind, list] in kinds" :key="kind">
-          <SectionHeader :title="sectionTitle(kind)" :meta="`${list.length}`">
             <template #actions>
+              <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }" class="mc-btn">
+                Guided Build
+              </RouterLink>
               <RouterLink
-                :to="{ name: 'entity-section', params: { id: campaignId, kind } }"
-                class="mc-link mc-muted"
+                :to="{ name: 'ask', params: { id: campaignId } }"
+                class="mc-btn mc-btn-secondary"
               >
-                {{ isDirectory ? 'Open section →' : 'View all →' }}
+                Ask the world…
               </RouterLink>
             </template>
-          </SectionHeader>
-          <EntityGrid>
-            <EntityCard
-              v-for="entity in preview(list)"
-              :key="entity.id"
-              :name="entity.name"
-              :meta="metaFor(entity)"
-              :description="describe(entity)"
-              :relation-info="relationInfo(entity)"
-              :portrait-url="world.portraitSrc(campaignId, entity.id)"
-            >
-              <template #primary>
-                <RouterLink
-                  :to="{ name: 'entity', params: { id: campaignId, entityId: entity.id } }"
-                  class="mc-link"
+          </EmptyState>
+
+          <template v-else-if="isDirectory">
+            <label class="mc-directory-search">
+              <span>Find an entity</span>
+              <input
+                v-model="search"
+                type="search"
+                placeholder="Search names, kinds, or descriptions"
+              />
+            </label>
+            <p v-if="directoryKinds.length === 0" class="mc-muted">
+              No entities match “{{ search }}”.
+            </p>
+            <section v-for="[kind, list] in directoryKinds" :key="kind">
+              <SectionHeader :title="sectionTitle(kind)" :meta="`${list.length}`">
+                <template #actions>
+                  <RouterLink
+                    :to="{ name: 'entity-section', params: { id: campaignId, kind } }"
+                    class="mc-link mc-muted"
+                  >
+                    Open section →
+                  </RouterLink>
+                </template>
+              </SectionHeader>
+              <EntityGrid>
+                <EntityCard
+                  v-for="entity in list"
+                  :key="entity.id"
+                  :name="entity.name"
+                  :meta="metaFor(entity)"
+                  :description="describe(entity)"
+                  :relation-info="relationInfo(entity)"
+                  :portrait-url="world.portraitSrc(campaignId, entity.id)"
                 >
-                  Open →
+                  <template #primary>
+                    <RouterLink
+                      :to="{ name: 'entity', params: { id: campaignId, entityId: entity.id } }"
+                      class="mc-link"
+                    >
+                      Open →
+                    </RouterLink>
+                  </template>
+                </EntityCard>
+              </EntityGrid>
+            </section>
+          </template>
+          <template v-else>
+            <section class="mc-overview-browse">
+              <SectionHeader title="Explore the world" meta="Browse by kind" />
+              <div class="mc-kind-grid">
+                <RouterLink
+                  v-for="[kind, list] in kinds"
+                  :key="kind"
+                  :to="{ name: 'entity-section', params: { id: campaignId, kind } }"
+                  class="mc-kind-tile"
+                >
+                  <span class="mc-kind-count">{{ list.length }}</span>
+                  <span>{{ sectionTitle(kind) }}</span>
+                  <span class="mc-kind-arrow" aria-hidden="true">↗</span>
                 </RouterLink>
-              </template>
-            </EntityCard>
-          </EntityGrid>
-        </section>
-      </template>
+              </div>
+            </section>
+            <section class="mc-overview-recent">
+              <SectionHeader title="Recently added" :meta="`${recentEntities.length} shown`">
+                <template #actions
+                  ><RouterLink
+                    :to="{ name: 'world', params: { id: campaignId } }"
+                    class="mc-link mc-muted"
+                    >Browse all →</RouterLink
+                  ></template
+                >
+              </SectionHeader>
+              <EntityGrid>
+                <EntityCard
+                  v-for="entity in recentEntities"
+                  :key="entity.id"
+                  :name="entity.name"
+                  :meta="metaFor(entity)"
+                  :description="describe(entity)"
+                  :relation-info="relationInfo(entity)"
+                  :portrait-url="world.portraitSrc(campaignId, entity.id)"
+                >
+                  <template #primary
+                    ><RouterLink
+                      :to="{ name: 'entity', params: { id: campaignId, entityId: entity.id } }"
+                      class="mc-link"
+                      >Open →</RouterLink
+                    ></template
+                  >
+                </EntityCard>
+              </EntityGrid>
+            </section>
+          </template>
         </div>
 
         <aside v-if="!isDirectory" class="mc-overview-rail" aria-label="World context">
@@ -263,13 +356,25 @@ function worldExportUrl(format: 'markdown' | 'html'): string {
               <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }">
                 <span>Guided build</span><span aria-hidden="true">→</span>
               </RouterLink>
-              <RouterLink :to="{ name: 'forge', params: { id: campaignId } }">
+              <RouterLink :to="{ name: 'ask', params: { id: campaignId } }">
                 <span>Ask the world</span><span aria-hidden="true">→</span>
               </RouterLink>
               <RouterLink :to="{ name: 'graph', params: { id: campaignId } }">
                 <span>Open relationship graph</span><span aria-hidden="true">→</span>
               </RouterLink>
             </nav>
+          </section>
+
+          <section class="mc-rail-card">
+            <p class="mc-rail-kicker">Take it with you</p>
+            <h2>Export world</h2>
+            <p class="mc-export-copy">Download the complete current world as a document.</p>
+            <div class="mc-export-actions">
+              <a :href="worldExportUrl('markdown')" download class="mc-btn mc-btn-secondary"
+                >Markdown</a
+              >
+              <a :href="worldExportUrl('html')" download class="mc-btn mc-btn-secondary">HTML</a>
+            </div>
           </section>
         </aside>
       </div>
@@ -308,6 +413,57 @@ function worldExportUrl(format: 'markdown' | 'html'): string {
 .mc-overview-main {
   min-width: 0;
 }
+.mc-overview-browse + .mc-overview-recent {
+  margin-top: 2.25rem;
+}
+.mc-kind-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  gap: 0.75rem;
+}
+.mc-kind-tile {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 0.15rem;
+  min-height: 105px;
+  padding: 1rem;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius);
+  background: var(--mc-surface-raised);
+  color: var(--mc-text-secondary);
+  text-decoration: none;
+}
+.mc-kind-tile:hover,
+.mc-kind-tile:focus-visible {
+  border-color: var(--mc-interactive-bright);
+  background: var(--mc-surface-hover);
+}
+.mc-kind-count {
+  grid-column: 1 / -1;
+  color: var(--mc-text-primary);
+  font-family: var(--mc-display-font);
+  font-size: 2rem;
+  line-height: 1;
+}
+.mc-kind-arrow {
+  color: var(--mc-interactive-bright);
+}
+.mc-directory-search {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 1.75rem;
+  color: var(--mc-text-secondary);
+}
+.mc-directory-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--mc-border-bright);
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-input);
+  color: var(--mc-text-primary);
+}
 .mc-world-directory .mc-overview-main > section + section {
   margin-top: 2.5rem;
 }
@@ -337,6 +493,15 @@ function worldExportUrl(format: 'markdown' | 'html'): string {
   margin: 0;
   font-family: var(--mc-display-font);
   font-size: 1.35rem;
+}
+.mc-export-copy {
+  margin: 0.55rem 0 0.9rem;
+  color: var(--mc-text-secondary);
+}
+.mc-export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 .mc-pulse-list {
   display: grid;

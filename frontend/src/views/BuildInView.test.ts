@@ -115,6 +115,23 @@ describe('BuildInView seed form', () => {
     jobList = []
   })
 
+  it('sends a requested count as model-generated entities, without numbered placeholders', async () => {
+    mockApi({ created: job() })
+    const wrapper = await mountView()
+    await wrapper.get('input[aria-label="Generate key places"]').setValue(20)
+    expect(wrapper.text()).toContain('The model will invent 20 places')
+    expect(wrapper.findAll('.mc-quick-row')).toHaveLength(0)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const request = apiFetchMock.mock.calls.find(
+      ([path, init]) => path === '/api/jobs' && init?.method === 'POST',
+    )
+    expect(request).toBeDefined()
+    const body = JSON.parse(request![1].body as string)
+    expect(body.payload.generate_counts).toEqual({ places: 20, factions: 0, key_figures: 0 })
+    expect(body.payload.places).toEqual([])
+  })
+
   it('keeps the seed text through the build and a failure — the DM retries without retyping', async () => {
     const created = job()
     mockApi({ created })

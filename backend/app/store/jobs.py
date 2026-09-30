@@ -30,7 +30,7 @@ about websockets; 1.4's worker drives the same primitives.
 import json
 from collections.abc import Callable
 from contextlib import suppress
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import func, literal_column, select
 from sqlalchemy.orm import Session
@@ -646,12 +646,29 @@ def _validate_build_in_payload(payload: dict[str, Any]) -> None:
     any_content = False
     from app.store.direct import seed_entry_violations  # noqa: PLC0415 - import cycle
 
+    counts = payload.get("generate_counts", {})
+    if not isinstance(counts, dict) or set(counts) - {"places", "factions", "key_figures"}:
+        raise InvalidJobInputError(
+            "generate_counts must contain only places, factions, and key_figures"
+        )
+
     for section in ("places", "factions", "key_figures"):
         entries = payload.get(section, [])
         if not isinstance(entries, list):
             raise InvalidJobInputError(f"build_in {section} must be a list")
         if len(entries) > BUILD_IN_MAX_ENTRIES:
             raise InvalidJobInputError(f"build_in {section} exceeds {BUILD_IN_MAX_ENTRIES} entries")
+        requested = counts.get(section, 0)
+        if (
+            type(requested) is not int
+            or requested < 0
+            or requested + len(entries) > BUILD_IN_MAX_ENTRIES
+        ):
+            raise InvalidJobInputError(
+                f"{section}: generated count must be 0–{BUILD_IN_MAX_ENTRIES - len(entries)} "
+                "after named entries"
+            )
+        any_content = any_content or requested > 0
         for i, entry in enumerate(entries):
             if isinstance(entry, str):
                 trimmed = entry.strip()
@@ -742,15 +759,26 @@ def _build_in_budget(payload: dict[str, Any]) -> int:
     def _count(section: str) -> int:
         return sum(1 for entry in payload.get(section) or [] if _seed_entry_name(entry))
 
-    figures = _count("key_figures")
-    total = figures + _count("places") + _count("factions")
+    counts = cast(dict[str, int], payload.get("generate_counts") or {})
+    figures = _count("key_figures") + counts.get("key_figures", 0)
+    total = (
+        figures
+        + _count("places")
+        + _count("factions")
+        + counts.get("places", 0)
+        + counts.get("factions", 0)
+    )
     mandated = _declared_target_names(payload)
     figures += len(mandated)
     total += len(mandated)
     chunks = -(-total // BUILD_IN_LLM_CHUNK_ENTRIES)  # ceil division
+    naming_calls = sum(-(-count // 20) for count in counts.values())
     return max(
         BUILD_IN_MIN_LLM_CALLS,
-        BUILD_IN_LLM_CALLS_PER_FIGURE * figures + chunks + BUILD_IN_LLM_CALLS_OVERHEAD,
+        BUILD_IN_LLM_CALLS_PER_FIGURE * figures
+        + chunks
+        + BUILD_IN_LLM_CALLS_OVERHEAD
+        + 2 * naming_calls,
     )
 
 

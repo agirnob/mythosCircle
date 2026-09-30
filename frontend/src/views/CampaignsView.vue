@@ -4,6 +4,9 @@ import { RouterLink } from 'vue-router'
 
 import type { components } from '../api/schema'
 import { ApiError } from '../api/client'
+import PageHeader from '../components/ui/PageHeader.vue'
+import SectionHeader from '../components/ui/SectionHeader.vue'
+import StatusBadge from '../components/ui/StatusBadge.vue'
 import { useCampaignsStore } from '../stores/campaigns'
 
 type Campaign = components['schemas']['CampaignResponse']
@@ -108,159 +111,285 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section>
-    <h1>Your worlds</h1>
+  <div class="mc-worlds-page">
+    <p class="mc-eyebrow">Campaign library</p>
+    <PageHeader
+      title="Your worlds"
+      description="Choose a campaign to continue, or start a new one."
+    />
 
-    <form class="card create" @submit.prevent="create">
-      <h2>Create a world</h2>
-      <label>
-        Title
-        <input v-model="title" type="text" required placeholder="The Shattered Coast" />
-      </label>
-      <label>
-        Theme
-        <select v-model="theme" required>
-          <option value="" disabled>Choose a theme…</option>
-          <option v-for="option in campaigns.themes" :key="option" :value="option">
-            {{ option }}
-          </option>
-        </select>
-      </label>
-      <label>
-        Description
-        <textarea
-          v-model="description"
-          rows="2"
-          placeholder="What kind of world is this?"
-        ></textarea>
-      </label>
-      <label>
-        Custom lore
-        <textarea
-          v-model="customLore"
-          rows="3"
-          placeholder="Secrets, history, hooks to seed the world."
-        ></textarea>
-      </label>
-      <p v-if="themeError" class="error">{{ themeError }}</p>
-      <p v-if="createError" class="error">{{ createError }}</p>
-      <button type="submit" :disabled="creating">
-        {{ creating ? 'Creating…' : 'Create world' }}
-      </button>
+    <form class="create mc-create-world" @submit.prevent="create">
+      <div class="mc-create-intro">
+        <p class="mc-eyebrow">A new story</p>
+        <h2 class="mc-display-title">Begin with a world.</h2>
+        <p>
+          Give it a name and a little direction. You can shape its places, factions, and people
+          next.
+        </p>
+      </div>
+      <div class="mc-create-fields">
+        <label
+          >World name
+          <input
+            v-model="title"
+            class="mc-input"
+            type="text"
+            required
+            placeholder="The Shattered Coast"
+          />
+        </label>
+        <label
+          >Theme
+          <select v-model="theme" class="mc-input" required>
+            <option value="" disabled>Choose a theme…</option>
+            <option v-for="option in campaigns.themes" :key="option" :value="option">
+              {{ option }}
+            </option>
+          </select>
+        </label>
+        <label
+          >Description
+          <span class="mc-field-hint">The short pitch you will see on your world.</span>
+          <textarea
+            v-model="description"
+            class="mc-textarea"
+            rows="2"
+            placeholder="What kind of world is this?"
+          ></textarea>
+        </label>
+        <label
+          >Custom lore <span class="mc-field-hint">Optional details to guide generation.</span>
+          <textarea
+            v-model="customLore"
+            class="mc-textarea"
+            rows="3"
+            placeholder="Secrets, history, or a conflict worth exploring."
+          ></textarea>
+        </label>
+        <p v-if="themeError" class="error">{{ themeError }}</p>
+        <p v-if="createError" class="error">{{ createError }}</p>
+        <button type="submit" class="mc-btn" :disabled="creating">
+          {{ creating ? 'Creating…' : 'Create world →' }}
+        </button>
+      </div>
     </form>
 
-    <p v-if="campaigns.loading" class="muted">Loading…</p>
-    <p v-else-if="loadError" class="error">{{ loadError }}</p>
-    <p v-else-if="campaigns.campaigns.length === 0" class="muted">
-      No worlds yet — create your first one above.
-    </p>
-    <ul v-else class="worlds">
-      <li v-for="campaign in campaigns.campaigns" :key="campaign.id" class="card world">
-        <div>
-          <strong>{{ campaign.title }}</strong>
-          <p class="muted">{{ campaign.description || 'No description.' }}</p>
-          <p class="muted">Theme: {{ campaign.theme }}</p>
-        </div>
-        <RouterLink :to="{ name: 'build-in', params: { id: campaign.id } }" class="cta">
-          Open build-in
-        </RouterLink>
-        <RouterLink :to="{ name: 'world', params: { id: campaign.id } }" class="cta secondary">
-          Open world
-        </RouterLink>
-        <button
-          v-if="confirmingId !== campaign.id"
-          type="button"
-          class="cta secondary"
-          :disabled="deletingId !== null"
-          @click="startDelete(campaign)"
-        >
-          Delete
-        </button>
-        <!-- AR20 total hard delete: the typed title is the UI-side gate that
-             names exactly one world (the server additionally requires the
-             explicit {"confirm": true} body). -->
-        <form v-else class="delete-world" @submit.prevent="confirmDelete(campaign)">
-          <label>
-            Type “{{ campaign.title }}” to confirm
-            <input
-              v-model="confirmTitle"
-              type="text"
-              :aria-label="`Type ${campaign.title} to confirm deletion`"
-            />
-          </label>
-          <p class="muted small">
-            Deletes the world and everything in it — revisions, entities, relations, jobs and media
-            files. This cannot be undone.
-          </p>
-          <p class="actions">
-            <button type="submit" :disabled="deletingId === campaign.id">
-              {{ deletingId === campaign.id ? 'Deleting…' : 'Delete world' }}
-            </button>
-            <button
-              type="button"
-              class="cta secondary"
-              :disabled="deletingId === campaign.id"
-              @click="cancelDelete"
+    <section class="mc-library" aria-label="Saved worlds">
+      <SectionHeader title="Continue a world" :meta="`${campaigns.campaigns.length} saved`" />
+      <p v-if="campaigns.loading" class="muted">Loading worlds…</p>
+      <p v-else-if="loadError" class="error">{{ loadError }}</p>
+      <div v-else-if="campaigns.campaigns.length === 0" class="mc-library-empty">
+        No worlds yet. Create your first one above.
+      </div>
+      <ul v-else class="worlds">
+        <li v-for="campaign in campaigns.campaigns" :key="campaign.id" class="world">
+          <div class="mc-world-card-main">
+            <StatusBadge variant="neutral">{{ campaign.theme }}</StatusBadge>
+            <h3 class="mc-display-title">{{ campaign.title }}</h3>
+            <p>{{ campaign.description || 'A world ready for its first story.' }}</p>
+          </div>
+          <div class="mc-world-card-actions">
+            <RouterLink :to="{ name: 'overview', params: { id: campaign.id } }" class="mc-btn"
+              >Open overview →</RouterLink
             >
-              Cancel
+            <RouterLink
+              :to="{ name: 'build-in', params: { id: campaign.id } }"
+              class="mc-btn mc-btn-secondary"
+              >Guided build</RouterLink
+            >
+            <button
+              v-if="confirmingId !== campaign.id"
+              type="button"
+              class="mc-delete-trigger"
+              :disabled="deletingId !== null"
+              @click="startDelete(campaign)"
+            >
+              Delete
             </button>
-          </p>
-          <p v-if="deleteError" class="error">{{ deleteError }}</p>
-        </form>
-      </li>
-    </ul>
-  </section>
+          </div>
+          <form
+            v-if="confirmingId === campaign.id"
+            class="delete-world"
+            @submit.prevent="confirmDelete(campaign)"
+          >
+            <label
+              >Type “{{ campaign.title }}” to confirm
+              <input
+                v-model="confirmTitle"
+                class="mc-input"
+                type="text"
+                :aria-label="`Type ${campaign.title} to confirm deletion`"
+              />
+            </label>
+            <p class="muted small">
+              Deletes the world and everything in it — revisions, entities, relations, jobs and
+              media. This cannot be undone.
+            </p>
+            <p class="actions">
+              <button type="submit" class="mc-btn" :disabled="deletingId === campaign.id">
+                {{ deletingId === campaign.id ? 'Deleting…' : 'Delete world' }}
+              </button>
+              <button
+                type="button"
+                class="mc-btn mc-btn-secondary"
+                :disabled="deletingId === campaign.id"
+                @click="cancelDelete"
+              >
+                Cancel
+              </button>
+            </p>
+            <p v-if="deleteError" class="error">{{ deleteError }}</p>
+          </form>
+        </li>
+      </ul>
+    </section>
+  </div>
 </template>
 
 <style scoped>
+.mc-worlds-page {
+  max-width: 1140px;
+}
+.mc-eyebrow {
+  margin: 0 0 0.45rem;
+  color: var(--mc-interactive-bright);
+  font-size: var(--mc-meta-size);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.mc-create-world {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.8fr) minmax(0, 1.3fr);
+  gap: 2rem;
+  padding: 1.5rem;
+  border: 1px solid var(--mc-border-bright);
+  border-radius: var(--mc-radius);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(139, 108, 255, 0.14), transparent 24rem),
+    var(--mc-surface);
+}
+.mc-create-intro h2 {
+  margin: 0 0 0.75rem;
+  font-size: clamp(1.45rem, 3vw, 2rem);
+  line-height: 1.1;
+}
+.mc-create-intro > p:last-child {
+  max-width: 30ch;
+  color: var(--mc-text-secondary);
+}
+.mc-create-fields {
+  display: grid;
+  gap: 0.85rem;
+}
+.mc-create-fields label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--mc-text-primary);
+  font-weight: 600;
+}
+.mc-create-fields .mc-input,
+.mc-create-fields .mc-textarea {
+  font-weight: 400;
+}
+.mc-field-hint {
+  color: var(--mc-text-muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+.mc-create-fields button {
+  justify-self: start;
+}
+.mc-library {
+  margin-top: 2.75rem;
+}
 .worlds {
   list-style: none;
   padding: 0;
-}
-.create {
   display: grid;
-  gap: 0.75rem;
-  max-width: 36rem;
+  gap: 0.85rem;
 }
-.create h2 {
-  margin: 0;
-}
-label {
-  display: grid;
-  gap: 0.25rem;
-}
-input,
-textarea {
-  padding: 0.5rem;
-  border-radius: 6px;
-  border: 1px solid #2c3038;
-  background: #14161a;
-  color: inherit;
-}
-textarea {
-  resize: vertical;
+.mc-library-empty {
+  padding: 2rem;
+  border: 1px dashed var(--mc-border-bright);
+  border-radius: var(--mc-radius);
+  color: var(--mc-text-secondary);
+  text-align: center;
 }
 .world {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-end;
   gap: 1rem;
-  /* The typed-title confirmation is a full-width row under the world's
-     title/actions instead of a squeezed flex child. */
   flex-wrap: wrap;
+  padding: 1.25rem;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius);
+  background: var(--mc-surface-raised);
+}
+.mc-world-card-main {
+  min-width: 0;
+  flex: 1 1 230px;
+}
+.mc-world-card-main h3 {
+  margin: 0.65rem 0 0.25rem;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+.mc-world-card-main p {
+  margin: 0;
+  color: var(--mc-text-secondary);
+}
+.mc-world-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.mc-delete-trigger {
+  padding: 0.45rem;
+  border: 0;
+  background: transparent;
+  color: var(--mc-text-muted);
+  cursor: pointer;
+}
+.mc-delete-trigger:hover {
+  color: var(--mc-danger);
 }
 .delete-world {
   flex-basis: 100%;
   display: grid;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
+  gap: 0.7rem;
+  margin-top: 0.75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--mc-border);
+}
+.delete-world label {
+  display: grid;
+  gap: 0.35rem;
+  max-width: 30rem;
 }
 .delete-world .actions {
   display: flex;
   gap: 0.5rem;
   margin: 0;
 }
-.world p {
-  margin: 0.25rem 0;
+@media (max-width: 900px) {
+  .mc-create-world {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+}
+@media (max-width: 560px) {
+  .mc-create-world {
+    padding: 1rem;
+  }
+  .mc-world-card-actions {
+    width: 100%;
+  }
+  .mc-world-card-actions .mc-btn {
+    flex: 1 1 auto;
+    text-align: center;
+  }
 }
 </style>

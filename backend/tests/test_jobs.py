@@ -788,6 +788,33 @@ def test_enqueue_build_in_budget_counts_only_non_blank(world: str) -> None:
     assert tiny.max_llm_calls == 64  # max(64, 0 + 1 + 32) — the floor binds
 
 
+def test_enqueue_build_in_accepts_requested_counts_and_budgets_names(world: str) -> None:
+    job = enqueue_job(
+        world,
+        "build_in",
+        {"places": ["Old Harbor"], "generate_counts": {"places": 20, "key_figures": 12}},
+    )
+    assert job.state == "queued"
+    assert job.max_llm_calls >= 3 * 12 + 3 + 32 + 4
+
+
+@pytest.mark.parametrize(
+    "counts",
+    [
+        {"places": True},
+        {"places": -1},
+        {"places": 101},
+        {"places": 1.5},
+        {"unknown": 1},
+        [20],
+    ],
+)
+def test_enqueue_build_in_rejects_invalid_requested_counts(world: str, counts: object) -> None:
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "build_in", {"generate_counts": counts})
+    assert _count_jobs() == 0
+
+
 def test_enqueue_build_in_explicit_budget_wins(world: str) -> None:
     """An explicit caller-supplied max_llm_calls beats the roster-scaled
     computation — the API's optional budget parameter stays authoritative."""

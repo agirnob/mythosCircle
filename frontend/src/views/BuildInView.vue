@@ -32,13 +32,70 @@ const world = useWorldStore()
 const loadError = ref<string | null>(null)
 
 const sections: Array<{ key: SectionKey; label: string; hint: string }> = [
-  { key: 'places', label: 'Key places', hint: 'One per line — towns, taverns, ruins…' },
-  { key: 'factions', label: 'Factions', hint: 'One per line — guilds, courts, cults…' },
-  { key: 'key_figures', label: 'Key figures', hint: 'One per line — bar keep, mayor, rival…' },
+  { key: 'places', label: 'Key places', hint: 'The Saltglass Harbor' },
+  { key: 'factions', label: 'Factions', hint: 'The Lantern Guild' },
+  { key: 'key_figures', label: 'Key figures', hint: 'Mara Vey, harbor master' },
 ]
 type SectionKey = 'places' | 'factions' | 'key_figures'
 
 const sectionText = ref<Record<SectionKey, string>>({ places: '', factions: '', key_figures: '' })
+const quickSlots = ref<Record<SectionKey, number>>({ places: 0, factions: 0, key_figures: 0 })
+const generateCounts = ref<Record<SectionKey, number>>({ places: 0, factions: 0, key_figures: 0 })
+const MAX_QUICK_SLOTS = 100
+
+function quickLines(key: SectionKey): string[] {
+  return sectionText.value[key] ? sectionText.value[key].split(/\r?\n/) : []
+}
+
+function lastNamedSlot(lines: string[]): number {
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (lines[index]?.trim()) return index + 1
+  }
+  return 0
+}
+
+function slotCount(key: SectionKey): number {
+  return Math.max(quickSlots.value[key], lastNamedSlot(quickLines(key)))
+}
+
+function setSlotCount(key: SectionKey, value: number) {
+  const requested = Number.isFinite(value)
+    ? Math.min(MAX_QUICK_SLOTS, Math.max(0, Math.trunc(value)))
+    : 0
+  const lines = quickLines(key)
+  quickSlots.value[key] = Math.max(requested, lastNamedSlot(lines))
+}
+
+function setQuickName(key: SectionKey, index: number, value: string) {
+  const lines = quickLines(key)
+  while (lines.length <= index) lines.push('')
+  lines[index] = value.replace(/[\r\n]+/g, ' ')
+  sectionText.value[key] = lines.join('\n')
+}
+
+function removeQuickName(key: SectionKey, index: number) {
+  const previousCount = slotCount(key)
+  const lines = quickLines(key)
+  lines.splice(index, 1)
+  sectionText.value[key] = lines.join('\n')
+  quickSlots.value[key] = Math.max(0, previousCount - 1)
+}
+
+function syncPastedNames(key: SectionKey) {
+  quickSlots.value[key] = Math.max(quickSlots.value[key], quickLines(key).length)
+}
+
+function onGenerateCountChange(key: SectionKey) {
+  const named =
+    splitEntries(sectionText.value[key]).length +
+    (key === 'key_figures'
+      ? figureEditors.value.length
+      : flatDraftsFor(key === 'places' ? 'place' : 'faction').length)
+  const value = Number(generateCounts.value[key])
+  generateCounts.value[key] = Number.isFinite(value)
+    ? Math.min(Math.max(0, MAX_QUICK_SLOTS - named), Math.max(0, Math.trunc(value)))
+    : 0
+}
 type FlatKind = 'place' | 'faction'
 interface FlatSeedDraft extends FlatSeedEntry {
   id: number
@@ -60,6 +117,10 @@ const editorRefs = ref<Array<InstanceType<typeof CharacterSheetEditor> | null>>(
 
 function addFigure() {
   figureEditors.value.push({ id: ++figureEditorSeq })
+}
+function removeFigure(index: number) {
+  figureEditors.value.splice(index, 1)
+  editorRefs.value.splice(index, 1)
 }
 const notes = ref('')
 const error = ref<string | null>(null)
@@ -107,6 +168,8 @@ onMounted(async () => {
 
 interface StoredBuildDraft {
   sectionText?: Partial<Record<SectionKey, string>>
+  quickSlots?: Partial<Record<SectionKey, number>>
+  generateCounts?: Partial<Record<SectionKey, number>>
   flatSeedDrafts?: Array<Omit<FlatSeedDraft, 'id'> & { id?: number }>
   notes?: string
 }
@@ -127,6 +190,10 @@ function restoreDraft() {
       places: stored.sectionText?.places ?? '',
       factions: stored.sectionText?.factions ?? '',
       key_figures: stored.sectionText?.key_figures ?? '',
+    }
+    for (const key of ['places', 'factions', 'key_figures'] as const) {
+      setSlotCount(key, stored.quickSlots?.[key] ?? splitEntries(sectionText.value[key]).length)
+      generateCounts.value[key] = stored.generateCounts?.[key] ?? 0
     }
     flatSeedDrafts.value = (stored.flatSeedDrafts ?? []).map((draft) => ({
       ...draft,
@@ -149,13 +216,15 @@ function hydrateFromSeed(seed: BuildInPayload) {
     factions: stringsFor(seed.factions),
     key_figures: stringsFor(seed.key_figures),
   }
+  for (const key of ['places', 'factions', 'key_figures'] as const) {
+    setSlotCount(key, splitEntries(sectionText.value[key]).length)
+    generateCounts.value[key] = seed.generate_counts?.[key] ?? 0
+  }
   const structured = (entries: unknown[] | undefined, kind: FlatKind): FlatSeedDraft[] =>
     (entries ?? []).flatMap((entry) => {
       if (typeof entry !== 'object' || entry === null) return []
       const value = entry as FlatSeedEntry
-      return typeof value.name === 'string'
-        ? [{ ...value, id: ++flatSeedSeq, kind }]
-        : []
+      return typeof value.name === 'string' ? [{ ...value, id: ++flatSeedSeq, kind }] : []
     })
   flatSeedDrafts.value = [
     ...structured(seed.places, 'place'),
@@ -171,6 +240,8 @@ function saveDraft() {
       draftStorageKey,
       JSON.stringify({
         sectionText: sectionText.value,
+        quickSlots: quickSlots.value,
+        generateCounts: generateCounts.value,
         flatSeedDrafts: flatSeedDrafts.value,
         notes: notes.value,
       } satisfies StoredBuildDraft),
@@ -188,7 +259,7 @@ function clearDraft() {
   }
 }
 
-watch([sectionText, flatSeedDrafts, notes], saveDraft, { deep: true })
+watch([sectionText, quickSlots, generateCounts, flatSeedDrafts, notes], saveDraft, { deep: true })
 
 onUnmounted(() => {
   disconnectSocket?.()
@@ -202,17 +273,28 @@ const hasContent = computed(() => {
   )
   const anyEditor = editorRefs.value.some((editor) => editor?.hasContent)
   const anyFlatDraft = flatSeedDrafts.value.some((draft) => draft.name.trim().length > 0)
-  return anySection || notes.value.trim().length > 0 || anyEditor || anyFlatDraft
+  return (
+    anySection ||
+    Object.values(generateCounts.value).some(Boolean) ||
+    notes.value.trim().length > 0 ||
+    anyEditor ||
+    anyFlatDraft
+  )
 })
 
 const buildPreview = computed(() => ({
-  places: splitEntries(sectionText.value.places).length,
-  factions: splitEntries(sectionText.value.factions).length,
+  places: flatEntries('place').length + generateCounts.value.places,
+  factions: flatEntries('faction').length + generateCounts.value.factions,
   figures:
     splitEntries(sectionText.value.key_figures).length +
-    figureEditors.value.filter((_, index) => editorRefs.value[index]?.hasContent).length,
+    figureEditors.value.filter((_, index) => editorRefs.value[index]?.hasContent).length +
+    generateCounts.value.key_figures,
+  generated: Object.values(generateCounts.value).reduce((sum, count) => sum + count, 0),
   hasNotes: notes.value.trim().length > 0,
 }))
+const overLimit = computed(() =>
+  (['places', 'factions', 'figures'] as const).filter((kind) => buildPreview.value[kind] > 100),
+)
 
 function splitEntries(text: string): string[] {
   return text
@@ -288,7 +370,8 @@ const entityPickerOptions = computed<EntityPickerOption[]>(() => {
   }
   for (const name of quickNamesFor('place')) add(name, 'place', 'free text')
   for (const name of quickNamesFor('faction')) add(name, 'faction', 'free text')
-  for (const name of splitEntries(sectionText.value.key_figures)) add(name, 'character', 'free text')
+  for (const name of splitEntries(sectionText.value.key_figures))
+    add(name, 'character', 'free text')
   for (const draft of flatSeedDrafts.value) add(draft.name, draft.kind, 'shaped entry')
   const seen = new Set<string>()
   return options.filter((option) => {
@@ -358,9 +441,7 @@ function flatEntries(kind: FlatKind): (string | FlatSeedEntry)[] {
  * structured registry-backed entries; key figures mix textarea lines with
  * entries authored in the shared sheet editor. */
 function formSeed(): BuildInPayload {
-  const figures: (string | AuthoredFigureSeed)[] = splitEntries(
-    sectionText.value.key_figures,
-  )
+  const figures: (string | AuthoredFigureSeed)[] = splitEntries(sectionText.value.key_figures)
   for (const editor of editorRefs.value) {
     if (!editor) continue
     if (!editor.hasContent) continue
@@ -370,6 +451,7 @@ function formSeed(): BuildInPayload {
     places: flatEntries('place'),
     factions: flatEntries('faction'),
     key_figures: figures,
+    generate_counts: { ...generateCounts.value },
     notes: notes.value.trim(),
   }
 }
@@ -412,14 +494,13 @@ function jobSeed(payload: unknown): BuildInPayload | null {
   const factions = flatEntriesFromJob('factions')
   const keyFigures = figureEntriesFromJob('key_figures')
   const notes = record['notes']
-  if (
-    !places ||
-    !factions ||
-    !keyFigures ||
-    typeof notes !== 'string'
-  )
-    return null
-  return { places, factions, key_figures: keyFigures, notes }
+  if (!places || !factions || !keyFigures || typeof notes !== 'string') return null
+  const rawCounts = record['generate_counts']
+  const generate_counts =
+    typeof rawCounts === 'object' && rawCounts !== null
+      ? (rawCounts as BuildInPayload['generate_counts'])
+      : undefined
+  return { places, factions, key_figures: keyFigures, notes, generate_counts }
 }
 
 function sameEntry(
@@ -432,6 +513,9 @@ function sameEntry(
 function sameSeed(a: BuildInPayload, b: BuildInPayload): boolean {
   return (
     a.notes === b.notes &&
+    (['places', 'factions', 'key_figures'] as const).every(
+      (key) => (a.generate_counts?.[key] ?? 0) === (b.generate_counts?.[key] ?? 0),
+    ) &&
     (['places', 'factions', 'key_figures'] as const).every((key) => {
       const left = a[key] ?? []
       const right = b[key] ?? []
@@ -458,6 +542,8 @@ async function onJobMessage(message: WsMessage) {
     figureEditors.value = []
     editorRefs.value = []
     sectionText.value = { places: '', factions: '', key_figures: '' }
+    quickSlots.value = { places: 0, factions: 0, key_figures: 0 }
+    generateCounts.value = { places: 0, factions: 0, key_figures: 0 }
     notes.value = ''
     clearDraft()
   }
@@ -561,195 +647,303 @@ function mergeLines(result: unknown): string[] {
     <template v-else>
       <div class="mc-build-layout">
         <div class="mc-build-main">
-    <div class="card seed">
-      <h2>{{ campaigns.current.title }}</h2>
-      <p class="muted">{{ campaigns.current.description || 'No description.' }}</p>
-      <p>
-        <RouterLink :to="{ name: 'world', params: { id: campaignId } }" class="cta secondary"
-          >Open world view</RouterLink
-        >
-      </p>
-      <p class="muted">
-        Theme: <strong>{{ campaigns.current.theme }}</strong>
-      </p>
-      <p v-if="campaigns.current.custom_lore" class="lore">
-        {{ campaigns.current.custom_lore }}
-      </p>
-      <p class="muted small">
-        The world seed is read from your campaign — it flows into generation.
-      </p>
-    </div>
-  
-
-    <form class="card mc-build-form" @submit.prevent="submit">
-      <div v-for="section in sections" :key="section.key" class="mc-build-section">
-        <label>
-          <span>{{ section.label }}</span>
-          <textarea v-model="sectionText[section.key]" :placeholder="section.hint" rows="3" />
-        </label>
-        <p v-if="section.key === 'places' || section.key === 'factions'" class="mc-build-section-help">
-          Quick names above, or add shaped entries with an archetype and dial.
-        </p>
-        <div v-if="section.key === 'places' || section.key === 'factions'" class="mc-flat-seeds">
-          <article v-for="draft in flatDraftsFor(section.key === 'places' ? 'place' : 'faction')" :key="draft.id" class="mc-flat-seed">
-            <div class="mc-flat-seed-heading">
-              <span class="mc-card-kicker">{{ draft.kind }}</span>
-              <button type="button" class="link" @click="removeFlatSeed(draft.id)">Remove</button>
-            </div>
-            <div class="mc-flat-seed-grid">
-              <label>
-                <span>Name</span>
-                <EntityPicker
-                  v-model="draft.name"
-                  :options="pickerOptionsFor(draft.kind)"
-                  placeholder="Choose or type a name"
-                />
-              </label>
-              <label>
-                <span>Archetype</span>
-                <select v-model="draft.archetype" class="mc-seed-input">
-                  <option v-for="entry in archetypesFor(draft.kind)" :key="entry.name" :value="entry.name">
-                    {{ entry.name }}
-                  </option>
-                </select>
-              </label>
-              <label class="mc-flat-seed-description">
-                <span>Description</span>
-                <textarea v-model="draft.description" class="mc-seed-input" rows="2" placeholder="What makes it matter?" />
-              </label>
-              <label>
-                <span>Dial</span>
-                <select v-model="draft.dial" class="mc-seed-input">
-                  <option v-for="level in dialLevels" :key="level" :value="level">{{ level }}</option>
-                </select>
-              </label>
-            </div>
-            <div class="mc-flat-relations">
-              <div class="mc-flat-relations-heading">
-                <span>Relations</span>
-                <button type="button" class="link" @click="addFlatRelation(draft)">
-                  + add relation
-                </button>
-              </div>
-              <div
-                v-for="(relation, relationIndex) in draft.relations ?? []"
-                :key="relationIndex"
-                class="mc-flat-relation"
+          <div class="card seed">
+            <h2>{{ campaigns.current.title }}</h2>
+            <p class="muted">{{ campaigns.current.description || 'No description.' }}</p>
+            <p>
+              <RouterLink
+                :to="{ name: 'overview', params: { id: campaignId } }"
+                class="mc-btn mc-btn-secondary"
+                >Open overview</RouterLink
               >
-                <select v-model="relation.type" class="mc-seed-input" aria-label="Relation type">
-                  <option
-                    v-for="type in relationTypesFor(draft, relation.target_name)"
-                    :key="type"
-                    :value="type"
+            </p>
+            <p class="muted">
+              Theme: <strong>{{ campaigns.current.theme }}</strong>
+            </p>
+            <p v-if="campaigns.current.custom_lore" class="lore">
+              {{ campaigns.current.custom_lore }}
+            </p>
+            <p class="muted small">
+              The world seed is read from your campaign — it flows into generation.
+            </p>
+          </div>
+
+          <form class="card mc-build-form" @submit.prevent="submit">
+            <div v-for="section in sections" :key="section.key" class="mc-build-section">
+              <div class="mc-quick-heading">
+                <div>
+                  <h2>{{ section.label }}</h2>
+                  <p>Let the model invent names, or add your own anchors below.</p>
+                </div>
+                <label class="mc-slot-count">
+                  <span>Generate how many?</span>
+                  <input
+                    v-model.number="generateCounts[section.key]"
+                    type="number"
+                    min="0"
+                    :max="MAX_QUICK_SLOTS"
+                    :aria-label="`Generate ${section.label.toLowerCase()}`"
+                    @change="onGenerateCountChange(section.key)"
+                  />
+                </label>
+              </div>
+              <p v-if="generateCounts[section.key]" class="mc-generated-hint">
+                The model will invent {{ generateCounts[section.key] }}
+                {{ section.key === 'key_figures' ? 'figures' : section.key }} and build full records
+                for them.
+              </p>
+              <div v-if="slotCount(section.key)" class="mc-quick-rows">
+                <div
+                  v-for="index in slotCount(section.key)"
+                  :key="`${section.key}-${index}`"
+                  class="mc-quick-row"
+                >
+                  <label :for="`quick-${section.key}-${index}`" class="sr-only"
+                    ><span>{{ section.label }} {{ index }}</span></label
                   >
-                    {{ type }}
-                  </option>
-                </select>
-                <EntityPicker
-                  :model-value="relation.target_name ?? ''"
-                  :options="pickerOptionsFor()"
-                  aria-label="Relation target"
-                  placeholder="Choose or type a target"
-                  @update:model-value="relation.target_name = $event"
-                />
-                <input
-                  v-model.number="relation.counter"
-                  class="mc-seed-input mc-relation-counter"
-                  type="number"
-                  aria-label="Relation counter"
-                  placeholder="Counter"
-                />
+                  <input
+                    :id="`quick-${section.key}-${index}`"
+                    type="text"
+                    class="mc-seed-input"
+                    :value="quickLines(section.key)[index - 1] ?? ''"
+                    :placeholder="section.hint"
+                    @input="
+                      setQuickName(
+                        section.key,
+                        index - 1,
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                  />
+                  <button
+                    type="button"
+                    class="mc-quick-remove"
+                    :aria-label="`Remove ${section.label} ${index}`"
+                    @click="removeQuickName(section.key, index - 1)"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+              <div class="mc-quick-tools">
                 <button
                   type="button"
-                  class="link"
-                  :aria-label="`Remove relation ${relationIndex + 1}`"
-                  @click="removeFlatRelation(draft, relationIndex)"
+                  class="mc-btn mc-btn-secondary"
+                  :disabled="slotCount(section.key) >= MAX_QUICK_SLOTS"
+                  @click="setSlotCount(section.key, slotCount(section.key) + 1)"
                 >
-                  Remove
+                  + Add a named
+                  {{
+                    section.key === 'key_figures'
+                      ? 'figure'
+                      : section.key === 'places'
+                        ? 'place'
+                        : 'faction'
+                  }}
                 </button>
+                <details class="mc-paste-list">
+                  <summary>Paste a list instead</summary>
+                  <label
+                    ><span>{{ section.label }}</span>
+                    <textarea
+                      v-model="sectionText[section.key]"
+                      :placeholder="`One ${section.key === 'key_figures' ? 'figure' : section.key === 'places' ? 'place' : 'faction'} per line`"
+                      rows="3"
+                      @input="syncPastedNames(section.key)"
+                    />
+                  </label>
+                </details>
               </div>
+              <p
+                v-if="section.key === 'places' || section.key === 'factions'"
+                class="mc-build-section-help"
+              >
+                Want to direct the details? Add a shaped entry with an archetype, dial, and
+                relations.
+              </p>
+              <div
+                v-if="section.key === 'places' || section.key === 'factions'"
+                class="mc-flat-seeds"
+              >
+                <article
+                  v-for="draft in flatDraftsFor(section.key === 'places' ? 'place' : 'faction')"
+                  :key="draft.id"
+                  class="mc-flat-seed"
+                >
+                  <div class="mc-flat-seed-heading">
+                    <span class="mc-card-kicker">{{ draft.kind }}</span>
+                    <button type="button" class="link" @click="removeFlatSeed(draft.id)">
+                      Remove
+                    </button>
+                  </div>
+                  <div class="mc-flat-seed-grid">
+                    <label>
+                      <span>Name</span>
+                      <EntityPicker
+                        v-model="draft.name"
+                        :options="pickerOptionsFor(draft.kind)"
+                        placeholder="Choose or type a name"
+                      />
+                    </label>
+                    <label>
+                      <span>Archetype</span>
+                      <select v-model="draft.archetype" class="mc-seed-input">
+                        <option
+                          v-for="entry in archetypesFor(draft.kind)"
+                          :key="entry.name"
+                          :value="entry.name"
+                        >
+                          {{ entry.name }}
+                        </option>
+                      </select>
+                    </label>
+                    <label class="mc-flat-seed-description">
+                      <span>Description</span>
+                      <textarea
+                        v-model="draft.description"
+                        class="mc-seed-input"
+                        rows="2"
+                        placeholder="What makes it matter?"
+                      />
+                    </label>
+                    <label>
+                      <span>Dial</span>
+                      <select v-model="draft.dial" class="mc-seed-input">
+                        <option v-for="level in dialLevels" :key="level" :value="level">
+                          {{ level }}
+                        </option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="mc-flat-relations">
+                    <div class="mc-flat-relations-heading">
+                      <span>Relations</span>
+                      <button type="button" class="link" @click="addFlatRelation(draft)">
+                        + add relation
+                      </button>
+                    </div>
+                    <div
+                      v-for="(relation, relationIndex) in draft.relations ?? []"
+                      :key="relationIndex"
+                      class="mc-flat-relation"
+                    >
+                      <select
+                        v-model="relation.type"
+                        class="mc-seed-input"
+                        aria-label="Relation type"
+                      >
+                        <option
+                          v-for="type in relationTypesFor(draft, relation.target_name)"
+                          :key="type"
+                          :value="type"
+                        >
+                          {{ type }}
+                        </option>
+                      </select>
+                      <EntityPicker
+                        :model-value="relation.target_name ?? ''"
+                        :options="pickerOptionsFor()"
+                        aria-label="Relation target"
+                        placeholder="Choose or type a target"
+                        @update:model-value="relation.target_name = $event"
+                      />
+                      <input
+                        v-model.number="relation.counter"
+                        class="mc-seed-input mc-relation-counter"
+                        type="number"
+                        aria-label="Relation counter"
+                        placeholder="Counter"
+                      />
+                      <button
+                        type="button"
+                        class="link"
+                        :aria-label="`Remove relation ${relationIndex + 1}`"
+                        @click="removeFlatRelation(draft, relationIndex)"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              </div>
+              <button
+                v-if="section.key === 'places' || section.key === 'factions'"
+                type="button"
+                class="mc-btn mc-btn-secondary mc-add-flat-seed"
+                @click="addFlatSeed(section.key === 'places' ? 'place' : 'faction')"
+              >
+                + shaped {{ section.key === 'places' ? 'place' : 'faction' }}
+              </button>
             </div>
-          </article>
-        </div>
-        <button
-          v-if="section.key === 'places' || section.key === 'factions'"
-          type="button"
-          class="link mc-add-flat-seed"
-          @click="addFlatSeed(section.key === 'places' ? 'place' : 'faction')"
-        >
-          + shaped {{ section.key === 'places' ? 'place' : 'faction' }}
-        </button>
-      </div>
-      <div class="authored">
-        <h2>Authored key figures</h2>
-        <p class="muted small">
-          Optional. A figure here is YOUR fact — the model builds the rest of the world around
-          it and your text commits verbatim. A relation naming someone who does not exist yet
-          (a city, a cult) makes the build create them; the relation's type decides what
-          (located in → a place). Plain lines in Key figures above stay free-form.
-        </p>
-        <article
-          v-for="(figure, index) in figureEditors"
-          :key="figure.id"
-          class="figure"
-        >
-          <div class="figure-head">
-            <span class="muted small">Authored figure {{ index + 1 }}</span>
+            <div class="authored">
+              <h2>Authored key figures</h2>
+              <p class="muted small">
+                Optional. A figure here is YOUR fact — the model builds the rest of the world around
+                it and your text commits verbatim. A relation naming someone who does not exist yet
+                (a city, a cult) makes the build create them; the relation's type decides what
+                (located in → a place). Plain lines in Key figures above stay free-form.
+              </p>
+              <article v-for="(figure, index) in figureEditors" :key="figure.id" class="figure">
+                <div class="figure-head">
+                  <span class="muted small">Authored figure {{ index + 1 }}</span>
+                  <button type="button" class="link" @click="removeFigure(index)">
+                    ✕ remove figure
+                  </button>
+                </div>
+                <CharacterSheetEditor
+                  :ref="
+                    (el) => (editorRefs[index] = el as InstanceType<typeof CharacterSheetEditor>)
+                  "
+                  :campaign-id="campaignId"
+                />
+              </article>
+              <button type="button" class="link" @click="addFigure">+ authored figure</button>
+            </div>
+            <label>
+              <span>Free-form notes</span>
+              <textarea
+                v-model="notes"
+                maxlength="2000"
+                placeholder="Custom lore, rumors, history, anything in your head — one note per line is fine."
+                rows="5"
+              />
+              <span class="muted small counter">{{ notes.length }}/2000</span>
+            </label>
+            <div class="mc-build-summary" aria-live="polite">
+              <div>
+                <p class="mc-card-kicker">Ready to build</p>
+                <strong
+                  >{{ buildPreview.places + buildPreview.factions + buildPreview.figures }} entities
+                  requested</strong
+                >
+                <p>
+                  {{ buildPreview.generated }} invented by the model; your named anchors and
+                  campaign seed shape the rest{{ buildPreview.hasNotes ? ' with your notes' : '' }}.
+                </p>
+              </div>
+              <ul>
+                <li>{{ buildPreview.places }} places</li>
+                <li>{{ buildPreview.factions }} factions</li>
+                <li>{{ buildPreview.figures }} figures</li>
+              </ul>
+            </div>
+            <p v-if="overLimit.length" class="error">
+              Keep each group to 100 or fewer, including your named entries:
+              {{ overLimit.join(', ') }}.
+            </p>
+            <p v-if="error" class="error">{{ error }}</p>
             <button
-              type="button"
-              class="link"
-              @click="
-                figureEditors.splice(index, 1);
-                editorRefs.splice(index, 1)
-              "
+              type="submit"
+              class="mc-btn mc-build-submit"
+              :disabled="submitting || inFlight || !hasContent || overLimit.length > 0"
             >
-              ✕ remove figure
+              {{ submitting ? 'Enqueuing…' : inFlight ? 'Building…' : 'Build my world' }}
             </button>
-          </div>
-          <CharacterSheetEditor
-            :ref="(el) => (editorRefs[index] = el as InstanceType<typeof CharacterSheetEditor>)"
-            :campaign-id="campaignId"
-          />
-        </article>
-        <button type="button" class="link" @click="addFigure">+ authored figure</button>
-      </div>
-      <label>
-        <span>Free-form notes</span>
-        <textarea
-          v-model="notes"
-          maxlength="2000"
-          placeholder="Custom lore, rumors, history, anything in your head — one note per line is fine."
-          rows="5"
-        />
-        <span class="muted small counter">{{ notes.length }}/2000</span>
-      </label>
-      <p v-if="error" class="error">{{ error }}</p>
-      <button type="submit" :disabled="submitting || inFlight || !hasContent">
-        {{ submitting ? 'Enqueuing…' : inFlight ? 'Building…' : 'Build my world' }}
-      </button>
-      <p v-if="inFlight" class="muted small">
-        Still building — your seed text stays here, and a failed build keeps it for the retry.
-      </p>
-    </form>
+            <p v-if="inFlight" class="muted small">
+              Still building — your seed text stays here, and a failed build keeps it for the retry.
+            </p>
+          </form>
         </div>
-
-        <aside class="mc-build-preview card" aria-labelledby="build-preview-title">
-          <p class="mc-card-kicker">Live preview</p>
-          <h2 id="build-preview-title">What this build contains</h2>
-          <p class="muted">
-            Your notes stay yours. The model uses these anchors to shape the world around them.
-          </p>
-          <ul class="mc-build-inventory">
-            <li><strong>{{ buildPreview.places }}</strong><span>places</span></li>
-            <li><strong>{{ buildPreview.factions }}</strong><span>factions</span></li>
-            <li><strong>{{ buildPreview.figures }}</strong><span>key figures</span></li>
-            <li><strong>{{ buildPreview.hasNotes ? 'On' : 'Off' }}</strong><span>free-form lore</span></li>
-          </ul>
-          <div class="mc-build-preview-note">
-            <span class="mc-build-preview-icon" aria-hidden="true">✦</span>
-            <p>Start with names and ideas. You can refine the world after the first build.</p>
-          </div>
-        </aside>
       </div>
     </template>
 
@@ -775,8 +969,8 @@ function mergeLines(result: unknown): string[] {
               <span v-for="line in mergeLines(job.result)" :key="line">{{ line }}<br /></span>
               <span class="muted small"
                 >Places and factions merge into the existing world — nothing is duplicated.
-                Characters never merge: every build commits them as new entries (regenerate or
-                edit an existing character to change it).</span
+                Characters never merge: every build commits them as new entries (regenerate or edit
+                an existing character to change it).</span
               >
             </dd>
           </template>
@@ -790,6 +984,38 @@ function mergeLines(result: unknown): string[] {
 </template>
 
 <style scoped>
+.mc-build-page {
+  max-width: 980px;
+}
+.seed,
+.mc-build-form,
+.job {
+  padding: 1.3rem;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius);
+  background: var(--mc-surface);
+}
+.seed {
+  background:
+    radial-gradient(circle at 100% 0%, rgba(139, 108, 255, 0.12), transparent 23rem),
+    var(--mc-surface);
+}
+.seed > p {
+  margin: 0.55rem 0;
+}
+.seed .lore {
+  padding: 0.8rem 1rem;
+  border-left: 2px solid var(--mc-interactive);
+  color: var(--mc-text-secondary);
+  background: var(--mc-surface-raised);
+}
+.mc-build-form > button[type='submit'] {
+  justify-self: start;
+}
+.mc-build-form > button[type='submit']:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .mc-build-header {
   margin-bottom: 1.5rem;
 }
@@ -854,7 +1080,7 @@ function mergeLines(result: unknown): string[] {
 }
 .mc-build-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(250px, 0.75fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: 1.25rem;
 }
@@ -865,7 +1091,135 @@ function mergeLines(result: unknown): string[] {
 }
 .mc-build-section {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.7rem;
+  padding: 1.25rem 0;
+  border-bottom: 1px solid var(--mc-border);
+}
+.mc-quick-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 1rem;
+}
+.mc-quick-heading h2 {
+  margin: 0;
+  font-family: var(--mc-display-font);
+  font-size: 1.35rem;
+}
+.mc-quick-heading p {
+  margin: 0.2rem 0 0;
+  color: var(--mc-text-muted);
+  font-size: 0.85rem;
+}
+.mc-slot-count {
+  width: 8.8rem;
+  flex: none;
+  color: var(--mc-text-secondary);
+  font-size: 0.8rem;
+}
+.mc-slot-count input {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--mc-border-bright);
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-input);
+  color: var(--mc-text-primary);
+}
+.mc-quick-rows {
+  display: grid;
+  gap: 0.5rem;
+}
+.mc-quick-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+}
+.mc-generated-hint {
+  margin: 0;
+  color: var(--mc-interactive-bright);
+  font-size: 0.85rem;
+}
+.mc-quick-remove {
+  border: 0;
+  background: transparent;
+  color: var(--mc-text-muted);
+  cursor: pointer;
+}
+.mc-quick-remove:hover {
+  color: var(--mc-danger);
+}
+.mc-quick-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+}
+.mc-quick-tools .mc-btn {
+  font-size: 0.85rem;
+  padding: 0.45rem 0.75rem;
+}
+.mc-paste-list {
+  color: var(--mc-text-secondary);
+  font-size: 0.85rem;
+}
+.mc-paste-list summary {
+  cursor: pointer;
+}
+.mc-paste-list[open] {
+  flex-basis: 100%;
+}
+.mc-paste-list label {
+  margin-top: 0.6rem;
+}
+.mc-paste-list textarea {
+  width: 100%;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.mc-build-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--mc-border-bright);
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-surface-raised);
+}
+.mc-build-summary strong {
+  font-family: var(--mc-display-font);
+  font-size: 1.2rem;
+}
+.mc-build-summary p:last-child {
+  margin: 0.2rem 0 0;
+  color: var(--mc-text-secondary);
+  font-size: 0.85rem;
+}
+.mc-build-summary ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mc-build-summary li {
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--mc-border);
+  border-radius: 999px;
+  color: var(--mc-text-secondary);
+  font-size: 0.8rem;
 }
 .mc-build-section-help {
   margin: 0;
@@ -926,6 +1280,8 @@ function mergeLines(result: unknown): string[] {
 }
 .mc-add-flat-seed {
   justify-self: start;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.85rem;
 }
 .mc-flat-relations {
   display: grid;
@@ -950,63 +1306,6 @@ function mergeLines(result: unknown): string[] {
 }
 .mc-relation-counter {
   width: 6rem;
-}
-.mc-build-preview {
-  position: sticky;
-  top: 1rem;
-  background:
-    radial-gradient(circle at 90% 0%, rgba(139, 108, 255, 0.15), transparent 14rem),
-    var(--mc-surface);
-}
-.mc-build-preview h2 {
-  margin: 0;
-  font-family: var(--mc-display-font);
-  font-size: 1.35rem;
-}
-.mc-build-preview > .muted {
-  margin: 0.55rem 0 1.25rem;
-}
-.mc-build-inventory {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.55rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.mc-build-inventory li {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  padding: 0.7rem;
-  border: 1px solid var(--mc-border);
-  border-radius: var(--mc-radius-sm);
-  background: rgba(10, 20, 33, 0.65);
-}
-.mc-build-inventory strong {
-  color: var(--mc-interactive-bright);
-  font-size: 1.35rem;
-}
-.mc-build-inventory span {
-  color: var(--mc-text-muted);
-  font-size: var(--mc-meta-size);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-.mc-build-preview-note {
-  display: flex;
-  gap: 0.65rem;
-  margin-top: 1.25rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--mc-border);
-  color: var(--mc-text-secondary);
-  font-size: 0.85rem;
-}
-.mc-build-preview-note p {
-  margin: 0;
-}
-.mc-build-preview-icon {
-  color: var(--mc-warning);
 }
 .seed h2 {
   margin-top: 0;
@@ -1075,11 +1374,9 @@ textarea {
   padding-top: 0.75rem;
 }
 @media (max-width: 760px) {
-  .mc-build-layout {
-    grid-template-columns: 1fr;
-  }
-  .mc-build-preview {
-    position: static;
+  .mc-quick-heading {
+    align-items: start;
+    flex-direction: column;
   }
   .mc-flat-seed-grid {
     grid-template-columns: 1fr;

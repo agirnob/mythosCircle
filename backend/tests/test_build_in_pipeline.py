@@ -14,6 +14,7 @@ import dataclasses
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -21,6 +22,7 @@ import pytest
 from app.core import ids
 from app.core.settings import LLMSettings
 from app.pipeline import combat
+from app.pipeline.budget import CallBudget
 from app.pipeline.build_in import (
     REPAIR_SEED,
     REPAIR_TEMPERATURE,
@@ -32,6 +34,7 @@ from app.pipeline.build_in import (
     _cap_relationship_rows,
     _collect_record_issues,
     _edge_row_usable,
+    _expand_requested_names,
     _filter_wiring_edges,
     _log_stat_repair_scope_breaches,
     _normalize_edge_directions,
@@ -355,6 +358,110 @@ def test_wave1_only_commits_core_and_succeeds(world: str) -> None:
     # Fully networked at the commit: every entity is an edge endpoint.
     endpoints = {e.src for e in edges} | {e.dst for e in edges}
     assert {e.id for e in entities} == endpoints
+
+
+def test_requested_place_count_invents_and_builds_exact_roster(world: str) -> None:
+    job_id = _enqueue(world, generate_counts={"places": 2})
+    prompts: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        prompts.append(prompt)
+        if "Invent names" in prompt:
+            return json.dumps({"names": ["The Glass Quay", "Moonwake Pier"]})
+        return json.dumps(
+            {
+                "entities": [
+                    {"ref": "E0", "kind": "place", "name": "The Glass Quay"},
+                    {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
+                ],
+                "edges": [],
+            }
+        )
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _ = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    assert "The Glass Quay" in prompts[-1] and "Moonwake Pier" in prompts[-1]
+    with session_scope() as session:
+        assert {entity.name for entity in world_entities(session, world)} == {
+            "The Glass Quay",
+            "Moonwake Pier",
+        }
+
+
+def test_requested_names_retry_duplicate_before_world_write(world: str) -> None:
+    job_id = _enqueue(world, generate_counts={"places": 2})
+    responses = [
+        json.dumps({"names": ["Same", "Same"]}),
+        json.dumps({"names": ["Glass Quay", "Moonwake Pier"]}),
+        json.dumps(
+            {
+                "entities": [
+                    {"ref": "E0", "kind": "place", "name": "Glass Quay"},
+                    {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
+                ],
+                "edges": [],
+            }
+        ),
+    ]
+
+    assert (
+        run_next_job(provider=lambda _prompt, settings: responses.pop(0), settings=SETTINGS)
+        == job_id
+    )
+    job, _ = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    assert responses == []
+
+
+def test_twenty_requested_places_are_twenty_invented_names(world: str) -> None:
+    job_id = _enqueue(world, generate_counts={"places": 20})
+    job, _ = job_status(job_id)
+    names = [
+        f"The {word} Haven"
+        for word in (
+            "Amber",
+            "Briar",
+            "Cinder",
+            "Dawn",
+            "Ember",
+            "Frost",
+            "Gale",
+            "Hazel",
+            "Ivory",
+            "Juniper",
+            "Kestrel",
+            "Lunar",
+            "Moss",
+            "Night",
+            "Opal",
+            "Pine",
+            "Quartz",
+            "Reed",
+            "Silver",
+            "Thistle",
+        )
+    ]
+    prompts: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        prompts.append(prompt)
+        assert settings.response_format is not None
+        name_schema = settings.response_format["json_schema"]["schema"]["properties"]["names"]
+        assert name_schema["minItems"] == name_schema["maxItems"] == 20
+        return json.dumps({"names": names})
+
+    expanded = _expand_requested_names(
+        {"places": [], "factions": [], "key_figures": [], "generate_counts": {"places": 20}},
+        SimpleNamespace(title="Coast", theme="High Fantasy", description="", custom_lore=""),
+        [],
+        CallBudget(job),
+        provider,
+        SETTINGS,
+    )
+    assert expanded["places"] == names
+    assert len(prompts) == 1
+    assert "numbered placeholders" in prompts[0]
 
 
 def test_two_waves_commit_core_first_then_notes(world: str) -> None:

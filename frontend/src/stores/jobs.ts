@@ -61,6 +61,8 @@ export interface BuildInPayload {
   places?: (string | FlatSeedEntry)[]
   factions?: (string | FlatSeedEntry)[]
   key_figures: (string | AuthoredFigureSeed)[]
+  /** Additional model-invented entities, on top of any named anchors. */
+  generate_counts?: Partial<Record<'places' | 'factions' | 'key_figures', number>>
   notes?: string
   /** Generic-library builds only: the theme whose default seed the runner
    * substitutes for the library's own (never generation context). */
@@ -293,9 +295,7 @@ export const useJobsStore = defineStore('jobs', {
         body: JSON.stringify({
           campaign_id: campaignId,
           kind: 'video',
-          payload: hasPrompt
-            ? { entity_id: entityId, prompt }
-            : { entity_id: entityId },
+          payload: hasPrompt ? { entity_id: entityId, prompt } : { entity_id: entityId },
         }),
       })
       this.upsert(job)

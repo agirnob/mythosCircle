@@ -834,6 +834,120 @@ def _wave1_roster(payload: dict[str, Any]) -> list[tuple[str, str, dict[str, Any
     return roster
 
 
+def _parse_requested_names(text: str) -> dict[str, Any]:
+    parsed = parse_json_object(text)
+    if parsed is None:
+        raise WaveJsonError("name list is not JSON")
+    return parsed
+
+
+def _expand_requested_names(
+    payload: dict[str, Any],
+    campaign: Any,
+    world_before: Sequence[models.Entity],
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+) -> dict[str, Any]:
+    """Invent the requested number of *additional* anchors before wave 1.
+
+    The original job payload stays untouched for retry and audit. Each naming
+    batch is small enough for local models, and a malformed/duplicate list
+    gets one correction attempt before any world write occurs.
+    """
+    counts = payload.get("generate_counts") or {}
+    if not any(counts.values()):
+        return payload
+    expanded = {
+        **payload,
+        **{section: list(payload.get(section) or []) for section in SECTION_NAMES},
+    }
+    used = {normalize_entity_name(entity.name) for entity in world_before}
+    used.update(normalize_entity_name(name) for _section, name, _seed in _wave1_roster(payload))
+    labels = {"places": "place", "factions": "faction", "key_figures": "character"}
+    for section in SECTION_NAMES:
+        remaining = counts.get(section, 0)
+        while remaining:
+            amount = min(20, remaining)
+            prompt = "\n".join(
+                [
+                    "Invent names for a TTRPG campaign. Respond with only one JSON object.",
+                    f"Campaign: {campaign.title}",
+                    f"Theme: {campaign.theme}",
+                    f"World seed: {campaign.description}",
+                    f"Lore: {campaign.custom_lore}",
+                    f"DM notes: {payload.get('notes', '')}",
+                    f"Create exactly {amount} distinct {labels[section]} names.",
+                    "Use evocative, setting-specific names, not numbered placeholders.",
+                    "Do not repeat any existing or named anchor:",
+                    ", ".join(sorted(used)),
+                    'Return {"names": ["Name", ...]}. Names must be strings, not records.',
+                ]
+            )
+            schema = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "build_in_names",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "names": {
+                                "type": "array",
+                                "minItems": amount,
+                                "maxItems": amount,
+                                "items": {"type": "string", "minLength": 1},
+                            }
+                        },
+                        "required": ["names"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+            naming_settings = dataclasses.replace(
+                settings, response_format=schema, max_tokens=min(settings.max_tokens, 2048)
+            )
+            for attempt in range(2):
+                parsed = call_wave(
+                    budget,
+                    provider,
+                    naming_settings,
+                    prompt,
+                    label="build_names" if attempt == 0 else "build_names_retry",
+                    parse=_parse_requested_names,
+                    retry_note='Return only {"names": ["Name", ...]}.',
+                    ceiling=settings.max_tokens,
+                )
+                names = parsed.get("names")
+                if (
+                    isinstance(names, list)
+                    and len(names) == amount
+                    and all(
+                        isinstance(name, str)
+                        and 0 < len(name.strip()) <= 2000
+                        and normalize_entity_name(name) not in used
+                        for name in names
+                    )
+                    and len({normalize_entity_name(name) for name in names}) == amount
+                ):
+                    break
+                if attempt == 1:
+                    raise JobPayloadError(
+                        f"Could not create {amount} unique {labels[section]} names. "
+                        "Try a smaller number or add a few names yourself."
+                    )
+                prompt += (
+                    "\nYour last list had missing, repeated, or already-used names. "
+                    f"Return exactly {amount} new and distinct names. Previous list: "
+                    + json.dumps(names, ensure_ascii=False)
+                )
+            valid_names = cast(list[str], names)
+            expanded[section].extend(name.strip() for name in valid_names)
+            used.update(normalize_entity_name(name) for name in valid_names)
+            remaining -= amount
+    return expanded
+
+
 def _wave1_chunks(
     roster: Sequence[tuple[str, str, dict[str, Any] | None]],
 ) -> list[list[tuple[int, str, str, dict[str, Any] | None]]]:
@@ -2027,9 +2141,7 @@ def _enforce_flat_records(
             budget=budget,
             provider=provider,
             settings=settings,
-            prompt=_build_flat_record_repair_prompt(
-                issues, safety_words=8 * (repair_attempt + 1)
-            ),
+            prompt=_build_flat_record_repair_prompt(issues, safety_words=8 * (repair_attempt + 1)),
             parse=_parse_record_repair_output,
             positions=[issue.position for issue in issues],
             label="flat_record" if repair_attempt == 0 else "flat_record_retry",
@@ -3152,6 +3264,21 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # seed entry nor the committed world resolves become MANDATED roster
     # rows — they generate inside the wave (the schema pins the count)
     # because the DM-demanded endpoints are load-bearing.
+    if not _job_still_running(job):
+        return
+    original_payload = payload
+    payload = _expand_requested_names(payload, wave1_seed, world_before, budget, provider, settings)
+    generated_rows = (
+        [
+            ("character" if section == "key_figures" else section[:-1], normalize_entity_name(name))
+            for section in SECTION_NAMES
+            for name in payload[section][len(original_payload.get(section) or []) :]
+        ]
+        if payload is not original_payload
+        else []
+    )
+    if generated_rows:
+        progress(0.1)
     roster = _wave1_roster(payload)
     committed_names = {normalize_entity_name(entity.name) for entity in world_before}
     mandated = _mandated_targets(payload, committed_names)
@@ -3256,6 +3383,14 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     )
     if cancelled:
         return
+    if generated_rows:
+        actual_rows = {(entity.kind, normalize_entity_name(entity.name)) for entity in entities_1}
+        missing_rows = [name for name in generated_rows if name not in actual_rows]
+        if len(entities_1) != len(roster) or missing_rows:
+            raise JobPayloadError(
+                "The model did not build every requested entity. Try a smaller count; "
+                "no entities from this build were saved."
+            )
     progress(0.3)
     # Record enforcement (dogfood fix 2026-09-09): every wave character
     # carries the full AR24 record — violations go through exactly one
