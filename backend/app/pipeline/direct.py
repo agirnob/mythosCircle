@@ -29,7 +29,7 @@ the declared edges applied deterministically in the same transaction.
 from typing import Any, cast
 
 from app.core import ids
-from app.store import complete_job, models
+from app.store import JobStateConflictError, complete_job, models
 from app.store.commit import _commit, edge_kind_ok
 from app.store.db import session_scope
 from app.store.direct import validate_add_character_payload
@@ -165,6 +165,11 @@ def run_add_character(job: models.Job) -> None:
     if not isinstance(payload, dict):
         raise StructuralValidationError(["add_character payload must be a JSON object"])
     with session_scope() as session:
+        # BEGIN IMMEDIATE holds the write lock from this read through the
+        # graph commit. A cancellation that won the race must stop the write.
+        current = session.get(models.Job, job.id)
+        if current is None or current.state != "running":
+            raise JobStateConflictError(job.id, current.state if current else "missing")
         violations = validate_add_character_payload(payload)
         if violations:
             raise StructuralValidationError(violations)

@@ -2583,3 +2583,123 @@ def test_migrate_edge_reason_adds_null_column(tmp_path: Path) -> None:
         assert edge is not None and edge.reason is None
     finally:
         init_db(previous)
+
+
+@pytest.mark.parametrize("later", [{"hp": 12}, {"defeated": False}])
+def test_creation_take_back_preserves_later_session_state(
+    world: str, later: dict[str, Any]
+) -> None:
+    _, entity = _seed_world(world)
+    first = commit_session_verb(world, entity, update={"defeated": True})
+    commit_session_verb(world, entity, update=later)
+    original = _session_row(world, entity)
+    assert original is not None
+    take_back = undo(world, first.id)
+    assert _session_row(world, entity) == later
+    undo(world, take_back.id)
+    assert _session_row(world, entity) == original
+
+
+def test_surgical_numeric_take_back_logs_current_image_and_redoes(world: str) -> None:
+    _, entity = _seed_world(world)
+    commit_session_verb(world, entity, update={"hp": 10})
+    target = commit_session_verb(world, entity, update={"hp": 20})
+    commit_session_verb(world, entity, update={"hp": 35})
+    take_back = undo(world, target.id)
+    assert _session_row(world, entity) == {"hp": 25}
+    with session_scope() as session:
+        event = revision_events(session, world, take_back.id)[0]
+        assert event.payload["before"]["data"] == {"hp": 35}
+    undo(world, take_back.id)
+    assert _session_row(world, entity) == {"hp": 35}
+
+
+@pytest.mark.parametrize("creation", [False, True])
+def test_knowledge_take_back_preserves_later_toggle_and_redo(world: str, creation: bool) -> None:
+    _, entity = _seed_world(world)
+    if not creation:
+        commit_knowledge_toggle(world, entity, "secret", known=False)
+    target = commit_knowledge_toggle(world, entity, "secret", known=True)
+    later = commit_knowledge_toggle(world, entity, "secret", known=False)
+    take_back = undo(world, target.id)
+    assert _knowledge_rows(world, entity) == {"secret": False}
+    with session_scope() as session:
+        previous = revision_events(session, world, later.id)[0].payload["after"]
+        inverse = revision_events(session, world, take_back.id)[0]
+        assert inverse.payload["before"] == previous
+    undo(world, take_back.id)
+    assert _knowledge_rows(world, entity) == {"secret": False}
+
+
+@pytest.mark.parametrize("value", [True, 1.0])
+def test_undo_persists_json_type_changes(world: str, value: bool | float) -> None:
+    _, entity = _seed_world(world)
+    update_entity(world, entity, patch={"custom_flag": 1})
+    changed = update_entity(world, entity, patch={"custom_flag": value})
+    inverse = undo(world, changed.id)
+    with session_scope() as session:
+        row = session.get(models.Entity, entity)
+        assert row is not None
+        assert type(row.data["custom_flag"]) is int
+    undo(world, inverse.id)
+    with session_scope() as session:
+        row = session.get(models.Entity, entity)
+        assert row is not None
+        assert type(row.data["custom_flag"]) is type(value)
+
+
+@pytest.mark.parametrize("kind", ["edge_created", "edge_updated", "edge_deleted"])
+def test_undo_legacy_edge_snapshots_without_reason(world: str, kind: str) -> None:
+    _seed_world(world)
+    with session_scope() as session:
+        edge = session.scalars(select(models.Edge)).first()
+        assert edge is not None
+        head = latest_revision(session, world)
+        assert head is not None
+        snapshot = {
+            key: getattr(edge, key) for key in ("src", "dst", "type", "counter", "created_at")
+        }
+        revision = models.Revision(
+            id=ids.new_id(),
+            campaign_id=world,
+            base_revision=head.id,
+            created_at=time.now(),
+        )
+        session.add(revision)
+        session.flush()
+        session.add(
+            models.Event(
+                id=ids.new_id(),
+                campaign_id=world,
+                revision_id=revision.id,
+                type=kind,
+                payload={
+                    "id": edge.id,
+                    "before": snapshot if kind != "edge_created" else None,
+                    "after": snapshot if kind != "edge_deleted" else None,
+                },
+                created_at=time.now(),
+            )
+        )
+        if kind == "edge_deleted":
+            session.delete(edge)
+        target = revision.id
+    inverse = undo(world, target)
+    undo(world, inverse.id)
+
+
+@pytest.mark.parametrize("family", ["session", "knowledge"])
+def test_unmodified_state_creation_take_back_deletes_and_redoes(world: str, family: str) -> None:
+    _, entity = _seed_world(world)
+    if family == "session":
+        target = commit_session_verb(world, entity, update={"defeated": True})
+    else:
+        target = commit_knowledge_toggle(world, entity, "secret", known=True)
+    inverse = undo(world, target.id)
+    assert _session_row(world, entity) is None
+    assert _knowledge_rows(world, entity) == {}
+    undo(world, inverse.id)
+    if family == "session":
+        assert _session_row(world, entity) == {"defeated": True}
+    else:
+        assert _knowledge_rows(world, entity) == {"secret": True}

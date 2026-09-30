@@ -9,6 +9,7 @@ import { useAuthStore } from '../stores/auth'
 import { useCampaignsStore } from '../stores/campaigns'
 import { useJobsStore } from '../stores/jobs'
 import { connectJobSocket } from '../ws'
+import { sessionGeneration } from '../api/session'
 import type { WsMessage } from '../ws'
 
 type Job = components['schemas']['JobResponse']
@@ -39,6 +40,7 @@ const editorRef = ref<InstanceType<typeof CharacterSheetEditor> | null>(null)
 // library, seeded by the selected theme's default setting text.
 const draftTheme = ref('')
 
+const socketGeneration = sessionGeneration()
 let disconnectSocket: (() => void) | null = null
 
 /** The post-pick load: world meta, this world's job list + live frames,
@@ -46,6 +48,7 @@ let disconnectSocket: (() => void) | null = null
 async function loadCampaign(id: string) {
   try {
     await Promise.all([campaigns.fetchOne(id), jobs.syncList(id)])
+    if (socketGeneration !== sessionGeneration()) return
     if (campaigns.error) {
       loadError.value = campaigns.error
       return
@@ -61,12 +64,13 @@ async function loadCampaign(id: string) {
       void jobs.handleWsMessage(id, message)
     },
     {
+      generation: socketGeneration,
       onReconnect: () => {
         void jobs.syncList(id)
       },
       onAuthFailure: () => {
         const auth = useAuthStore()
-        auth.account = null
+        auth.clearSession()
         void router.push({ name: 'login' })
       },
     },
@@ -75,6 +79,7 @@ async function loadCampaign(id: string) {
 
 onMounted(async () => {
   await campaigns.list()
+  if (socketGeneration !== sessionGeneration()) return
   if (!draftTheme.value && campaigns.themes.length > 0) {
     draftTheme.value = campaigns.themes[0]!
   }

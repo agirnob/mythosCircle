@@ -5225,6 +5225,105 @@ def test_blank_reason_fill_lying_prose_drops_all(world: str, caplog: Any) -> Non
     assert sum("reason still blank" in record.message for record in caplog.records) == 2
 
 
+def test_sparse_blank_reason_schema_uses_original_edge_index(world: str) -> None:
+    output = _wave1_output()
+    output["edges"][1]["reason"] = ""
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        if "REASON FILL" in prompt:
+            assert "index 1:" in prompt
+            assert settings.response_format is not None
+            schema = settings.response_format["json_schema"]["schema"]
+            assert schema["properties"]["reasons"]["items"]["properties"]["index"]["enum"] == [1]
+            return json.dumps({"reasons": [{"index": 1, "reason": "Her ledger records the debt."}]})
+        return json.dumps(output)
+
+    job_id = _enqueue(world, places=["Greymarch"], key_figures=["Mira"])
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _ = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    with session_scope() as session:
+        edges = world_edges(session, world)
+    assert len(edges) == 2
+    assert edges[1].reason == "Her ledger records the debt."
+
+
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+def test_count_connectivity_checked_after_blank_edge_drops(
+    world: str, repair_succeeds: bool
+) -> None:
+    wiring_calls = 0
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        nonlocal wiring_calls
+        if "Invent names" in prompt:
+            return json.dumps({"names": ["Glass Quay", "Moonwake Pier"]})
+        if "REASON FILL" in prompt:
+            return '{"reasons": []}'
+        if "Connect these newly generated" in prompt:
+            wiring_calls += 1
+            return json.dumps({"edges": [{
+                "src": "E0", "dst": "E1", "type": "rival_of", "counter": 1,
+                "reason": "The ports compete for the same merchant fleet.",
+            }] if repair_succeeds else []})
+        return json.dumps({"entities": [
+            {"ref": "E0", "kind": "place", "name": "Glass Quay"},
+            {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
+        ], "edges": [{"src": "E0", "dst": "E1", "type": "rival_of", "reason": ""}]})
+
+    job_id = _enqueue(world, generate_counts={"places": 2})
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _ = job_status(job_id)
+    assert job.state == ("succeeded" if repair_succeeds else "failed"), job.error
+    assert wiring_calls == (1 if repair_succeeds else 2)
+    with session_scope() as session:
+        assert len(world_entities(session, world)) == (2 if repair_succeeds else 0)
+        assert len(world_edges(session, world)) == (1 if repair_succeeds else 0)
+
+
+@pytest.mark.parametrize("pinned_role", ["Monster", "NPC"])
+def test_role_pin_validated_before_saving_role_specific_mechanics(
+    world: str, pinned_role: str
+) -> None:
+    initial = json.loads(json.dumps(_MIRA_STAT_BLOCK))
+    if pinned_role == "NPC":
+        initial["identity"]["role"] = "Monster"
+        initial["identity"]["cr"] = 1
+        initial["identity"].pop("level")
+    record = _character_record(
+        "Mira", role=pinned_role, level_cr="CR 1" if pinned_role == "Monster" else "level 5",
+        stat_block=initial,
+    )
+    if pinned_role == "Monster":
+        record["boss"] = _BOSS_SECTION
+    repairs = 0
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        nonlocal repairs
+        if '"stat_blocks"' in prompt:
+            repairs += 1
+            fixed = json.loads(json.dumps(_MIRA_STAT_BLOCK))
+            if pinned_role == "Monster":
+                fixed["identity"].pop("level")
+                fixed["identity"]["cr"] = 1
+            # Even a repair's wrong role is folded before the gate judges it.
+            fixed["identity"]["role"] = "NPC" if pinned_role == "Monster" else "Monster"
+            return json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": fixed}]})
+        return json.dumps({"entities": [{
+            "ref": "E0", "kind": "character", "name": "Mira", "data": record,
+        }], "edges": []})
+
+    job_id = _enqueue(world, key_figures=[{"name": "Mira", "role": pinned_role}])
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _ = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    assert repairs > 0
+    with session_scope() as session:
+        entity = world_entities(session, world)[0]
+    assert entity.data["stat_block"]["identity"]["role"] == pinned_role
+    assert validate_stat_block(entity.data["stat_block"]) == []
+
+
 def test_corpus_blank_reason_wave_filled_end_to_end(world: str) -> None:
     """VERBATIM corpus, 2026-09-19 capture (gemma-4-26B build-in wave-1
     chunk: 16 entities, 11 edges, NO reason anywhere): the RAW

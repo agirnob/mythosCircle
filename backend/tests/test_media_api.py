@@ -773,3 +773,20 @@ def test_delete_media_foreign_or_unknown_campaign_is_404(
 
     assert [item.id for item in list_media(other_id)] == [foreign_row.id]
     assert client.get(f"/api/campaigns/{campaign_id}/media").status_code == 200
+
+
+@pytest.mark.parametrize("option", ["style", "framing", "background"])
+@pytest.mark.parametrize("value", [[], {}, 42, True])
+def test_portrait_option_types_return_422(
+    client: TestClient, media_api: Callable[[], str], option: str, value: object
+) -> None:
+    response = client.post(
+        "/api/jobs",
+        json={
+            "campaign_id": media_api(),
+            "kind": "image",
+            "payload": {"entity_id": ids.new_id(), option: value},
+        },
+    )
+    assert response.status_code == 422
+    assert option in response.text

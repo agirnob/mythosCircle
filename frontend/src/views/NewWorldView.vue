@@ -23,6 +23,7 @@ import { useCampaignsStore } from '../stores/campaigns'
 import { useJobsStore } from '../stores/jobs'
 import { useWorldStore } from '../stores/world'
 import { connectJobSocket } from '../ws'
+import { sessionGeneration } from '../api/session'
 
 type EntityExport = components['schemas']['EntityExport']
 
@@ -37,12 +38,13 @@ const world = useWorldStore()
 const campaigns = useCampaignsStore()
 const jobs = useJobsStore()
 
+const socketGeneration = sessionGeneration()
 let disconnectSocket: (() => void) | null = null
 let disposed = false
 
 async function start() {
   await world.load(campaignId)
-  if (disposed) return
+  if (disposed || socketGeneration !== sessionGeneration()) return
   const entry = world.entry(campaignId)
   if (entry.notFound || entry.error) return
   if (!campaigns.current || campaigns.current.id !== campaignId) {
@@ -50,18 +52,20 @@ async function start() {
   }
   void world.fetchMedia(campaignId)
   void jobs.syncList(campaignId).catch(() => {})
+  if (socketGeneration !== sessionGeneration()) return
   disconnectSocket = connectJobSocket(
     campaignId,
     (message) => {
       void world.handleJobMessage(campaignId, message)
     },
     {
+      generation: socketGeneration,
       onReconnect: () => {
         world.requestRefetch(campaignId)
       },
       onAuthFailure: () => {
         const auth = useAuthStore()
-        auth.account = null
+        auth.clearSession()
         void router.push({ name: 'login' })
       },
     },

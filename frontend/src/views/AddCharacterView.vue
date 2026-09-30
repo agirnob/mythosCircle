@@ -19,6 +19,7 @@ import { submissionViolations } from '../lib/characterValidation'
 import { useAuthStore } from '../stores/auth'
 import { useJobsStore } from '../stores/jobs'
 import { connectJobSocket } from '../ws'
+import { sessionGeneration } from '../api/session'
 import type { WsMessage } from '../ws'
 
 const route = useRoute()
@@ -31,12 +32,18 @@ const loadError = ref<string | null>(null)
 const entities = ref<EntityRef[]>([])
 const campaignTitle = ref('')
 
-const sheetCount = ref(1)
-/** Live sheet instances in a PLAIN array — writing instances from a
+let nextSheetId = 1
+const sheetIds = ref([0])
+const sheetCount = computed(() => sheetIds.value.length)
+/** Live sheet instances in a PLAIN map — writing instances from a
  * v-for :ref callback must not mutate a reactive structure the same
  * render iterates (that self-dirties the render effect into a
- * recursion loop); the v-for keys off `sheetCount` instead. */
-let sheetInstances: Array<InstanceType<typeof AuthorSheetForm> | null> = [null]
+ * recursion loop); the v-for uses stable `sheetIds` instead. */
+const sheetRefs = new Map<number, InstanceType<typeof AuthorSheetForm>>()
+const sheetInstances = {
+  [Symbol.iterator]: function* () { for (const id of sheetIds.value) yield sheetRefs.get(id) ?? null },
+  entries: function* () { for (const [index, id] of sheetIds.value.entries()) yield [index, sheetRefs.get(id) ?? null] as const },
+}
 
 const submitting = ref(false)
 const submitError = ref<string | null>(null)
@@ -44,6 +51,7 @@ const startedJobId = ref<string | null>(null)
 /** The 422 gate's field-level violations, verbatim from the server. */
 const serverViolations = ref<string[]>([])
 
+const socketGeneration = sessionGeneration()
 let disconnectSocket: (() => void) | null = null
 
 // --- Live mirror-gate state -------------------------------------------------
@@ -60,13 +68,13 @@ const dirtySheets = ref<Set<number>>(new Set())
 const submitAttempted = ref(false)
 
 function onSheetChange(index: number) {
-  dirtySheets.value = new Set(dirtySheets.value).add(index)
+  dirtySheets.value = new Set(dirtySheets.value).add(sheetIds.value[index]!)
   recomputeViolations()
 }
 
 /** Whether the inline violation lists for a sheet may render. */
 function showSheetViolations(index: number): boolean {
-  return dirtySheets.value.has(index) || submitAttempted.value
+  return dirtySheets.value.has(sheetIds.value[index]!) || submitAttempted.value
 }
 
 const showPayloadViolations = computed(
@@ -135,21 +143,22 @@ function stagedFor(index: number): Array<{ key: string; name: string }> {
  * doing it DURING the view's render would self-dirty the render effect
  * (a recursion loop). Each mount's recompute therefore runs one tick
  * later — still long before the DM can submit. */
-function setSheetRef(index: number, instance: unknown) {
-  sheetInstances[index] = instance as InstanceType<typeof AuthorSheetForm> | null
+function setSheetRef(sheetId: number, instance: unknown) {
+  if (instance) sheetRefs.set(sheetId, instance as InstanceType<typeof AuthorSheetForm>)
+  else sheetRefs.delete(sheetId)
   Promise.resolve().then(() => recomputeViolations())
 }
 
 function addSheet() {
-  sheetInstances.push(null)
-  sheetCount.value += 1
+  sheetIds.value.push(nextSheetId++)
   recomputeViolations()
 }
 
 function removeSheet(index: number) {
   if (sheetCount.value <= 1) return
-  sheetInstances.splice(index, 1)
-  sheetCount.value -= 1
+  const [id] = sheetIds.value.splice(index, 1)
+  sheetRefs.delete(id!)
+  dirtySheets.value.delete(id!)
   recomputeViolations()
 }
 
@@ -225,12 +234,13 @@ onMounted(() => {
       }
     },
     {
+      generation: socketGeneration,
       onReconnect: () => {
         void jobs.syncList(campaignId).catch(() => {})
       },
       onAuthFailure: () => {
         const auth = useAuthStore()
-        auth.account = null
+        auth.clearSession()
         void router.push({ name: 'login' })
       },
     },
@@ -265,12 +275,12 @@ const recentJobs = computed(() => jobs
     </div>
 
     <template v-else-if="!loadError">
-      <div v-for="index in Array.from({ length: sheetCount }, (_, i) => i)" :key="index" class="card">
+      <div v-for="(sheetId, index) in sheetIds" :key="sheetId" class="card">
         <h2>Character {{ index + 1 }}</h2>
         <AuthorSheetForm
-          :key="`sheet-${index}`"
-          :ref="(instance) => setSheetRef(index, instance)"
-          :index="index"
+          :key="`sheet-${sheetId}`"
+          :ref="(instance) => setSheetRef(sheetId, instance)"
+          :index="sheetId"
           :entities="entities"
           :staged="stagedFor(index)"
           @change="onSheetChange(index)"

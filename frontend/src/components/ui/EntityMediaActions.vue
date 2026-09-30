@@ -19,6 +19,7 @@ import {
 import { useJobsStore } from '../../stores/jobs'
 import { useWorldStore } from '../../stores/world'
 import { connectJobSocket } from '../../ws'
+import { sessionGeneration } from '../../api/session'
 
 type EntityExport = components['schemas']['EntityExport']
 
@@ -38,6 +39,7 @@ const automaticPromptLoading = ref(false)
 const automaticPromptError = ref('')
 const portraitLink = ref('')
 const portraitLinkBusy = ref(false)
+const socketGeneration = sessionGeneration()
 let disconnect: (() => void) | null = null
 let automaticPromptRequest = 0
 
@@ -184,6 +186,7 @@ function useAutomaticPrompt() {
 }
 
 async function loadAutomaticPrompt() {
+  if (socketGeneration !== sessionGeneration()) return
   const request = ++automaticPromptRequest
   automaticRevealPrompt.value = null
   automaticPromptError.value = ''
@@ -194,7 +197,7 @@ async function loadAutomaticPrompt() {
     const response = await apiFetch<components['schemas']['RevealPromptResponse']>(
       `/api/campaigns/${encodeURIComponent(props.campaignId)}/entities/${encodeURIComponent(entityId.value)}/reveal-prompt`,
     )
-    if (request !== automaticPromptRequest) return
+    if (request !== automaticPromptRequest || socketGeneration !== sessionGeneration()) return
     if (!response.prompt?.trim()) throw new Error('Empty automatic prompt')
     automaticRevealPrompt.value = response.prompt
   } catch {
@@ -221,13 +224,14 @@ async function renderRevealVideo() {
 }
 
 onMounted(() => {
+  if (socketGeneration !== sessionGeneration()) return
   restoreRevealDraft()
   void world.fetchMedia(props.campaignId)
-  void jobs.syncList(props.campaignId)
+  void jobs.syncList(props.campaignId).catch(() => {})
   void loadAutomaticPrompt()
   disconnect = connectJobSocket(props.campaignId, (message) => {
     void world.handleJobMessage(props.campaignId, message)
-  })
+  }, { generation: socketGeneration })
 })
 
 onUnmounted(() => {

@@ -203,17 +203,17 @@ def portrait_options(payload: Any) -> dict[str, str]:
     options: dict[str, str] = {}
     style = payload.get("style")
     if style is not None:
-        if style not in PORTRAIT_STYLES:
+        if not isinstance(style, str) or style not in PORTRAIT_STYLES:
             raise ValueError(f"image payload style must be one of {sorted(PORTRAIT_STYLES)}")
         options["style"] = style
     framing = payload.get("framing")
     if framing is not None:
-        if framing not in PORTRAIT_FRAMINGS:
+        if not isinstance(framing, str) or framing not in PORTRAIT_FRAMINGS:
             raise ValueError(f"image payload framing must be one of {sorted(PORTRAIT_FRAMINGS)}")
         options["framing"] = framing
     background = payload.get("background")
     if background is not None:
-        if background not in PORTRAIT_BACKGROUNDS:
+        if not isinstance(background, str) or background not in PORTRAIT_BACKGROUNDS:
             raise ValueError(
                 f"image payload background must be one of {sorted(PORTRAIT_BACKGROUNDS)}"
             )

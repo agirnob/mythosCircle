@@ -687,7 +687,7 @@ def _related_entities(value: Any) -> list[dict[str, Any]]:
         if (
             ref == f"N{index}"
             and kind in {"character", "faction", "place"}
-            and _non_blank_str(name)
+            and isinstance(name, str) and name.strip()
             and _non_blank_str(description)
             and isinstance(data, dict)
         ):

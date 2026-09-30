@@ -12,7 +12,7 @@ app.use(createPinia())
 // Single generic 401 (AR29): clear the session and send the user to login.
 setUnauthorizedHandler(() => {
   const auth = useAuthStore()
-  auth.account = null
+  auth.clearSession()
   void router.push({ name: 'login' })
 })
 app.use(router)

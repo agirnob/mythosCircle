@@ -13,7 +13,6 @@ import type { components } from '../../api/schema'
 import { statBlockWithRecordIdentity } from '../../lib/statBlockIdentity'
 import StatBlockEditor from '../StatBlockEditor.vue'
 import {
-  CORE_FIELDS,
   FIELD_LABELS,
   IDENTITY_FIELDS,
   LORE_FIELDS,
@@ -40,7 +39,6 @@ const ROLES = ['NPC', 'BBEG', 'Monster'] as const
 
 const name = ref('')
 const text = ref('')
-const story = ref<Record<string, string>>({})
 const lore = ref<Record<string, string>>({})
 const identity = ref<Record<string, string>>({})
 const worldInt = ref<Record<string, string>>({})
@@ -63,7 +61,6 @@ function initialize() {
   const data = (props.entity.data ?? {}) as Record<string, unknown>
   name.value = props.entity.name
   text.value = props.entity.text ?? ''
-  story.value = picks(data, [...CORE_FIELDS])
   lore.value = picks(data, [...LORE_FIELDS])
   identity.value = picks(data, ['role', ...IDENTITY_FIELDS])
   const block = data['world_integration']
@@ -86,7 +83,9 @@ function initialize() {
   if (!flat.value.description && !isCharacter()) flat.value.description = text.value
 }
 
-watch(() => props.entity, initialize, { immediate: true })
+// An edit session owns its opening snapshot until save/cancel unmounts it.
+// World refetches must not replace prose or partially authored stat rows.
+watch([() => props.entity.id, () => props.entity.kind], initialize, { immediate: true })
 
 function buildPatch(): Record<string, unknown> {
   const patch: Record<string, unknown> = { name: name.value, text: text.value }
@@ -94,7 +93,7 @@ function buildPatch(): Record<string, unknown> {
     for (const [key, value] of Object.entries(flat.value)) patch[key] = value
     patch.text = flat.value.description ?? text.value
   }
-  const merged = { ...story.value, ...lore.value, ...identity.value }
+  const merged = { ...lore.value, ...identity.value }
   for (const [key, value] of Object.entries(merged)) {
     patch[key] = value
   }
@@ -142,10 +141,18 @@ function save() {
     <label class="mc-edit-field">
       <span class="mc-edit-label">{{ isCharacter() ? 'Text' : 'Description' }}</span>
       <textarea
+        v-if="isCharacter()"
         v-model="text"
         class="mc-edit-textarea"
         rows="4"
-        :aria-label="isCharacter() ? 'Text' : 'Description'"
+        aria-label="Text"
+      ></textarea>
+      <textarea
+        v-else
+        v-model="flat.description"
+        class="mc-edit-textarea"
+        rows="4"
+        aria-label="Description"
       ></textarea>
     </label>
 
@@ -168,16 +175,6 @@ function save() {
             class="mc-edit-input"
             :aria-label="FIELD_LABELS[key] ?? key"
           />
-        </label>
-
-        <label v-for="key in CORE_FIELDS" :key="key" class="mc-edit-field">
-          <span class="mc-edit-label">{{ FIELD_LABELS[key] ?? key }}</span>
-          <textarea
-            v-model="story[key]"
-            rows="2"
-            class="mc-edit-textarea"
-            :aria-label="FIELD_LABELS[key] ?? key"
-          ></textarea>
         </label>
 
         <label v-for="key in LORE_FIELDS" :key="key" class="mc-edit-field">
@@ -214,7 +211,11 @@ function save() {
 
     <template v-else>
       <div class="mc-edit-grid mc-flat-edit-grid">
-        <label v-for="key in flatFieldsForKind()" :key="key" class="mc-edit-field">
+        <label
+          v-for="key in flatFieldsForKind().filter((field) => field !== 'description')"
+          :key="key"
+          class="mc-edit-field"
+        >
           <span class="mc-edit-label">{{ key.replaceAll('_', ' ') }}</span>
           <textarea
             v-model="flat[key]"

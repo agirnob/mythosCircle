@@ -1255,8 +1255,9 @@ def _enforce_role_pins(
 
     Reject-only remains for the DM's OWN contradiction: an AUTHORED
     ``identity.role`` disagreeing with the pin fails pre-repair in
-    ``_check_authored_stat_blocks``. Runs AFTER the stat gate: a pre-gate
-    merged/partial skeleton may have no identity until the gate writes it.
+    ``_check_authored_stat_blocks``. The stat gate applies this fold before
+    validation and after each repair, so role-specific mechanics are checked
+    against the authored role rather than changed after validation.
     """
     from app.pipeline.knowledge import stat_block_role  # noqa: PLC0415 - local import fine
 
@@ -1694,6 +1695,7 @@ def _enforce_stat_blocks(
     repair_response_format: dict[str, Any] | None = None,
     wave: int | None = None,
     frozen: frozenset[int] = frozenset(),
+    role_roster: Sequence[tuple[str, str, dict[str, Any] | None]] = (),
 ) -> tuple[list[models.EntityInput], bool]:
     """The stat-block gate shared by both waves and the regenerate path:
     collect issues, run up to THREE bounded repair passes, re-check, then the
@@ -1740,6 +1742,7 @@ def _enforce_stat_blocks(
     # FROZEN positions (DM-authored blocks, hybrid path) skip the folds and
     # the issue collection entirely: they are pre-validated reject-only and
     # commit byte-identical — the repair machinery never touches them.
+    entities = _enforce_role_pins(entities, role_roster)
     entities = _canonicalize_skipping(entities, frozen)
     issues = [issue for issue in collect_stat_issues(entities) if issue.position not in frozen]
     # Conform-first (see the docstring): Monster power-only misses go
@@ -1847,6 +1850,7 @@ def _enforce_stat_blocks(
                     merged["identity"] = {**merged_identity, **restored}
             stripped[issue.position] = merged
         entities = apply_stat_repairs(entities, stripped)
+        entities = _enforce_role_pins(entities, role_roster)
         # The repair response is model output like any other: re-canonicalize
         # so the block the auditor re-checks (and the block that commits) is
         # the canonical one. Measured live 2026-09-11: a repair shipped
@@ -2928,7 +2932,7 @@ def _connect_count_generated_entities(
     required = {
         entity.id
         for entity in entities
-        if (entity.kind, normalize_entity_name(entity.name)) in wanted
+        if entity.id is not None and (entity.kind, normalize_entity_name(entity.name)) in wanted
     }
     if not required:
         return list(edges)
@@ -3592,6 +3596,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         repair_response_format=build_stat_repair_schema(),
         wave=1,
         frozen=_authored_stat_frozen(entities_1, roster),
+        role_roster=roster,
     )
     if cancelled:
         return
@@ -3644,6 +3649,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
             repair_response_format=build_stat_repair_schema(),
             wave=1,
             frozen=_authored_stat_frozen(entities_1, roster),
+            role_roster=roster,
         )
         if cancelled:
             return
@@ -3663,6 +3669,12 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     if declared:
         logger.info("build_in: %d declared edge(s) applied (job %s)", len(declared), job.id)
     edges_1 = [*edges_1, *declared]
+    # Fill/drop reasons before testing connectivity: a dropped blank edge
+    # cannot count as a path into the world.
+    edges_1 = _fill_blank_reasons(
+        job, budget, provider, settings, 1, edges_1, entities_1,
+        context=_context_refs(world_before),
+    )
     if generated_rows:
         edges_1 = _connect_count_generated_entities(
             job, budget, provider, settings, wave1_seed, entities_1, edges_1,
@@ -3670,11 +3682,6 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         )
         if not _job_still_running(job):
             return
-    # AD-33 fill-blank: one bounded reason repair for blank edge whys,
-    # then drop-with-audit; wave 1 stays edgeless-legal (owner verdict).
-    edges_1 = _fill_blank_reasons(
-        job, budget, provider, settings, 1, edges_1, entities_1, context=()
-    )
     # Edgeless wave-1 commits through the store's FR2 backstop explicitly
     # (owner verdict 2026-09-11): the pipeline no longer requires internal
     # wiring, so the commit must not either — the DM prunes. Every other
@@ -4996,13 +5003,16 @@ def _resolve_edges(
 # ---------------------------------------------------------------------------
 
 
-def build_reason_fill_schema(count: int) -> dict[str, Any]:
+def build_reason_fill_schema(
+    count: int, *, indexes: Sequence[int] | None = None
+) -> dict[str, Any]:
     """The single-field reply schema for the fill-blank reason repair
     (AD-33: the saved JSON returns with ONLY the missing field asked
     for, grammar-enforced where backends allow). ``index`` is a closed
     enum of exactly the edges that were asked about — a reply about any
     other edge is unemittable on grammar-enforcing backends and
     discarded by the take-only-X merge everywhere else."""
+    allowed_indexes = list(indexes) if indexes is not None else list(range(count))
     return {
         "type": "json_schema",
         "json_schema": {
@@ -5020,8 +5030,7 @@ def build_reason_fill_schema(count: int) -> dict[str, Any]:
                             "properties": {
                                 "index": {
                                     "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": max(count - 1, 0),
+                                    "enum": allowed_indexes,
                                 },
                                 "reason": {"type": "string", "minLength": 1},
                             },
@@ -5113,7 +5122,9 @@ def _fill_blank_reasons(
                 prompt,
                 settings=dataclasses.replace(
                     settings,
-                    response_format=build_reason_fill_schema(len(blanks)),
+                    response_format=build_reason_fill_schema(
+                        len(blanks), indexes=[index for index, _edge in blanks]
+                    ),
                     max_tokens=min(1024, settings.max_tokens),
                 ),
             )
@@ -5131,7 +5142,9 @@ def _fill_blank_reasons(
                 prompt + "\n\nRETRY NOTE: " + retry_note,
                 settings=dataclasses.replace(
                     settings,
-                    response_format=build_reason_fill_schema(len(blanks)),
+                    response_format=build_reason_fill_schema(
+                        len(blanks), indexes=[index for index, _edge in blanks]
+                    ),
                     max_tokens=min(1024, settings.max_tokens),
                 ),
             )

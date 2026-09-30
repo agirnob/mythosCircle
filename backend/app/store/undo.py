@@ -284,7 +284,8 @@ def _apply_inverse(
 
 
 _ENTITY_KEYS = ("kind", "name", "text", "data", "created_at")
-_EDGE_KEYS = ("src", "dst", "type", "counter", "reason", "created_at")
+# Legacy snapshots predate the nullable reason column.
+_EDGE_KEYS = ("src", "dst", "type", "counter", "created_at")
 #: AD-28 run-state snapshot keys (rebuild-faithful, AD-26). The payload
 #: ``id`` names the ENTITY; the knowledge payload also carries ``field``.
 _SESSION_KEYS = ("data", "updated_at")
@@ -373,6 +374,7 @@ def _inverse_entity_update(
     row.name = before["name"]
     row.text = before["text"]
     row.data = before["data"]
+    flag_modified(row, "data")
     _add_event(
         session,
         campaign_id,
@@ -439,7 +441,7 @@ def _inverse_session_state_created(
     created_at: str,
     event: models.Event,
 ) -> None:
-    """The inverse of a verb's state-row creation deletes the row."""
+    """Remove the creation delta, preserving subsequent session state."""
     payload = event.payload
     row = session.scalars(
         select(models.EntitySessionState).where(
@@ -449,13 +451,24 @@ def _inverse_session_state_created(
     ).first()
     if row is None:
         raise CorruptEventError(event.id, "run-state row missing for inverse")
-    session.delete(row)
+    current: dict[str, Any] = {"data": dict(row.data), "updated_at": row.updated_at}
+    undone = _surgical_inverse({}, payload["after"]["data"], current["data"])
+    if undone:
+        row.data = undone
+        flag_modified(row, "data")
+        row.updated_at = created_at
+        event_type = "session_state_updated"
+        after = {"data": undone, "updated_at": created_at}
+    else:
+        session.delete(row)
+        event_type = "session_state_deleted"
+        after = None
     _add_event(
         session,
         campaign_id,
         revision_id,
-        "session_state_deleted",
-        {"id": payload["id"], "before": payload["after"], "after": None},
+        event_type,
+        {"id": payload["id"], "before": current, "after": after},
         created_at,
     )
 
@@ -483,6 +496,7 @@ def _inverse_session_state_updated(
     before = payload["before"]["data"]
     after = payload["after"]["data"]
     current = dict(row.data) if isinstance(row.data, dict) else {}
+    current_image = {"data": current, "updated_at": row.updated_at}
     undone = _surgical_inverse(before, after, current)
     row.data = undone
     flag_modified(row, "data")
@@ -494,7 +508,7 @@ def _inverse_session_state_updated(
         "session_state_updated",
         {
             "id": payload["id"],
-            "before": payload["after"],
+            "before": current_image,
             "after": {"data": undone, "updated_at": created_at},
         },
         created_at,
@@ -508,7 +522,7 @@ def _inverse_knowledge_state_created(
     created_at: str,
     event: models.Event,
 ) -> None:
-    """The inverse of a toggle's row creation deletes the row."""
+    """Delete the created marker only while its original result still holds."""
     payload = event.payload
     row = session.scalars(
         select(models.EntityKnowledgeState).where(
@@ -519,13 +533,22 @@ def _inverse_knowledge_state_created(
     ).first()
     if row is None:
         raise CorruptEventError(event.id, "knowledge row missing for inverse")
-    session.delete(row)
+    current = {"field": row.field, "known": row.known, "updated_at": row.updated_at}
+    if row.known == payload["after"]["known"]:
+        session.delete(row)
+        event_type = "knowledge_state_deleted"
+        after = None
+    else:
+        # A later toggle owns this marker; retain it and log the actual transition.
+        row.updated_at = created_at
+        event_type = "knowledge_state_updated"
+        after = {**current, "updated_at": created_at}
     _add_event(
         session,
         campaign_id,
         revision_id,
-        "knowledge_state_deleted",
-        {"id": payload["id"], "field": payload["field"], "before": payload["after"], "after": None},
+        event_type,
+        {"id": payload["id"], "field": row.field, "before": current, "after": after},
         created_at,
     )
 
@@ -550,6 +573,7 @@ def _inverse_knowledge_state_updated(
     ).first()
     if row is None:
         raise CorruptEventError(event.id, "knowledge row missing for inverse")
+    current = {"field": row.field, "known": row.known, "updated_at": row.updated_at}
     before = payload["before"]
     after = payload["after"]
     if row.known == after["known"]:
@@ -569,7 +593,7 @@ def _inverse_knowledge_state_updated(
         {
             "id": payload["id"],
             "field": payload["field"],
-            "before": after,
+            "before": current,
             "after": undone,
         },
         created_at,

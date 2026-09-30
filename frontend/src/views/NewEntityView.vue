@@ -259,8 +259,10 @@ const edgeError = ref<string | null>(null)
 const editMode = ref(false)
 const editBusy = ref(false)
 const editError = ref<string | null>(null)
+const editBaseRevision = ref<string | null>(null)
 
 function startEdit() {
+  editBaseRevision.value = entry.value.world?.revision?.id ?? null
   editError.value = null
   editMode.value = true
 }
@@ -276,7 +278,7 @@ async function saveEdit(patch: Record<string, unknown>) {
   try {
     // AD-36/FR10: one atomic revision — the base pins the snapshot the
     // editor opened against (409 = the world moved under it).
-    await world.updateEntity(campaignId, entityId, patch, entry.value.world?.revision?.id ?? null)
+    await world.updateEntity(campaignId, entityId, patch, editBaseRevision.value)
     editMode.value = false
   } catch (err) {
     editError.value = messageFrom(err, 'Could not save the edit.')

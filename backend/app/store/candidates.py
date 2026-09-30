@@ -498,7 +498,12 @@ def _replace_candidate_payload(
         raise InvalidCandidateError(
             f"candidate {candidate_id}: replacement payload is not strict JSON ({exc})"
         ) from exc
-    violations = payload_section_violations(payload)
+    entity_kind = candidate.payload.get("entity_kind", "character")
+    if payload.get("entity_kind", "character") != entity_kind:
+        raise InvalidCandidateError(
+            f"candidate {candidate_id}: replacement cannot change entity_kind"
+        )
+    violations = payload_section_violations(payload, entity_kind)
     if violations:
         raise InvalidCandidateError(
             f"candidate {candidate_id}: replacement payload fails the required-section "
@@ -798,7 +803,8 @@ def _accept_edge(
             f"candidate {candidate_id}: edge must be an object, got {edge!r}"
         )
     endpoint = edge.get("endpoint")
-    endpoint = (related_ids or {}).get(endpoint, endpoint)
+    if isinstance(endpoint, str):
+        endpoint = (related_ids or {}).get(endpoint, endpoint)
     direction = edge.get("direction")
     edge_type = edge.get("type")
     if (
@@ -927,11 +933,13 @@ def _repair_legacy_edge_directions(
         if not isinstance(edge, dict):
             repaired.append(edge)
             continue
-        endpoint_kind = kinds.get(edge.get("endpoint"))
+        endpoint = edge.get("endpoint")
+        endpoint_kind = kinds.get(endpoint) if isinstance(endpoint, str) else None
         edge_type = edge.get("type")
         if (
             edge.get("direction") == "outbound"
             and endpoint_kind is not None
+            and isinstance(edge_type, str)
             and not edge_kind_ok(edge_type, candidate_kind, endpoint_kind)
             and edge_kind_ok(edge_type, endpoint_kind, candidate_kind)
             and edge_type in {"bases_at", "hails_from"}

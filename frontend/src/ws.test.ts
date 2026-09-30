@@ -1,3 +1,4 @@
+import { invalidateSession, sessionGeneration } from './api/session'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { connectJobSocket } from './ws'
@@ -51,6 +52,25 @@ describe('connectJobSocket', () => {
     FakeWebSocket.instances = []
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('closes sockets, drops queued frames and cancels reconnects on an account boundary', async () => {
+    vi.useFakeTimers()
+    const onMessage = vi.fn(), onReconnect = vi.fn(), onAuthFailure = vi.fn()
+    const generation = sessionGeneration()
+    const disconnect = connectJobSocket('C1', onMessage, { onReconnect, onAuthFailure })
+    const socket = FakeWebSocket.instances[0]!
+    socket.serverClose(1000)
+    invalidateSession()
+    socket.onmessage?.({ data: '{}' }); socket.open(); socket.serverClose(4401)
+    await vi.advanceTimersByTimeAsync(MAX_BACKOFF_MS)
+    expect(socket.closeCalls).toBe(1)
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(onReconnect).not.toHaveBeenCalled()
+    expect(onAuthFailure).not.toHaveBeenCalled()
+    connectJobSocket('C1', onMessage, { generation })
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    disconnect()
   })
 
   it('calls onReconnect when the socket reopens after a drop', async () => {

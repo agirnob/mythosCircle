@@ -13,7 +13,7 @@ is in effect.
 """
 
 import time as _time
-from collections import defaultdict, deque
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -42,22 +42,30 @@ class AttemptLimiter:
             raise ValueError("max_attempts must be >= 1")
         if self.window_seconds <= 0:
             raise ValueError("window_seconds must be > 0")
-        self._attempts: dict[str, deque[float]] = defaultdict(deque)
+        self._attempts: OrderedDict[str, deque[float]] = OrderedDict()
+        self._next_prune = self.clock()
 
     def allowed(self, key: str) -> bool:
         """Report whether the key may try now; does NOT consume a quota."""
         now = self.clock()
-        attempts = self._attempts[key]
+        self._prune_expired(now)
+        attempts = self._attempts.get(key, deque())
         self._prune(attempts, now)
         return len(attempts) < self.max_attempts
 
     def record(self, key: str, count: int = 1) -> None:
         """Consume ``count`` attempts (default: one failure)."""
         now = self.clock()
-        attempts = self._attempts[key]
+        self._prune_expired(now)
+        attempts = self._attempts.get(key, deque())
         self._prune(attempts, now)
-        for _ in range(max(count, 1)):
+        # Keep the newest quota: older excess attempts cannot release a lockout.
+        for _ in range(min(max(count, 1), self.max_attempts)):
             attempts.append(now)
+        while len(attempts) > self.max_attempts:
+            attempts.popleft()
+        self._attempts[key] = attempts
+        self._attempts.move_to_end(key)
         self._evict_if_oversized()
 
     def blocked_until(self, key: str) -> float | None:
@@ -68,7 +76,8 @@ class AttemptLimiter:
         attempt's expiry would overstate the lockout).
         """
         now = self.clock()
-        attempts = self._attempts[key]
+        self._prune_expired(now)
+        attempts = self._attempts.get(key, deque())
         self._prune(attempts, now)
         if len(attempts) < self.max_attempts:
             return None
@@ -78,15 +87,22 @@ class AttemptLimiter:
         while attempts and attempts[0] <= now - self.window_seconds:
             attempts.popleft()
 
-    def _evict_if_oversized(self) -> None:
-        if len(self._attempts) <= _MAX_KEYS:
+    def _prune_expired(self, now: float) -> None:
+        # Sweep globally at most once per minute, including on read-only calls.
+        if now < self._next_prune:
             return
-        # Drop the emptiest keys — a cheap bound so crafted distinct keys
-        # cannot grow memory without end.
-        for key in list(self._attempts)[: len(self._attempts) - _MAX_KEYS]:
-            if not self._attempts[key]:
+        for key, attempts in list(self._attempts.items()):
+            self._prune(attempts, now)
+            if not attempts:
                 del self._attempts[key]
+        self._next_prune = now + min(self.window_seconds, 60.0)
+
+    def _evict_if_oversized(self) -> None:
+        # Under saturation, retain the most recently recorded failure keys.
+        while len(self._attempts) > _MAX_KEYS:
+            self._attempts.popitem(last=False)
 
     def reset(self) -> None:
         """Clear all attempts (test isolation)."""
         self._attempts.clear()
+        self._next_prune = self.clock()

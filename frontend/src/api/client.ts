@@ -1,3 +1,5 @@
+import { sessionGeneration, SessionChangedError } from './session'
+
 /**
  * API client — the frontend's single fetch path (spec-2.1).
  *
@@ -34,7 +36,7 @@ interface Envelope {
 let unauthorizedHandler: (() => void) | null = null
 
 /** Register the single 401 handler (AR29) — called before ApiError throws. */
-export function setUnauthorizedHandler(handler: () => void) {
+export function setUnauthorizedHandler(handler: (() => void) | null) {
   unauthorizedHandler = handler
 }
 
@@ -42,6 +44,7 @@ export function setUnauthorizedHandler(handler: () => void) {
 const DEFAULT_BASE_URL = ''
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const generation = sessionGeneration()
   const response = await fetch(`${DEFAULT_BASE_URL}${path}`, {
     ...init,
     headers: {
@@ -49,11 +52,16 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
       ...init.headers,
     },
     credentials: 'same-origin',
+  }).catch((error: unknown) => {
+    if (generation !== sessionGeneration()) throw new SessionChangedError()
+    throw error
   })
+  if (generation !== sessionGeneration()) throw new SessionChangedError()
   if (response.status === 204) {
     return undefined as T
   }
   const body: unknown = await response.json().catch(() => null)
+  if (generation !== sessionGeneration()) throw new SessionChangedError()
   if (!response.ok) {
     const envelope = (body ?? null) as Envelope | null
     const error = new ApiError(

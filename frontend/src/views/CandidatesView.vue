@@ -20,6 +20,7 @@ import {
 } from '../components/profile/profile'
 import { useWorldStore } from '../stores/world'
 import { connectJobSocket } from '../ws'
+import { sessionGeneration } from '../api/session'
 import type { WsMessage } from '../ws'
 
 type Candidate = components['schemas']['CandidateResponse']
@@ -63,6 +64,7 @@ interface EdgeAddForm {
   counter: number
 }
 
+const socketGeneration = sessionGeneration()
 let disconnectSocket: (() => void) | null = null
 /** candidateId -> the candidate changed server-side mid-edit; the draft was visibly discarded. */
 const staleEdits = ref<Record<string, boolean>>({})
@@ -81,6 +83,7 @@ onMounted(async () => {
     // list is the reason this view exists; a jobs failure must not read
     // as a candidates failure.
   }
+  if (socketGeneration !== sessionGeneration()) return
   // Endpoint names for the relation lines — best effort; ids are the fallback.
   world.load(campaignId).catch(() => undefined)
   disconnectSocket = connectJobSocket(
@@ -89,12 +92,13 @@ onMounted(async () => {
       void onJobMessage(message)
     },
     {
+      generation: socketGeneration,
       onReconnect: () => {
         void resync()
       },
       onAuthFailure: () => {
         const auth = useAuthStore()
-        auth.account = null
+        auth.clearSession()
         void router.push({ name: 'login' })
       },
     },

@@ -1,3 +1,4 @@
+import { sessionGeneration, SessionChangedError } from '../api/session'
 /**
  * Tonight store (v3 Tier-1/2; AD-26..29, AD-34/35).
  *
@@ -75,12 +76,14 @@ export const useTonightStore = defineStore('tonight', {
     /** Per-mount registry fetch (AD-34) — the views call this on every
      * walk mount; a previous mount's payload is never served as fresh. */
     async fetchKinds(campaignId: string) {
+      const generation = sessionGeneration()
       const entry = this.ensureEntry(campaignId)
       entry.loading = true
       try {
         entry.kinds = await apiFetch<KindsResponse>('/api/campaigns/kinds')
         entry.error = null
       } catch (err) {
+        if (generation !== sessionGeneration() || err instanceof SessionChangedError) return
         entry.error = err instanceof ApiError ? err.message : 'Could not load the kinds registry.'
       } finally {
         entry.loading = false
@@ -109,6 +112,7 @@ export const useTonightStore = defineStore('tonight', {
     },
     /** The single coalesced fetch for the two Tonight projections. */
     async fetchTonight(campaignId: string) {
+      const generation = sessionGeneration()
       const entry = this.ensureEntry(campaignId)
       if (entry.fetching) {
         entry.dirty = true
@@ -127,6 +131,7 @@ export const useTonightStore = defineStore('tonight', {
         entry.revisions = feed.revisions
         entry.error = null
       } catch (err) {
+        if (generation !== sessionGeneration() || err instanceof SessionChangedError) return
         // The feed and run-state ride one entry: a failure of either
         // surface keeps the other's last-known projection (never blanks
         // on a transient error). A 404/ownership miss is the view's
@@ -137,7 +142,7 @@ export const useTonightStore = defineStore('tonight', {
       } finally {
         entry.fetching = false
         entry.loading = false
-        if (entry.dirty) {
+        if (entry.dirty && this.byCampaign[campaignId] === entry) {
           entry.dirty = false
           void this.fetchTonight(campaignId)
         }

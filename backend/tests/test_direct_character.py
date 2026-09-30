@@ -302,6 +302,24 @@ def test_zero_llm_acceptance_via_worker_dispatch(world: str) -> None:
     assert calls == []
 
 
+def test_cancelled_claimed_job_cannot_commit_characters(world: str) -> None:
+    from app.pipeline.direct import run_add_character
+    from app.store import JobStateConflictError, cancel_job
+
+    queued = enqueue_job(world, "add_character", {"characters": [_sheet()]})
+    claimed = claim_next_job()
+    assert claimed is not None and claimed.id == queued.id
+    cancel_job(claimed.id)
+    assert claimed.state == "running"  # the detached worker snapshot is stale
+    with pytest.raises(JobStateConflictError):
+        run_add_character(claimed)
+    with session_scope() as session:
+        assert world_state(session, world) == ([], [])
+        assert latest_revision(session, world) is None
+    stored, _ = job_status(queued.id)
+    assert stored.state == "cancelled"
+
+
 # ---------------------------------------------------------------------------
 # The synchronous enqueue gate (202 / 422 semantics, zero job rows)
 # ---------------------------------------------------------------------------

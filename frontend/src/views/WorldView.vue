@@ -23,6 +23,7 @@ import {
 import { useJobsStore } from '../stores/jobs'
 import { useWorldStore } from '../stores/world'
 import { connectJobSocket } from '../ws'
+import { sessionGeneration } from '../api/session'
 import {
   BOSS_FIELDS as BOSS_TEXT_FIELDS,
   BOSS_ROLES,
@@ -48,6 +49,7 @@ const world = useWorldStore()
 const campaigns = useCampaignsStore()
 const jobs = useJobsStore()
 
+const socketGeneration = sessionGeneration()
 let disconnectSocket: (() => void) | null = null
 let connectedCampaign: string | null = null
 let disposed = false
@@ -64,7 +66,7 @@ let disposed = false
  */
 async function start() {
   await world.load(campaignId)
-  if (disposed) return
+  if (disposed || socketGeneration !== sessionGeneration()) return
   const entry = world.entry(campaignId)
   if (entry.notFound || entry.error) return
   // Spec-4.1: the media manifest is fetched separately from the snapshot
@@ -77,18 +79,20 @@ async function start() {
   void jobs.syncList(campaignId).catch(() => {})
   if (connectedCampaign === campaignId) return
   connectedCampaign = campaignId
+  if (socketGeneration !== sessionGeneration()) return
   disconnectSocket = connectJobSocket(
     campaignId,
     (message) => {
       void world.handleJobMessage(campaignId, message)
     },
     {
+      generation: socketGeneration,
       onReconnect: () => {
         world.requestRefetch(campaignId)
       },
       onAuthFailure: () => {
         const auth = useAuthStore()
-        auth.account = null
+        auth.clearSession()
         void router.push({ name: 'login' })
       },
     },

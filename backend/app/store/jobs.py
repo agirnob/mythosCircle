@@ -1077,6 +1077,9 @@ def _validate_regenerate_payload(
                 f"{candidate.status} — only proposed candidates are re-rollable"
             )
         record = candidate.payload
+        entity_kind = (
+            record.get("entity_kind", "character") if isinstance(record, dict) else "character"
+        )
     flat_sections = FLAT_REGEN_SECTIONS.get(entity_kind or "")
     if flat_sections is not None:
         if not isinstance(record, dict):

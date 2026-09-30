@@ -8,6 +8,9 @@ import { apiFetch } from '../../api/client'
 import { useJobsStore } from '../../stores/jobs'
 import { useWorldStore } from '../../stores/world'
 import EntityMediaActions from './EntityMediaActions.vue'
+import { useAuthStore } from '../../stores/auth'
+import { connectJobSocket } from '../../ws'
+import { invalidateSession } from '../../api/session'
 
 vi.mock('../../ws', () => ({ connectJobSocket: vi.fn(() => () => {}) }))
 vi.mock('../../api/client', async (importOriginal) => ({
@@ -67,6 +70,28 @@ describe('EntityMediaActions reveal prompt', () => {
     vi.mocked(apiFetch).mockReset().mockResolvedValue({ prompt: automaticPrompt })
     vi.spyOn(useWorldStore(), 'fetchMedia').mockResolvedValue()
     vi.spyOn(useJobsStore(), 'syncList').mockResolvedValue()
+  })
+
+  it('does not start requests or subscribe if the account changes before its mount hook', async () => {
+    const auth = useAuthStore()
+    auth.account = { id: 'A', email: 'a@example.com' }
+    vi.mocked(connectJobSocket).mockClear()
+    const wrapper = mount(EntityMediaActions, {
+      props: { campaignId: 'C1', entity },
+      global: { mixins: [{ beforeMount() { invalidateSession() } }] },
+    })
+    await flushPromises()
+    expect(connectJobSocket).not.toHaveBeenCalled()
+    expect(apiFetch).not.toHaveBeenCalled()
+    expect(useWorldStore().fetchMedia).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('subscribes with the session captured when the component was created', async () => {
+    const wrapper = mountActions()
+    await flushPromises()
+    expect(connectJobSocket).toHaveBeenLastCalledWith('C1', expect.any(Function), { generation: expect.any(Number) })
+    wrapper.unmount()
   })
 
   it('prefills the appearance prompt and ignores older text-model drafts and failures', async () => {

@@ -15,7 +15,8 @@ const props = defineProps<{
   /** True when the parent owns the identity block (the fully-authored
    * Add-Character form authors role/race/level/CR/class/alignment once,
    * at sheet level, and injects them at build time) — the identity grid
-   * renders and emits nothing here. WorldView's profile editor leaves it
+   * does not render here; existing identity fields round-trip unchanged.
+   * WorldView's profile editor leaves it
    * unset and keeps the built-in identity rows. */
   hideIdentity?: boolean
 }>()
@@ -50,6 +51,7 @@ const hitDice = ref('')
 const powerStamp = ref<{ dpr?: number; band?: number[]; verdict?: string } | null>(null)
 
 interface SkillRow {
+  source?: Record<string, unknown>
   name: string
   bonus: string
   description: string
@@ -57,12 +59,15 @@ interface SkillRow {
 const skills = ref<SkillRow[]>([])
 
 interface DamageRow {
+  source?: Record<string, unknown>
+  initial?: { count: string; sides: string; mod: string; type: string }
   count: string
   sides: string
   mod: string
   type: string
 }
 interface ActionRow {
+  source?: Record<string, unknown>
   name: string
   toHit: string
   description: string
@@ -71,6 +76,7 @@ interface ActionRow {
 const actions = ref<ActionRow[]>([])
 
 interface TraitRow {
+  source?: Record<string, unknown>
   name: string
   description: string
 }
@@ -102,12 +108,13 @@ function damageRows(parts: unknown): DamageRow[] {
           : typeof part['bonus'] === 'number' && part['bonus'] !== 0
           ? String(part['bonus'])
           : ''
-      return {
-        count: match?.[1] ?? '',
-        sides: match?.[2] ?? '',
-        mod: bonus.replace(/^-/, ''),
+      const fields = {
+        count: match?.[1] ?? (num(part['count']) !== null ? String(part['count']) : ''),
+        sides: match?.[2] ?? (num(part['sides']) !== null ? String(part['sides']) : ''),
+        mod: bonus,
         type: typeof part['type'] === 'string' ? part['type'] : '',
       }
+      return { source: part, initial: { ...fields }, ...fields }
     })
 }
 
@@ -165,6 +172,7 @@ function load(block: Record<string, unknown> | null) {
     ? rawSkills.map((entry) => {
         const skill = (entry ?? {}) as Record<string, unknown>
         return {
+          source: skill,
           name: typeof skill['name'] === 'string' ? skill['name'] : '',
           bonus: skill['bonus'] !== undefined ? String(skill['bonus']) : '',
           description:
@@ -181,6 +189,7 @@ function load(block: Record<string, unknown> | null) {
           typeof action['description'] === 'string' ? action['description'] : ''
         const structuredDamage = damageRows(action['damage'])
         return {
+          source: action,
           name: typeof action['name'] === 'string' ? action['name'] : '',
           toHit: action['to_hit'] !== undefined ? String(action['to_hit']) : '',
           description: actionDescription,
@@ -197,6 +206,7 @@ function load(block: Record<string, unknown> | null) {
     ? rawTraits.map((entry) => {
         const trait = (entry ?? {}) as Record<string, unknown>
         return {
+          source: trait,
           name: typeof trait['name'] === 'string' ? trait['name'] : '',
           description:
             typeof trait['description'] === 'string' ? trait['description'] : '',
@@ -249,10 +259,26 @@ const stampLine = computed(() => {
   return `${stamp.verdict ?? 'unknown'} — DPR ${stamp.dpr} vs band ${band}`
 })
 
-function emitBlock(): Record<string, unknown> | null {
-  const block: Record<string, unknown> = {}
+/** Copy fields the form does not own; clearing an owned field still removes it. */
+function unedited(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  const result =
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? { ...(value as Record<string, unknown>) }
+      : {}
+  for (const key of keys) delete result[key]
+  return result
+}
 
-  const identity: Record<string, unknown> = {}
+function emitBlock(): Record<string, unknown> | null {
+  const original = props.modelValue
+  const block = unedited(original, [
+    'identity', 'attributes', 'combat', 'skills', 'actions', 'traits', 'spells',
+  ])
+
+  const identity = unedited(
+    original?.identity,
+    props.hideIdentity ? [] : ['role', 'race', 'level', 'cr', 'class', 'alignment'],
+  )
   if (!props.hideIdentity) {
     if (identityRole.value.trim()) identity.role = identityRole.value.trim()
     if (identityRace.value.trim()) identity.race = identityRace.value.trim()
@@ -263,14 +289,14 @@ function emitBlock(): Record<string, unknown> | null {
   }
   if (Object.keys(identity).length > 0) block.identity = identity
 
-  const attrs: Record<string, number> = {}
+  const attrs = unedited(original?.attributes, ATTRIBUTES)
   for (const attr of ATTRIBUTES) {
     const value = attributes.value[attr]
     if (value !== null) attrs[attr] = value
   }
   if (Object.keys(attrs).length > 0) block.attributes = attrs
 
-  const combat: Record<string, unknown> = {}
+  const combat = unedited(original?.combat, ['ac', 'hp', 'hit_dice'])
   if (ac.value !== null) combat.ac = ac.value
   if (hp.value !== null) combat.hp = hp.value
   if (hitDice.value.trim()) combat.hit_dice = hitDice.value.trim()
@@ -279,7 +305,10 @@ function emitBlock(): Record<string, unknown> | null {
   const skillList = skills.value
     .filter((s) => s.name.trim())
     .map((s) => {
-      const skill: Record<string, unknown> = { name: s.name.trim() }
+      const skill: Record<string, unknown> = {
+        ...unedited(s.source, ['name', 'bonus', 'description']),
+        name: s.name.trim(),
+      }
       const bonus = Number.parseInt(s.bonus, 10)
       if (s.bonus.trim() && Number.isFinite(bonus)) skill.bonus = bonus
       if (s.description.trim()) skill.description = s.description.trim()
@@ -290,13 +319,23 @@ function emitBlock(): Record<string, unknown> | null {
   const actionList = actions.value
     .filter((a) => a.name.trim() || a.description.trim())
     .map((a) => {
-      const action: Record<string, unknown> = {}
+      const action = unedited(a.source, ['name', 'to_hit', 'description', 'damage'])
       if (a.name.trim()) action.name = a.name.trim()
       const toHit = Number.parseInt(a.toHit, 10)
       if (a.toHit.trim() && Number.isFinite(toHit)) action.to_hit = toHit
       if (a.description.trim()) action.description = a.description.trim()
       const parts: Record<string, unknown>[] = []
       for (const row of a.damages) {
+        // Unedited parts round-trip exactly, including fractional averages,
+        // legacy dice suffixes and omitted canonical fields.
+        if (
+          row.source && row.initial &&
+          row.count === row.initial.count && row.sides === row.initial.sides &&
+          row.mod === row.initial.mod && row.type === row.initial.type
+        ) {
+          parts.push({ ...row.source })
+          continue
+        }
         const count = Number.parseInt(row.count, 10)
         const sides = Number.parseInt(row.sides, 10)
         if (!Number.isFinite(count) || !Number.isFinite(sides)) continue
@@ -307,8 +346,9 @@ function emitBlock(): Record<string, unknown> | null {
         // setting bonus made the export render "5d6+7+7" and the auditor
         // read the bonus twice.
         const dice = `${count}d${sides}`
-        const average = Math.round((count * (sides + 1)) / 2 + bonus)
+        const average = Math.round(((count * (sides + 1)) / 2 + bonus) * 100) / 100
         parts.push({
+          ...unedited(row.source, ['dice', 'count', 'sides', 'bonus', 'average', 'type']),
           dice,
           count,
           sides,
@@ -325,6 +365,7 @@ function emitBlock(): Record<string, unknown> | null {
   const traitList = traits.value
     .filter((t) => t.name.trim() || t.description.trim())
     .map((t) => ({
+      ...unedited(t.source, ['name', 'description']),
       name: t.name.trim(),
       description: t.description.trim(),
     }))

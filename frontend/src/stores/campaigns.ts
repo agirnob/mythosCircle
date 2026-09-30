@@ -1,3 +1,4 @@
+import { sessionGeneration, SessionChangedError } from '../api/session'
 import { defineStore } from 'pinia'
 
 import type { components } from '../api/schema'
@@ -17,6 +18,7 @@ export const useCampaignsStore = defineStore('campaigns', {
   }),
   actions: {
     async list() {
+      const generation = sessionGeneration()
       this.error = null
       this.loading = true
       try {
@@ -24,9 +26,10 @@ export const useCampaignsStore = defineStore('campaigns', {
           await apiFetch<components['schemas']['CampaignListResponse']>('/api/campaigns')
         this.campaigns = response.campaigns
       } catch (err) {
+        if (generation !== sessionGeneration() || err instanceof SessionChangedError) return
         this.error = err instanceof ApiError ? err.message : 'Could not load campaigns.'
       } finally {
-        this.loading = false
+        if (generation === sessionGeneration()) this.loading = false
       }
     },
     /** Create a campaign (POST /api/campaigns, story 1.6 contract). Rethrows so the form can show the ApiError. */
@@ -53,10 +56,12 @@ export const useCampaignsStore = defineStore('campaigns', {
       await this.list()
     },
     async fetchOne(campaignId: string) {
+      const generation = sessionGeneration()
       this.error = null
       try {
         this.current = await apiFetch<Campaign>(`/api/campaigns/${campaignId}`)
       } catch (err) {
+        if (generation !== sessionGeneration() || err instanceof SessionChangedError) return
         this.error = err instanceof ApiError ? err.message : 'Could not load the campaign.'
       }
     },

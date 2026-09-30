@@ -167,3 +167,28 @@ def test_cli_exit_codes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
         fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert main(["--data-dir", str(data_dir)]) == 1
         assert "already running" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_cli_directory_env_defaults_and_flag_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    writer = _make_world(data)
+    env_media, env_backup = tmp_path / "env-media", tmp_path / "env-backups"
+    flag_media, flag_backup = tmp_path / "flag-media", tmp_path / "flag-backups"
+    for media in (env_media, flag_media):
+        media.mkdir()
+        (media / "portrait.png").write_bytes(media.name.encode())
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(env_media))
+    monkeypatch.setenv("MYTHOSCIRCLE_BACKUP_DIR", str(env_backup))
+    args = ["--data-dir", str(data)]
+    if explicit:
+        args += ["--media-dir", str(flag_media), "--backup-dir", str(flag_backup)]
+    assert main(args) == 0
+    root, media = (flag_backup, flag_media) if explicit else (env_backup, env_media)
+    snapshot = next(root.iterdir())
+    manifest = json.loads((snapshot / "manifest.json").read_text())
+    assert manifest["media"]["files"][0]["sha256"] == _sha256(media / "portrait.png")
+    writer.close()

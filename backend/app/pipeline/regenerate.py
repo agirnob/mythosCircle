@@ -404,6 +404,8 @@ def _stage_entity_payload(
         if dial is not None:
             payload["dial"] = dial
         payload["edges"] = []
+        if entity.kind in FLAT_REGEN_SECTIONS:
+            payload["entity_kind"] = entity.kind
         return _stage_candidates(
             session,
             campaign_id,
@@ -455,6 +457,10 @@ def _roll_candidate_payload(
                     f"committed world state of campaign {campaign_id}"
                 )
             base_record = copy.deepcopy(target.data)
+            if target.kind in FLAT_REGEN_SECTIONS:
+                base_record["entity_kind"] = target.kind
+                base_record.setdefault("name", target.name)
+                base_record.setdefault("description", target.text or "")
             # The DM's staged edge edits (3-4) survive the re-roll verbatim.
             base_record["edges"] = staged_payload.get("edges", [])
         else:
@@ -528,7 +534,7 @@ def _resolve_record(
         ]
         if not seeds:
             seeds = None
-        resolved_kind = "character"
+        resolved_kind = record.get("entity_kind", "character")
     return copy.deepcopy(record), seeds, resolved_kind
 
 
@@ -601,17 +607,17 @@ def _validate_output(
     byte-identical preservation rule below still applies.
     """
     if entity_kind in FLAT_REGEN_SECTIONS:
-        violations: list[str] = []
+        flat_violations: list[str] = []
         active_dial = dial or record.get("dial") or "simple"
         minimum = _DIAL_MIN_WORDS.get(active_dial, 1)
         for section in requested:
             value = raw.get(section)
             if not isinstance(value, str) or not value.strip():
-                violations.append(f"{entity_kind}.{section} must be a non-blank string")
+                flat_violations.append(f"{entity_kind}.{section} must be a non-blank string")
                 continue
             words = len(value.split())
             if words < minimum:
-                violations.append(
+                flat_violations.append(
                     f"{entity_kind}.{section} has {words} words; dial {active_dial} "
                     f"requires at least {minimum}"
                 )
@@ -619,11 +625,11 @@ def _validate_output(
             if key in requested or key == "dial":
                 continue
             if raw.get(key) != value:
-                violations.append(f"{key} must stay byte-identical to the target record")
-        if violations:
+                flat_violations.append(f"{key} must stay byte-identical to the target record")
+        if flat_violations:
             raise JobPayloadError(
                 f"regenerate: re-rolled {entity_kind} fails the contract: "
-                + "; ".join(violations)
+                + "; ".join(flat_violations)
             )
         return
     is_flat = payload_section_violations(record) != []

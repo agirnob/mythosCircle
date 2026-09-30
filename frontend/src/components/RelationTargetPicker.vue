@@ -126,7 +126,8 @@ defineExpose({})
         </option>
       </select>
       <input
-        v-model="draft.counter"
+        :value="draft.counter"
+        @input="update({ counter: ($event.target as HTMLInputElement).value })"
         class="counter-input"
         type="number"
         :aria-label="`Relation counter`"
@@ -207,7 +208,8 @@ defineExpose({})
       <label class="field">
         Named target
         <input
-          v-model="draft.targetName"
+          :value="draft.targetName"
+          @input="update({ targetName: ($event.target as HTMLInputElement).value })"
           type="text"
           placeholder="e.g. The Shadow Queen"
           aria-label="Named target"

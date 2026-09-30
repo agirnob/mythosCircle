@@ -17,6 +17,7 @@ import { useTonightStore } from '../stores/tonight'
 import { useWorldStore } from '../stores/world'
 import { EDGE_VOCAB } from '../components/profile/profile'
 import { connectJobSocket } from '../ws'
+import { sessionGeneration } from '../api/session'
 import type { WsMessage } from '../ws'
 
 type Job = components['schemas']['JobResponse']
@@ -126,8 +127,10 @@ const notes = ref('')
 const error = ref<string | null>(null)
 const submitting = ref(false)
 const draftReady = ref(false)
-const draftStorageKey = `mythoscircle:build-in:${campaignId}`
+const draftOwnerId = useAuthStore().account?.id
+const draftStorageKey = `mythoscircle:build-in:${draftOwnerId}:${campaignId}`
 
+const socketGeneration = sessionGeneration()
 let disconnectSocket: (() => void) | null = null
 let statusTimer: ReturnType<typeof globalThis.setInterval> | null = null
 let statusPollPending = false
@@ -142,6 +145,7 @@ onMounted(async () => {
       tonight.fetchKinds(campaignId),
       world.load(campaignId),
     ])
+    if (socketGeneration !== sessionGeneration()) return
     if (campaigns.error) {
       loadError.value = campaigns.error
       return
@@ -158,12 +162,13 @@ onMounted(async () => {
       void onJobMessage(message)
     },
     {
+      generation: socketGeneration,
       onReconnect: () => {
         void jobs.syncList(campaignId)
       },
       onAuthFailure: () => {
         const auth = useAuthStore()
-        auth.account = null
+        auth.clearSession()
         void router.push({ name: 'login' })
       },
     },
@@ -179,6 +184,7 @@ interface StoredBuildDraft {
 }
 
 function restoreDraft() {
+  if (!draftOwnerId || socketGeneration !== sessionGeneration()) return
   const stored: StoredBuildDraft | null = (() => {
     try {
       const raw = globalThis.localStorage.getItem(draftStorageKey)
@@ -238,7 +244,7 @@ function hydrateFromSeed(seed: BuildInPayload) {
 }
 
 function saveDraft() {
-  if (!draftReady.value) return
+  if (!draftReady.value || !draftOwnerId || socketGeneration !== sessionGeneration()) return
   try {
     globalThis.localStorage.setItem(
       draftStorageKey,
@@ -256,6 +262,7 @@ function saveDraft() {
 }
 
 function clearDraft() {
+  if (!draftOwnerId || socketGeneration !== sessionGeneration()) return
   try {
     globalThis.localStorage.removeItem(draftStorageKey)
   } catch {

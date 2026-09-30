@@ -46,6 +46,7 @@ vi.mock('../api/client', () => ({
 
 import { ApiError } from '../api/client'
 import BuildInView from './BuildInView.vue'
+import { useAuthStore } from '../stores/auth'
 
 const CAMPAIGN = {
   id: 'C1',
@@ -113,6 +114,30 @@ describe('BuildInView seed form', () => {
     vi.clearAllMocks()
     socketCalls.length = 0
     jobList = []
+  })
+
+  it('isolates persisted drafts by account and restores the original account draft', async () => {
+    const saved = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value), removeItem: (key: string) => saved.delete(key), clear: () => saved.clear() })
+    mockApi()
+    const auth = useAuthStore()
+    auth.account = { id: 'A', email: 'a@example.com' }
+    const first = await mountView()
+    await field(first, 'Free-form notes').setValue('Private A notes')
+    await flushPromises()
+    first.unmount()
+    expect(localStorage.getItem('mythoscircle:build-in:A:C1')).toContain('Private A notes')
+    auth.account = { id: 'B', email: 'b@example.com' }
+    const second = await mountView()
+    expect((field(second, 'Free-form notes').element as HTMLTextAreaElement).value).toBe('')
+    await field(second, 'Free-form notes').setValue('Private B notes')
+    await flushPromises()
+    second.unmount()
+    auth.account = { id: 'A', email: 'a@example.com' }
+    const restored = await mountView()
+    expect((field(restored, 'Free-form notes').element as HTMLTextAreaElement).value).toBe('Private A notes')
+    restored.unmount()
+    vi.unstubAllGlobals()
   })
 
   it('sends a requested count as model-generated entities, without numbered placeholders', async () => {

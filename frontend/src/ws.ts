@@ -1,3 +1,5 @@
+import { onSessionChange, sessionGeneration } from './api/session'
+
 /**
  * WebSocket client for job broadcasts (AD-17).
  *
@@ -22,6 +24,8 @@ export interface WsMessage {
 }
 
 export interface JobSocketOptions {
+  /** Session in which the subscribing view was created. */
+  generation?: number
   /** Fired on every socket open — the first and each reopen after a drop — re-sync via REST. */
   onReconnect?: () => void
   /** Fired on a 4401 close — the session is invalid (fatal, no reconnect). */
@@ -36,6 +40,7 @@ export function connectJobSocket(
   onMessage: (message: WsMessage) => void,
   options: JobSocketOptions = {},
 ): () => void {
+  if (options.generation !== undefined && options.generation !== sessionGeneration()) return () => {}
   let closed = false
   let socket: WebSocket | null = null
   let retry = 0
@@ -48,6 +53,7 @@ export function connectJobSocket(
     reconnectTimer = null
     socket = new WebSocket(url)
     socket.onopen = () => {
+      if (closed) return
       // Fire on the first open too — callers use this as their REST
       // re-sync hook, and the world view leans on it to catch a commit
       // landing between its snapshot fetch and the socket opening.
@@ -55,6 +61,7 @@ export function connectJobSocket(
       retry = 0
     }
     socket.onmessage = (event) => {
+      if (closed) return
       try {
         onMessage(JSON.parse(event.data as string) as WsMessage)
       } catch {
@@ -71,6 +78,7 @@ export function connectJobSocket(
       if (closed) return
       if (event.code === 4401) {
         closed = true
+        unsubscribe()
         options.onAuthFailure?.()
         return
       }
@@ -79,8 +87,9 @@ export function connectJobSocket(
     }
   }
 
-  connect()
-  return () => {
+  const unsubscribe = onSessionChange(disconnect)
+  function disconnect() {
+    unsubscribe()
     closed = true
     if (reconnectTimer !== null) {
       clearTimeout(reconnectTimer)
@@ -88,4 +97,6 @@ export function connectJobSocket(
     }
     socket?.close()
   }
+  connect()
+  return disconnect
 }

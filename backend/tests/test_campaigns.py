@@ -230,3 +230,35 @@ def test_configured_seed_themes_falls_back_on_empty_config(
 
     monkeypatch.setattr(campaigns_mod, "configured_themes", lambda: [])
     assert campaigns_mod.configured_seed_themes() == set(DEFAULT_THEMES)
+
+
+@pytest.mark.parametrize("state_kind", ["session", "knowledge", "both"])
+def test_delete_campaign_with_tonight_state(db: None, state_kind: str) -> None:
+    from app.store import commit_knowledge_toggle, commit_session_verb
+
+    owner = _owner()
+    campaign = _create(owner)
+    other = _create(owner, "Other")
+    for world in (campaign, other):
+        _seed_graph(world)
+        with session_scope() as session:
+            row = session.scalars(
+                select(models.Entity).where(
+                    models.Entity.campaign_id == world, models.Entity.kind == "character"
+                )
+            ).first()
+            assert row is not None
+            entity = row.id
+        if state_kind in ("session", "both"):
+            commit_session_verb(world, entity, update={"defeated": True})
+        if state_kind in ("knowledge", "both"):
+            commit_knowledge_toggle(world, entity, "secret", known=True)
+    assert delete_campaign(owner, campaign)
+    with session_scope() as session:
+        for model in (models.EntitySessionState, models.EntityKnowledgeState):
+            assert not session.scalars(select(model).where(model.campaign_id == campaign)).all()
+        assert session.get(models.Campaign, other) is not None
+        assert (
+            session.scalars(select(models.EntitySessionState)).all()
+            or session.scalars(select(models.EntityKnowledgeState)).all()
+        )

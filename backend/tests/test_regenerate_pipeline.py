@@ -996,3 +996,86 @@ def test_enrich_guide_and_dial_ride_the_prompt(world: tuple[str, str, str]) -> N
     assert "pillar" in prompt
     assert "GUIDE (the DM says what changed" in prompt
     assert "Lean into the dockmaster shadow-work." in prompt
+
+
+@pytest.mark.parametrize("kind", ["place", "faction"])
+@pytest.mark.parametrize("sections", [None, ["description"]])
+@pytest.mark.parametrize("entity_target", [False, True])
+def test_flat_proposal_reroll(
+    world: tuple[str, str, str], kind: str, sections: list[str] | None, entity_target: bool
+) -> None:
+    from app.store import InvalidCandidateError, InvalidJobInputError
+    from app.store.candidates import FLAT_REGEN_SECTIONS, replace_candidate_payload
+
+    campaign_id, _, guild_id = world
+    record: dict[str, Any] = {
+        "name": "Flat target",
+        "entity_kind": kind,
+        "edges": [],
+        "custom": "keep",
+    }
+    record.update(
+        {field: ("original details " * 20) + field for field in FLAT_REGEN_SECTIONS[kind]}
+    )
+    if entity_target:
+        entity_id = ids.new_id()
+        with session_scope() as session:
+            head = latest_revision(session, campaign_id)
+        assert head is not None
+        commit_subgraph(
+            campaign_id,
+            [
+                EntityInput(
+                    id=entity_id,
+                    kind=kind,
+                    name=record["name"],
+                    data={key: value for key, value in record.items() if key != "entity_kind"},
+                )
+            ],
+            [
+                EdgeInput(
+                    src=guild_id,
+                    dst=entity_id,
+                    type="located_in" if kind == "place" else "rival_of",
+                    counter=1,
+                    reason="seeded",
+                )
+            ],
+            base_revision=head.id,
+        )
+        first = _enqueue(campaign_id, {"kind": "entity", "id": entity_id}, sections)
+        assert (
+            run_next_job(
+                provider=lambda *args, **kwargs: json.dumps({"candidates": [record]}),
+                settings=SETTINGS,
+            )
+            == first
+        )
+        assert job_status(first)[0].state == "succeeded", job_status(first)[0].error
+        candidate = _staged(campaign_id)[0]
+    else:
+        job = enqueue_job(campaign_id, "generate", {"ask": "flat target", "entity_kind": kind})
+        candidate = stage_candidates(campaign_id, job.id, [record])[0]
+        claim_next_job()
+        complete_job(job.id)
+    with pytest.raises(InvalidJobInputError):
+        _enqueue(campaign_id, {"kind": "candidate", "id": candidate.id}, ["personality"])
+    regen = _enqueue(campaign_id, {"kind": "candidate", "id": candidate.id}, sections)
+    output = dict(record, description=("rerolled description " * 20).strip())
+    assert (
+        run_next_job(
+            provider=lambda *args, **kwargs: json.dumps({"candidates": [output]}), settings=SETTINGS
+        )
+        == regen
+    )
+    assert job_status(regen)[0].state == "succeeded", job_status(regen)[0].error
+    row = _staged(campaign_id)[0]
+    assert row.id == candidate.id
+    assert row.payload == output
+    with pytest.raises(InvalidCandidateError):
+        replace_candidate_payload(campaign_id, row.id, dict(output, description=[]))
+    with pytest.raises(InvalidCandidateError, match="cannot change entity_kind"):
+        replace_candidate_payload(campaign_id, row.id, dict(output, entity_kind="character"))
+    if entity_target:
+        accepted, _ = accept_candidate(campaign_id, row.id)
+        assert accepted.accepted_entity_id == entity_id

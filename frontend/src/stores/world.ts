@@ -1,3 +1,4 @@
+import { sessionGeneration, SessionChangedError } from '../api/session'
 /**
  * World view store (spec-2-7; write surface added in spec-3-4).
  *
@@ -105,13 +106,15 @@ export const useWorldStore = defineStore('world', {
      * frame or remount refetches.
      */
     async fetchMedia(campaignId: string) {
+      const generation = sessionGeneration()
       try {
         const response = await apiFetch<components['schemas']['MediaListResponse']>(
           `/api/campaigns/${encodeURIComponent(campaignId)}/media`,
         )
         this.mediaByCampaign[campaignId] = response.media
         this.mediaErrorByCampaign[campaignId] = false
-      } catch {
+      } catch (err) {
+        if (generation !== sessionGeneration() || err instanceof SessionChangedError) return
         this.mediaErrorByCampaign[campaignId] = true
       }
     },
@@ -287,6 +290,7 @@ export const useWorldStore = defineStore('world', {
      * one settles, so a frame mid-fetch still lands its delta.
      */
     async fetchSnapshot(campaignId: string) {
+      const generation = sessionGeneration()
       if (!this.byCampaign[campaignId]) {
         this.byCampaign[campaignId] = emptyEntry()
       }
@@ -309,6 +313,7 @@ export const useWorldStore = defineStore('world', {
         // the sync-failed banner before the outcome is known.
         entry.error = null
       } catch (err) {
+        if (generation !== sessionGeneration() || err instanceof SessionChangedError) return
         if (err instanceof ApiError && err.status === 404) {
           // Foreign or unknown campaign — the indistinguishable 404; a
           // previous snapshot must not linger in the not-found view.
@@ -321,7 +326,7 @@ export const useWorldStore = defineStore('world', {
       } finally {
         entry.fetching = false
         entry.loading = false
-        if (entry.dirty) {
+        if (entry.dirty && this.byCampaign[campaignId] === entry) {
           entry.dirty = false
           void this.fetchSnapshot(campaignId)
         }

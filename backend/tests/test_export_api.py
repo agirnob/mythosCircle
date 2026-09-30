@@ -781,7 +781,7 @@ def test_entity_export_markdown_pure(client: Any) -> None:
     assert "# Vespera" in md
     assert _fences(md)[0] == _VESPERA_DATA
     assert "- Vespera --debt(5)--> The Guild" in md
-    assert "- The Guild <--ally_of(3)-- Vespera" in md  # inbound renders too
+    assert "- The Guild --ally_of(3)--> Vespera" in md  # inbound renders too
     assert "[[" not in md
     assert "<style" not in md
 
@@ -815,7 +815,7 @@ def test_entity_export_html_sheet(
     assert "widget_config" in html_body  # unknown key survives verbatim…
     assert '"deep": true' in html_body  # …inside the appendix JSON
     assert "Vespera --debt(5)--> The Guild" in html_body  # relations render
-    assert "The Guild &lt;--ally_of(3)-- Vespera" in html_body
+    assert "The Guild --ally_of(3)--&gt; Vespera" in html_body
     assert "<details class='appendix'" in html_body
     before = _counts(campaign_id)
     client.get(url, params={"format": "html"})
@@ -1580,7 +1580,9 @@ _RPTOK_MARKED_PATHS: frozenset[tuple[str, ...]] = frozenset(
 )
 
 #: The committed Dragon template file (the canonical owner export).
-_RPTOK_TEMPLATE_FILE = Path(__file__).resolve().parent / "fixtures" / "maptool-token-template-dragon.xml"
+_RPTOK_TEMPLATE_FILE = (
+    Path(__file__).resolve().parent / "fixtures" / "maptool-token-template-dragon.xml"
+)
 
 
 def _assert_rptok_template_fidelity(root: ET.Element) -> None:
@@ -3086,3 +3088,32 @@ def test_owlbear_pre_change_action_payload_unchanged(client: Any) -> None:
         action["description"] for action in _SERA_DATA["stat_block"]["actions"]
     ]
     assert all("Hit:" not in entry["description"] for entry in entries)
+
+
+@pytest.mark.parametrize("format", ["markdown", "html"])
+def test_incoming_export_arrow_preserves_direction(client: TestClient, format: str) -> None:
+    _register_login(client)
+    campaign_id = _create_campaign(client).json()["id"]
+    _commit_world(campaign_id)
+    with session_scope() as session:
+        guild = session.scalar(
+            select(models.Entity).where(
+                models.Entity.campaign_id == campaign_id, models.Entity.kind == "faction"
+            )
+        )
+        assert guild is not None
+        guild_id = guild.id
+    response = client.get(
+        f"/api/campaigns/{campaign_id}/entities/{guild_id}/export", params={"format": format}
+    )
+    assert response.status_code == 200
+    expected = (
+        "Vex --debt(50)--> The Guild"
+        if format == "markdown"
+        else "Vex --debt(50)--&gt; The Guild"
+    )
+    assert expected in response.text
+    if format == "html":
+        response = client.get(f"/api/campaigns/{campaign_id}/export", params={"format": format})
+        assert response.status_code == 200
+        assert expected in response.text

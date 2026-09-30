@@ -120,6 +120,25 @@ describe('AddCharacterView — the F3 frontend gate + POST /api/characters', () 
     socketCalls.length = 0
   })
 
+  it('removes the selected authored sheet and preserves sibling identity and staged keys', async () => {
+    stubApi()
+    const wrapper = await mountView()
+    await wrapper.get('input[aria-label="Character name"]').setValue('First character')
+    const add = wrapper.findAll('button').find((button) => button.text().includes('Add another'))!
+    await add.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('input[aria-label="Character name"]')[1]!.setValue('Second character')
+    const forms = wrapper.findAllComponents({ name: 'AuthorSheetForm' })
+    const second = forms[1]!.vm
+    const key = (second as unknown as { sheetKey: string }).sheetKey
+    await wrapper.findAll('button').find((button) => button.text() === 'Remove character 1')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('input[aria-label="Character name"]').element).toHaveProperty('value', 'Second character')
+    expect(wrapper.findComponent({ name: 'AuthorSheetForm' }).element).toBe(forms[1]!.element)
+    expect((wrapper.findComponent({ name: 'AuthorSheetForm' }).vm as unknown as { sheetKey: string }).sheetKey).toBe(key)
+    wrapper.unmount()
+  })
+
   it('mounts one empty sheet with submit disabled and NO violation wall until touched', async () => {
     stubApi()
     const wrapper = await mountView()

@@ -222,12 +222,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--media-dir",
-        default=None,
+        default=os.environ.get(MEDIA_DIR_ENV) or None,
         help="media root (default <data-dir>/media; env MYTHOSCIRCLE_MEDIA_DIR)",
     )
     parser.add_argument(
         "--backup-dir",
-        default=None,
+        default=os.environ.get(BACKUP_DIR_ENV) or None,
         help="snapshot root (default <data-dir>/backups; env MYTHOSCIRCLE_BACKUP_DIR)",
     )
     parser.add_argument(

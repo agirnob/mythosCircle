@@ -11,10 +11,13 @@ const auth = useAuthStore()
 <template>
   <!-- Stage-1 shell (§7): sidebar workspace around the existing routes. -->
   <AppShell v-if="auth.isAuthenticated">
-    <!-- Keyed by fullPath: a param-only change remounts the view. -->
-    <RouterView :key="route.fullPath" />
+    <!-- Keep query navigation in the view; remount for path or account changes. -->
+    <RouterView :key="`${auth.account?.id ?? 'anonymous'}:${route.path}`" />
   </AppShell>
-  <RouterView v-else :key="route.fullPath" />
+  <RouterView
+    v-else-if="!route.meta.requiresAuth"
+    :key="`${auth.account?.id ?? 'anonymous'}:${route.path}`"
+  />
 </template>
 
 <style>

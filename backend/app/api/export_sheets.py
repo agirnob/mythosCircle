@@ -309,7 +309,7 @@ def render_entity_markdown(export: WorldExport, entity_id: str) -> str:
         lines.append(f"- {subject} --{_edge_label(edge)}--> {neighbor}")
     for edge in inbound:
         neighbor = names.get(edge.src, edge.src)
-        lines.append(f"- {neighbor} <--{_edge_label(edge)}-- {subject}")
+        lines.append(f"- {neighbor} --{_edge_label(edge)}--> {subject}")
     lines += _media_lines(entity)
     lines.append("")
     return "\n".join(lines)
@@ -577,7 +577,7 @@ def _entity_sections(
             relations.append(f"<li>{subject} --{label}--> {neighbor}</li>")
         elif edge.dst == entity.id:
             neighbor = _esc(names.get(edge.src, edge.src))
-            relations.append(f"<li>{neighbor} &lt;--{label}-- {subject}</li>")
+            relations.append(f"<li>{neighbor} --{label}--&gt; {subject}</li>")
     if relations:
         body.append(
             f"<section><h2>Relations</h2><ul class='relations'>{''.join(relations)}</ul></section>"

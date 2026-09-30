@@ -719,3 +719,10 @@ def test_reclaim_campaign_media_removes_only_campaign_dir(tmp_path: Path) -> Non
     assert tmp_path.exists()  # the media root itself survives
     reclaim_campaign_media(tmp_path, "camp")  # idempotent
     reclaim_campaign_media(tmp_path, "missing-camp")  # never existed
+
+
+@pytest.mark.parametrize("option", ["style", "framing", "background"])
+@pytest.mark.parametrize("value", [[], {}, 42, True])
+def test_portrait_option_types_raise_value_error(option: str, value: object) -> None:
+    with pytest.raises(ValueError, match=option):
+        portrait_options({"entity_id": "target", option: value})

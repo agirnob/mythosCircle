@@ -4,8 +4,8 @@
  * visible queue and staged proposals.
  *
  * Same store contracts as CandidatesView (submitAsk / proposed / accept /
- * reject + jobs WS sync); per-section re-roll and inline editing stay in
- * the existing proposals surface, linked from each card as "Refine".
+ * reject + jobs WS sync), with inline review and explicit regeneration
+ * conflict recovery on this active surface.
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
@@ -27,6 +27,7 @@ import { useCandidatesStore } from '../stores/candidates'
 import { useJobsStore } from '../stores/jobs'
 import { useWorldStore } from '../stores/world'
 import { connectJobSocket } from '../ws'
+import { sessionGeneration } from '../api/session'
 
 type Candidate = components['schemas']['CandidateResponse']
 type Job = components['schemas']['JobResponse']
@@ -48,11 +49,14 @@ const loadError = ref<string | null>(null)
 const jobsError = ref<string | null>(null)
 const actingId = ref<string | null>(null)
 const actionError = ref<{ id: string; message: string } | null>(null)
+const conflicts = ref<Record<string, boolean>>({})
+const overwriteArmed = ref<Record<string, boolean>>({})
 const reviewing = ref<Record<string, boolean>>({})
 const drafts = ref<Record<string, Record<string, unknown>>>({})
 /** Accepted candidates this session: candidateId -> new entity id. */
 const accepted = ref<Record<string, string>>({})
 
+const socketGeneration = sessionGeneration()
 let disconnectSocket: (() => void) | null = null
 
 async function syncCandidates() {
@@ -79,9 +83,11 @@ async function resync() {
 
 onMounted(async () => {
   await resync()
+  if (socketGeneration !== sessionGeneration()) return
   if (!campaigns.current || campaigns.current.id !== campaignId) {
     await campaigns.fetchOne(campaignId)
   }
+  if (socketGeneration !== sessionGeneration()) return
   await world.load(campaignId).catch(() => {})
   disconnectSocket = connectJobSocket(
     campaignId,
@@ -94,12 +100,13 @@ onMounted(async () => {
       }
     },
     {
+      generation: socketGeneration,
       onReconnect: () => {
         void resync()
       },
       onAuthFailure: () => {
         const auth = useAuthStore()
-        auth.account = null
+        auth.clearSession()
         void router.push({ name: 'login' })
       },
     },
@@ -202,7 +209,8 @@ function failureMessage(job: Job): string {
   return 'The generator could not finish this request. No proposals were saved. Try again.'
 }
 
-async function acceptProposal(candidate: Candidate) {
+async function acceptProposal(candidate: Candidate, overwrite = false) {
+  if (actingId.value || jobs.regenerateInFlight(campaignId, 'candidate', candidate.id)) return
   actionError.value = null
   actingId.value = candidate.id
   try {
@@ -210,12 +218,20 @@ async function acceptProposal(candidate: Candidate) {
       campaignId,
       candidate.id,
       reviewing.value[candidate.id] ? drafts.value[candidate.id] : undefined,
+      overwrite,
     )
+    delete conflicts.value[candidate.id]
+    delete overwriteArmed.value[candidate.id]
+    closeReview(candidate)
     if (accepted_row.accepted_entity_id) {
       accepted.value[candidate.id] = accepted_row.accepted_entity_id
     }
     await resync()
   } catch (err) {
+    if (err instanceof ApiError && err.status === 409 && err.message.includes('changed since this candidate was generated')) {
+      conflicts.value[candidate.id] = true
+      overwriteArmed.value[candidate.id] = false
+    }
     actionError.value = {
       id: candidate.id,
       message: err instanceof ApiError ? err.message : 'Could not accept the proposal.',
@@ -223,6 +239,25 @@ async function acceptProposal(candidate: Candidate) {
   } finally {
     actingId.value = null
   }
+}
+
+function confirmOverwrite(candidate: Candidate) {
+  if (!overwriteArmed.value[candidate.id]) overwriteArmed.value[candidate.id] = true
+  else void acceptProposal(candidate, true)
+}
+async function rerollConflict(candidate: Candidate) {
+  if (actingId.value || jobs.regenerateInFlight(campaignId, 'candidate', candidate.id)) return
+  actingId.value = candidate.id
+  actionError.value = null
+  try {
+    await jobs.submitRegenerate(campaignId, { kind: 'candidate', id: candidate.id }, null)
+    closeReview(candidate)
+    delete conflicts.value[candidate.id]
+    delete overwriteArmed.value[candidate.id]
+    await syncJobs()
+  } catch (err) {
+    actionError.value = { id: candidate.id, message: err instanceof ApiError ? err.message : 'Could not re-roll the proposal.' }
+  } finally { actingId.value = null }
 }
 
 async function rejectProposal(candidate: Candidate) {
@@ -507,7 +542,7 @@ function updateStatBlock(candidate: Candidate, value: Record<string, unknown> | 
                   <button
                     type="button"
                     class="mc-btn"
-                    :disabled="actingId === candidate.id"
+                    :disabled="actingId !== null || jobs.regenerateInFlight(campaignId, 'candidate', candidate.id)"
                     @click="acceptProposal(candidate)"
                   >
                     {{ reviewing[candidate.id] ? 'Accept edited' : 'Accept' }}
@@ -515,7 +550,7 @@ function updateStatBlock(candidate: Candidate, value: Record<string, unknown> | 
                   <button
                     type="button"
                     class="mc-btn mc-btn-secondary"
-                    :disabled="actingId === candidate.id"
+                    :disabled="actingId !== null || jobs.regenerateInFlight(campaignId, 'candidate', candidate.id)"
                     @click="rejectProposal(candidate)"
                   >
                     Reject
@@ -524,7 +559,7 @@ function updateStatBlock(candidate: Candidate, value: Record<string, unknown> | 
                 <button
                   type="button"
                   class="mc-btn mc-btn-secondary mc-review-action"
-                  :disabled="actingId === candidate.id"
+                  :disabled="actingId !== null || jobs.regenerateInFlight(campaignId, 'candidate', candidate.id)"
                   @click="reviewing[candidate.id] ? closeReview(candidate) : reviewProposal(candidate)"
                 >
                   {{ reviewing[candidate.id] ? 'Close review' : 'Review / edit' }}
@@ -532,6 +567,13 @@ function updateStatBlock(candidate: Candidate, value: Record<string, unknown> | 
               </span>
             </template>
             </EntityCard>
+            <section v-if="conflicts[candidate.id]" class="mc-review-panel" role="alert">
+              <p>The target changed since this proposal was generated. Re-roll against the latest version, or explicitly overwrite your edit.</p>
+              <p v-if="overwriteArmed[candidate.id]">Accepting overwrites your edit. Click Confirm overwrite to continue.</p>
+              <button type="button" class="mc-btn mc-btn-secondary" :disabled="actingId !== null || jobs.regenerateInFlight(campaignId, 'candidate', candidate.id)" @click="rerollConflict(candidate)">Re-roll proposal</button>
+              <button type="button" class="mc-btn" :disabled="actingId !== null || jobs.regenerateInFlight(campaignId, 'candidate', candidate.id)" @click="confirmOverwrite(candidate)">{{ overwriteArmed[candidate.id] ? 'Confirm overwrite' : 'Accept generated version anyway' }}</button>
+              <button type="button" class="mc-btn mc-btn-secondary" @click="delete conflicts[candidate.id]; delete overwriteArmed[candidate.id]">Cancel</button>
+            </section>
             <section v-if="reviewing[candidate.id]" class="mc-review-panel">
               <div class="mc-review-title-row">
                 <div>

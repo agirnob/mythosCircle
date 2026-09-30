@@ -96,3 +96,51 @@ def test_reset_clears() -> None:
     assert not limiter.allowed("k")
     limiter.reset()
     assert limiter.allowed("k")
+
+
+def test_distinct_failures_have_bounded_retention(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.core.ratelimit._MAX_KEYS", 8)
+    limiter = AttemptLimiter()
+    for i in range(100):
+        assert limiter.allowed(str(i))
+        limiter.record(str(i))
+        assert len(limiter._attempts) <= 8
+    assert set(limiter._attempts) == {str(i) for i in range(92, 100)}
+
+
+def test_read_only_keys_are_not_retained_and_global_expiry_is_pruned() -> None:
+    clock = FakeClock()
+    limiter = AttemptLimiter(clock=clock, window_seconds=60)
+    for i in range(100):
+        limiter.allowed(str(i))
+        limiter.blocked_until(str(i))
+    assert not limiter._attempts
+    limiter.record("expired", count=1000000)
+    assert len(limiter._attempts["expired"]) == limiter.max_attempts
+    clock.advance(60)
+    assert limiter.allowed("new")
+    assert not limiter._attempts
+
+
+def test_key_eviction_retains_recent_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.core.ratelimit._MAX_KEYS", 2)
+    limiter = AttemptLimiter(max_attempts=2)
+    limiter.record("active")
+    limiter.record("older")
+    limiter.record("active")
+    limiter.record("new")
+    assert not limiter.allowed("active")
+    assert limiter.allowed("older")
+    assert len(limiter._attempts) == 2
+
+
+def test_global_pruning_preserves_unexpired_failures() -> None:
+    clock = FakeClock()
+    limiter = AttemptLimiter(max_attempts=1, window_seconds=60, clock=clock)
+    limiter.record("expired")
+    clock.advance(30)
+    limiter.record("live")
+    clock.advance(30)
+    assert limiter.blocked_until("live") == 1090
+    assert "expired" not in limiter._attempts
+    assert not limiter.allowed("live")
