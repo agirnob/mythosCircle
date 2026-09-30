@@ -368,6 +368,11 @@ def test_requested_place_count_invents_and_builds_exact_roster(world: str) -> No
         prompts.append(prompt)
         if "Invent names" in prompt:
             return json.dumps({"names": ["The Glass Quay", "Moonwake Pier"]})
+        if "Connect these newly generated" in prompt:
+            return json.dumps({"edges": [
+                {"src": "E0", "dst": "E1", "type": "rival_of", "counter": 1,
+                 "reason": "The two ports compete for the same merchant fleet."}
+            ]})
         return json.dumps(
             {
                 "entities": [
@@ -403,6 +408,10 @@ def test_requested_names_retry_duplicate_before_world_write(world: str) -> None:
                 "edges": [],
             }
         ),
+        json.dumps({"edges": [
+            {"src": "E0", "dst": "E1", "type": "rival_of", "counter": 1,
+             "reason": "The two ports compete for the same merchant fleet."}
+        ]}),
     ]
 
     assert (
@@ -412,6 +421,100 @@ def test_requested_names_retry_duplicate_before_world_write(world: str) -> None:
     job, _ = job_status(job_id)
     assert job.state == "succeeded", job.error
     assert responses == []
+
+
+def test_count_generated_places_connect_to_old_world(world: str) -> None:
+    old_id = ids.new_id()
+    commit_subgraph(
+        world,
+        [models.EntityInput(id=old_id, kind="place", name="Old Harbor", text="Trading harbor")],
+        [],
+        allow_orphans=True,
+    )
+    job_id = _enqueue(world, generate_counts={"places": 2})
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        if "Invent names" in prompt:
+            return json.dumps({"names": ["Glass Quay", "Moonwake Pier"]})
+        if "Connect these newly generated" in prompt:
+            assert "C0 'Old Harbor'" in prompt
+            assert settings.response_format == build_anchor_repair_schema(
+                ["E0", "E1"], ["C0"]
+            )
+            return json.dumps({"edges": [
+                {"src": "E0", "dst": "E1", "type": "rival_of", "counter": 1,
+                 "reason": "The two ports compete for the same merchant fleet."},
+                {"src": "E1", "dst": "C0", "type": "ally_of", "counter": 2,
+                 "reason": "Moonwake's ships exchange cargo with Old Harbor."},
+            ]})
+        return json.dumps({"entities": [
+            {"ref": "E0", "kind": "place", "name": "Glass Quay"},
+            {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
+        ], "edges": []})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _ = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    with session_scope() as session:
+        edges = world_edges(session, world)
+    assert len(edges) == 2
+    assert any(edge.dst == old_id for edge in edges)
+
+
+def test_count_generated_places_fail_before_commit_when_unconnected(world: str) -> None:
+    job_id = _enqueue(world, generate_counts={"places": 2})
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        if "Invent names" in prompt:
+            return json.dumps({"names": ["Glass Quay", "Moonwake Pier"]})
+        if "Connect these newly generated" in prompt:
+            return '{"edges": []}'
+        return json.dumps({"entities": [
+            {"ref": "E0", "kind": "place", "name": "Glass Quay"},
+            {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
+        ], "edges": []})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _ = job_status(job_id)
+    assert job.state == "failed"
+    assert "Could not connect all generated entities" in (job.error or "")
+    with session_scope() as session:
+        assert world_entities(session, world) == []
+
+
+def test_count_generated_places_retry_disconnected_cluster(world: str) -> None:
+    job_id = _enqueue(world, generate_counts={"places": 4})
+    wiring_calls = 0
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        nonlocal wiring_calls
+        if "Invent names" in prompt:
+            return json.dumps({"names": ["Glass Quay", "Moonwake Pier", "Ash Moor", "Silver Fen"]})
+        if "Connect these newly generated" in prompt:
+            wiring_calls += 1
+            if wiring_calls == 1:
+                return json.dumps({"edges": [
+                    {"src": "E0", "dst": "E1", "type": "relationship", "counter": 1,
+                     "reason": "The two ports share a shipping lane."},
+                    {"src": "E2", "dst": "E3", "type": "relationship", "counter": 1,
+                     "reason": "The fen drains the moor after heavy rains."},
+                ]})
+            assert "ALREADY ACCEPTED EDGES" in prompt
+            return json.dumps({"edges": [
+                {"src": "E1", "dst": "E2", "type": "relationship", "counter": 1,
+                 "reason": "Moorland traders ship through Moonwake Pier."},
+            ]})
+        return json.dumps({"entities": [
+            {"ref": f"E{i}", "kind": "place", "name": name}
+            for i, name in enumerate(["Glass Quay", "Moonwake Pier", "Ash Moor", "Silver Fen"])
+        ], "edges": []})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _ = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    assert wiring_calls == 2
+    with session_scope() as session:
+        assert len(world_edges(session, world)) == 3
 
 
 def test_twenty_requested_places_are_twenty_invented_names(world: str) -> None:

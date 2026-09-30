@@ -2905,6 +2905,171 @@ def _run_wave1_chunks(
     return entities, edges, False, kind_dropped
 
 
+def _connect_count_generated_entities(
+    job: models.Job,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    seed: models.Campaign,
+    entities: Sequence[models.EntityInput],
+    edges: Sequence[models.EdgeInput],
+    generated_rows: Sequence[tuple[str, str]],
+    world_before: Sequence[models.Entity],
+    *,
+    ceiling: int,
+) -> list[models.EdgeInput]:
+    """Give count-generated anchors actual graph links before committing them.
+
+    The ordinary wave-1 wiring pass only sees E refs and permits an empty
+    answer. A count request promises new parts of an existing world, so this
+    pass sees committed C refs too and checks coverage before accepting it.
+    """
+    wanted = set(generated_rows)
+    required = {
+        entity.id
+        for entity in entities
+        if (entity.kind, normalize_entity_name(entity.name)) in wanted
+    }
+    if not required:
+        return list(edges)
+    context_rows = list(world_before[:40])
+    context = _context_refs(context_rows)
+    context_ids = {row.id for row in context_rows}
+
+    def unconnected(current: Sequence[models.EdgeInput]) -> set[str]:
+        """All new nodes must share a path to the old world, or one another."""
+        reached = set(context_ids) if context_ids else {min(required)}
+        while True:
+            expanded = reached | {
+                endpoint
+                for edge in current
+                if edge.src in reached or edge.dst in reached
+                for endpoint in (edge.src, edge.dst)
+            }
+            if expanded == reached:
+                return required - reached
+            reached = expanded
+
+    roster = [(f"E{i}", row.name, row.kind) for i, row in enumerate(entities)]
+    new_refs = [row[0] for row in roster]
+    core_refs = [f"C{i}" for i in range(len(context))]
+    valid_refs = frozenset([*new_refs, *core_refs])
+    lines = [
+        "Connect these newly generated TTRPG entities to one another and to the",
+        "existing world. Entities are frozen; return only typed relationships.",
+        f"Campaign: {seed.title}; theme: {seed.theme}",
+        f"World seed: {seed.description}; lore: {seed.custom_lore}",
+        "NEW ENTITIES:",
+        *(
+            f"- E{i} {row.name!r} ({row.kind}): {_wiring_profile(row)}"
+            for i, row in enumerate(entities)
+        ),
+        "EXISTING WORLD:",
+        *(
+            f"- C{i} {row.name!r} ({row.kind}): {' '.join((row.text or '').split())[:140]}"
+            for i, row in enumerate(context_rows)
+        ),
+        "Every newly generated entity needs at least one meaningful edge.",
+        "When existing entities are listed, include at least one edge from a new",
+        "entity to an existing one. Connect compatible places where their stories",
+        "suggest trade, rivalry, containment, shared rule, or another clear link.",
+        "Use 'relationship' for a specific geographic or supernatural connection",
+        "when the named types do not fit. Many such links are allowed here.",
+        "Do not invent facts unrelated to these records. Never use a self-edge.",
+        "Every edge needs a concrete non-blank reason explaining the connection.",
+        "Use only listed refs and these legal kind pairings:",
+        *edge_guidance_lines(),
+        "Return exactly one JSON object: {\"edges\": [{\"src\": \"E0\",",
+        '"dst": "C0", "type": "rival_of", "counter": 1, "reason": "..."}]}.',
+        "Counter semantics:",
+        *(f"- {kind}: {edge_counter_semantic(kind)}" for kind in sorted(EDGE_TYPES)),
+    ]
+    prompt = "\n".join(lines)
+    result = list(edges)
+    for attempt in range(2):
+        if not _job_still_running(job):
+            return result
+        missing = unconnected(result)
+        has_existing_link = not context or any(
+            (edge.src in required and edge.dst in context_ids)
+            or (edge.dst in required and edge.src in context_ids)
+            for edge in result
+        )
+        if not missing:
+            return result
+        if attempt:
+            linked = "\n".join(
+                f"- {edge.src} --{edge.type}--> {edge.dst}: {edge.reason}"
+                for edge in result
+            )
+            prompt += (
+                "\nThe previous edges left these new entities unconnected: "
+                + ", ".join(sorted(row.name for row in entities if row.id in missing))
+                + (
+                    ". Add a connection to the existing world too."
+                    if not has_existing_link else "."
+                )
+                + " Return only additional edges; do not repeat earlier edges."
+                + "\nALREADY ACCEPTED EDGES:\n" + linked
+            )
+        wiring_settings = dataclasses.replace(
+            settings,
+            response_format=build_anchor_repair_schema(new_refs, core_refs),
+            max_tokens=min(ceiling, EDGES_CALL_MAX_TOKENS),
+        )
+        try:
+            raw = call_wave(
+                budget,
+                provider,
+                wiring_settings,
+                prompt,
+                label="wave1_count_wiring" if attempt == 0 else "wave1_count_wiring_retry",
+                parse=_parse_wiring_output,
+                retry_note='Return ONLY {"edges": [...]} with valid refs and reasons.',
+                ceiling=ceiling,
+            )
+        except (JobPayloadError, ProviderError, BudgetExceededError) as exc:
+            logger.warning("count-generated wiring attempt %d failed: %s", attempt + 1, exc)
+            continue
+        usable = [
+            row for row in raw
+            if _edge_row_usable(row, valid_refs) and edge_reason_ok(row.get("reason"))
+        ]
+        # Invalid kind pairings are discarded here and listed as missing on
+        # the next pass; the store remains the final compatibility backstop.
+        kinds = {ref: kind for ref, _name, kind in roster}
+        kinds.update({f"C{i}": row.kind for i, row in enumerate(context)})
+        usable = [
+            row for row in usable
+            if edge_kind_ok(row["type"], kinds[row["src"]], kinds[row["dst"]])
+        ]
+        resolved, _ = _resolve_edges(
+            1, usable, [row.id or "" for row in entities], context=context
+        )
+        existing_keys = {(edge.src, edge.dst, edge.type) for edge in result}
+        for edge in resolved:
+            key = (edge.src, edge.dst, edge.type)
+            if key not in existing_keys:
+                result.append(edge)
+                existing_keys.add(key)
+    missing_names = sorted(row.name for row in entities if row.id in unconnected(result))
+    has_existing_link = not context or any(
+        (edge.src in required and edge.dst in context_ids)
+        or (edge.dst in required and edge.src in context_ids)
+        for edge in result
+    )
+    if missing_names or not has_existing_link:
+        detail = f"Unconnected: {', '.join(missing_names[:6])}." if missing_names else ""
+        if not has_existing_link:
+            detail += " No link to the existing world."
+        raise JobPayloadError(
+            "Could not connect all generated entities to the world. "
+            + detail
+            + " Nothing from this build was saved; try fewer entities or add more world details."
+        )
+    return result
+
+
 def _drop_roster_twins(
     parsed: dict[str, Any], roster_keys: set[tuple[str, str]]
 ) -> tuple[dict[str, Any], list[str]]:
@@ -3498,6 +3663,13 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     if declared:
         logger.info("build_in: %d declared edge(s) applied (job %s)", len(declared), job.id)
     edges_1 = [*edges_1, *declared]
+    if generated_rows:
+        edges_1 = _connect_count_generated_entities(
+            job, budget, provider, settings, wave1_seed, entities_1, edges_1,
+            generated_rows, [] if seed.is_generic else world_before, ceiling=ceiling,
+        )
+        if not _job_still_running(job):
+            return
     # AD-33 fill-blank: one bounded reason repair for blank edge whys,
     # then drop-with-audit; wave 1 stays edgeless-legal (owner verdict).
     edges_1 = _fill_blank_reasons(
@@ -5144,9 +5316,8 @@ def _resolve_endpoint(
     Wave refs (``E<index>`` for wave 1 — GLOBAL positions, so a chunk's
     edges resolve against the assembled roster via ``ref_offset`` —
     ``N<index>`` for wave 2) resolve into the wave's runner-assigned ULIDs
-    and return their LOCAL position; context refs (``C<index>``, wave 2
-    only) resolve into the two-tier anchor context (M2: detail rows plus
-    the compact core) and return ``None`` (a context endpoint is never a
+    and return their LOCAL position; supplied context refs (``C<index>``)
+    resolve into committed entities and return ``None`` (a context endpoint is never a
     wave position). A malformed, non-canonical, or out-of-range ref is a
     ``JobPayloadError`` naming the wave, edge, and side.
     """
@@ -5159,14 +5330,14 @@ def _resolve_endpoint(
                 f"wave {wave}: edge {edge_index} {side} {ref!r} names no entity in the wave"
             )
         return assigned_ids[position], position
-    if wave == 2 and isinstance(ref, str) and ref.startswith("C"):
+    if isinstance(ref, str) and ref.startswith("C") and context:
         position = _ref_index(ref, "C", wave=wave, edge_index=edge_index, side=side)
         if position >= len(context):
             raise JobPayloadError(
                 f"wave {wave}: edge {edge_index} {side} {ref!r} names no context entity"
             )
         return context[position].id, None
-    suffix = " or C<index>" if wave == 2 else ""
+    suffix = " or C<index>" if context else ""
     raise JobPayloadError(
         f"wave {wave}: edge {edge_index} {side} ref {ref!r} must be {prefix}<index>{suffix}"
     )
