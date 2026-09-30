@@ -328,11 +328,10 @@ def test_post_regenerate_settled_candidate_422_zero_rows(
     _zero_jobs(campaign_id)
 
 
-def test_post_regenerate_non_ar24_target_422_zero_rows(
+def test_post_regenerate_flat_place_is_enrichable_201(
     client: TestClient, job_api: Callable[[], str]
 ) -> None:
-    """A target without an AR24 sectioned profile (build-in style entity
-    data) is a 422 at enqueue — nothing to preserve byte-identically."""
+    """A place uses its own section contract and can be enriched at enqueue."""
     campaign_id = job_api()
     place_id, guild_id = ids.new_id(), ids.new_id()
     commit_subgraph(
@@ -350,8 +349,7 @@ def test_post_regenerate_non_ar24_target_422_zero_rows(
         base_revision=None,
     )
     response = _post(client, campaign_id, {"kind": "entity", "id": place_id}, None)
-    assert response.status_code == 422
-    _zero_jobs(campaign_id)
+    assert response.status_code == 201, response.text
 
 
 @pytest.mark.parametrize(

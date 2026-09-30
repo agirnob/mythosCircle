@@ -61,6 +61,7 @@ from app.pipeline.budget import BudgetExceededError, CallBudget
 from app.pipeline.fencing import json_error, parse_json_object
 from app.pipeline.fencing import strip_fence as _strip_fence
 from app.pipeline.knowledge import ROLES, identity_field_allowed, identity_field_ok
+from app.pipeline.prompt_catalog import prompt_contract
 from app.pipeline.retrieval import (
     context_summary,
     retrieve_neighborhood,
@@ -207,6 +208,20 @@ WAVE1_CHUNK_WEIGHT = 12.0
 WAVE1_CHUNK_HARD_CAP = 16
 _WEIGHT_CHARACTER = 1.0
 _WEIGHT_FLAT = 0.35
+#: Registry-backed place/faction sections. These are deliberately separate
+#: from the AR24 character record: a dialled flat entity must grow its own
+#: complete kind-specific record before it can commit.
+_FLAT_SECTIONS: dict[str, tuple[str, ...]] = {
+    "place": ("description", "inhabitants", "whats_hidden"),
+    "faction": ("description", "doctrine", "assets"),
+}
+_DIAL_MIN_WORDS: dict[str, int] = {
+    "nothing": 1,
+    "draft": 8,
+    "simple": 16,
+    "important": 28,
+    "pillar": 45,
+}
 #: Per-call generation-window sizing (B): the measured per-entity output at
 #: rung 50 (Qwen3.8 ~530 tokens/entity, gemma ~390) with ~70% headroom,
 #: times the pinned count, plus edge-list headroom — capped at the
@@ -833,7 +848,10 @@ def _wave1_chunks(
     current: list[tuple[int, str, str, dict[str, Any] | None]] = []
     weight = 0.0
     for position, (section, entry, seed) in enumerate(roster):
-        flat = seed is not None and seed.get("kind") in ("place", "faction")
+        # The input section is authoritative here. SeedEntry intentionally
+        # has no duplicated `kind` field, so checking the seed dict made all
+        # structured places/factions receive character-sized prompt budgets.
+        flat = section in ("places", "factions")
         weighted = section in ("key_figures", "mandate") and not flat
         entry_weight = _WEIGHT_CHARACTER if weighted else _WEIGHT_FLAT
         if current and (
@@ -963,7 +981,12 @@ def _backfill_authored(
         description = seed.get("description")
         if isinstance(description, str) and description.strip() and which in ("all", "record"):
             text = description
+            data["description"] = description.strip()
         if which in ("all", "record"):
+            for key in ("archetype", "dial"):
+                value = seed.get(key)
+                if value is not None:
+                    data[key] = value
             role = seed.get("role")
             if isinstance(role, str) and role.strip():
                 data["role"] = role.strip()
@@ -990,6 +1013,58 @@ def _backfill_authored(
                     )
         out.append(dataclasses.replace(entity, name=name, text=text, data=data))
     return out
+
+
+def _flat_record_violations(
+    entities: Sequence[models.EntityInput],
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+) -> list[str]:
+    """Validate dialled place/faction output before any commit.
+
+    The model must supply every section for the entity kind. A DM-authored
+    section is accepted verbatim at any length; only model-filled sections
+    are subject to the dial's minimum word floor. Legacy plain-string rows
+    and structured rows without a dial retain their historical flat shape
+    until the DM opts into the registry contract.
+    """
+    violations: list[str] = []
+    seen_flat_keys: set[tuple[str, str]] = set()
+    for position, entity in enumerate(entities):
+        _section, _entry, seed = roster[position] if position < len(roster) else ("", "", None)
+        if seed is None or seed.get("mandate") or entity.kind not in _FLAT_SECTIONS:
+            continue
+        flat_key = (entity.kind, normalize_entity_name(entity.name))
+        if flat_key in seen_flat_keys:
+            # Places and factions with the same kind/name are folded into the
+            # first row by _merge_with_world, so a discarded twin cannot fail
+            # the contract before that established upsert rule runs.
+            continue
+        seen_flat_keys.add(flat_key)
+        dial = seed.get("dial")
+        if dial is None:
+            continue
+        if dial not in _DIAL_MIN_WORDS:
+            violations.append(f"E{position} {entity.name!r}: unknown dial {dial!r}")
+            continue
+        data = entity.data if isinstance(entity.data, dict) else {}
+        for field in _FLAT_SECTIONS[entity.kind]:
+            value = data.get(field)
+            if field == "description" and not isinstance(value, str):
+                value = entity.text
+            if not isinstance(value, str) or not value.strip():
+                violations.append(f"E{position} {entity.name!r}: missing {entity.kind}.{field}")
+                continue
+            authored = field == "description" and isinstance(seed.get("description"), str)
+            if authored:
+                continue
+            words = len(value.split())
+            minimum = _DIAL_MIN_WORDS[dial]
+            if words < minimum:
+                violations.append(
+                    f"E{position} {entity.name!r}: {entity.kind}.{field} has {words} words; "
+                    f"dial {dial} requires at least {minimum}"
+                )
+    return violations
 
 
 def _check_authored_stat_blocks(
@@ -1771,6 +1846,201 @@ class _RecordIssue:
     position: int
     entity: models.EntityInput
     violations: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class _FlatRecordIssue:
+    """One dialled place/faction whose generated sections need enrichment."""
+
+    position: int
+    entity: models.EntityInput
+    kind: str
+    dial: str
+    fields: tuple[str, ...]
+    violations: tuple[str, ...]
+
+
+def _collect_flat_record_issues(
+    entities: Sequence[models.EntityInput],
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+) -> list[_FlatRecordIssue]:
+    """Collect repairable dial violations grouped by entity.
+
+    This intentionally mirrors ``_flat_record_violations`` while retaining
+    the field names needed to ask the model for a narrow enrichment patch.
+    Authored descriptions are never included in the repair field list.
+    """
+    issues: list[_FlatRecordIssue] = []
+    seen_flat_keys: set[tuple[str, str]] = set()
+    for position, entity in enumerate(entities):
+        _section, _entry, seed = roster[position] if position < len(roster) else ("", "", None)
+        if seed is None or seed.get("mandate") or entity.kind not in _FLAT_SECTIONS:
+            continue
+        flat_key = (entity.kind, normalize_entity_name(entity.name))
+        if flat_key in seen_flat_keys:
+            continue
+        seen_flat_keys.add(flat_key)
+        dial = seed.get("dial")
+        if not isinstance(dial, str) or dial not in _DIAL_MIN_WORDS:
+            continue
+        data = entity.data if isinstance(entity.data, dict) else {}
+        fields: list[str] = []
+        violations: list[str] = []
+        for field in _FLAT_SECTIONS[entity.kind]:
+            value = data.get(field)
+            if field == "description" and not isinstance(value, str):
+                value = entity.text
+            authored = field == "description" and isinstance(seed.get("description"), str)
+            if authored:
+                continue
+            if not isinstance(value, str) or not value.strip():
+                fields.append(field)
+                violations.append(f"missing {entity.kind}.{field}")
+                continue
+            words = len(value.split())
+            minimum = _DIAL_MIN_WORDS[dial]
+            if words < minimum:
+                fields.append(field)
+                violations.append(
+                    f"{entity.kind}.{field} has {words} words; dial {dial} requires at least "
+                    f"{minimum}"
+                )
+        if fields:
+            issues.append(
+                _FlatRecordIssue(
+                    position=position,
+                    entity=entity,
+                    kind=entity.kind,
+                    dial=dial,
+                    fields=tuple(fields),
+                    violations=tuple(violations),
+                )
+            )
+    return issues
+
+
+def _build_flat_record_repair_prompt(
+    issues: Sequence[_FlatRecordIssue],
+    *,
+    safety_words: int = 8,
+) -> str:
+    """Build the bounded enrichment prompt for short place/faction fields."""
+    flagged: list[str] = []
+    for issue in issues:
+        current = {
+            field: issue.entity.data.get(field)
+            for field in _FLAT_SECTIONS[issue.kind]
+            if field in issue.entity.data
+        }
+        minimum = _DIAL_MIN_WORDS[issue.dial]
+        fields = ", ".join(issue.fields)
+        violations = "\n".join(f"  - {violation}" for violation in issue.violations)
+        flagged.append(
+            f"E{issue.position} ({issue.kind}, {issue.entity.name!r}, dial {issue.dial!r}):\n"
+            f"current data: {json.dumps(current, sort_keys=True, separators=(',', ':'))}\n"
+            f"fields to repair: {fields}\n"
+            f"every repaired field must contain at least {minimum + safety_words} words "
+            f"({minimum} required, with a safety margin)\n"
+            f"violations:\n{violations}"
+        )
+    return "\n".join(
+        [
+            "You are enriching place and faction records for a TTRPG world.",
+            "Respond with exactly one JSON object — nothing else.",
+            "",
+            "A place has these flat fields: description, inhabitants, whats_hidden.",
+            "A faction has these flat fields: description, doctrine, assets.",
+            "Write concrete, evocative, game-ready prose that fits the existing record.",
+            "Only repair the fields listed for each entity. Do not invent or rename entities.",
+            "Never return stat_block, kind, name, archetype, or dial.",
+            "",
+            "VIOLATIONS TO FIX",
+            "\n\n".join(flagged),
+            "",
+            "OUTPUT CONTRACT",
+            '{"records": [{"ref": "E<position>", "data": {"field": "..."}}, ...]}',
+            "Return exactly one record for every listed entity, with the exact refs.",
+            "Each listed repair field must be a non-blank string meeting its word minimum.",
+            "Use a flat data object; no nested sections and no surrounding prose.",
+        ]
+    )
+
+
+def _apply_flat_record_repairs(
+    entities: Sequence[models.EntityInput],
+    repaired: Mapping[int, dict[str, Any]],
+) -> list[models.EntityInput]:
+    """Apply only the canonical flat fields from a flat-record repair."""
+    merged: list[models.EntityInput] = []
+    for position, entity in enumerate(entities):
+        patch = repaired.get(position)
+        if patch is not None and entity.kind in _FLAT_SECTIONS:
+            flat_patch = {
+                key: value
+                for key, value in patch.items()
+                if key in _FLAT_SECTIONS[entity.kind] and isinstance(value, str)
+            }
+            if flat_patch:
+                entity = dataclasses.replace(entity, data={**entity.data, **flat_patch})
+        merged.append(entity)
+    return merged
+
+
+def _flat_failure_message(wave: int, issues: Sequence[_FlatRecordIssue]) -> str:
+    parts = [
+        f"E{issue.position} {issue.entity.name!r}: " + " | ".join(issue.violations)
+        for issue in issues
+    ]
+    return (
+        f"wave {wave}: dialled place/faction records failed their kind-specific contract: "
+        + " | ".join(parts)
+    )
+
+
+def _flat_violation_message(wave: int, violations: Sequence[str]) -> str:
+    return (
+        f"wave {wave}: dialled place/faction records failed their kind-specific contract: "
+        + " | ".join(violations)
+    )
+
+
+def _enforce_flat_records(
+    job: models.Job,
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    entities: list[models.EntityInput],
+    roster: Sequence[tuple[str, str, dict[str, Any] | None]],
+    wave: int,
+) -> tuple[list[models.EntityInput], bool]:
+    """Repair short dialled place/faction sections once, then re-check."""
+    for repair_attempt in range(2):
+        initial_violations = _flat_record_violations(entities, roster)
+        issues = _collect_flat_record_issues(entities, roster)
+        if not issues:
+            if initial_violations:
+                raise JobPayloadError(_flat_violation_message(wave, initial_violations))
+            return entities, False
+        if not _job_still_running(job):
+            return entities, True
+        repaired = _run_repair(
+            budget=budget,
+            provider=provider,
+            settings=settings,
+            prompt=_build_flat_record_repair_prompt(
+                issues, safety_words=8 * (repair_attempt + 1)
+            ),
+            parse=_parse_record_repair_output,
+            positions=[issue.position for issue in issues],
+            label="flat_record" if repair_attempt == 0 else "flat_record_retry",
+            retry_note="Return ONLY the records list with one flat data patch per flagged ref. "
+            "Never include name, kind, archetype, dial, or stat_block.",
+        )
+        entities = _apply_flat_record_repairs(entities, repaired)
+    final_violations = _flat_record_violations(entities, roster)
+    if final_violations:
+        raise JobPayloadError(_flat_violation_message(wave, final_violations))
+    return entities, False
 
 
 def _collect_record_issues(
@@ -2967,6 +3237,16 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # below (a repair that drifted an authored field is reverted
     # deterministically, never re-repaired by the LLM).
     entities_1 = _backfill_authored(entities_1, roster, which="record")
+    # Place/faction records get the same bounded content-repair behavior as
+    # character records. A concise model response can miss an important or
+    # pillar word floor even when its JSON is structurally valid; give it one
+    # narrow enrichment pass before treating the contract as fatal.
+    entities_1, cancelled = _enforce_flat_records(
+        job, budget, provider, settings, entities_1, roster, wave=1
+    )
+    if cancelled:
+        return
+    entities_1 = _backfill_authored(entities_1, roster, which="record")
     # Structural-name enforcement (dogfood fix 2026-09-09): a wave entity
     # missing its name (gemma shipped a fully-detailed character with no
     # name field) gets one bounded repair pass BEFORE the record gate, so
@@ -3282,6 +3562,10 @@ def build_wave1_prompt(
         "Every entity must appear in at least one edge within this subgraph — no orphans.",
         "Edges must connect two different entities — no self-loops.",
         "",
+        prompt_contract("build_in", "kind_contract"),
+        prompt_contract("build_in", "dial_contract"),
+        prompt_contract("build_in", "seed_controls"),
+        "",
         "STAT BLOCKS",
         stat_block_rules_text(),
         "",
@@ -3305,8 +3589,10 @@ def build_wave1_prompt(
         "role, level_cr, race_type, class_profession, alignment, and stat_block are keys",
         "of data — never keys of the entity itself. An entity carrying them at the top",
         "level loses them: the record is read from data and nowhere else.",
-        'A place or faction is flat: {"ref": "E0", "kind": "place", "name": "City of Gallorb",',
-        '  "text": "the hard truth about it"} — data is optional for those two kinds.',
+        'A place record: {"ref": "E0", "kind": "place", "name": "City of Gallorb",',
+        '  "text": "short description", "data": {"description": "...",',
+        '  "inhabitants": "...", "whats_hidden": "...", "archetype": "City",',
+        '  "dial": "important"}}.',
         "Refs are positional and canonical: the first entity in the list is E0, the",
         "second E1, and so on (never E01, E007).",
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
@@ -3345,6 +3631,12 @@ def _authored_seed_lines(seed: dict[str, Any]) -> list[str]:
         "  DM-AUTHORED SEED (GROUND TRUTH — copy every authored field below",
         "  VERBATIM into the entity/record; never paraphrase, re-type, or drop one):",
     ]
+    archetype = seed.get("archetype")
+    if isinstance(archetype, str) and archetype.strip():
+        lines.append(f"    archetype (PINNED): {archetype.strip()}")
+    dial = seed.get("dial")
+    if isinstance(dial, str) and dial.strip():
+        lines.append(f"    dial (PINNED): {dial.strip()}")
     role = seed.get("role")
     if isinstance(role, str) and role.strip():
         lines.append(f"    role (PINNED): {role.strip()}")
@@ -3456,14 +3748,20 @@ def build_wave1_chunk_prompt(
         "role, level_cr, race_type, class_profession, alignment, and stat_block are keys",
         "of data — never keys of the entity itself. An entity carrying them at the top",
         "level loses them: the record is read from data and nowhere else.",
-        'A place or faction is flat: {"ref": "E0", "kind": "place", "name": "City of Gallorb",',
-        '  "text": "the hard truth about it"} — data is optional for those two kinds.',
+        'A place record: {"ref": "E0", "kind": "place", "name": "City of Gallorb",',
+        '  "text": "short description", "data": {"description": "...",',
+        '  "inhabitants": "...", "whats_hidden": "...", "archetype": "City",',
+        '  "dial": "important"}}.',
         f"The refs are FIXED global positions: your first entity is E{start}, your",
         f"second E{start + 1}, and so on up to E{end} (never E01, E007).",
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',
         '  "counter": <integer, default 1>}.',
         f"Edge src/dst must be refs from YOUR ENTITIES list (E{start}..E{end}).",
         "Names must be non-blank.",
+        "",
+        prompt_contract("build_in", "kind_contract"),
+        prompt_contract("build_in", "dial_contract"),
+        prompt_contract("build_in", "seed_controls"),
         "",
         *edge_guidance_lines(),
         "",
@@ -3745,6 +4043,10 @@ def build_wave2_prompt(
         "orphans. Detail context entries beyond the core are background only.",
         "Edges must connect two different entities — no self-loops.",
         "",
+        prompt_contract("build_in", "kind_contract"),
+        prompt_contract("build_in", "dial_contract"),
+        prompt_contract("build_in", "seed_controls"),
+        "",
         "STAT BLOCKS",
         stat_block_rules_text(),
         "",
@@ -3768,8 +4070,9 @@ def build_wave2_prompt(
         'kind is exactly "character", "faction", or "place" — never a role word like',
         '"Monster" or "NPC": the role belongs in data.role, and an entity carrying',
         "record keys at the top level loses them — the record is read from data alone.",
-        'A place or faction is flat: {"ref": "N0", "kind": "faction", "name": "The Guild",',
-        '  "text": "the hard truth about it"} — data is optional for those two kinds.',
+        'A faction record: {"ref": "N0", "kind": "faction", "name": "The Guild",',
+        '  "text": "short doctrine", "data": {"description": "...", "doctrine": "...",',
+        '  "assets": "...", "archetype": "Guild", "dial": "important"}}.',
         "Refs are positional and canonical: the first new entity in the list is N0,",
         "the second N1, and so on (never N01, N007).",
         'Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",',

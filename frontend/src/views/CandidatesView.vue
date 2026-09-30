@@ -251,6 +251,24 @@ function sectionObject(
   return isObject(value) ? value : null
 }
 
+/** Flat place/faction proposals do not have AR24 lore sections. */
+function flatFieldsFor(candidate: Candidate): readonly string[] {
+  const payload = candidate.payload
+  if (
+    payload['kind'] === 'faction' ||
+    (asString(payload['doctrine']) !== null && asString(payload['assets']) !== null)
+  ) {
+    return ['description', 'doctrine', 'assets']
+  }
+  if (
+    payload['kind'] === 'place' ||
+    (asString(payload['inhabitants']) !== null && asString(payload['whats_hidden']) !== null)
+  ) {
+    return ['description', 'inhabitants', 'whats_hidden']
+  }
+  return []
+}
+
 interface StagedEdge {
   endpoint: string
   direction: string
@@ -372,6 +390,9 @@ function toggleEdit(candidate: Candidate) {
     for (const field of fields) {
       draft[draftKey(section, field)] = originalValue(candidate, section, field) ?? ''
     }
+  }
+  for (const field of flatFieldsFor(candidate)) {
+    draft[field] = originalValue(candidate, 'top', field) ?? ''
   }
   editing.value[id] = true
   drafts.value[id] = { ...draft }
@@ -682,6 +703,34 @@ function rollLabel(candidateId: string, section: string): string {
         </p>
 
         <div class="sections">
+          <!-- Flat place/faction records use their own compact contract. -->
+          <dl v-if="flatFieldsFor(candidate).length">
+            <template v-for="field in flatFieldsFor(candidate)" :key="field">
+              <div v-if="editing[candidate.id]" class="edit-row">
+                <dt>{{ FIELD_LABELS[field] ?? field }}</dt>
+                <dd>
+                  <textarea
+                    v-model="drafts[candidate.id][field]"
+                    rows="3"
+                    :aria-label="FIELD_LABELS[field] ?? field"
+                  ></textarea>
+                </dd>
+              </div>
+              <div v-else-if="asString(candidate.payload[field])" class="view-row">
+                <dt>{{ FIELD_LABELS[field] ?? field }}</dt>
+                <dd class="text">{{ candidate.payload[field] }}</dd>
+                <button
+                  type="button"
+                  class="link re-roll"
+                  :disabled="actingId !== null"
+                  @click="rollCandidate(candidate, [field], field)"
+                >
+                  {{ rollLabel(candidate.id, field) }}
+                </button>
+              </div>
+            </template>
+          </dl>
+
           <!-- Narrative lore -->
           <dl>
             <template v-for="field in LORE_FIELDS" :key="field">

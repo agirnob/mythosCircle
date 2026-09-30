@@ -167,6 +167,54 @@ def _generate_output(total: int = 3) -> dict[str, Any]:
     }
 
 
+def test_faction_prompt_and_generation_use_faction_fields(world: str) -> None:
+    """A faction ask must advertise and stage doctrine/assets, not place fields."""
+    _commit_world(world)
+    response = {
+        "candidates": [
+            {
+                "name": name,
+                "description": "Shipwrights who debate whether a rebuilt vessel is the same ship.",
+                "doctrine": "A ship's identity survives the replacement of its hull.",
+                "assets": "Dry docks, salvage crews, and a ledger of original keels.",
+                "edges": [
+                    {
+                        "endpoint": "C0",
+                        "direction": "outbound",
+                        "type": "relationship",
+                        "counter": 1,
+                        "reason": "The guild trades salvage with the Gilded Bar.",
+                    }
+                ],
+            }
+            for name in ("Hull-Menders", "Keelkeepers", "Plankwrights")
+        ]
+    }
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        assert '"doctrine": "..."' in prompt
+        assert '"assets": "..."' in prompt
+        assert '"inhabitants": "..."' not in prompt
+        assert '"whats_hidden": "..."' not in prompt
+        assert "STAT BLOCKS" not in prompt
+        return json.dumps(response)
+
+    job_id = enqueue_job(world, "generate", {"ask": "ship of theseus", "entity_kind": "faction"}).id
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    assert [row.payload["name"] for row in _staged(world)] == [
+        "Hull-Menders",
+        "Keelkeepers",
+        "Plankwrights",
+    ]
+    assert all(row.payload["entity_kind"] == "faction" for row in _staged(world))
+    assert all(
+        row.payload["edges"][0]["reason"] == "The guild trades salvage with the Gilded Bar."
+        for row in _staged(world)
+    )
+
+
 def _enqueue(world: str, *, max_llm_calls: int | None = None, ask: str = "a rival for Mira") -> str:
     """Enqueue one generate job; returns its id."""
     return enqueue_job(world, "generate", {"ask": ask}, max_llm_calls=max_llm_calls).id

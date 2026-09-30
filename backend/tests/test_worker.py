@@ -148,13 +148,13 @@ def test_run_video_prompt_job_runs_the_draft_runner(world: str) -> None:
     assert job.result == {"entity_id": entity_id, "prompt": draft}
     assert list_media(world) == []
     assert len(seen) == 1
-    assert "the writing guide" in seen[0].lower()
+    assert "use only the appearance below" in seen[0].lower()
 
 
-def test_run_video_prompt_job_fails_cleanly_when_llm_down(world: str) -> None:
-    """DRAFT_LLM_DOWN through the worker: a provider failure fails the
-    job with the draft's own error vocabulary, no leftover."""
+def test_run_video_prompt_job_uses_appearance_when_llm_down(world: str) -> None:
+    """The video workflow still gets a draft when the text model is offline."""
     from app.core import ids
+    from app.media.service import bbeg_video_prompt
     from app.store import commit_subgraph
 
     boss_data = {
@@ -183,9 +183,12 @@ def test_run_video_prompt_job_fails_cleanly_when_llm_down(world: str) -> None:
     processed = run_next_job(provider=down, settings=SETTINGS)
     assert processed == job_id
     job, _position = job_status(job_id)
-    assert job.state == "failed"
-    assert "video prompt generation failed" in (job.error or "")
-    assert job.result is None
+    assert job.state == "succeeded"
+    assert job.result == {
+        "entity_id": entity_id,
+        "prompt": bbeg_video_prompt(boss_data),
+        "source": "appearance_fallback",
+    }
 
 
 def test_run_no_job_returns_none(world: str) -> None:
@@ -542,7 +545,8 @@ def test_run_video_job_non_mp4_fails_cleanly(
     def bad_video_provider(
         prompt: str, settings: VideoSettings, first_frame: str | None = None
     ) -> bytes:
-        assert "lair_actions" in prompt
+        assert "face: a mask of fused iron" in prompt
+        assert "lair_actions" not in prompt
         return b"<html>not a video</html>"
 
     job_id = enqueue_job(world, "video", {"entity_id": entity_id}).id

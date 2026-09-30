@@ -47,7 +47,7 @@ from app.store.candidates import (
     ROLES,
     payload_section_violations,
 )
-from app.store.commit import EDGE_KIND_RULES, EDGE_TYPES
+from app.store.commit import ARCHETYPES, DIAL_LEVELS, EDGE_KIND_RULES, EDGE_TYPES
 
 #: The canonical dice formula for an authored action's ``damage`` slot:
 #: tight operators only (``2d6`` / ``1d8+7`` / ``2d6-1``) — the form
@@ -104,7 +104,9 @@ SHEET_KEYS: frozenset[str] = frozenset({"key", "record", "relations"})
 #: (spec: ``str | SeedEntry``). Figures carry the pinned role and the
 #: authored record; places/factions carry the authored description.
 FIGURE_SEED_KEYS: frozenset[str] = frozenset({"name", "role", "record", "relations", "key"})
-FLAT_SEED_KEYS: frozenset[str] = frozenset({"name", "description", "relations", "key"})
+FLAT_SEED_KEYS: frozenset[str] = frozenset(
+    {"name", "description", "relations", "key", "archetype", "dial"}
+)
 
 #: Cap on staged sheets per ``add_character`` submission (the build-in
 #: section cap — one ceiling for both paths).
@@ -582,6 +584,22 @@ def seed_entry_violations(entry: Any, section: str) -> list[str]:
                     violations.extend(
                         stat_block_subset_violations(block, f"{where}.record.stat_block")
                     )
+    else:
+        dial = entry.get("dial")
+        if dial is not None and dial not in DIAL_LEVELS:
+            violations.append(f"{where}.dial must be one of {list(DIAL_LEVELS)}")
+        archetype = entry.get("archetype")
+        if archetype is not None:
+            if not isinstance(archetype, str) or not archetype.strip():
+                violations.append(f"{where}.archetype must be a non-blank string")
+            elif (section[:-1], archetype.strip()) not in {
+                (kind, name) for kind, name, _dial in ARCHETYPES
+            }:
+                kind = "place" if section == "places" else "faction"
+                allowed = sorted(name for row_kind, name, _dial in ARCHETYPES if row_kind == kind)
+                violations.append(
+                    f"{where}.archetype must be one of {allowed} for {kind} entries"
+                )
     relations = entry.get("relations")
     if relations is not None:
         if not isinstance(relations, list):

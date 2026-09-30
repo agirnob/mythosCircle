@@ -177,6 +177,7 @@ from app.store.models import (
 )
 from app.store.read import (
     campaign_seed,
+    entity_for_campaign,
     entity_live_edges,
     latest_revision,
     revision_chain,
@@ -303,6 +304,7 @@ __all__ = [
     "discard_candidates",
     "edge_counter_bounds",
     "edge_counter_semantic",
+    "entity_for_campaign",
     "entity_live_edges",
     "enqueue_job",
     "fail_job",

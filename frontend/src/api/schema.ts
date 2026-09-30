@@ -801,6 +801,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/entities/{entity_id}/reveal-prompt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reveal Prompt Preview
+         * @description Preview the canonical automatic prompt without enqueuing a job.
+         */
+        get: operations["reveal_prompt_preview_api_campaigns__campaign_id__entities__entity_id__reveal_prompt_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/entities/{entity_id}/media/{media_id}": {
         parameters: {
             query?: never;
@@ -1329,6 +1349,14 @@ export interface components {
             email: string;
             /** Password */
             password: string;
+        };
+        /**
+         * RevealPromptResponse
+         * @description The exact appearance-based prompt available for a reveal render.
+         */
+        RevealPromptResponse: {
+            /** Prompt */
+            prompt: string;
         };
         /** RevisionMeta */
         RevisionMeta: {
@@ -2585,6 +2613,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MediaListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reveal_prompt_preview_api_campaigns__campaign_id__entities__entity_id__reveal_prompt_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                entity_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevealPromptResponse"];
                 };
             };
             /** @description Validation Error */

@@ -63,6 +63,25 @@ describe('jobs store', () => {
     })
   })
 
+  it('submits the visible reveal prompt verbatim', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(job('JV1', { kind: 'video' })), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const prompt = '  One continuous reveal.\nKeep the amber eye in frame.  '
+
+    await useJobsStore().submitRevealVideo('C1', 'E1', prompt)
+
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0]
+    expect(JSON.parse(init?.body as string)).toEqual({
+      campaign_id: 'C1',
+      kind: 'video',
+      payload: { entity_id: 'E1', prompt },
+    })
+  })
+
   it('WS progress patches the cached row in place without clobbering REST fields', async () => {
     const jobs = useJobsStore()
     jobs.upsert(job('J1'))

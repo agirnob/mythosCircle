@@ -20,7 +20,7 @@
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { useId } from 'vue'
-import { VueFlow, useVueFlow, getBezierPath } from '@vue-flow/core'
+import { VueFlow, useVueFlow, getBezierPath, Position } from '@vue-flow/core'
 import type { EdgeProps, Node, Edge, ViewportTransform } from '@vue-flow/core'
 import '@vue-flow/core/dist/style.css'
 
@@ -69,14 +69,47 @@ const ringPositions = ref<Map<string, { x: number; y: number }>>(new Map())
 interface HandleSpec {
   edgeId: string
   pct: number
+  position: Position
 }
 
-function handleSpecs(edges: GraphRenderEdge[], nodeId: string, side: 'src' | 'dst'): HandleSpec[] {
+function handleSpecs(
+  edges: GraphRenderEdge[],
+  nodeId: string,
+  side: 'src' | 'dst',
+  positions: Map<string, { x: number; y: number }>,
+): HandleSpec[] {
   const incident = edges.filter((edge) => (side === 'src' ? edge.src === nodeId : edge.dst === nodeId))
-  return incident.map((edge, index) => ({
-    edgeId: edge.id,
-    pct: incident.length > 1 ? 16 + 68 * (index / (incident.length - 1)) : 50,
-  }))
+  const groups = new Map<Position, GraphRenderEdge[]>()
+  for (const edge of incident) {
+    const otherId = side === 'src' ? edge.dst : edge.src
+    const here = positions.get(nodeId)
+    const other = positions.get(otherId)
+    const dx = (other?.x ?? here?.x ?? 0) - (here?.x ?? 0)
+    const dy = (other?.y ?? here?.y ?? 0) - (here?.y ?? 0)
+    const position = Math.abs(dx) >= Math.abs(dy)
+      ? (dx >= 0 ? Position.Right : Position.Left)
+      : (dy >= 0 ? Position.Bottom : Position.Top)
+    const list = groups.get(position)
+    if (list) list.push(edge)
+    else groups.set(position, [edge])
+  }
+  return incident.map((edge) => {
+    const otherId = side === 'src' ? edge.dst : edge.src
+    const here = positions.get(nodeId)
+    const other = positions.get(otherId)
+    const dx = (other?.x ?? here?.x ?? 0) - (here?.x ?? 0)
+    const dy = (other?.y ?? here?.y ?? 0) - (here?.y ?? 0)
+    const position = Math.abs(dx) >= Math.abs(dy)
+      ? (dx >= 0 ? Position.Right : Position.Left)
+      : (dy >= 0 ? Position.Bottom : Position.Top)
+    const group = groups.get(position) ?? [edge]
+    const index = group.indexOf(edge)
+    return {
+      edgeId: edge.id,
+      position,
+      pct: group.length > 1 ? 18 + 64 * (index / (group.length - 1)) : 50,
+    }
+  })
 }
 
 const focusActive = computed(() => props.focusId !== null && props.oneHop !== null)
@@ -103,8 +136,8 @@ const flowNodes = computed<Node[]>(() =>
         node,
         focused,
         dimmed: nodeDimmed(node.id),
-        outHandles: handleSpecs(props.edges, node.id, 'src'),
-        inHandles: handleSpecs(props.edges, node.id, 'dst'),
+        outHandles: handleSpecs(props.edges, node.id, 'src', ringPositions.value),
+        inHandles: handleSpecs(props.edges, node.id, 'dst', ringPositions.value),
       },
     }
   }),
@@ -393,7 +426,7 @@ defineExpose({ zoomIn, zoomOut, fitView, resetView, panBy })
   min-height: 0;
 }
 .graph-edge path {
-  stroke: #7d8695;
+  stroke: var(--mc-text-muted);
   stroke-width: 1.8;
   fill: none;
 }
@@ -402,36 +435,36 @@ defineExpose({ zoomIn, zoomOut, fitView, resetView, panBy })
   opacity: 0.18;
 }
 .graph-edge.active path {
-  stroke: #b45309;
+  stroke: var(--mc-warning);
   stroke-width: 2.6;
 }
 .graph-edge.hovered path,
 .graph-edge.selected path {
-  stroke: #b45309;
+  stroke: var(--mc-interactive-bright);
   stroke-width: 2.6;
 }
 .graph-edge .edge-label {
   font: 600 11.5px system-ui, sans-serif;
-  fill: #1c2330;
+  fill: var(--mc-text-primary);
   paint-order: stroke;
-  stroke: #ffffff;
-  stroke-width: 3px;
+  stroke: var(--mc-surface);
+  stroke-width: 4px;
   stroke-linejoin: round;
   pointer-events: none;
 }
 .graph-tooltip {
   font: 11px ui-monospace, Menlo, monospace;
-  color: #1c2330;
-  background: #ffffff;
-  border: 1px solid #d8dbe0;
+  color: var(--mc-text-primary);
+  background: var(--mc-surface-raised);
+  border: 1px solid var(--mc-border-bright);
   border-radius: 7px;
   padding: 5px 8px;
-  box-shadow: 0 2px 8px rgba(20, 30, 50, 0.15);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38);
   width: max-content;
   max-width: 300px;
 }
 .tt-arrow {
-  color: #b45309;
+  color: var(--mc-warning);
   font-weight: 700;
   margin: 0 2px;
 }

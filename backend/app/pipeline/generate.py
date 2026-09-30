@@ -51,6 +51,7 @@ from app.pipeline.budget import CallBudget
 from app.pipeline.build_in import build_reason_fill_schema
 from app.pipeline.fencing import strip_fence, strip_trailing_commas
 from app.pipeline.knowledge import ROLES
+from app.pipeline.prompt_catalog import prompt_contract
 from app.pipeline.retrieval import (
     DEFAULT_ENTITY_CAP,
     retrieve_neighborhood,
@@ -81,12 +82,14 @@ from app.store import (
 from app.store.candidates import (
     BOSS_FIELDS,
     BOSS_ROLES,
+    FLAT_REGEN_SECTIONS,
     IDENTITY_FIELDS,
     LORE_FIELDS,
     WORLD_INTEGRATION_FIELDS,
     canonicalize_reaction_matrix,
     payload_section_violations,
 )
+from app.store.commit import edge_kind_ok
 from app.store.db import session_scope
 from app.store.jobs import GENERATE_MAX_ASK_LENGTH
 from app.store.read import campaign_seed, world_state
@@ -129,10 +132,16 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
     payload = job.payload
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"ask"}
+        or set(payload) not in ({"ask"}, {"ask", "entity_kind"})
         or not isinstance(payload.get("ask"), str)
     ):
-        raise JobPayloadError("generate: job payload must be exactly {'ask': str}")
+        raise JobPayloadError(
+            "generate: job payload must contain ask and an optional "
+            "entity_kind ('character', 'faction', or 'place')"
+        )
+    entity_kind = payload.get("entity_kind", "character")
+    if entity_kind not in {"character", "faction", "place"}:
+        raise JobPayloadError("generate: entity_kind must be character, faction, or place")
     ask = payload["ask"].strip()
     # The runner re-checks the enqueue-time payload contract (non-blank,
     # length-capped): a generate job row written outside ``enqueue_job``
@@ -163,7 +172,7 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
         boost_ids=target_ids or None,
         newest_first=True,
     )
-    prompt = build_generate_prompt(seed, ask, (context_entities, context_edges))
+    prompt = build_generate_prompt(seed, ask, (context_entities, context_edges), entity_kind)
     parsed = call_wave(
         budget,
         provider,
@@ -191,11 +200,11 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
     valid: list[tuple[int, dict[str, Any]]] = []
     drops: list[tuple[int, str, str]] = []  # (E-ref index, name, reason)
     for index, raw in enumerate(parsed):
-        violations = _candidate_violations(raw, context_entities)
+        violations = _candidate_violations(raw, context_entities, entity_kind)
         if violations:
             drops.append((index, _display_name(raw, index), "; ".join(violations)))
         else:
-            valid.append((index, _candidate_payload(raw, context_entities)))
+            valid.append((index, _candidate_payload(raw, context_entities, entity_kind)))
 
     # Stat-block enforcement (AR25): bounded repair passes (up to three),
     # budget-gated like every provider call. ``inputs`` mirrors the parsed
@@ -205,10 +214,14 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
     valid_map = dict(valid)
     inputs = [
         models.EntityInput(
-            kind="character",
+            kind="character" if entity_kind == "character" else entity_kind,
             name=valid_map[index]["name"],
             data={
-                "stat_block": valid_map[index]["stat_block"],
+                **(
+                    {"stat_block": valid_map[index]["stat_block"]}
+                    if entity_kind == "character"
+                    else {}
+                ),
                 **{
                     key: value
                     for key in ("role", "level_cr")
@@ -288,7 +301,12 @@ def run_generate(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # dropping still-invalid candidates — an AR25-valid block is never
     # staged unrepaired.
     valid = [
-        (index, {**candidate, "stat_block": inputs[index].data.get("stat_block")})
+        (
+            index,
+            {**candidate, "stat_block": inputs[index].data.get("stat_block")}
+            if entity_kind == "character"
+            else candidate,
+        )
         for index, candidate in valid
         if index not in still_bad
     ]
@@ -452,6 +470,7 @@ def build_generate_prompt(
     campaign_seed: models.Campaign,
     ask: str,
     context: tuple[Sequence[models.Entity], Sequence[models.Edge]],
+    entity_kind: str = "character",
 ) -> str:
     """The generate prompt (AR6/AR27/AD-16): pure and byte-deterministic.
 
@@ -484,80 +503,138 @@ def build_generate_prompt(
         "THE DM'S ASK",
         ask.strip(),
         "",
+        prompt_contract("generate"),
+        "",
         "TASK",
-        "Create exactly 3 candidate entities that answer the ask. Each candidate is a",
-        f"character-like figure with a role in {sorted(ROLES)}, woven into the world by",
-        "at least one meaningful typed edge whose far endpoint is a committed entity from the",
-        "context list above. Weave, don't list: every candidate must fit the existing",
-        "world. Edges must connect two different entities — no self-loops.",
+        f"Create exactly 3 candidate {entity_kind} entities that answer the ask.",
+        (
+            f"Each candidate is a character-like figure with a role in {sorted(ROLES)}, "
+            "woven into the world by"
+            if entity_kind == "character"
+            else (
+                f"Each candidate is a complete {entity_kind} record with no character "
+                "role, race, class, or stat block. Use the "
+                f"{', '.join(FLAT_REGEN_SECTIONS[entity_kind])} fields required "
+                f"for a {entity_kind}."
+            )
+        ),
+        "at least one meaningful typed edge to a committed entity from the context",
+        "list above or an explicitly requested new related entity. Weave, don't list:",
+        "every candidate must fit the existing world. Edges must connect two different",
+        "entities — no self-loops.",
+        "Use edge directions that match entity kinds: bases_at and hails_from",
+        "point from a character or faction to a place; do not use either",
+        "with a place as the source.",
         "Prefer more than one edge when that is what clearly establishes the",
         "candidate's role in the committed world.",
         "If the ask names several distinct figures, answer each with its own",
         "candidate, in the order the ask names them.",
         "Candidates are additions to the committed world: never a duplicate or",
-        "upgrade of a committed entity, and never two versions of the same character",
+        f"upgrade of a committed entity, and never two versions of the same {entity_kind}",
         "— each gets a distinct name. Treat an already-established figure as the",
         'existing figure when the ask refers to it generically ("the BBEG"); do not',
         "create a replacement or a second one unless the ask explicitly requests one.",
         "",
-        "STAT BLOCKS",
-        stat_block_rules_text(spells_reference=False),
-        "",
-        "OUTPUT CONTRACT",
-        'Respond with one JSON object: {"candidates": [...]} — exactly 3 entries.',
-        "Each candidate is the full sectioned profile — every section below is",
-        "required and must be a non-blank string (or an object whose fields are",
-        'all non-blank strings): {"name": "...", "role": "NPC|BBEG|Monster",',
-        '  "level_cr": "level <n>" for NPC/BBEG or "CR <n>" for Monster,',
-        '  "race_type": "...", "class_profession": "...", "alignment": "...",',
-        '  "personality": "...", "secret": "...", "rumor": "...", "party_hook": "...",',
-        '  "appearance": "painter-grade prose: face, body, clothing, scars, marks",',
-        '  "background": "...", "goals": "...", "relationships": "...",',
-        '  "voice_style": "...", "catchphrases": "...",',
-        '  "stat_block": {...per the STAT BLOCK RULES above...},',
-        '  "world_integration": {"reputation": "...", "factions": "...",',
-        '                        "current_location": "...", "reaction_matrix": "...",',
-        '                        "on_defeat": "..."},',
-        "world_integration.reaction_matrix is ONE non-blank prose string —",
-        "never a JSON object/mapping: enumerate each reacting committed",
-        "entity or faction as 'C<index>: <reaction>' inside that single",
-        "string, e.g. 'C5: Friendly — welcomes the party; C2: Hostile —",
-        "schemes against them'.",
-        '  "boss": {"lair_actions": "...", "legendary_actions": "...", "immunities": "...",',
-        '           "vulnerabilities": "..."}  — CONDITIONAL: this one section is REQUIRED',
-        "           when the role is BBEG or Monster and OMITTED entirely for NPC (never",
-        "           an empty boss object); every other section above is always required,",
-        '  "edges": [{"endpoint": "C<index>", "direction": "outbound"|"inbound",',
-        '             "type": "<vocabulary member>", "counter": <integer, default 1>,',
-        '             "reason": "<one non-blank sentence: why this relation holds>"}]},',
-        'Fill every boss field for a BBEG/Monster — use "None." where a field does not',
-        "apply (e.g. a monster without legendary actions).",
-        "Every edge connects the candidate to exactly one committed entity: endpoint",
-        "is a C<index> ref matching the context list above (never an entity name or",
-        'id), direction says whether the edge points from the candidate ("outbound")',
-        'or from the endpoint to the candidate ("inbound"). Names, roles, personality,',
-        "and the secret/rumor/party_hook fields must be non-blank.",
-        "Direction example: the candidate hunts the C2 figure — candidate -> C2, so",
-        '"outbound"; the C2 figure hunts the candidate — C2 -> candidate, so "inbound".',
-        "Quality bar: secret is a specific concealed fact, rumor a concrete in-world",
-        "claim, party_hook a concrete way the party engages the candidate, and",
-        "world_integration.reaction_matrix says how the committed entities and",
-        "factions above react to the candidate.",
-        "Identity consistency: stat_block.identity.role must match the top-level",
-        "role. Top-level level_cr is display text only (the export derives",
-        "level/CR from the stat_block.identity numerics, which are",
-        "authoritative): for NPC/BBEG write 'level <n>' matching",
-        "stat_block.identity.level; for Monster write 'CR <n>' matching",
-        "stat_block.identity.cr. Use lowercase 'level' and uppercase 'CR' exactly.",
-        "",
-        "EDGE VOCABULARY (closed set — never invent a type)",
-        *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
-        "",
-        "COUNTER SEMANTICS (one integer per edge)",
-        *(f"- {edge_type}: {edge_counter_semantic(edge_type)}" for edge_type in sorted(EDGE_TYPES)),
-        "Neutral types: counter must be 1.",
-        "Amount/score/intensity types: counter must be a positive integer from 1 to 10.",
     ]
+    if entity_kind == "character":
+        lines.extend(
+            [
+                "STAT BLOCKS",
+                stat_block_rules_text(spells_reference=False),
+                "",
+                "OUTPUT CONTRACT",
+                'Respond with one JSON object: {"candidates": [...]} — exactly 3 entries.',
+                "Each candidate is the full sectioned profile — every section below is",
+                "required and must be a non-blank string (or an object whose fields are",
+                'all non-blank strings): {"name": "...", "role": "NPC|BBEG|Monster",',
+                '  "level_cr": "level <n>" for NPC/BBEG or "CR <n>" for Monster,',
+                '  "race_type": "...", "class_profession": "...", "alignment": "...",',
+                '  "personality": "...", "secret": "...", "rumor": "...", "party_hook": "...",',
+                '  "appearance": "painter-grade prose: face, body, clothing, scars, marks",',
+                '  "background": "...", "goals": "...", "relationships": "...",',
+                '  "voice_style": "...", "catchphrases": "...",',
+                '  "stat_block": {...per the STAT BLOCK RULES above...},',
+                '  "world_integration": {"reputation": "...", "factions": "...",',
+                '                        "current_location": "...", "reaction_matrix": "...",',
+                '                        "on_defeat": "..."},',
+                "world_integration.reaction_matrix is ONE non-blank prose string —",
+                "never a JSON object/mapping: enumerate each reacting committed",
+                "entity or faction as 'C<index>: <reaction>' inside that single",
+                "string, e.g. 'C5: Friendly — welcomes the party; C2: Hostile —",
+                "schemes against them'.",
+                '  "boss": {"lair_actions": "...", "legendary_actions": "...",',
+                '           "immunities": "...",',
+                '           "vulnerabilities": "..."}  — CONDITIONAL: this one section is REQUIRED',
+                "           when the role is BBEG or Monster and OMITTED entirely for NPC (never",
+                "           an empty boss object); every other section above is always required,",
+                '  "related_entities": [{"ref": "N0", "kind": "character|faction|place",',
+                '    "name": "...", "description": "...", "data": {...}}],',
+                '  "edges": [{"endpoint": "C<index>"|"N<index>",',
+                '             "direction": "outbound"|"inbound",',
+                '             "type": "<vocabulary member>", "counter": <integer, default 1>,',
+                '             "reason": "<one non-blank sentence: why this relation holds>"}]},',
+                'Fill every boss field for a BBEG/Monster — use "None." where a field does not',
+                "apply (e.g. a monster without legendary actions).",
+                "Names, roles, personality, and the secret/rumor/party_hook fields",
+                "must be non-blank.",
+                "Direction example: the candidate hunts the C2 figure — candidate -> C2, so",
+                '"outbound"; the C2 figure hunts the candidate — C2 -> candidate, so "inbound".',
+                "Quality bar: secret is a specific concealed fact, rumor a concrete in-world",
+                "claim, party_hook a concrete way the party engages the candidate, and",
+                "world_integration.reaction_matrix says how the committed entities and",
+                "factions above react to the candidate.",
+                "Identity consistency: stat_block.identity.role must match the top-level",
+                "role. Top-level level_cr is display text only (the export derives",
+                "level/CR from the stat_block.identity numerics, which are",
+                "authoritative): for NPC/BBEG write 'level <n>' matching",
+                "stat_block.identity.level; for Monster write 'CR <n>' matching",
+                "stat_block.identity.cr. Use lowercase 'level' and uppercase 'CR' exactly.",
+            ]
+        )
+    else:
+        fields = FLAT_REGEN_SECTIONS[entity_kind]
+        example = ", ".join(f'"{field}": "..."' for field in fields)
+        lines.extend(
+            [
+                "OUTPUT CONTRACT",
+                'Respond with one JSON object: {"candidates": [...]} — exactly 3 entries.',
+                f"Every {entity_kind} candidate requires name and the "
+                f"{', '.join(fields)} fields as non-blank strings.",
+                f'Each candidate: {{"name": "...", {example}, "related_entities": [],',
+                '  "edges": [{"endpoint": "C0", "direction": "outbound", "type": "relationship",',
+                '             "counter": 1, "reason": "A specific reason for this link."}]}',
+                "Use only the listed fields for the main entity. Do not include",
+                "character identity,",
+                "personality, boss, world_integration, or stat_block fields.",
+            ]
+        )
+    lines.extend(
+        [
+            "Every edge connects the candidate to exactly one committed entity or one",
+            "explicit related_entities record. C<index> references the context list above;",
+            "N<index> references related_entities in this same candidate.",
+            'Each related entity uses {"ref": "N0", "kind": "character|faction|place",',
+            '"name": "...", "description": "...", "data": {...}}.',
+            "Use related_entities only for a new named entity explicitly requested by the DM",
+            "or required to make the requested named relationship concrete. Do not invent",
+            "extra related entities. A related entity is reviewed and accepted as part of",
+            "this proposal bundle.",
+            "Do not use an entity name or id as an edge endpoint.",
+            'Direction says whether the edge points from the candidate ("outbound")',
+            'or from the endpoint to the candidate ("inbound").',
+            "",
+            "EDGE VOCABULARY (closed set — never invent a type)",
+            *(f"- {edge_type}" for edge_type in sorted(EDGE_TYPES)),
+            "",
+            "COUNTER SEMANTICS (one integer per edge)",
+            *(
+                f"- {edge_type}: {edge_counter_semantic(edge_type)}"
+                for edge_type in sorted(EDGE_TYPES)
+            ),
+            "Neutral types: counter must be 1.",
+            "Amount/score/intensity types: counter must be a positive integer from 1 to 10.",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -586,6 +663,67 @@ def _parse_candidates(text: str) -> list[Any]:
 
 def _non_blank_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _related_entities(value: Any) -> list[dict[str, Any]]:
+    """Return the explicit new-entity bundle in model output.
+
+    Related entities are deliberately small transport records here. Their
+    kind/name/description/data are reviewed with the proposal and committed
+    atomically with it; invented records outside this list cannot become
+    world state.
+    """
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        ref = item.get("ref", f"N{index}")
+        kind = item.get("kind")
+        name = item.get("name")
+        description = item.get("description", "")
+        data = item.get("data", {})
+        if (
+            ref == f"N{index}"
+            and kind in {"character", "faction", "place"}
+            and _non_blank_str(name)
+            and _non_blank_str(description)
+            and isinstance(data, dict)
+        ):
+            result.append(
+                {
+                    "ref": ref,
+                    "kind": kind,
+                    "name": name.strip(),
+                    "description": description.strip(),
+                    "data": data,
+                }
+            )
+    return result
+
+
+def _related_entity_violations(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return ["related_entities must be a list"]
+    violations: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            violations.append(f"related_entities[{index}] must be an object")
+            continue
+        if item.get("ref") != f"N{index}":
+            violations.append(f"related_entities[{index}].ref must be N{index}")
+        if item.get("kind") not in {"character", "faction", "place"}:
+            violations.append(f"related_entities[{index}].kind is invalid")
+        if not _non_blank_str(item.get("name")):
+            violations.append(f"related_entities[{index}].name must be non-blank")
+        if not _non_blank_str(item.get("description")):
+            violations.append(f"related_entities[{index}].description must be non-blank")
+        if not isinstance(item.get("data", {}), dict):
+            violations.append(f"related_entities[{index}].data must be an object")
+    return violations
 
 
 def _ask_target_ids(ask: str, entities: Sequence[models.Entity]) -> list[str]:
@@ -676,7 +814,9 @@ def _parse_context_ref(ref: Any, context_entities: Sequence[models.Entity]) -> i
     return index
 
 
-def _candidate_violations(raw: Any, context_entities: Sequence[models.Entity]) -> list[str]:
+def _candidate_violations(
+    raw: Any, context_entities: Sequence[models.Entity], entity_kind: str = "character"
+) -> list[str]:
     """The AR19+AR24 shape violations of one raw candidate (``[]`` = valid).
 
     Checks the AR19 required fields (name, role, personality, the
@@ -694,26 +834,44 @@ def _candidate_violations(raw: Any, context_entities: Sequence[models.Entity]) -
     """
     if not isinstance(raw, dict):
         return ["candidate must be an object"]
-    violations = payload_section_violations(raw)
-    anchor_violations = _edge_violations(raw.get("edges"), context_entities)
-    if anchor_violations:
-        violations.extend(anchor_violations)
+    violations = payload_section_violations(raw, entity_kind)
+    related = _related_entities(raw.get("related_entities"))
+    related_violations = _related_entity_violations(raw.get("related_entities"))
+    anchor_violations = _edge_violations(raw.get("edges"), context_entities, entity_kind, related)
+    related_violations.extend(anchor_violations)
+    related_violations = related_violations or []
+    if related_violations:
+        violations.extend(related_violations)
     return violations
 
 
-def _edge_violations(edges: Any, context_entities: Sequence[models.Entity]) -> list[str]:
+def _edge_violations(
+    edges: Any,
+    context_entities: Sequence[models.Entity],
+    candidate_kind: str = "character",
+    related_entities: Sequence[dict[str, Any]] = (),
+) -> list[str]:
     """The anchor rule: at least one well-formed edge into the committed
     world; malformed edges are dropped, and only a candidate left with
     none is invalid (BAD_EDGE)."""
     if not isinstance(edges, list) or not edges:
         return ["edges must be a non-empty list"]
-    valid = [edge for edge in edges if _valid_edge(edge, context_entities) is not None]
+    valid = [
+        edge
+        for edge in edges
+        if _valid_edge(edge, context_entities, candidate_kind, related_entities) is not None
+    ]
     if not valid:
         return ["no edge resolves to a committed entity (BAD_EDGE)"]
     return []
 
 
-def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[str, Any] | None:
+def _valid_edge(
+    edge: Any,
+    context_entities: Sequence[models.Entity],
+    candidate_kind: str = "character",
+    related_entities: Sequence[dict[str, Any]] = (),
+) -> dict[str, Any] | None:
     """One well-formed edge: a dict whose endpoint is a canonical
     ``C<index>`` ref in range, whose type is in the closed vocabulary,
     whose direction is outbound/inbound, and whose counter (when given)
@@ -733,9 +891,21 @@ def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[st
     accept screen and the accept-time override re-validation agree."""
     if not isinstance(edge, dict):
         return None
-    position = _parse_context_ref(edge.get("endpoint"), context_entities)
+    endpoint = edge.get("endpoint")
+    position = _parse_context_ref(endpoint, context_entities)
+    context_kind: str | None
     if position is None:
-        return None
+        if not isinstance(endpoint, str) or not endpoint.startswith("N"):
+            return None
+        digits = endpoint[1:]
+        if not digits.isdecimal() or str(int(digits)) != digits:
+            return None
+        related_index = int(digits)
+        if related_index >= len(related_entities):
+            return None
+        context_kind = related_entities[related_index]["kind"]
+    else:
+        context_kind = context_entities[position].kind
     edge_type = edge.get("type")
     direction = edge.get("direction")
     if (
@@ -752,6 +922,11 @@ def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[st
         return None
     if not isinstance(direction, str) or direction not in _DIRECTIONS:
         return None
+    if direction == "outbound":
+        if not edge_kind_ok(edge_type, candidate_kind, context_kind):
+            return None
+    elif not edge_kind_ok(edge_type, context_kind, candidate_kind):
+        return None
     counter = edge.get("counter", 1)
     if counter is None:
         counter = 1
@@ -760,12 +935,15 @@ def _valid_edge(edge: Any, context_entities: Sequence[models.Entity]) -> dict[st
     bounds = edge_counter_bounds(edge_type)
     if bounds is not None and not bounds[0] <= counter <= bounds[1]:
         return None
-    return {
-        "endpoint": context_entities[position].id,
+    resolved = {
+        "endpoint": context_entities[position].id if position is not None else endpoint,
         "direction": direction,
         "type": edge_type,
         "counter": counter,
     }
+    if store.edge_reason_ok(edge.get("reason")):
+        resolved["reason"] = edge["reason"].strip()
+    return resolved
 
 
 def _endpoint_label(endpoint: Any, context_entities: Sequence[models.Entity]) -> str:
@@ -933,7 +1111,7 @@ def _canonical_block(block: Any) -> Any:
 
 
 def _candidate_payload(
-    raw: dict[str, Any], context_entities: Sequence[models.Entity]
+    raw: dict[str, Any], context_entities: Sequence[models.Entity], entity_kind: str = "character"
 ) -> dict[str, Any]:
     """The staged AR24 record for a shape-valid candidate: the AR19
     required fields and AR24 sections (trimmed strings; the
@@ -942,8 +1120,27 @@ def _candidate_payload(
     included iff the role is BBEG/Monster (spec-3.3). Assembly is
     deterministic — same raw candidate, same staged key order. Extra
     keys pass through unvalidated (AR24 forward compatibility)."""
+    if entity_kind in FLAT_REGEN_SECTIONS:
+        staged = {
+            "name": raw["name"].strip(),
+            "entity_kind": entity_kind,
+            **{field: raw[field].strip() for field in FLAT_REGEN_SECTIONS[entity_kind]},
+        }
+        related = _related_entities(raw.get("related_entities"))
+        staged["related_entities"] = related
+        staged["edges"] = [
+            resolved
+            for edge in raw.get("edges", [])
+            if (resolved := _valid_edge(edge, context_entities, entity_kind, related)) is not None
+        ]
+        for key, value in raw.items():
+            if key not in staged:
+                staged[key] = value
+        return staged
+
     staged = {
         "name": raw["name"].strip(),
+        "entity_kind": entity_kind,
         "role": raw["role"].strip(),
         "personality": raw["personality"].strip(),
         "secret": raw["secret"].strip(),
@@ -958,10 +1155,12 @@ def _candidate_payload(
     if staged["role"] in BOSS_ROLES:
         staged["boss"] = {field: raw["boss"][field].strip() for field in BOSS_FIELDS}
     staged["stat_block"] = _canonical_block(raw.get("stat_block"))
+    related = _related_entities(raw.get("related_entities"))
+    staged["related_entities"] = related
     staged["edges"] = [
         resolved
         for edge in raw.get("edges", [])
-        if (resolved := _valid_edge(edge, context_entities)) is not None
+        if (resolved := _valid_edge(edge, context_entities, entity_kind, related)) is not None
     ]
     for key, value in raw.items():
         if key not in staged:

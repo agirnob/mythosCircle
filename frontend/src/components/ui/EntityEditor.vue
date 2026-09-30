@@ -10,6 +10,7 @@
 import { ref, watch } from 'vue'
 
 import type { components } from '../../api/schema'
+import { statBlockWithRecordIdentity } from '../../lib/statBlockIdentity'
 import StatBlockEditor from '../StatBlockEditor.vue'
 import {
   CORE_FIELDS,
@@ -43,6 +44,7 @@ const story = ref<Record<string, string>>({})
 const lore = ref<Record<string, string>>({})
 const identity = ref<Record<string, string>>({})
 const worldInt = ref<Record<string, string>>({})
+const flat = ref<Record<string, string>>({})
 const statBlock = ref<Record<string, unknown> | null>(null)
 const dial = ref<string | null>(null)
 const archetype = ref<string>('')
@@ -80,12 +82,18 @@ function initialize() {
   dial.value = typeof level === 'string' ? level : null
   const arch = data['archetype']
   archetype.value = typeof arch === 'string' ? arch : ''
+  flat.value = picks(data, flatFieldsForKind())
+  if (!flat.value.description && !isCharacter()) flat.value.description = text.value
 }
 
 watch(() => props.entity, initialize, { immediate: true })
 
 function buildPatch(): Record<string, unknown> {
   const patch: Record<string, unknown> = { name: name.value, text: text.value }
+  if (!isCharacter()) {
+    for (const [key, value] of Object.entries(flat.value)) patch[key] = value
+    patch.text = flat.value.description ?? text.value
+  }
   const merged = { ...story.value, ...lore.value, ...identity.value }
   for (const [key, value] of Object.entries(merged)) {
     patch[key] = value
@@ -95,7 +103,7 @@ function buildPatch(): Record<string, unknown> {
     integration[key] = value
   }
   patch['world_integration'] = integration
-  patch['stat_block'] = statBlock.value
+  patch['stat_block'] = statBlockWithRecordIdentity(statBlock.value, identity.value)
   if (dial.value !== null) patch['dial'] = dial.value
   if (archetype.value !== '' && !isCharacter()) patch['archetype'] = archetype.value
   return patch
@@ -103,6 +111,12 @@ function buildPatch(): Record<string, unknown> {
 
 function isCharacter(): boolean {
   return props.entity.kind === 'character'
+}
+
+function flatFieldsForKind(): readonly string[] {
+  if (props.entity.kind === 'place') return ['description', 'inhabitants', 'whats_hidden']
+  if (props.entity.kind === 'faction') return ['description', 'doctrine', 'assets']
+  return []
 }
 
 /** The archetypes registry offers for this kind (AD-34 payload). */
@@ -113,10 +127,6 @@ function archetypesForKind(): string[] {
 }
 
 /** The flat-kind display label (place/faction). */
-function genericLabel(): string {
-  return props.entity.kind === 'place' ? 'Places' : 'Factions'
-}
-
 function save() {
   if (props.busy) return
   emit('save', buildPatch())
@@ -125,7 +135,7 @@ function save() {
 
 <template>
   <form class="mc-entity-editor" @submit.prevent="save">
-    <label class="mc-edit-field">
+    <label v-if="isCharacter()" class="mc-edit-field">
       <span class="mc-edit-label">Name</span>
       <input v-model="name" class="mc-edit-input" aria-label="Name" />
     </label>
@@ -198,11 +208,22 @@ function save() {
 
       <div class="mc-edit-field">
         <span class="mc-edit-label">Stat block</span>
-        <StatBlockEditor v-model="statBlock" />
+        <StatBlockEditor v-model="statBlock" hide-identity />
       </div>
     </template>
 
     <template v-else>
+      <div class="mc-edit-grid mc-flat-edit-grid">
+        <label v-for="key in flatFieldsForKind()" :key="key" class="mc-edit-field">
+          <span class="mc-edit-label">{{ key.replaceAll('_', ' ') }}</span>
+          <textarea
+            v-model="flat[key]"
+            class="mc-edit-textarea"
+            rows="3"
+            :aria-label="key.replaceAll('_', ' ')"
+          ></textarea>
+        </label>
+      </div>
       <div v-if="archetypesForKind().length > 0" class="mc-edit-field">
         <span class="mc-edit-label">Archetype</span>
         <select v-model="archetype" class="mc-edit-input" aria-label="Archetype">
@@ -213,8 +234,7 @@ function save() {
         </select>
       </div>
       <p class="mc-muted mc-edit-note">
-        {{ genericLabel() }} carry their truth in the description; the dial sets the elaboration
-        depth for enrich/regenerate (AD-36).
+        These fields stay separate so regeneration can target one part without replacing the rest.
       </p>
     </template>
 
@@ -268,6 +288,9 @@ function save() {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: var(--mc-gap-sm);
+}
+.mc-flat-edit-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 .mc-edit-dial {
   display: flex;

@@ -233,7 +233,152 @@ function representative(id: string, clusterOfMember: Map<string, string>): strin
  *
  * Pure: same world ⇒ same positions; focus never influences the layout.
  */
+/**
+ * Lane layout used by the graph view. The world graph is intentionally
+ * organized by entity kind first, then by faction membership within the
+ * character lane. This keeps the overview readable when a world has many
+ * cross-links instead of letting the force pass pull cards into a dense knot.
+ */
 export function clusterLayout(
+  nodes: ReadonlyArray<GraphNode>,
+  edges: ReadonlyArray<GraphEdge>,
+): LayoutPosition[] {
+  const clusters = buildFactionClusters(nodes, edges)
+
+  const factions = nodes.filter((node) => node.kind === 'faction')
+  const characters = nodes.filter((node) => node.kind === 'character')
+  const places = nodes.filter((node) => node.kind === 'place')
+  const positions = new Map<string, LayoutPosition>()
+  const placed = new Set<string>()
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5))
+  const factionCenters = { x: -320, y: 0 }
+
+  // Factions form separated islands around a loose orbit. This preserves a
+  // readable high-level structure without the artificial rows of a grid.
+  factions.forEach((faction, index) => {
+    const angle = -Math.PI / 2 + (index * 2 * Math.PI) / Math.max(factions.length, 1)
+    const radius = factions.length === 1 ? 0 : 270
+    positions.set(faction.id, {
+      id: faction.id,
+      x: factionCenters.x + radius * Math.cos(angle),
+      y: factionCenters.y + radius * Math.sin(angle),
+    })
+    placed.add(faction.id)
+  })
+
+  // If a faction belongs to another faction, push it outward from the parent
+  // so the nested group's members naturally occupy the far side of its hub.
+  const parentFaction = new Map<string, string>()
+  for (const [parentId, members] of clusters) {
+    for (const memberId of members) {
+      if (factions.some((faction) => faction.id === memberId)) parentFaction.set(memberId, parentId)
+    }
+  }
+  for (const [childId, parentId] of parentFaction) {
+    const child = positions.get(childId)
+    const parent = positions.get(parentId)
+    if (!child || !parent) continue
+    const dx = child.x - parent.x
+    const dy = child.y - parent.y
+    const distance = Math.hypot(dx, dy) || 1
+    child.x = parent.x + (dx / distance) * 360
+    child.y = parent.y + (dy / distance) * 360
+  }
+
+  // Members orbit their faction hub. The fixed golden-angle ordering avoids
+  // parallel stacks while remaining deterministic across renders.
+  for (const [factionId, members] of clusters) {
+    const root = positions.get(factionId)
+    if (!root) continue
+    const directCharacters = members.filter((id) => nodes.find((node) => node.id === id)?.kind === 'character')
+    const memberRadius = Math.max(210, (directCharacters.length * 205) / (2 * Math.PI))
+    const parent = parentFaction.get(factionId)
+    const parentPoint = parent ? positions.get(parent) : undefined
+    const awayAngle = parentPoint ? Math.atan2(root.y - parentPoint.y, root.x - parentPoint.x) : -Math.PI / 2
+    directCharacters.forEach((id, index) => {
+      const angle = awayAngle + (index - (directCharacters.length - 1) / 2) * (2 * Math.PI / Math.max(directCharacters.length, 1))
+      positions.set(id, {
+        id,
+        x: root.x + memberRadius * Math.cos(angle),
+        y: root.y + memberRadius * Math.sin(angle),
+      })
+      placed.add(id)
+    })
+  }
+
+  // Anchored places sit on the outer edge of their faction island. Other
+  // places and unaffiliated characters form loose organic clouds by kind.
+  places.forEach((place) => {
+    const edge = edges.find(
+      (candidate) =>
+        (candidate.src === place.id || candidate.dst === place.id) &&
+        (candidate.type === 'bases_at' || candidate.type === 'located_in') &&
+        factions.some((faction) => faction.id === (candidate.src === place.id ? candidate.dst : candidate.src)),
+    )
+    if (!edge) return
+    const factionId = edge.src === place.id ? edge.dst : edge.src
+    const root = positions.get(factionId)
+    if (!root) return
+    const angle = (hashString(place.id) % 360) * (Math.PI / 180)
+    positions.set(place.id, { id: place.id, x: root.x + 270 * Math.cos(angle), y: root.y + 270 * Math.sin(angle) })
+    placed.add(place.id)
+  })
+
+  const cloud = (items: GraphNode[], centerX: number, centerY: number) => {
+    items.forEach((node, index) => {
+      const angle = index * goldenAngle
+      const radius = 150 + 72 * Math.sqrt(index)
+      positions.set(node.id, {
+        id: node.id,
+        x: centerX + radius * Math.cos(angle),
+        y: centerY + radius * Math.sin(angle),
+      })
+      placed.add(node.id)
+    })
+  }
+  cloud(characters.filter((node) => !placed.has(node.id)), 80, 0)
+  cloud(places.filter((node) => !placed.has(node.id)), 520, 0)
+
+  // Final rectangle separation. Organic placement is useful only when cards
+  // remain individually readable, so resolve collisions without relying on
+  // render timing or browser physics.
+  const minDx = GRAPH_NODE_WIDTH + 24
+  const minDy = GRAPH_NODE_HEIGHT + 24
+  for (let pass = 0; pass < 80; pass += 1) {
+    let moved = false
+    for (let i = 0; i < nodes.length; i += 1) {
+      const a = positions.get(nodes[i]!.id)
+      if (!a) continue
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const b = positions.get(nodes[j]!.id)
+        if (!b) continue
+        const dx = b.x - a.x
+        const dy = b.y - a.y
+        const overlapX = minDx - Math.abs(dx)
+        const overlapY = minDy - Math.abs(dy)
+        if (overlapX <= 0 || overlapY <= 0) continue
+        if (overlapX < overlapY) {
+          const shift = overlapX / 2
+          const direction = dx === 0 ? 1 : Math.sign(dx)
+          a.x -= direction * shift
+          b.x += direction * shift
+        } else {
+          const shift = overlapY / 2
+          const direction = dy === 0 ? 1 : Math.sign(dy)
+          a.y -= direction * shift
+          b.y += direction * shift
+        }
+        moved = true
+      }
+    }
+    if (!moved) break
+  }
+
+  return nodes.map((node) => positions.get(node.id) ?? { id: node.id, x: 0, y: 0 })
+}
+
+/** Retained for layout experiments and regression comparisons. */
+export function legacyClusterLayout(
   nodes: ReadonlyArray<GraphNode>,
   edges: ReadonlyArray<GraphEdge>,
 ): LayoutPosition[] {

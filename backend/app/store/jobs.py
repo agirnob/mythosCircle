@@ -807,8 +807,10 @@ def _validate_generate_payload(payload: dict[str, Any]) -> None:
     """
     if not isinstance(payload, dict):
         raise InvalidJobInputError("generate payload must be a JSON object")
-    if set(payload) != {"ask"}:
-        raise InvalidJobInputError("generate payload must be exactly {'ask': str}")
+    if set(payload) not in ({"ask"}, {"ask", "entity_kind"}):
+        raise InvalidJobInputError(
+            "generate payload must be {'ask': str, 'entity_kind': 'character'|'faction'|'place'}"
+        )
     ask = payload["ask"]
     if not isinstance(ask, str):
         raise InvalidJobInputError("generate ask must be a string")
@@ -816,6 +818,10 @@ def _validate_generate_payload(payload: dict[str, Any]) -> None:
         raise InvalidJobInputError("generate ask must be non-blank")
     if len(ask.strip()) > GENERATE_MAX_ASK_LENGTH:
         raise InvalidJobInputError(f"generate ask exceeds {GENERATE_MAX_ASK_LENGTH} chars")
+    if "entity_kind" in payload and payload["entity_kind"] not in {"character", "faction", "place"}:
+        raise InvalidJobInputError(
+            "generate entity_kind must be 'character', 'faction', or 'place'"
+        )
 
 
 def _validate_image_payload(payload: dict[str, Any], session: Session, campaign_id: str) -> None:
@@ -860,12 +866,10 @@ def _validate_video_payload(payload: dict[str, Any], session: Session, campaign_
     DM's approved ``prompt`` (spec-4.6). The committed entity must exist
     in this campaign (404 ``UnknownEntityError``) and be BOSS-tier: its
     committed ``role`` must be BBEG or Monster (422 — the NOT_BOSS matrix
-    row). With a supplied prompt, the ``bbeg_video_prompt``-non-None
-    check is relaxed (the DM's prompt is the source of truth) but the
-    source-frame (appearance) + boss gates still apply (frozen spec-4.6
-    contract); without one, ``bbeg_video_prompt`` must produce a prompt
-    from the entity's appearance + boss section (422 — the NO_VIDEO_PROMPT
-    matrix row). A supplied blank prompt is rejected (422 — the
+    row). With a supplied prompt, the DM's prompt is the source of truth;
+    without one, ``bbeg_video_prompt`` builds from appearance and reveal
+    framing. Both paths need a non-blank appearance and boss-tier role.
+    A supplied blank prompt is rejected (422 — the
     RENDER_BLANK_PROMPT matrix row). The prompt-existence check runs the
     SAME builder the runner uses, so the enqueue gate and the run-time
     fail condition can never disagree (function-local import: the media
@@ -892,8 +896,7 @@ def _validate_video_payload(payload: dict[str, Any], session: Session, campaign_
     supplied_prompt = payload.get("prompt")
     if supplied_prompt is not None:
         # The DM's approved prompt is the source of truth (spec-4.6): a
-        # supplied prompt relaxes the boss-section projection requirement
-        # but never the boss-tier or source-frame (appearance) gates, and
+        # supplied prompt never relaxes the boss-tier or appearance gates, and
         # a blank supplied prompt is a 422 (RENDER_BLANK_PROMPT).
         if not isinstance(supplied_prompt, str) or not supplied_prompt.strip():
             raise InvalidJobInputError("video payload 'prompt' must be a non-blank string")
@@ -905,7 +908,7 @@ def _validate_video_payload(payload: dict[str, Any], session: Session, campaign_
     if bbeg_video_prompt(data) is None:
         raise InvalidJobInputError(
             f"video payload entity {entity_id} has no usable reveal prompt "
-            "(non-blank AR24 appearance and boss section required)"
+            "(add a non-blank appearance to render this reveal)"
         )
 
 
@@ -973,6 +976,7 @@ def _validate_regenerate_payload(
     from app.store import DIAL_LEVELS
     from app.store.candidates import (
         BOSS_ROLES,
+        FLAT_REGEN_SECTIONS,
         REGEN_SECTIONS,
         CandidateNotFoundError,
         payload_section_violations,
@@ -1016,16 +1020,25 @@ def _validate_regenerate_payload(
                 "regenerate sections must be null (whole character) or a non-empty list"
             )
         for section in sections:
-            if not isinstance(section, str) or section not in REGEN_SECTIONS:
+            flat_section_names = {
+                section_name
+                for section_names in FLAT_REGEN_SECTIONS.values()
+                for section_name in section_names
+            }
+            if not isinstance(section, str) or (
+                section not in REGEN_SECTIONS and section not in flat_section_names
+            ):
                 raise InvalidJobInputError(
                     f"regenerate section {section!r} is not regenerable — "
-                    f"closed set: {sorted(REGEN_SECTIONS)}"
+                    f"closed set: {sorted(REGEN_SECTIONS | flat_section_names)}"
                 )
+    entity_kind: str | None = None
     if kind == "entity":
         entity = session.get(models.Entity, target_id)
         if entity is None or entity.campaign_id != campaign_id:
             raise UnknownEntityError(target_id)
         record = entity.data
+        entity_kind = entity.kind
     else:
         candidate = session.get(models.ProposedCandidate, target_id)
         if candidate is None or candidate.campaign_id != campaign_id:
@@ -1036,6 +1049,25 @@ def _validate_regenerate_payload(
                 f"{candidate.status} — only proposed candidates are re-rollable"
             )
         record = candidate.payload
+    flat_sections = FLAT_REGEN_SECTIONS.get(entity_kind or "")
+    if flat_sections is not None:
+        if not isinstance(record, dict):
+            raise InvalidJobInputError(f"regenerate target {target_id!r} has no record object")
+        if sections is not None:
+            invalid = [section for section in sections if section not in flat_sections]
+            if invalid:
+                raise InvalidJobInputError(
+                    f"regenerate section(s) {sorted(set(invalid))!r} are not valid for "
+                    f"{entity_kind}: {list(flat_sections)}"
+                )
+        return
+    if sections is not None:
+        invalid = [section for section in sections if section not in REGEN_SECTIONS]
+        if invalid:
+            raise InvalidJobInputError(
+                f"regenerate section(s) {sorted(set(invalid))!r} are not valid for "
+                f"character records: {sorted(REGEN_SECTIONS)}"
+            )
     # The regeneration unit is the AR24 sectioned record: a target
     # without one (build-in entities, hand-written rows) has no sections
     # to preserve byte-identically — reject up front, never at the job.

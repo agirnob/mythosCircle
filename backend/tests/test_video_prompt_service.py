@@ -1,13 +1,12 @@
-"""Video-prompt draft runner tests (spec-4.6): the ``video_prompt`` job
-kind generates a DM-reviewable MiniMax-H3 I2VA reveal prompt from the
-entity's committed AR24 data + the in-repo writing guide.
+"""Video-prompt draft runner tests: the ``video_prompt`` job generates a
+DM-reviewable reveal prompt from the entity's committed appearance.
 
 Mirrors test_video_service.py's runner discipline: payload contract ->
-run-time entity re-read -> boss/name/appearance gates -> guide-loaded
+run-time entity re-read -> boss/appearance gates ->
 LLM call -> non-blank check -> complete_job({entity_id, prompt}). The
 LLM is injected, never a live gemma — deterministic.
 
-Covers the I/O matrix rows DRAFT_OK, DRAFT_LLM_DOWN, DRAFT_BLANK_RESULT
+Covers the I/O matrix rows DRAFT_OK, offline text-model fallback, DRAFT_BLANK_RESULT
 (the enqueue-side DRAFT_NO_BOSS / DRAFT_NO_SOURCE rows live in
 test_jobs.py; the run-time mirrors are here), plus the render-side
 rows RENDER_WITH_PROMPT, RENDER_LEGACY, RENDER_BLANK_PROMPT.
@@ -21,12 +20,7 @@ import pytest
 
 from app.core import ids
 from app.core.settings import LLMSettings, VideoSettings
-from app.media.service import (
-    VIDEO_PROMPT_GUIDE_PATH,
-    bbeg_video_prompt,
-    run_video,
-    run_video_prompt,
-)
+from app.media.service import bbeg_video_prompt, run_video, run_video_prompt
 from app.pipeline.budget import BudgetExceededError
 from app.pipeline.worker import JobPayloadError
 from app.providers.llm import ProviderError
@@ -47,12 +41,8 @@ SETTINGS = LLMSettings(endpoint="http://test/v1", model="test-model")
 MP4_BYTES = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00reveal-payload"
 
 I2VA_DRAFT = (
-    "For the target video, at 0.00 seconds into the target video, "
-    "<Picture 1> (from [Shot 1]) is fully referenced.\n\n"
-    "integrated_multimodal_description: [Shot 1] The camera holds on the "
-    "masked figure as the iron face tilts toward the lens.\n"
-    "overall_soundscape: N/A\n"
-    "non_diegetic_music: low brass swell\n"
+    "Begin in shadow. Slowly reveal the towering figure's fused iron mask "
+    "as the camera moves closer in one continuous shot."
 )
 
 BOSS_DATA: dict[str, Any] = {
@@ -145,17 +135,19 @@ def _llm(draft: str = I2VA_DRAFT) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# DRAFT_OK: guide + data -> LLM -> completed job with {entity_id, prompt}
+# DRAFT_OK: appearance -> LLM -> completed job with {entity_id, prompt}
 # ---------------------------------------------------------------------------
 
 
 def test_run_video_prompt_happy_path(world: str) -> None:
-    """DRAFT_OK: the draft is the LLM's I2VA-structured output, stored as
+    """DRAFT_OK: the draft is the LLM's concise output, stored as
     the job result ``{entity_id, prompt}`` — never a file, never a media
-    row (a prompt is not media, AD-1). The instruction embeds the guide
-    verbatim + the committed appearance + boss projections + the I2VA
-    compliance demand."""
-    entity_id = _commit_with_data(world, BOSS_DATA)
+    row (a prompt is not media, AD-1). Only appearance is supplied as
+    character data to the drafting model."""
+    entity_id = _commit_with_data(
+        world,
+        {**BOSS_DATA, "background": "forgotten war", "goals": "raise the fortress"},
+    )
     job = _claim_draft_job(world, entity_id)
     llm = _llm()
 
@@ -167,15 +159,16 @@ def test_run_video_prompt_happy_path(world: str) -> None:
     assert state.result["entity_id"] == entity_id
     assert state.result["prompt"] == I2VA_DRAFT
     assert list_media(world) == []
-    # The instruction embeds the guide verbatim and the data projections
-    # the draft must anchor on.
+    # The instruction contains no identity, combat, lore, or guide fields.
     instruction = llm.calls[0]
-    assert VIDEO_PROMPT_WRITING_GUIDE in instruction
     assert "face: a mask of fused iron" in instruction
-    assert "lair_actions: the walls breathe" in instruction
-    assert "integrated_multimodal_description" in instruction
-    assert "overall_soundscape" in instruction
-    assert "non_diegetic_music" in instruction
+    assert "slow cinematic character reveal" in instruction
+    assert "lair_actions: the walls breathe" not in instruction
+    assert "Vashka the Unmaker" not in instruction
+    assert "forgotten war" not in instruction
+    assert "raise the fortress" not in instruction
+    assert "Appearance:" in instruction
+    assert "overall_soundscape" not in instruction
 
 
 def test_run_video_prompt_draft_is_the_llm_output_verbatim(world: str) -> None:
@@ -282,14 +275,12 @@ def test_run_video_prompt_no_appearance_fails(world: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DRAFT_LLM_DOWN / DRAFT_BLANK_RESULT / budget
+# Text-model connection fallback / other provider failures / budget
 # ---------------------------------------------------------------------------
 
 
 def test_run_video_prompt_llm_down_fails_cleanly(world: str) -> None:
-    """DRAFT_LLM_DOWN: a provider refusal/timeout surfaces the draft's
-    own error vocabulary ('video prompt generation failed: …') — never
-    the LLM dialect — and no draft is left behind."""
+    """An HTTP provider failure still reports a draft-specific error."""
     entity_id = _commit_with_data(world, BOSS_DATA)
     job = _claim_draft_job(world, entity_id)
 
@@ -300,16 +291,24 @@ def test_run_video_prompt_llm_down_fails_cleanly(world: str) -> None:
         run_video_prompt(job, down, SETTINGS)
 
 
-def test_run_video_prompt_connection_error_fails_cleanly(world: str) -> None:
-    """A connection refusal is the same clean draft failure."""
+def test_run_video_prompt_connection_error_uses_appearance_draft(world: str) -> None:
+    """A video-model-only session still gets an editable appearance draft."""
     entity_id = _commit_with_data(world, BOSS_DATA)
     job = _claim_draft_job(world, entity_id)
 
     def down(prompt: str, settings: LLMSettings) -> str:
         raise ProviderError(kind="connection")
 
-    with pytest.raises(JobPayloadError, match=r"video prompt generation failed"):
-        run_video_prompt(job, down, SETTINGS)
+    run_video_prompt(job, down, SETTINGS)
+
+    state, _position = job_status(job.id)
+    assert state.state == "succeeded"
+    assert state.result == {
+        "entity_id": entity_id,
+        "prompt": bbeg_video_prompt(BOSS_DATA),
+        "source": "appearance_fallback",
+    }
+    assert list_media(world) == []
 
 
 def test_run_video_prompt_blank_draft_fails(world: str) -> None:
@@ -398,7 +397,7 @@ def test_run_video_supplied_prompt_used_verbatim(world: str, tmp_path: Path) -> 
     truth — the provider receives exactly that text, never a
     ``bbeg_video_prompt`` substitution."""
     entity_id = _commit_with_data(world, BOSS_DATA)
-    dm_prompt = "DM's own cinematic reveal: no bbeg framing at all."
+    dm_prompt = "  DM's own cinematic reveal:\nno bbeg framing at all.  "
     job = _claim_video_job(world, entity_id, prompt=dm_prompt)
     seen: list[str] = []
 
@@ -418,6 +417,7 @@ def test_run_video_supplied_prompt_used_verbatim(world: str, tmp_path: Path) -> 
     state, _position = job_status(job.id)
     assert state.state == "succeeded"
     assert state.result is not None and state.result["entity_id"] == entity_id
+    assert state.result["prompt"] == dm_prompt
 
 
 def test_run_video_legacy_payload_falls_back_to_bbeg(world: str, tmp_path: Path) -> None:
@@ -441,6 +441,7 @@ def test_run_video_legacy_payload_falls_back_to_bbeg(world: str, tmp_path: Path)
     assert seen == [bbeg_video_prompt(BOSS_DATA)]
     state, _position = job_status(job.id)
     assert state.state == "succeeded"
+    assert state.result is not None and state.result["prompt"] == seen[0]
 
 
 def test_run_video_blank_supplied_prompt_fails(world: str, tmp_path: Path) -> None:
@@ -465,9 +466,3 @@ def test_run_video_blank_supplied_prompt_fails(world: str, tmp_path: Path) -> No
     assert called == []
     assert list_media(world) == []
     assert not (tmp_path / world / entity_id).exists()
-
-
-#: The guide's own expected opening — the point of the full-embed
-#: (Ask-First 2) is that the I2VA compliance demand and the guide text
-#: ride together in the instruction.
-VIDEO_PROMPT_WRITING_GUIDE = VIDEO_PROMPT_GUIDE_PATH.read_text(encoding="utf-8")

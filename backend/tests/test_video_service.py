@@ -157,22 +157,11 @@ def _mp4_provider(prompt: str, settings: VideoSettings, first_frame: str | None 
 # ---------------------------------------------------------------------------
 
 
-def test_bbeg_video_prompt_joins_appearance_boss_identity_framing() -> None:
-    """The prompt is a projection of the committed AR24 record: the
-    appearance join, the boss section's non-blank ``key: value`` lines,
-    the identity line, then the pipeline's reveal framing constant."""
+def test_bbeg_video_prompt_uses_only_appearance_and_reveal_framing() -> None:
+    """Combat details, identity, and unrelated record text stay out of the video prompt."""
     prompt = bbeg_video_prompt(BOSS_DATA)
-    assert prompt is not None
-    lines = prompt.split("\n")
-    assert lines[0] == "face: a mask of fused iron"
-    assert lines[1] == "body: towering"
-    assert lines[2] == "lair_actions: the walls breathe"
-    assert lines[3] == "legendary_actions: three per round"
-    assert lines[4] == "immunities: fire"
-    assert lines[5] == "vulnerabilities: the old name"
-    assert lines[6] == "Vashka the Unmaker — BBEG"
-    assert lines[7] == REVEAL_FRAMING
-    assert len(lines) == 8
+    assert prompt == f"face: a mask of fused iron\nbody: towering\n{REVEAL_FRAMING}"
+    assert "reveal" in REVEAL_FRAMING.lower()
 
 
 def test_bbeg_video_prompt_string_appearance_verbatim() -> None:
@@ -188,18 +177,13 @@ def test_bbeg_video_prompt_string_appearance_verbatim() -> None:
         None,
         {},
         {"appearance": "", "boss": {"lair_actions": "x"}},
-        {"appearance": {"face": "sharp"}, "boss": None},
-        {"appearance": {"face": "sharp"}, "boss": {}},
-        {"appearance": {"face": "sharp"}, "boss": {"lair_actions": "   "}},
-        {"appearance": {"face": "sharp"}, "boss": "not a dict"},
-        {"appearance": {"face": "sharp"}},
+        {"appearance": {"face": "   "}, "boss": {}},
+        {"appearance": {"unknown": "sharp"}},
         "not a dict",
     ],
 )
 def test_bbeg_video_prompt_insufficient_shapes_yield_none(data: object) -> None:
-    """NO_VIDEO_PROMPT: blank/missing appearance OR a missing/blank boss
-    section (no non-blank documented value) yields None — the shared
-    gate behind the enqueue 422 and the run-time fail."""
+    """NO_VIDEO_PROMPT: blank or missing appearance yields None."""
     assert bbeg_video_prompt(data) is None
 
 
@@ -207,7 +191,7 @@ def test_run_video_blank_prompt_fails_cleanly(world: str, tmp_path: Path) -> Non
     """NO_VIDEO_PROMPT at run time (a job row written OUTSIDE the enqueue
     gate — the gate 422s first and never writes a row): fails with a
     stable message BEFORE any provider call; no file, no row."""
-    data = {**BOSS_DATA, "boss": {}}
+    data = {**BOSS_DATA, "appearance": "   "}
     entity_id = _commit_with_data(world, data)
     job = _claim_direct_video_job(world, entity_id)
     called: list[str] = []
@@ -223,16 +207,17 @@ def test_run_video_blank_prompt_fails_cleanly(world: str, tmp_path: Path) -> Non
     assert not (tmp_path / world / entity_id).exists()
 
 
-def test_bbeg_video_prompt_unknown_boss_keys_never_join() -> None:
-    """Unknown boss keys are tolerated (AR24 forward compatibility) but
-    never make a prompt: only the documented BOSS_FIELDS join."""
+def test_bbeg_video_prompt_ignores_boss_data_entirely() -> None:
+    """The prompt works without a boss section and ignores all boss fields."""
     data = {
         **BOSS_DATA,
         "boss": {"custom_bit": "free text", "lair_actions": "the walls breathe"},
+        "background": "a secret war",
     }
     prompt = bbeg_video_prompt(data)
     assert prompt is not None
-    assert "custom_bit" not in prompt
+    assert prompt == bbeg_video_prompt({"appearance": BOSS_DATA["appearance"]})
+    assert bbeg_video_prompt({"appearance": "an iron mask"}) == f"an iron mask\n{REVEAL_FRAMING}"
 
 
 # ---------------------------------------------------------------------------

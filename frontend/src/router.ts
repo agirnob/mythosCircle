@@ -22,12 +22,13 @@ const router = createRouter({
     {
       path: '/campaigns/:id/candidates',
       name: 'candidates',
-      component: () => import('./views/CandidatesView.vue'),
+      // Compatibility route: Ask the World owns the primary proposal queue.
+      // Old saved links are sent to the current review surface.
+      redirect: (to) => ({ name: 'ask', params: { id: to.params.id } }),
       meta: { requiresAuth: true },
     },
     {
-      // Rebuild Stage 2: campaign overview (NewWorldView). The existing
-      // 'world' route stays intact as the full record surface.
+      // Campaign overview previews each entity kind.
       path: '/campaigns/:id/overview',
       name: 'overview',
       component: () => import('./views/NewWorldView.vue'),
@@ -36,7 +37,8 @@ const router = createRouter({
     {
       path: '/campaigns/:id/world',
       name: 'world',
-      component: () => import('./views/WorldView.vue'),
+      component: () => import('./views/NewWorldView.vue'),
+      props: { mode: 'directory' },
       meta: { requiresAuth: true },
     },
     {
@@ -56,8 +58,15 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      // Browsable collection for one entity kind. This keeps overview
+      // sections from dropping users into the legacy mixed world surface.
+      path: '/campaigns/:id/entities/kind/:kind',
+      name: 'entity-section',
+      component: () => import('./views/EntitySectionView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       // Rebuild Stage 4: plain-language ask with staged proposals (NewAskView).
-      // The existing 'candidates' route stays intact for re-roll/editing.
       path: '/campaigns/:id/ask',
       name: 'ask',
       component: () => import('./views/NewAskView.vue'),

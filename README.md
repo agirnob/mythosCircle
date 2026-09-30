@@ -31,6 +31,7 @@ committed lockfiles).
 
 | Command            | What it runs                                                            |
 | ------------------ | ----------------------------------------------------------------------- |
+| `make dev`         | backend API + frontend dev server with writable local data paths        |
 | `make test`        | backend `pytest` + frontend `vitest`                                    |
 | `make lint`        | `ruff check` + `ruff format --check` (backend) + `eslint` (frontend)    |
 | `make format`      | `ruff format` + `ruff check --fix` (backend) + `prettier --write`       |
@@ -39,14 +40,19 @@ committed lockfiles).
 ## Running locally
 
 ```sh
-# backend — http://127.0.0.1:8000/api/health
-# The store defaults to the production path (/var/lib/mythoscircle/mythoscircle.db,
-# matching deploy/config.toml and the backup scripts); point local dev at a
-# writable location:
-MYTHOSCIRCLE_DB=sqlite:///./data/mythosCircle.db uv run --directory backend uvicorn app.main:app --port 8000
+make dev
+```
 
-# frontend — Vite dev server, proxies /api and /ws to 127.0.0.1:8000
-cd frontend && npm run dev
+Open http://127.0.0.1:5173/. The API runs at http://127.0.0.1:8000/ and
+Vite proxies `/api` and `/ws` to it. Stop both with Ctrl+C.
+
+`make dev` stores the database, media, and JSON log under ignored
+`backend/data/`. To use a database stored elsewhere, override its path and
+the matching media directory before starting, for example:
+
+```sh
+MYTHOSCIRCLE_DB=sqlite:////absolute/path/to/world.db \
+MYTHOSCIRCLE_MEDIA_DIR=/absolute/path/to/media make dev
 ```
 
 ## Conventions

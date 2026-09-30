@@ -65,6 +65,16 @@ def world_entities(session: Session, campaign_id: str) -> Sequence[models.Entity
     ).all()
 
 
+def entity_for_campaign(session: Session, campaign_id: str, entity_id: str) -> models.Entity | None:
+    """Read one live entity only when it belongs to this campaign."""
+    return session.scalar(
+        select(models.Entity).where(
+            models.Entity.id == entity_id,
+            models.Entity.campaign_id == campaign_id,
+        )
+    )
+
+
 def world_edges(session: Session, campaign_id: str) -> Sequence[models.Edge]:
     """The materialized latest-revision edges in rowid (commit) order —
     deterministic retrieval (AD-16)."""

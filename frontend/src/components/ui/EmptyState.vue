@@ -15,15 +15,19 @@ defineProps<{ title: string; body?: string }>()
 
 <style scoped>
 .mc-empty {
-  border: 1px dashed var(--mc-border);
+  border: 1px dashed var(--mc-border-bright);
   border-radius: var(--mc-radius);
-  padding: 2rem 1.5rem;
+  padding: 2.5rem 1.5rem;
   text-align: center;
-  background: var(--mc-surface);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(139, 108, 255, 0.12), transparent 55%),
+    var(--mc-surface);
 }
 .mc-empty-title {
   margin: 0;
   font-weight: 600;
+  font-family: var(--mc-display-font);
+  font-size: 1.25rem;
 }
 .mc-empty-body {
   margin: 0.5rem 0 0;

@@ -176,6 +176,42 @@ def _row(campaign_id: str, candidate_id: str) -> models.ProposedCandidate:
         return row
 
 
+def test_accept_commits_explicit_related_entity_bundle(world: str) -> None:
+    """A proposal may carry an explicitly reviewed new relation target.
+
+    The primary entity, the related character, and their edge commit in one
+    revision; a rejected or unaccepted bundle never becomes world state.
+    """
+    bar_id, mira_id = _seed_world(world)
+    payload = _payload(mira_id, bar_id)
+    payload["related_entities"] = [
+        {
+            "ref": "N0",
+            "kind": "character",
+            "name": "Kaelen Tide-Walker",
+            "description": "A tide-scarred guide who keeps a sanctuary beneath the harbor.",
+            "data": {"role": "NPC", "background": "A guide of the exposed seabeds."},
+        }
+    ]
+    payload["edges"] = [
+        *payload["edges"],
+        {
+            "endpoint": "N0",
+            "direction": "outbound",
+            "type": "ally_of",
+            "counter": 1,
+            "reason": "They share a sanctuary and protect its refugees.",
+        },
+    ]
+    candidate = _stage(world, payload)
+    accepted, _revision = accept_candidate(world, candidate.id)
+    assert accepted.status == STATUS_ACCEPTED
+    entities, edges = _state(world)
+    names = {row[2] for row in entities}
+    assert {"Sable Rook", "Kaelen Tide-Walker"} <= names
+    assert any(edge[3] == "ally_of" for edge in edges)
+
+
 # ---------------------------------------------------------------------------
 # ACCEPT_HAPPY + acceptance criteria (fresh ULID, non-mutation, one revision)
 # ---------------------------------------------------------------------------

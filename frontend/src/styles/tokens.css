@@ -8,53 +8,75 @@
 :root {
   color-scheme: dark;
 
-  /* Background (§9) — consolidation pass 2026-09-27: cooler slate chrome,
-   * the signature accent shifts from the legacy amber to teal so the
-   * rebuild reads as its own surface. */
-  --mc-app-bg: #10141a;
-  --mc-surface: #161b22;
-  --mc-surface-raised: #1c222c;
-  --mc-input: #12161d;
-  --mc-border: #28303c;
+  /* Atmospheric navy foundation with a violet creative accent. */
+  --mc-app-bg: #080d16;
+  --mc-app-bg-raised: #0b1320;
+  --mc-surface: #0e1724;
+  --mc-surface-raised: #131e2e;
+  --mc-surface-hover: #17253a;
+  --mc-input: #0a1421;
+  --mc-border: #24344a;
+  --mc-border-bright: #334966;
+  --mc-glow-violet: rgba(125, 92, 255, 0.24);
+  --mc-glow-cyan: rgba(53, 190, 205, 0.18);
 
   /* Text (§9) */
-  --mc-text-primary: #e6e8ee;
-  --mc-text-secondary: #9aa2af;
-  --mc-text-muted: #6b7484;
+  --mc-text-primary: #eef1fb;
+  --mc-text-secondary: #b2bdd0;
+  --mc-text-muted: #74839a;
+  --mc-text-faint: #52627a;
 
-  /* Semantic accents — restrained (§9) */
-  --mc-canonical: #79c29a;
-  --mc-proposal: #a79dd4;
-  --mc-warning: #d4b06a;
-  --mc-danger: #d47a70;
-  --mc-interactive: #35a7c9;
+  /* Semantic accents: creation, canon, importance, danger. */
+  --mc-interactive: #8b6cff;
+  --mc-interactive-bright: #a994ff;
+  --mc-canonical: #5ed0c1;
+  --mc-proposal: #c09cff;
+  --mc-warning: #e7b866;
+  --mc-danger: #ed777d;
+  --mc-success: #75d39e;
 
   /* Type scale (§10) */
-  --mc-page-title-size: 2rem;
+  --mc-page-title-size: clamp(2rem, 4vw, 3rem);
   --mc-section-title-size: 1.125rem;
   --mc-entity-name-size: 1rem;
   --mc-meta-size: 0.72rem;
   --mc-body-size: 0.95rem;
+  --mc-display-font: Georgia, 'Times New Roman', serif;
+  --mc-body-font: 'Avenir Next', 'Segoe UI', sans-serif;
 
   /* Shape + spacing */
-  --mc-radius: 10px;
-  --mc-radius-sm: 6px;
+  --mc-radius: 12px;
+  --mc-radius-sm: 7px;
   --mc-gap: 1rem;
   --mc-gap-sm: 0.5rem;
-  --mc-shell-width: 1200px;
-  --mc-sidebar-width: 220px;
+  --mc-shell-width: 1440px;
+  --mc-sidebar-width: 236px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: var(--mc-app-bg);
 }
 
 body {
   margin: 0;
-  font-family: system-ui, sans-serif;
-  background: var(--mc-app-bg);
+  min-width: 320px;
+  font-family: var(--mc-body-font);
+  background:
+    radial-gradient(circle at 85% -10%, rgba(117, 83, 255, 0.13), transparent 34rem),
+    radial-gradient(circle at 10% 40%, rgba(40, 160, 190, 0.06), transparent 28rem),
+    var(--mc-app-bg);
   color: var(--mc-text-primary);
+  line-height: 1.5;
 }
 
 :focus-visible {
-  outline: 2px solid var(--mc-interactive);
-  outline-offset: 1px;
+  outline: 2px solid var(--mc-interactive-bright);
+  outline-offset: 3px;
 }
 
 button,
@@ -62,4 +84,50 @@ input,
 textarea,
 select {
   font: inherit;
+}
+
+button,
+input,
+textarea,
+select {
+  color-scheme: dark;
+}
+
+::selection {
+  background: rgba(139, 108, 255, 0.4);
+  color: var(--mc-text-primary);
+}
+
+.mc-display-title {
+  font-family: var(--mc-display-font);
+  letter-spacing: -0.025em;
+}
+
+.mc-skip-link {
+  position: fixed;
+  z-index: 20;
+  top: 0.75rem;
+  left: 0.75rem;
+  transform: translateY(-160%);
+  padding: 0.65rem 0.9rem;
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-interactive);
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform 160ms ease;
+}
+
+.mc-skip-link:focus {
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }

@@ -52,6 +52,8 @@ function shortTime(iso: string): string {
   display: flex;
   flex-direction: column;
   gap: var(--mc-gap-sm);
+  border-left: 1px solid var(--mc-border);
+  padding-left: 0.85rem;
 }
 .mc-feed-revision {
   margin: 0;
@@ -62,11 +64,22 @@ function shortTime(iso: string): string {
   padding: 0;
 }
 .mc-feed-line {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
   align-items: baseline;
   font-size: 0.85rem;
+}
+.mc-feed-line::before {
+  content: '';
+  position: absolute;
+  left: -1.15rem;
+  width: 0.45rem;
+  height: 0.45rem;
+  border: 2px solid var(--mc-canonical);
+  border-radius: 50%;
+  background: var(--mc-app-bg);
 }
 .mc-feed-action {
   font-weight: 600;

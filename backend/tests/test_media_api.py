@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from app.core import ids
 from app.core.settings import ImageSettings
+from app.media.service import bbeg_video_prompt
 from app.pipeline.worker import run_next_job
 from app.store import (
     add_media,
@@ -68,7 +69,9 @@ def media_api(client: TestClient, tmp_path: Path) -> Iterator[Callable[[], str]]
         init_db(previous)
 
 
-def _commit_entity(campaign_id: str, appearance: object, name: str = "Mira Vane") -> str:
+def _commit_entity(
+    campaign_id: str, appearance: object, name: str = "Mira Vane", *, role: str | None = None
+) -> str:
     """One committed character with the given appearance (FR2: a new
     entity needs an edge, so the subgraph carries a small anchor pair)."""
     from app.store import latest_revision, session_scope
@@ -83,7 +86,10 @@ def _commit_entity(campaign_id: str, appearance: object, name: str = "Mira Vane"
         [
             models.EntityInput(kind="place", name="The Anchor", id=anchor_id),
             models.EntityInput(
-                kind="character", name=name, data={"appearance": appearance}, id=entity_id
+                kind="character",
+                name=name,
+                data={"appearance": appearance, **({"role": role} if role else {})},
+                id=entity_id,
             ),
         ],
         [
@@ -157,6 +163,56 @@ def test_media_list_foreign_campaign_is_404(
     assert client.get(f"/api/campaigns/{other_id}/media").status_code == 404
     # The owner's own campaign still lists fine (200, empty manifest).
     assert client.get(f"/api/campaigns/{campaign_id}/media").status_code == 200
+
+
+def test_reveal_prompt_preview_is_the_canonical_prompt(
+    client: TestClient, media_api: Callable[[], str]
+) -> None:
+    campaign_id = media_api()
+    appearance = {"face": "one amber eye", "body": "brass-plated captain"}
+    entity_id = _commit_entity(campaign_id, appearance, role="BBEG")
+
+    response = client.get(f"/api/campaigns/{campaign_id}/entities/{entity_id}/reveal-prompt")
+
+    assert response.status_code == 200
+    assert response.json() == {"prompt": bbeg_video_prompt({"appearance": appearance})}
+    render = client.post(
+        "/api/jobs",
+        json={
+            "campaign_id": campaign_id,
+            "kind": "video",
+            "payload": {"entity_id": entity_id, "prompt": response.json()["prompt"]},
+        },
+    )
+    assert render.status_code == 201
+    assert render.json()["payload"]["prompt"] == response.json()["prompt"]
+    assert (
+        client.get(
+            f"/api/campaigns/{campaign_id}/entities/{ids.new_id()}/reveal-prompt"
+        ).status_code
+        == 404
+    )
+
+
+def test_reveal_prompt_preview_respects_ownership_and_boss_gate(
+    client: TestClient, media_api: Callable[[], str]
+) -> None:
+    campaign_id = media_api()
+    entity_id = _commit_entity(campaign_id, "one amber eye")
+    path = f"/api/campaigns/{campaign_id}/entities/{entity_id}/reveal-prompt"
+    assert client.get(path).status_code == 422
+
+    foreign = create_campaign(
+        register_account(f"foreign-{ids.new_id()}@example.com", "password123").id,
+        title="Foreign",
+        description="",
+        theme="Grimdark",
+        custom_lore="",
+    ).id
+    assert (
+        client.get(f"/api/campaigns/{foreign}/entities/{entity_id}/reveal-prompt").status_code
+        == 404
+    )
 
 
 def test_media_happy_path_file_round_trip(
@@ -367,7 +423,9 @@ def _run_video_job() -> None:
     from app.core.settings import VideoSettings
 
     def provider(prompt: str, settings: VideoSettings, first_frame: str | None = None) -> bytes:
-        assert "lair_actions" in prompt
+        assert "face: a mask of fused iron" in prompt
+        assert "lair_actions" not in prompt
+        assert "reveal" in prompt.lower()
         assert first_frame is None  # openai path: no portrait resolution (review round 1)
         return MP4_BYTES
 
@@ -440,12 +498,11 @@ def test_video_not_boss_enqueue_is_422(client: TestClient, media_api: Callable[[
 def test_video_no_usable_prompt_enqueue_is_422(
     client: TestClient, media_api: Callable[[], str]
 ) -> None:
-    """NO_VIDEO_PROMPT: the forced enqueue for a boss-tier entity without
-    a usable prompt (no boss section) is the envelope 422."""
+    """NO_VIDEO_PROMPT: missing appearance is the envelope 422."""
     campaign_id = media_api()
     boss_id = _commit_boss(
         campaign_id,
-        data={"name": "Vashka", "role": "BBEG", "appearance": {"face": "iron"}},
+        data={"name": "Vashka", "role": "BBEG", "appearance": ""},
     )
     response = client.post(
         "/api/jobs",

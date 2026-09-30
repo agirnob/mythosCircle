@@ -111,6 +111,25 @@ function damageRows(parts: unknown): DamageRow[] {
     })
 }
 
+/** Recover structured damage when a generated stat block only included the
+ * published damage expression in its action description. This keeps the
+ * editor useful for model output such as `Hit: 10 (1d10 + 5) force damage`
+ * while leaving wrapper actions like Multiattack without a false damage row. */
+function damageRowsFromDescription(description: string): DamageRow[] {
+  const rows: DamageRow[] = []
+  const pattern = /\((\d+)d(\d+)(?:\s*([+-])\s*(\d+))?\)\s+([A-Za-z]+)\s+damage/gi
+  for (const match of description.matchAll(pattern)) {
+    const modifier = match[4] ? `${match[3] === '-' ? '-' : ''}${match[4]}` : ''
+    rows.push({
+      count: match[1],
+      sides: match[2],
+      mod: modifier,
+      type: match[5].toLowerCase(),
+    })
+  }
+  return rows
+}
+
 function load(block: Record<string, unknown> | null) {
   const identity = (block?.['identity'] ?? {}) as Record<string, unknown>
   identityRole.value = typeof identity['role'] === 'string' ? identity['role'] : ''
@@ -158,12 +177,17 @@ function load(block: Record<string, unknown> | null) {
   actions.value = Array.isArray(rawActions)
     ? rawActions.map((entry) => {
         const action = (entry ?? {}) as Record<string, unknown>
+        const actionDescription =
+          typeof action['description'] === 'string' ? action['description'] : ''
+        const structuredDamage = damageRows(action['damage'])
         return {
           name: typeof action['name'] === 'string' ? action['name'] : '',
           toHit: action['to_hit'] !== undefined ? String(action['to_hit']) : '',
-          description:
-            typeof action['description'] === 'string' ? action['description'] : '',
-          damages: damageRows(action['damage']),
+          description: actionDescription,
+          damages:
+            structuredDamage.length > 0
+              ? structuredDamage
+              : damageRowsFromDescription(actionDescription),
         }
       })
     : []
@@ -425,7 +449,7 @@ function emitUpdate() {
       <button type="button" class="link" @click="traits.splice(i, 1); emitUpdate()">✕</button>
     </div>
 
-    <h4>Spells (one per line)</h4>
+    <h4>Spells</h4>
     <SpellCards v-model="spellRows" />
   </div>
 </template>
@@ -434,19 +458,25 @@ function emitUpdate() {
 .sbe {
   display: grid;
   gap: 0.5rem;
+  min-width: 0;
+  max-width: 100%;
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr));
   gap: 0.5rem;
 }
 label {
   display: grid;
   gap: 0.2rem;
+  min-width: 0;
 }
 input,
 select,
 textarea {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   padding: 0.3rem;
   border-radius: 6px;
   border: 1px solid #2c3038;
@@ -458,12 +488,18 @@ textarea {
   grid-template-columns: 1.5fr 0.7fr 1.5fr auto;
   gap: 0.4rem;
   align-items: center;
+  min-width: 0;
 }
 .dice-row {
   display: grid;
   grid-template-columns: 3.5rem auto 3.5rem auto 3.5rem 1fr auto;
   gap: 0.3rem;
   align-items: center;
+  min-width: 0;
+}
+.row.four > *,
+.dice-row > * {
+  min-width: 0;
 }
 .action-block,
 .trait-block {
@@ -494,5 +530,34 @@ h4 {
   display: flex;
   gap: 0.75rem;
   align-items: center;
+}
+
+@media (max-width: 760px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .row.four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .row.four .link {
+    justify-self: start;
+  }
+}
+
+@media (max-width: 480px) {
+  .grid,
+  .row.four {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dice-row {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .dice-row input {
+    flex: 1 1 3rem;
+  }
+  .dice-row input:last-of-type {
+    flex-basis: 7rem;
+  }
 }
 </style>

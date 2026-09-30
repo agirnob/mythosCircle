@@ -29,6 +29,13 @@ function syncFromParent() {
 
 watch(() => props.modelValue, syncFromParent, { immediate: true })
 
+function emitRows() {
+  lastEmitted = JSON.stringify(items.value)
+  emit('update:modelValue', items.value.length > 0 ? [...items.value] : null)
+}
+
+/** Drop the empties and visible-shrink — run on blur/remove only, so an
+ * in-progress blank row never vanishes under the user. */
 function emitCleaned() {
   const cleaned = items.value.map((spell) => spell.trim()).filter(Boolean)
   lastEmitted = JSON.stringify(cleaned)
@@ -37,7 +44,7 @@ function emitCleaned() {
 
 function addSpell() {
   items.value = [...items.value, '']
-  emitCleaned()
+  emitRows()
 }
 
 function removeAt(index: number) {
@@ -45,12 +52,14 @@ function removeAt(index: number) {
   emitCleaned()
 }
 
-function touch(index: number) {
-  items.value.splice(index, 1, items.value[index] ?? '')
-}
-
 function onBlur(index: number) {
-  items.value[index] = (items.value[index] ?? '').trim()
+  const trimmed = (items.value[index] ?? '').trim()
+  if (trimmed === '') {
+    items.value.splice(index, 1)
+    emitCleaned()
+    return
+  }
+  items.value[index] = trimmed
   emitCleaned()
 }
 </script>
@@ -67,7 +76,6 @@ function onBlur(index: number) {
           @input="
             (event) => {
               items[index] = (event.target as HTMLInputElement).value
-              touch(index)
             }
           "
           @blur="onBlur(index)"

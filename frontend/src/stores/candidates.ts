@@ -73,10 +73,18 @@ export const useCandidatesStore = defineStore('candidates', {
       }
     },
     /** Enqueue a generate job from the accept screen's ask box. */
-    async submitAsk(campaignId: string, ask: string): Promise<JobResponse> {
+    async submitAsk(
+      campaignId: string,
+      ask: string,
+      entityKind: 'character' | 'faction' | 'place' = 'character',
+    ): Promise<JobResponse> {
       return apiFetch<JobResponse>('/api/jobs', {
         method: 'POST',
-        body: JSON.stringify({ campaign_id: campaignId, kind: 'generate', payload: { ask } }),
+        body: JSON.stringify({
+          campaign_id: campaignId,
+          kind: 'generate',
+          payload: entityKind === 'character' ? { ask } : { ask, entity_kind: entityKind },
+        }),
       })
     },
     /**

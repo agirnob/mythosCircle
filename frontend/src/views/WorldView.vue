@@ -525,20 +525,10 @@ async function generatePortrait(entity: EntityExport) {
 // ---------------------------------------------------------------------------
 // Reveal video (spec-4.2, beta): boss-tier cards only — the DM triggers
 // the generation from the card, and the clip renders inline. The prompt
-// is a backend projection of the committed AR24 record (appearance +
-// boss + identity); the button mirrors the enqueue gates (boss-tier
-// role + usable prompt: non-blank appearance + boss section) plus the
+// is a backend projection of appearance plus reveal direction; the button
+// mirrors the enqueue gates (boss-tier role + appearance) plus the
 // in-flight discipline.
 // ---------------------------------------------------------------------------
-
-/** The AR24 boss-section keys the reveal prompt joins (the backend's
- * BOSS_PROMPT_KEYS mirror) — one non-blank value makes a usable prompt. */
-const BOSS_PROMPT_FIELDS = [
-  'lair_actions',
-  'legendary_actions',
-  'immunities',
-  'vulnerabilities',
-] as const
 
 const videoErrors = ref<Record<string, string>>({})
 
@@ -616,20 +606,6 @@ function isBossTier(entity: EntityExport): boolean {
   return typeof data?.role === 'string' && BOSS_ROLES.has(data.role)
 }
 
-/** True iff the committed AR24 record can produce a reveal prompt: a
- * non-blank appearance AND at least one non-blank documented boss value
- * (the backend's ``bbeg_video_prompt`` gate, mirrored). */
-function hasVideoPrompt(entity: EntityExport): boolean {
-  const data = entity.data as Record<string, unknown> | null | undefined
-  if (!data) return false
-  const boss = data['boss']
-  if (typeof boss !== 'object' || boss === null) return false
-  const record = boss as Record<string, unknown>
-  return BOSS_PROMPT_FIELDS.some(
-    (field) => typeof record[field] === 'string' && String(record[field]).trim() !== '',
-  )
-}
-
 /** The entity's latest video manifest row (newest created_at), or null. */
 function videoFor(entity: EntityExport) {
   return world.videoFor(campaignId, entity.id)
@@ -664,9 +640,7 @@ function videoJobFor(entityId: string) {
 function videoStatus(entity: EntityExport): string | null {
   const job = videoJobFor(entity.id)
   if (!job) {
-    // With the spec-4.6 draft surface a boss only needs a non-blank
-    // appearance to draft; the boss-section requirement applies to the
-    // legacy one-shot render only.
+    // Both drafting and rendering need a non-blank appearance.
     return entityHasAppearance(entity) ? null : 'Add an appearance to draft a reveal video prompt.'
   }
   if (job.state === 'queued') return `Reveal video queued — position ${job.queue_position ?? '…'}`
@@ -688,7 +662,6 @@ async function generateRevealVideo(entity: EntityExport) {
   if (jobs.videoInFlight(campaignId, entity.id)) return
   if (!entityHasAppearance(entity)) return // the backend gate, mirrored
   const prompt = revealPromptText(entity).trim()
-  if (!prompt && !hasVideoPrompt(entity)) return // the backend gate, mirrored
   videoErrors.value[entity.id] = ''
   try {
     await jobs.submitRevealVideo(campaignId, entity.id, prompt || undefined)
@@ -1299,10 +1272,10 @@ function additionalDataBlock(entity: EntityExport): string {
             Open build-in
           </RouterLink>
           <RouterLink
-            :to="{ name: 'candidates', params: { id: campaignId } }"
+            :to="{ name: 'ask', params: { id: campaignId } }"
             class="cta secondary"
           >
-            Open candidates
+            Ask the World
           </RouterLink>
           <RouterLink :to="{ name: 'graph', params: { id: campaignId } }" class="cta secondary">
             Open graph
@@ -1626,8 +1599,7 @@ function additionalDataBlock(entity: EntityExport): string {
                   class="link"
                   :disabled="
                     jobs.videoInFlight(campaignId, entity.id) ||
-                    !entityHasAppearance(entity) ||
-                    (!revealPromptText(entity).trim() && !hasVideoPrompt(entity))
+                    !entityHasAppearance(entity)
                   "
                   @click="generateRevealVideo(entity)"
                 >
@@ -1667,8 +1639,8 @@ function additionalDataBlock(entity: EntityExport): string {
             <p v-else-if="regenerateNotices[entity.id]" class="muted small status">
               <template v-if="regenerateNotices[entity.id].kind === 'ready'">
                 Re-roll of {{ regenerateNotices[entity.id].label }} is ready —
-                <RouterLink :to="{ name: 'candidates', params: { id: campaignId } }">
-                  review and accept it
+                <RouterLink :to="{ name: 'ask', params: { id: campaignId } }">
+                  review and accept it in Ask the World
                 </RouterLink>
                 (this world changes only when you accept).
               </template>

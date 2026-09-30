@@ -18,12 +18,13 @@ function stateOrdinal(state: string): number {
 }
 
 /**
- * The guided build-in submission shape (spec-2.1): four free-form
- * sections. Hybrid authorship (path 1) extends `key_figures`: an entry
- * is a legacy plain string OR one authored seed — `{name, role?, record?,
- * relations?, key?}` where `relations` carry `target_name` (the
- * mandate tier; path 1 owns it). The backend's canonical validator is
- * the authority; these types mirror its entry shape.
+ * The guided build-in submission shape (spec-2.1): quick text sections
+ * remain supported, while places and factions may also use structured flat
+ * entries. Hybrid authorship (path 1) extends `key_figures`: an entry is a
+ * legacy plain string OR one authored seed — `{name, role?, record?,
+ * relations?, key?}` where `relations` carry `target_name` (the mandate
+ * tier; path 1 owns it). The backend's canonical validator is the
+ * authority; these types mirror its entry shape.
  */
 export interface AuthoredRelationSeed {
   type: string
@@ -45,10 +46,20 @@ export interface AuthoredFigureSeed {
   key?: string
 }
 
+/** Structured place/faction seed accepted by the build-in flat roster. */
+export interface FlatSeedEntry {
+  name: string
+  description?: string
+  relations?: AuthoredRelationSeed[]
+  key?: string
+  archetype?: string
+  dial?: string
+}
+
 export interface BuildInPayload {
   /** Generic-library drafts omit the world-shaping sections entirely. */
-  places?: string[]
-  factions?: string[]
+  places?: (string | FlatSeedEntry)[]
+  factions?: (string | FlatSeedEntry)[]
   key_figures: (string | AuthoredFigureSeed)[]
   notes?: string
   /** Generic-library builds only: the theme whose default seed the runner
@@ -144,10 +155,8 @@ export const useJobsStore = defineStore('jobs', {
           const payload = job.payload as { entity_id?: string } | null
           return payload?.entity_id === entityId
         }),
-    /** The latest SUCCEEDED draft prompt for an entity (spec-4.6), or
-     * null. The draft is a job result the frontend holds — session-only
-     * durability (Ask-First 1 answer): a reload loses it and the DM
-     * re-drafts; never a media row (a prompt is not a file). */
+    /** The latest SUCCEEDED draft prompt for an entity, or null. The draft
+     * is a job result, never a media row; syncList restores it on reload. */
     videoPromptFor:
       (state) =>
       (campaignId: string, entityId: string): string | null => {
@@ -249,8 +258,9 @@ export const useJobsStore = defineStore('jobs', {
     /**
      * Spec-4.6 reveal-video prompt draft: one video_prompt job whose
      * payload names the committed boss-tier entity (with a non-blank
-     * appearance) — gemma authors a MiniMax-I2VA-compliant draft from
-     * the entity's AR24 record + the writing guide. The draft lands as
+     * appearance) — the model drafts a concise reveal from appearance,
+     * with an appearance-based fallback when the text model is offline.
+     * The draft lands as
      * the job result {entity_id, prompt}; the DM reviews/edits it in
      * the card before any render (two-phase; the backend validates the
      * payload + role + appearance at enqueue).
@@ -270,21 +280,21 @@ export const useJobsStore = defineStore('jobs', {
     /**
      * Spec-4.2/4.6 reveal video: one video job whose payload names the
      * committed boss-tier entity. Without a prompt the clip prompt is a
-     * backend projection of the entity's committed AR24 record
-     * (appearance + boss + identity) — never free text (the backend
+     * backend projection of the entity's committed appearance plus reveal
+     * direction (the backend
      * validates the payload + role + prompt at enqueue). With a
      * non-blank prompt (spec-4.6) the DM's approved text is used
      * VERBATIM by run_video — the draft-and-edit path's render.
      */
     async submitRevealVideo(campaignId: string, entityId: string, prompt?: string) {
-      const promptValue = prompt?.trim() ?? ''
+      const hasPrompt = typeof prompt === 'string' && Boolean(prompt.trim())
       const job = await apiFetch<Job>('/api/jobs', {
         method: 'POST',
         body: JSON.stringify({
           campaign_id: campaignId,
           kind: 'video',
-          payload: promptValue
-            ? { entity_id: entityId, prompt: promptValue }
+          payload: hasPrompt
+            ? { entity_id: entityId, prompt }
             : { entity_id: entityId },
         }),
       })

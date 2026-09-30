@@ -33,6 +33,7 @@ from app.store.commit import (
     StoreError,
     UnknownCampaignError,
     _commit,
+    edge_kind_ok,
 )
 from app.store.db import session_scope
 from app.store.jobs import (
@@ -128,6 +129,12 @@ BOSS_FIELDS: tuple[str, ...] = (
 #: empty boss object).
 BOSS_ROLES: frozenset[str] = frozenset({"BBEG", "Monster"})
 
+# Flat entity regeneration uses a different section contract from characters.
+FLAT_REGEN_SECTIONS: dict[str, tuple[str, ...]] = {
+    "place": ("description", "inhabitants", "whats_hidden"),
+    "faction": ("description", "doctrine", "assets"),
+}
+
 
 def _required_str_violations(value: Any, label: str) -> list[str]:
     if isinstance(value, str) and value.strip():
@@ -202,7 +209,7 @@ def canonicalize_reaction_matrix(record: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def payload_section_violations(payload: Any) -> list[str]:
+def payload_section_violations(payload: Any, entity_kind: str = "character") -> list[str]:
     """The required-section shape violations of one AR24 candidate
     payload (``[]`` = valid): the AR19 core (non-blank name, role in the
     closed set, personality, the secret/rumor/party-hook triple), every
@@ -219,6 +226,10 @@ def payload_section_violations(payload: Any) -> list[str]:
         return ["candidate must be an object"]
     violations: list[str] = []
     violations.extend(_required_str_violations(payload.get("name"), "name"))
+    if entity_kind in FLAT_REGEN_SECTIONS:
+        for field in FLAT_REGEN_SECTIONS[entity_kind]:
+            violations.extend(_required_str_violations(payload.get(field), field))
+        return violations
     for field in ("personality", "secret", "rumor", "party_hook"):
         violations.extend(_required_str_violations(payload.get(field), field))
     role = payload.get("role")
@@ -619,7 +630,8 @@ def accept_candidate(
             # required AR24 section shape as staging — an override that
             # drops or blanks a section is a shape violation (spec-3.3),
             # never a partial commit.
-            violations = payload_section_violations(payload_override)
+            candidate_kind = candidate.payload.get("entity_kind", "character")
+            violations = payload_section_violations(payload_override, candidate_kind)
             if violations:
                 raise InvalidCandidateError(
                     f"candidate {candidate_id}: payload override fails the required-section "
@@ -627,6 +639,22 @@ def accept_candidate(
                 )
         else:
             payload = dict(candidate.payload)
+        entity_kind = payload.get("entity_kind", "character")
+        if entity_kind not in {"character", "faction", "place"}:
+            raise InvalidCandidateError(
+                f"candidate {candidate_id}: payload entity_kind is invalid: {entity_kind!r}"
+            )
+        entities, _ = world_state(session, campaign_id)
+        payload["edges"] = _repair_legacy_edge_directions(
+            _candidate_edges(payload), entity_kind, list(entities)
+        )
+        if payload_override is not None:
+            violations = payload_section_violations(payload_override, entity_kind)
+            if violations:
+                raise InvalidCandidateError(
+                    f"candidate {candidate_id}: payload override fails the required-section "
+                    f"shape: {'; '.join(violations)}"
+                )
         name = payload.get("name")
         if not isinstance(name, str):
             raise InvalidCandidateError(f"candidate {candidate_id}: payload has no name")
@@ -666,6 +694,10 @@ def accept_candidate(
             # ``data`` (and the regenerated name) change.
             entity_kind = target.kind
             entity_text = target.text
+            if entity_kind in FLAT_REGEN_SECTIONS:
+                description = payload.get("description")
+                if isinstance(description, str) and description.strip():
+                    entity_text = description.strip()
         else:
             # A fresh ULID minted up front so the staged edges can name
             # the new entity: the commit path needs concrete ids to wire
@@ -674,21 +706,31 @@ def accept_candidate(
             # "id=None" wording describes the invariant (fresh ULID, never
             # an existing entity), not the minting site.
             entity_id = ids.new_id()
-            entity_kind = "character"
             entity_text = None
+            if entity_kind in FLAT_REGEN_SECTIONS:
+                description = payload.get("description")
+                entity_text = description.strip() if isinstance(description, str) else None
+        related_inputs, related_ids = _accept_related_entities(payload, candidate_id)
         entity = models.EntityInput(
             kind=entity_kind,
             name=name,
             text=entity_text,
-            data={key: value for key, value in payload.items() if key != "edges"},
+            data={
+                key: value
+                for key, value in payload.items()
+                if key not in {"edges", "related_entities"}
+            },
             id=entity_id,
         )
-        edges = [_accept_edge(entity_id, candidate_id, edge) for edge in _candidate_edges(payload)]
+        edges = [
+            _accept_edge(entity_id, candidate_id, edge, related_ids)
+            for edge in _candidate_edges(payload)
+        ]
         latest = latest_revision(session, campaign_id)
         revision = _commit(
             session,
             campaign_id,
-            [entity],
+            [entity, *related_inputs],
             edges,
             latest.id if latest is not None else None,
         )
@@ -698,7 +740,53 @@ def accept_candidate(
     return candidate, revision
 
 
-def _accept_edge(new_entity_id: str, candidate_id: str, edge: Any) -> models.EdgeInput:
+def _accept_related_entities(
+    payload: dict[str, Any], candidate_id: str
+) -> tuple[list[models.EntityInput], dict[str, str]]:
+    inputs: list[models.EntityInput] = []
+    ids_by_ref: dict[str, str] = {}
+    for index, related in enumerate(_candidate_related_entities(payload)):
+        if not isinstance(related, dict):
+            raise InvalidCandidateError(
+                f"candidate {candidate_id}: related entity {index} must be an object"
+            )
+        ref = related.get("ref")
+        kind = related.get("kind")
+        name = related.get("name")
+        description = related.get("description")
+        data = related.get("data", {})
+        if (
+            ref != f"N{index}"
+            or kind not in {"character", "faction", "place"}
+            or not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(description, str)
+            or not description.strip()
+            or not isinstance(data, dict)
+        ):
+            raise InvalidCandidateError(
+                f"candidate {candidate_id}: related entity {index} is malformed"
+            )
+        related_id = ids.new_id()
+        ids_by_ref[ref] = related_id
+        inputs.append(
+            models.EntityInput(
+                id=related_id,
+                kind=kind,
+                name=name.strip(),
+                text=description.strip(),
+                data=copy.deepcopy(data),
+            )
+        )
+    return inputs, ids_by_ref
+
+
+def _accept_edge(
+    new_entity_id: str,
+    candidate_id: str,
+    edge: Any,
+    related_ids: dict[str, str] | None = None,
+) -> models.EdgeInput:
     """One staged edge record -> ``EdgeInput`` wired against the new
     entity: ``outbound`` puts the candidate on the source side, ``inbound``
     on the destination side. ``type`` passes through; ``counter`` must be
@@ -710,6 +798,7 @@ def _accept_edge(new_entity_id: str, candidate_id: str, edge: Any) -> models.Edg
             f"candidate {candidate_id}: edge must be an object, got {edge!r}"
         )
     endpoint = edge.get("endpoint")
+    endpoint = (related_ids or {}).get(endpoint, endpoint)
     direction = edge.get("direction")
     edge_type = edge.get("type")
     if (
@@ -808,6 +897,13 @@ def _check_edge(endpoint: Any, direction: Any, edge_type: Any, committed: set[st
     )
 
 
+def _candidate_related_entities(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    related = payload.get("related_entities")
+    if not isinstance(related, list):
+        return []
+    return related
+
+
 def _candidate_edges(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """The staged ``edges`` list of a candidate payload (empty when absent
     or not a list — the caller's own contract governs the shape)."""
@@ -815,14 +911,72 @@ def _candidate_edges(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return edges if isinstance(edges, list) else []
 
 
+def _repair_legacy_edge_directions(
+    edges: list[dict[str, Any]], candidate_kind: str, entities: list[models.Entity]
+) -> list[dict[str, Any]]:
+    """Repair only the unambiguous reversed location edge shape.
+
+    Older proposals could stage a place with ``bases_at`` or ``hails_from``
+    pointing outward to a character or faction. Those edge kinds are valid
+    in the opposite direction, so flip the direction before commit. Other
+    invalid edges remain untouched and are rejected by the commit matrix.
+    """
+    kinds = {entity.id: entity.kind for entity in entities}
+    repaired: list[dict[str, Any]] = []
+    for edge in edges:
+        if not isinstance(edge, dict):
+            repaired.append(edge)
+            continue
+        endpoint_kind = kinds.get(edge.get("endpoint"))
+        edge_type = edge.get("type")
+        if (
+            edge.get("direction") == "outbound"
+            and endpoint_kind is not None
+            and not edge_kind_ok(edge_type, candidate_kind, endpoint_kind)
+            and edge_kind_ok(edge_type, endpoint_kind, candidate_kind)
+            and edge_type in {"bases_at", "hails_from"}
+        ):
+            repaired.append({**edge, "direction": "inbound"})
+        else:
+            repaired.append(edge)
+    return repaired
+
+
 def _check_candidate_edges(index: int, payload: dict[str, Any], committed: set[str]) -> None:
     """Reject the batch when any candidate edge references an endpoint
     that is not committed world state or a type outside the vocabulary."""
+    if "related_entities" in payload and not isinstance(payload.get("related_entities"), list):
+        raise InvalidCandidateError(f"candidate {index}: related_entities must be a list")
+    related = _candidate_related_entities(payload)
+    for related_index, related_entity in enumerate(related):
+        if (
+            not isinstance(related_entity, dict)
+            or related_entity.get("ref") != f"N{related_index}"
+            or related_entity.get("kind") not in {"character", "faction", "place"}
+            or not isinstance(related_entity.get("name"), str)
+            or not related_entity.get("name", "").strip()
+            or not isinstance(related_entity.get("description"), str)
+            or not related_entity.get("description", "").strip()
+            or not isinstance(related_entity.get("data", {}), dict)
+        ):
+            raise InvalidCandidateError(
+                f"candidate {index}: related_entities[{related_index}] is malformed"
+            )
+    related_refs = {f"N{index}" for index in range(len(related))}
     for edge in _candidate_edges(payload):
         if not isinstance(edge, dict):
             raise InvalidCandidateError(f"candidate {index}: edge must be an object, got {edge!r}")
-        if not _check_edge(
-            edge.get("endpoint"), edge.get("direction"), edge.get("type"), committed
+        endpoint = edge.get("endpoint")
+        valid_endpoint = (
+            isinstance(endpoint, str) and (endpoint in related_refs or endpoint in committed)
+        )
+        edge_endpoint = endpoint if endpoint in committed else "placeholder"
+        edge_committed = committed if endpoint in committed else {"placeholder"}
+        if not valid_endpoint or not _check_edge(
+            edge_endpoint,
+            edge.get("direction"),
+            edge.get("type"),
+            edge_committed,
         ):
             raise InvalidCandidateError(
                 f"candidate {index}: edge does not resolve to committed world state "

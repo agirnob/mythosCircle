@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../api/client'
@@ -9,7 +9,13 @@ import { useCampaignsStore } from '../stores/campaigns'
 import { useJobsStore } from '../stores/jobs'
 import type { BuildInPayload } from '../stores/jobs'
 import type { AuthoredFigureSeed } from '../stores/jobs'
+import type { FlatSeedEntry } from '../stores/jobs'
 import CharacterSheetEditor from '../components/CharacterSheetEditor.vue'
+import EntityPicker from '../components/ui/EntityPicker.vue'
+import type { EntityPickerOption } from '../components/ui/EntityPicker.vue'
+import { useTonightStore } from '../stores/tonight'
+import { useWorldStore } from '../stores/world'
+import { EDGE_VOCAB } from '../components/profile/profile'
 import { connectJobSocket } from '../ws'
 import type { WsMessage } from '../ws'
 
@@ -21,6 +27,8 @@ const campaignId = route.params.id as string
 
 const campaigns = useCampaignsStore()
 const jobs = useJobsStore()
+const tonight = useTonightStore()
+const world = useWorldStore()
 const loadError = ref<string | null>(null)
 
 const sections: Array<{ key: SectionKey; label: string; hint: string }> = [
@@ -31,6 +39,13 @@ const sections: Array<{ key: SectionKey; label: string; hint: string }> = [
 type SectionKey = 'places' | 'factions' | 'key_figures'
 
 const sectionText = ref<Record<SectionKey, string>>({ places: '', factions: '', key_figures: '' })
+type FlatKind = 'place' | 'faction'
+interface FlatSeedDraft extends FlatSeedEntry {
+  id: number
+  kind: FlatKind
+}
+const flatSeedDrafts = ref<FlatSeedDraft[]>([])
+let flatSeedSeq = 0
 /**
  * Authored key figures use the SAME sheet editor as the forge (one
  * authoring surface everywhere): each entry is a full editor instance —
@@ -49,16 +64,25 @@ function addFigure() {
 const notes = ref('')
 const error = ref<string | null>(null)
 const submitting = ref(false)
+const draftReady = ref(false)
+const draftStorageKey = `mythoscircle:build-in:${campaignId}`
 
 let disconnectSocket: (() => void) | null = null
 
 onMounted(async () => {
   try {
-    await Promise.all([campaigns.fetchOne(campaignId), jobs.syncList(campaignId)])
+    await Promise.all([
+      campaigns.fetchOne(campaignId),
+      jobs.syncList(campaignId),
+      tonight.fetchKinds(campaignId),
+      world.load(campaignId),
+    ])
     if (campaigns.error) {
       loadError.value = campaigns.error
       return
     }
+    restoreDraft()
+    draftReady.value = true
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : 'Could not load the world.'
     return
@@ -81,6 +105,91 @@ onMounted(async () => {
   )
 })
 
+interface StoredBuildDraft {
+  sectionText?: Partial<Record<SectionKey, string>>
+  flatSeedDrafts?: Array<Omit<FlatSeedDraft, 'id'> & { id?: number }>
+  notes?: string
+}
+
+function restoreDraft() {
+  const stored: StoredBuildDraft | null = (() => {
+    try {
+      const raw = globalThis.localStorage.getItem(draftStorageKey)
+      return raw ? (JSON.parse(raw) as StoredBuildDraft) : null
+    } catch {
+      return null
+    }
+  })()
+
+  const seed = stored ? null : recentJobs.value.find((job) => job.state === 'failed')
+  if (stored) {
+    sectionText.value = {
+      places: stored.sectionText?.places ?? '',
+      factions: stored.sectionText?.factions ?? '',
+      key_figures: stored.sectionText?.key_figures ?? '',
+    }
+    flatSeedDrafts.value = (stored.flatSeedDrafts ?? []).map((draft) => ({
+      ...draft,
+      id: ++flatSeedSeq,
+    }))
+    notes.value = stored.notes ?? ''
+    return
+  }
+  if (seed) {
+    const recovered = jobSeed(seed.payload)
+    if (recovered) hydrateFromSeed(recovered)
+  }
+}
+
+function hydrateFromSeed(seed: BuildInPayload) {
+  const stringsFor = (entries: unknown[] | undefined) =>
+    (entries ?? []).filter((entry): entry is string => typeof entry === 'string').join('\n')
+  sectionText.value = {
+    places: stringsFor(seed.places),
+    factions: stringsFor(seed.factions),
+    key_figures: stringsFor(seed.key_figures),
+  }
+  const structured = (entries: unknown[] | undefined, kind: FlatKind): FlatSeedDraft[] =>
+    (entries ?? []).flatMap((entry) => {
+      if (typeof entry !== 'object' || entry === null) return []
+      const value = entry as FlatSeedEntry
+      return typeof value.name === 'string'
+        ? [{ ...value, id: ++flatSeedSeq, kind }]
+        : []
+    })
+  flatSeedDrafts.value = [
+    ...structured(seed.places, 'place'),
+    ...structured(seed.factions, 'faction'),
+  ]
+  notes.value = seed.notes ?? ''
+}
+
+function saveDraft() {
+  if (!draftReady.value) return
+  try {
+    globalThis.localStorage.setItem(
+      draftStorageKey,
+      JSON.stringify({
+        sectionText: sectionText.value,
+        flatSeedDrafts: flatSeedDrafts.value,
+        notes: notes.value,
+      } satisfies StoredBuildDraft),
+    )
+  } catch {
+    // Draft persistence is best effort; the build itself remains unaffected.
+  }
+}
+
+function clearDraft() {
+  try {
+    globalThis.localStorage.removeItem(draftStorageKey)
+  } catch {
+    // Ignore unavailable browser storage.
+  }
+}
+
+watch([sectionText, flatSeedDrafts, notes], saveDraft, { deep: true })
+
 onUnmounted(() => {
   disconnectSocket?.()
 })
@@ -92,8 +201,18 @@ const hasContent = computed(() => {
     (section) => splitEntries(sectionText.value[section.key]).length > 0,
   )
   const anyEditor = editorRefs.value.some((editor) => editor?.hasContent)
-  return anySection || notes.value.trim().length > 0 || anyEditor
+  const anyFlatDraft = flatSeedDrafts.value.some((draft) => draft.name.trim().length > 0)
+  return anySection || notes.value.trim().length > 0 || anyEditor || anyFlatDraft
 })
+
+const buildPreview = computed(() => ({
+  places: splitEntries(sectionText.value.places).length,
+  factions: splitEntries(sectionText.value.factions).length,
+  figures:
+    splitEntries(sectionText.value.key_figures).length +
+    figureEditors.value.filter((_, index) => editorRefs.value[index]?.hasContent).length,
+  hasNotes: notes.value.trim().length > 0,
+}))
 
 function splitEntries(text: string): string[] {
   return text
@@ -102,9 +221,142 @@ function splitEntries(text: string): string[] {
     .filter(Boolean)
 }
 
+const kindsRegistry = computed(() => tonight.kindsFor(campaignId))
+const dialLevels = computed(() => kindsRegistry.value?.dial_levels ?? [])
+
+function archetypesFor(kind: FlatKind) {
+  return (kindsRegistry.value?.archetypes ?? []).filter((entry) => entry.kind === kind)
+}
+
+function normalizeSeedName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^(the|a|an)\s+/, '')
+}
+
+function knownTargetKind(targetName: string): string | null {
+  const normalized = normalizeSeedName(targetName)
+  if (!normalized) return null
+  const candidates: Array<{ name: string; kind: string }> = [
+    ...(world.entry(campaignId).world?.entities ?? []).map((entity) => ({
+      name: entity.name,
+      kind: entity.kind,
+    })),
+    ...flatSeedDrafts.value.map((draft) => ({ name: draft.name, kind: draft.kind })),
+    ...splitEntries(sectionText.value.places).map((name) => ({ name, kind: 'place' })),
+    ...splitEntries(sectionText.value.factions).map((name) => ({ name, kind: 'faction' })),
+    ...splitEntries(sectionText.value.key_figures).map((name) => ({ name, kind: 'character' })),
+  ]
+  return (
+    candidates.find((candidate) => normalizeSeedName(candidate.name) === normalized)?.kind ?? null
+  )
+}
+
+function relationTypesFor(draft: FlatSeedDraft, targetName = ''): string[] {
+  const registry = kindsRegistry.value
+  const types = registry?.edge_types ?? EDGE_VOCAB
+  const targetKind = knownTargetKind(targetName)
+  const targetKinds = targetKind ? [targetKind] : ['character', 'faction', 'place']
+  const allowed = types.filter((type) => {
+    const rule = registry?.kind_rules[type]
+    if (!rule) return true
+    const sourceAllowed = !rule.src || rule.src.includes(draft.kind)
+    const targetAllowed = !rule.dst || targetKinds.some((kind) => rule.dst?.includes(kind))
+    return sourceAllowed && targetAllowed
+  })
+  return allowed
+}
+
+function flatDraftsFor(kind: FlatKind) {
+  return flatSeedDrafts.value.filter((draft) => draft.kind === kind)
+}
+
+function quickNamesFor(kind: FlatKind): string[] {
+  return splitEntries(sectionText.value[kind === 'place' ? 'places' : 'factions'])
+}
+
+const entityPickerOptions = computed<EntityPickerOption[]>(() => {
+  const options: EntityPickerOption[] = []
+  const add = (name: string, kind: string, source: string) => {
+    const clean = name.trim()
+    if (clean) options.push({ name: clean, kind, source })
+  }
+  for (const entity of world.entry(campaignId).world?.entities ?? []) {
+    add(entity.name, entity.kind, 'in this world')
+  }
+  for (const name of quickNamesFor('place')) add(name, 'place', 'free text')
+  for (const name of quickNamesFor('faction')) add(name, 'faction', 'free text')
+  for (const name of splitEntries(sectionText.value.key_figures)) add(name, 'character', 'free text')
+  for (const draft of flatSeedDrafts.value) add(draft.name, draft.kind, 'shaped entry')
+  const seen = new Set<string>()
+  return options.filter((option) => {
+    const key = `${option.kind}:${normalizeSeedName(option.name)}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+})
+
+function pickerOptionsFor(kind?: FlatKind): EntityPickerOption[] {
+  return kind
+    ? entityPickerOptions.value.filter((option) => option.kind === kind)
+    : entityPickerOptions.value
+}
+
+function addFlatSeed(kind: FlatKind) {
+  const first = archetypesFor(kind)[0]
+  flatSeedDrafts.value.push({
+    id: ++flatSeedSeq,
+    kind,
+    name: '',
+    description: '',
+    archetype: first?.name,
+    dial: first?.default_dial ?? dialLevels.value[0],
+  })
+}
+
+function removeFlatSeed(id: number) {
+  flatSeedDrafts.value = flatSeedDrafts.value.filter((draft) => draft.id !== id)
+}
+
+function addFlatRelation(draft: FlatSeedDraft) {
+  draft.relations = [
+    ...(draft.relations ?? []),
+    { type: EDGE_VOCAB[0] ?? 'relationship', target_name: '' },
+  ]
+}
+
+function removeFlatRelation(draft: FlatSeedDraft, index: number) {
+  draft.relations = (draft.relations ?? []).filter((_, relationIndex) => relationIndex !== index)
+}
+
+function flatEntries(kind: FlatKind): (string | FlatSeedEntry)[] {
+  const textKey = kind === 'place' ? 'places' : 'factions'
+  const structured = flatDraftsFor(kind)
+    .filter((draft) => draft.name.trim().length > 0)
+    .map((draft) => ({
+      name: draft.name,
+      description: draft.description,
+      archetype: draft.archetype,
+      dial: draft.dial,
+      relations: draft.relations?.filter((relation) => relation.target_name?.trim()),
+    }))
+  // A shaped entry is the canonical version of a same-named quick entry.
+  // Keeping both sends a short legacy row before the dialled row and can
+  // make the validator inspect the wrong record.
+  const structuredNames = new Set(structured.map((entry) => normalizeSeedName(entry.name)))
+  const quickEntries = splitEntries(sectionText.value[textKey]).filter(
+    (name) => !structuredNames.has(normalizeSeedName(name)),
+  )
+  return [...quickEntries, ...structured]
+}
+
 /** The form as the enqueue payload — what `submit` sends and what a
- * build-in job row carries. Key figures mix legacy strings (textarea
- * lines) with entries authored in the shared sheet editor. */
+ * build-in job row carries. Flat kinds mix quick legacy strings with
+ * structured registry-backed entries; key figures mix textarea lines with
+ * entries authored in the shared sheet editor. */
 function formSeed(): BuildInPayload {
   const figures: (string | AuthoredFigureSeed)[] = splitEntries(
     sectionText.value.key_figures,
@@ -115,8 +367,8 @@ function formSeed(): BuildInPayload {
     figures.push(editor.buildFigure())
   }
   return {
-    places: splitEntries(sectionText.value.places),
-    factions: splitEntries(sectionText.value.factions),
+    places: flatEntries('place'),
+    factions: flatEntries('faction'),
     key_figures: figures,
     notes: notes.value.trim(),
   }
@@ -135,7 +387,19 @@ function figureSeed(payload: unknown): AuthoredFigureSeed | null {
 function jobSeed(payload: unknown): BuildInPayload | null {
   if (typeof payload !== 'object' || payload === null) return null
   const record = payload as Record<string, unknown>
-  const entries = (key: string): (string | AuthoredFigureSeed)[] | null => {
+  const flatEntriesFromJob = (key: string): (string | FlatSeedEntry)[] | null => {
+    const value = record[key]
+    if (!Array.isArray(value)) return null
+    return value.flatMap((entry: unknown): (string | FlatSeedEntry)[] => {
+      if (typeof entry === 'string') return [entry]
+      if (typeof entry !== 'object' || entry === null) return []
+      const flat = entry as Record<string, unknown>
+      return typeof flat['name'] === 'string' && flat['name'].trim()
+        ? [flat as unknown as FlatSeedEntry]
+        : []
+    })
+  }
+  const figureEntriesFromJob = (key: string): (string | AuthoredFigureSeed)[] | null => {
     const value = record[key]
     if (!Array.isArray(value)) return null
     return value.flatMap((entry: unknown): (string | AuthoredFigureSeed)[] => {
@@ -144,15 +408,13 @@ function jobSeed(payload: unknown): BuildInPayload | null {
       return figure ? [figure] : []
     })
   }
-  const places = entries('places')
-  const factions = entries('factions')
-  const keyFigures = entries('key_figures')
+  const places = flatEntriesFromJob('places')
+  const factions = flatEntriesFromJob('factions')
+  const keyFigures = figureEntriesFromJob('key_figures')
   const notes = record['notes']
   if (
     !places ||
-    !places.every((entry) => typeof entry === 'string') ||
     !factions ||
-    !factions.every((entry) => typeof entry === 'string') ||
     !keyFigures ||
     typeof notes !== 'string'
   )
@@ -160,7 +422,10 @@ function jobSeed(payload: unknown): BuildInPayload | null {
   return { places, factions, key_figures: keyFigures, notes }
 }
 
-function sameEntry(a: string | AuthoredFigureSeed, b: string | AuthoredFigureSeed): boolean {
+function sameEntry(
+  a: string | AuthoredFigureSeed | FlatSeedEntry,
+  b: string | AuthoredFigureSeed | FlatSeedEntry,
+): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
@@ -194,12 +459,14 @@ async function onJobMessage(message: WsMessage) {
     editorRefs.value = []
     sectionText.value = { places: '', factions: '', key_figures: '' }
     notes.value = ''
+    clearDraft()
   }
 }
 
 async function submit() {
   error.value = null
   submitting.value = true
+  saveDraft()
   try {
     await jobs.submitBuildIn(campaignId, formSeed())
   } catch (err) {
@@ -271,15 +538,30 @@ function mergeLines(result: unknown): string[] {
 </script>
 
 <template>
-  <section>
-    <h1>Guided build-in</h1>
+  <section class="mc-build-page">
+    <header class="mc-build-header">
+      <p class="mc-eyebrow">World creation</p>
+      <h1 class="mc-display-title">Guided build-in</h1>
+      <p class="mc-build-lede">
+        Give the world a few anchors. The build will connect them into a living campaign.
+      </p>
+    </header>
+
+    <ol class="mc-build-stepper" aria-label="Build stages">
+      <li class="mc-build-step-active"><span>1</span> Seed the world</li>
+      <li><span>2</span> Shape entities</li>
+      <li><span>3</span> Review the build</li>
+    </ol>
 
     <div v-if="loadError" class="card">
       <p class="error">{{ loadError }}</p>
       <RouterLink :to="{ name: 'campaigns' }" class="back">Back to your worlds</RouterLink>
     </div>
     <p v-else-if="campaigns.loading || !campaigns.current" class="muted">Loading world seed…</p>
-    <div v-else class="card seed">
+    <template v-else>
+      <div class="mc-build-layout">
+        <div class="mc-build-main">
+    <div class="card seed">
       <h2>{{ campaigns.current.title }}</h2>
       <p class="muted">{{ campaigns.current.description || 'No description.' }}</p>
       <p>
@@ -299,11 +581,105 @@ function mergeLines(result: unknown): string[] {
     </div>
   
 
-    <form class="card" @submit.prevent="submit">
-      <label v-for="section in sections" :key="section.key">
-        <span>{{ section.label }}</span>
-        <textarea v-model="sectionText[section.key]" :placeholder="section.hint" rows="3" />
-      </label>
+    <form class="card mc-build-form" @submit.prevent="submit">
+      <div v-for="section in sections" :key="section.key" class="mc-build-section">
+        <label>
+          <span>{{ section.label }}</span>
+          <textarea v-model="sectionText[section.key]" :placeholder="section.hint" rows="3" />
+        </label>
+        <p v-if="section.key === 'places' || section.key === 'factions'" class="mc-build-section-help">
+          Quick names above, or add shaped entries with an archetype and dial.
+        </p>
+        <div v-if="section.key === 'places' || section.key === 'factions'" class="mc-flat-seeds">
+          <article v-for="draft in flatDraftsFor(section.key === 'places' ? 'place' : 'faction')" :key="draft.id" class="mc-flat-seed">
+            <div class="mc-flat-seed-heading">
+              <span class="mc-card-kicker">{{ draft.kind }}</span>
+              <button type="button" class="link" @click="removeFlatSeed(draft.id)">Remove</button>
+            </div>
+            <div class="mc-flat-seed-grid">
+              <label>
+                <span>Name</span>
+                <EntityPicker
+                  v-model="draft.name"
+                  :options="pickerOptionsFor(draft.kind)"
+                  placeholder="Choose or type a name"
+                />
+              </label>
+              <label>
+                <span>Archetype</span>
+                <select v-model="draft.archetype" class="mc-seed-input">
+                  <option v-for="entry in archetypesFor(draft.kind)" :key="entry.name" :value="entry.name">
+                    {{ entry.name }}
+                  </option>
+                </select>
+              </label>
+              <label class="mc-flat-seed-description">
+                <span>Description</span>
+                <textarea v-model="draft.description" class="mc-seed-input" rows="2" placeholder="What makes it matter?" />
+              </label>
+              <label>
+                <span>Dial</span>
+                <select v-model="draft.dial" class="mc-seed-input">
+                  <option v-for="level in dialLevels" :key="level" :value="level">{{ level }}</option>
+                </select>
+              </label>
+            </div>
+            <div class="mc-flat-relations">
+              <div class="mc-flat-relations-heading">
+                <span>Relations</span>
+                <button type="button" class="link" @click="addFlatRelation(draft)">
+                  + add relation
+                </button>
+              </div>
+              <div
+                v-for="(relation, relationIndex) in draft.relations ?? []"
+                :key="relationIndex"
+                class="mc-flat-relation"
+              >
+                <select v-model="relation.type" class="mc-seed-input" aria-label="Relation type">
+                  <option
+                    v-for="type in relationTypesFor(draft, relation.target_name)"
+                    :key="type"
+                    :value="type"
+                  >
+                    {{ type }}
+                  </option>
+                </select>
+                <EntityPicker
+                  :model-value="relation.target_name ?? ''"
+                  :options="pickerOptionsFor()"
+                  aria-label="Relation target"
+                  placeholder="Choose or type a target"
+                  @update:model-value="relation.target_name = $event"
+                />
+                <input
+                  v-model.number="relation.counter"
+                  class="mc-seed-input mc-relation-counter"
+                  type="number"
+                  aria-label="Relation counter"
+                  placeholder="Counter"
+                />
+                <button
+                  type="button"
+                  class="link"
+                  :aria-label="`Remove relation ${relationIndex + 1}`"
+                  @click="removeFlatRelation(draft, relationIndex)"
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          </article>
+        </div>
+        <button
+          v-if="section.key === 'places' || section.key === 'factions'"
+          type="button"
+          class="link mc-add-flat-seed"
+          @click="addFlatSeed(section.key === 'places' ? 'place' : 'faction')"
+        >
+          + shaped {{ section.key === 'places' ? 'place' : 'faction' }}
+        </button>
+      </div>
       <div class="authored">
         <h2>Authored key figures</h2>
         <p class="muted small">
@@ -355,6 +731,27 @@ function mergeLines(result: unknown): string[] {
         Still building — your seed text stays here, and a failed build keeps it for the retry.
       </p>
     </form>
+        </div>
+
+        <aside class="mc-build-preview card" aria-labelledby="build-preview-title">
+          <p class="mc-card-kicker">Live preview</p>
+          <h2 id="build-preview-title">What this build contains</h2>
+          <p class="muted">
+            Your notes stay yours. The model uses these anchors to shape the world around them.
+          </p>
+          <ul class="mc-build-inventory">
+            <li><strong>{{ buildPreview.places }}</strong><span>places</span></li>
+            <li><strong>{{ buildPreview.factions }}</strong><span>factions</span></li>
+            <li><strong>{{ buildPreview.figures }}</strong><span>key figures</span></li>
+            <li><strong>{{ buildPreview.hasNotes ? 'On' : 'Off' }}</strong><span>free-form lore</span></li>
+          </ul>
+          <div class="mc-build-preview-note">
+            <span class="mc-build-preview-icon" aria-hidden="true">✦</span>
+            <p>Start with names and ideas. You can refine the world after the first build.</p>
+          </div>
+        </aside>
+      </div>
+    </template>
 
     <div v-if="recentJobs.length > 0" class="card job">
       <h2>Build-in jobs</h2>
@@ -393,6 +790,224 @@ function mergeLines(result: unknown): string[] {
 </template>
 
 <style scoped>
+.mc-build-header {
+  margin-bottom: 1.5rem;
+}
+.mc-eyebrow,
+.mc-card-kicker {
+  margin: 0 0 0.45rem;
+  color: var(--mc-interactive-bright);
+  font-size: var(--mc-meta-size);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.mc-build-header h1 {
+  margin: 0;
+  font-size: var(--mc-page-title-size);
+  line-height: 1.05;
+}
+.mc-build-lede {
+  max-width: 54ch;
+  margin: 0.65rem 0 0;
+  color: var(--mc-text-secondary);
+  font-size: 1.05rem;
+}
+.mc-build-stepper {
+  display: flex;
+  gap: 0;
+  margin: 0 0 1.5rem;
+  padding: 0.45rem;
+  list-style: none;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius);
+  background: rgba(14, 23, 36, 0.72);
+  overflow-x: auto;
+}
+.mc-build-stepper li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: max-content;
+  padding: 0.55rem 0.8rem;
+  color: var(--mc-text-muted);
+  font-size: 0.85rem;
+}
+.mc-build-stepper span {
+  display: grid;
+  width: 1.45rem;
+  height: 1.45rem;
+  place-items: center;
+  border: 1px solid var(--mc-border-bright);
+  border-radius: 50%;
+  font-size: 0.75rem;
+}
+.mc-build-stepper .mc-build-step-active {
+  color: var(--mc-text-primary);
+  border-radius: var(--mc-radius-sm);
+  background: rgba(139, 108, 255, 0.14);
+}
+.mc-build-stepper .mc-build-step-active span {
+  border-color: var(--mc-interactive);
+  background: var(--mc-interactive);
+  color: #fff;
+}
+.mc-build-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(250px, 0.75fr);
+  align-items: start;
+  gap: 1.25rem;
+}
+.mc-build-main,
+.mc-build-form {
+  display: grid;
+  gap: 1rem;
+}
+.mc-build-section {
+  display: grid;
+  gap: 0.45rem;
+}
+.mc-build-section-help {
+  margin: 0;
+  color: var(--mc-text-muted);
+  font-size: 0.8rem;
+}
+.mc-flat-seeds {
+  display: grid;
+  gap: 0.65rem;
+}
+.mc-flat-seed {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.8rem;
+  border: 1px solid var(--mc-border-bright);
+  border-radius: var(--mc-radius-sm);
+  background: rgba(10, 20, 33, 0.6);
+}
+.mc-flat-seed-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mc-flat-seed-heading .mc-card-kicker {
+  margin: 0;
+}
+.mc-flat-seed-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.75fr);
+  gap: 0.65rem;
+}
+.mc-flat-seed-grid label {
+  display: grid;
+  gap: 0.25rem;
+}
+.mc-flat-seed-grid label > span {
+  color: var(--mc-text-muted);
+  font-size: var(--mc-meta-size);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mc-flat-seed-description {
+  grid-column: span 2;
+}
+.mc-seed-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-input);
+  color: var(--mc-text-primary);
+}
+.mc-seed-input:focus {
+  border-color: var(--mc-interactive);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--mc-glow-violet);
+}
+.mc-add-flat-seed {
+  justify-self: start;
+}
+.mc-flat-relations {
+  display: grid;
+  gap: 0.5rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--mc-border);
+}
+.mc-flat-relations-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--mc-text-muted);
+  font-size: var(--mc-meta-size);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mc-flat-relation {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.75fr) minmax(0, 1.5fr) 6rem auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+.mc-relation-counter {
+  width: 6rem;
+}
+.mc-build-preview {
+  position: sticky;
+  top: 1rem;
+  background:
+    radial-gradient(circle at 90% 0%, rgba(139, 108, 255, 0.15), transparent 14rem),
+    var(--mc-surface);
+}
+.mc-build-preview h2 {
+  margin: 0;
+  font-family: var(--mc-display-font);
+  font-size: 1.35rem;
+}
+.mc-build-preview > .muted {
+  margin: 0.55rem 0 1.25rem;
+}
+.mc-build-inventory {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mc-build-inventory li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.7rem;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-sm);
+  background: rgba(10, 20, 33, 0.65);
+}
+.mc-build-inventory strong {
+  color: var(--mc-interactive-bright);
+  font-size: 1.35rem;
+}
+.mc-build-inventory span {
+  color: var(--mc-text-muted);
+  font-size: var(--mc-meta-size);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mc-build-preview-note {
+  display: flex;
+  gap: 0.65rem;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--mc-border);
+  color: var(--mc-text-secondary);
+  font-size: 0.85rem;
+}
+.mc-build-preview-note p {
+  margin: 0;
+}
+.mc-build-preview-icon {
+  color: var(--mc-warning);
+}
 .seed h2 {
   margin-top: 0;
 }
@@ -458,5 +1073,25 @@ textarea {
   border-top: 1px solid #2c3038;
   margin-top: 0.75rem;
   padding-top: 0.75rem;
+}
+@media (max-width: 760px) {
+  .mc-build-layout {
+    grid-template-columns: 1fr;
+  }
+  .mc-build-preview {
+    position: static;
+  }
+  .mc-flat-seed-grid {
+    grid-template-columns: 1fr;
+  }
+  .mc-flat-seed-description {
+    grid-column: auto;
+  }
+  .mc-flat-relation {
+    grid-template-columns: 1fr 1fr;
+  }
+  .mc-flat-relation .mc-relation-counter {
+    width: auto;
+  }
 }
 </style>

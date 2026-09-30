@@ -21,8 +21,8 @@ interface CardData {
   node: GraphRenderNode
   focused: boolean
   dimmed: boolean
-  outHandles: Array<{ edgeId: string; pct: number }>
-  inHandles: Array<{ edgeId: string; pct: number }>
+  outHandles: Array<{ edgeId: string; pct: number; position: Position }>
+  inHandles: Array<{ edgeId: string; pct: number; position: Position }>
 }
 
 const props = defineProps<NodeProps & { data: CardData }>()
@@ -50,8 +50,8 @@ function activate() {
     :style="{
       width: `${GRAPH_NODE_WIDTH}px`,
       height: `${GRAPH_NODE_HEIGHT}px`,
-      borderColor: card.focused ? '#b45309' : style.color,
-      boxShadow: card.focused ? '0 0 14px rgba(245, 158, 11, 0.35)' : undefined,
+      borderColor: card.focused ? 'var(--mc-warning)' : style.color,
+      boxShadow: card.focused ? '0 0 14px rgba(231, 184, 102, 0.35)' : undefined,
     }"
     role="button"
     tabindex="0"
@@ -79,8 +79,8 @@ function activate() {
       :id="`out-${h.edgeId}`"
       :key="`out-${h.edgeId}`"
       type="source"
-      :position="Position.Right"
-      :style="{ top: `${h.pct}%` }"
+      :position="h.position"
+      :style="{ ...(h.position === Position.Left || h.position === Position.Right ? { top: `${h.pct}%` } : { left: `${h.pct}%` }) }"
       class="graph-handle"
     />
     <Handle
@@ -88,8 +88,8 @@ function activate() {
       :id="`in-${h.edgeId}`"
       :key="`in-${h.edgeId}`"
       type="target"
-      :position="Position.Left"
-      :style="{ top: `${h.pct}%` }"
+      :position="h.position"
+      :style="{ ...(h.position === Position.Left || h.position === Position.Right ? { top: `${h.pct}%` } : { left: `${h.pct}%` }) }"
       class="graph-handle"
     />
   </div>
@@ -102,11 +102,11 @@ function activate() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: #ffffff;
-  border: 1.3px solid #d8dbe0;
+  background: var(--mc-surface-raised);
+  border: 1.3px solid var(--mc-border-bright);
   border-radius: 10px;
   font: 600 13px/1.3 system-ui, -apple-system, 'Segoe UI', sans-serif;
-  color: #1c2330;
+  color: var(--mc-text-primary);
   cursor: pointer;
   box-sizing: border-box;
   padding: 10px 8px 8px;
@@ -128,7 +128,7 @@ function activate() {
   height: 132px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  background: rgba(245, 158, 11, 0.13);
+  background: rgba(231, 184, 102, 0.16);
   pointer-events: none;
   z-index: -1;
 }
@@ -141,8 +141,8 @@ function activate() {
   height: 24px;
   border-radius: 50%;
   object-fit: cover;
-  border: 1px solid #d8dbe0;
-  background: #fff;
+  border: 1px solid var(--mc-border-bright);
+  background: var(--mc-surface);
 }
 .graph-node .avatar.initial {
   display: grid;

@@ -1,0 +1,53 @@
+[build_in]
+kind_contract = """
+PER-KIND RECORD CONTRACT
+Characters use the full character record and stat-block contract already supplied below.
+Places and factions are different kinds and MUST NOT receive character stat blocks.
+
+PLACE RECORD: data carries the generated/authored sections `description`, `inhabitants`,
+and `whats_hidden`. The entity text is the short description projection. Keep the
+entity kind `place` and preserve any DM-authored values verbatim.
+
+FACTION RECORD: data carries the generated/authored sections `description`, `doctrine`,
+and `assets`. The entity text is the short description projection. Keep the entity kind
+`faction` and preserve any DM-authored values verbatim.
+
+Relations are typed edges in the outer `edges` array and are wired by the pipeline when
+the DM declares them. Do not invent a character stat block for a place or faction.
+"""
+dial_contract = """
+GENERATION DIAL
+Each structured seed may carry its own dial: nothing, draft, simple, important, or
+pillar. The dial applies to that entity only and must be copied into data.dial.
+Every place and faction keeps its complete section set at every dial level; the dial
+changes elaboration only. `nothing` is concise essentials, `draft` is a short usable
+paragraph per section, `simple` is grounded detail, `important` is deep named detail,
+and `pillar` is dense setting-defining detail. A DM-authored non-blank field is ground
+truth at every dial and must not be paraphrased or replaced. Generated fields must meet
+the backend's dial-specific minimum detail floor: nothing 1+ word, draft 8+ words,
+simple 16+ words, important 28+ words, pillar 45+ words.
+"""
+seed_controls = """
+PINNED SEED CONTROLS
+If a seed gives an archetype, copy it into data.archetype. If it gives a dial, copy it
+into data.dial. These are per-entity controls, not build-wide settings.
+"""
+
+[generate]
+contract = """
+Generate candidates of the requested kind: character, place, or faction. Each kind
+has its own required fields. Follow only the kind-specific output contract below;
+character identity and stat-block fields do not apply to places or factions.
+"""
+
+[regenerate]
+contract = """
+Character regeneration accepts full AR24 character records and may regenerate only
+their closed character section set. Place and faction regeneration is enrichment, not
+character generation: use the kind-specific section set below and never add a stat
+block. For a place regenerate `description`, `inhabitants`, and `whats_hidden`; for a
+faction regenerate `description`, `doctrine`, and `assets`. Preserve all unrequested
+keys exactly, keep the entity kind, and return every requested section as a non-blank
+string. The active per-entity dial controls the minimum detail required for each
+requested section.
+"""

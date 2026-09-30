@@ -14,6 +14,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import EntityStatBlock from '../components/ui/EntityStatBlock.vue'
+import EntityMediaActions from '../components/ui/EntityMediaActions.vue'
 
 import VueFlowGraph from '../components/graph/VueFlowGraph.vue'
 import { avatarInitial, buildWorldGraph } from '../components/graph/graphModel'
@@ -30,7 +31,7 @@ import KnowledgeChip from '../components/ui/KnowledgeChip.vue'
 import SectionHeader from '../components/ui/SectionHeader.vue'
 import StatusBadge from '../components/ui/StatusBadge.vue'
 import VerbRow from '../components/ui/VerbRow.vue'
-import { REGEN_SECTIONS, asString, edgeLabel } from '../components/profile/profile'
+import { asString, edgeLabel, regenSectionsForKind } from '../components/profile/profile'
 import { useCampaignsStore } from '../stores/campaigns'
 import { useJobsStore } from '../stores/jobs'
 import { useTonightStore } from '../stores/tonight'
@@ -58,6 +59,11 @@ const regenQueued = ref(false)
 const regenWhole = ref(true)
 const regenSections = ref<Set<string>>(new Set())
 
+const regenLabel = computed(() => {
+  const kind = entity.value?.kind ?? 'character'
+  return kind === 'character' ? 'character' : kind
+})
+
 function selectWhole() {
   regenWhole.value = true
   regenSections.value = new Set()
@@ -77,8 +83,17 @@ function toggleRegenSection(section: string) {
 async function queueRegenerate() {
   regenError.value = null
   regenBusy.value = true
-  const sections =
-    regenWhole.value || regenSections.value.size === 0 ? null : [...regenSections.value].sort()
+  const currentKind = entity.value?.kind ?? 'character'
+  const isFlatEntity = currentKind === 'place' || currentKind === 'faction'
+  // Flat records have no AR24 character profile. They must always send their
+  // closed field set explicitly, including when the user chooses Whole.
+  const sections = isFlatEntity
+    ? regenWhole.value || regenSections.value.size === 0
+      ? [...regenSectionsForKind(currentKind)]
+      : [...regenSections.value].sort()
+    : regenWhole.value || regenSections.value.size === 0
+      ? null
+      : [...regenSections.value].sort()
   try {
     await jobs.submitRegenerate(campaignId, { kind: 'entity', id: entityId }, sections, {
       dial: regenDial.value,
@@ -149,6 +164,24 @@ const titleMeta = computed(() => {
   ].filter(Boolean)
   return parts.join(' · ')
 })
+
+const flatFields = computed(() => {
+  if (entity.value?.kind === 'place') {
+    return ['inhabitants', 'whats_hidden']
+  }
+  if (entity.value?.kind === 'faction') {
+    return ['doctrine', 'assets']
+  }
+  return []
+})
+
+const populatedFlatFields = computed(() =>
+  flatFields.value.filter((field) => Boolean(asString(data.value[field]))),
+)
+
+function flatFieldLabel(key: string): string {
+  return key.replaceAll('_', ' ')
+}
 
 const touching = computed<EdgeExport[]>(
   () => entry.value.world?.edges.filter((e) => e.src === entityId || e.dst === entityId) ?? [],
@@ -352,7 +385,7 @@ async function createEdge(edge: {
 </script>
 
 <template>
-  <div>
+  <div class="mc-entity-page">
     <p class="mc-muted">
       <RouterLink :to="{ name: 'overview', params: { id: campaignId } }" class="mc-link">
         ← {{ campaigns.current?.title ?? 'World' }}
@@ -382,7 +415,7 @@ async function createEdge(edge: {
         <div v-else class="mc-entity-hero-portrait mc-entity-hero-fallback" aria-hidden="true">
           {{ entity.name.charAt(0).toUpperCase() }}
         </div>
-        <div>
+        <div class="mc-entity-hero-copy">
           <StatusBadge variant="canon">Canon</StatusBadge>
           <h1 class="mc-entity-hero-name">{{ entity.name }}</h1>
           <p v-if="titleMeta" class="mc-entity-hero-meta">{{ titleMeta }}</p>
@@ -412,10 +445,10 @@ async function createEdge(edge: {
                 :class="{ 'mc-regen-chip-active': regenWhole }"
                 @click="selectWhole"
               >
-                Whole character
+                Whole {{ regenLabel }}
               </button>
               <button
-                v-for="section in REGEN_SECTIONS"
+                v-for="section in regenSectionsForKind(entity.kind)"
                 :key="section"
                 type="button"
                 class="mc-regen-chip"
@@ -467,6 +500,8 @@ async function createEdge(edge: {
         </div>
       </header>
 
+      <EntityMediaActions :campaign-id="campaignId" :entity="entity" />
+
       <template v-if="editMode">
         <SectionHeader title="Edit" meta="one revision per save" />
         <p v-if="editError" class="mc-action-error" role="alert">{{ editError }}</p>
@@ -483,6 +518,16 @@ async function createEdge(edge: {
         <section v-if="entity.text">
           <SectionHeader title="Description" />
           <p class="mc-body">{{ entity.text }}</p>
+        </section>
+
+        <section v-if="populatedFlatFields.length > 0">
+          <SectionHeader title="Details" meta="world record" />
+          <dl class="mc-facts mc-flat-facts">
+            <div v-for="field in populatedFlatFields" :key="field">
+              <dt>{{ flatFieldLabel(field) }}</dt>
+              <dd>{{ asString(data[field]) }}</dd>
+            </div>
+          </dl>
         </section>
 
         <section v-if="asString(data['appearance'])">
@@ -706,7 +751,14 @@ async function createEdge(edge: {
   display: flex;
   gap: 1.5rem;
   align-items: flex-start;
-  margin: 1rem 0 0.5rem;
+  margin: 1rem 0 2rem;
+  padding: 1.25rem;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius);
+  background:
+    radial-gradient(circle at 20% 15%, rgba(139, 108, 255, 0.11), transparent 17rem),
+    linear-gradient(135deg, rgba(19, 30, 46, 0.92), rgba(10, 18, 30, 0.72));
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.16);
 }
 .mc-facts {
   display: grid;
@@ -730,6 +782,12 @@ async function createEdge(edge: {
   margin: 0.25rem 0 0;
   line-height: 1.5;
 }
+.mc-flat-facts {
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+.mc-flat-facts dd {
+  color: var(--mc-text-secondary);
+}
 .mc-catchphrases {
   font-style: italic;
   color: var(--mc-text-secondary);
@@ -740,7 +798,7 @@ async function createEdge(edge: {
   object-fit: cover;
   border-radius: var(--mc-radius);
   border: 1px solid var(--mc-border);
-  background: var(--mc-surface);
+  background: var(--mc-surface-raised);
   flex: none;
 }
 .mc-entity-hero-fallback {
@@ -748,11 +806,17 @@ async function createEdge(edge: {
   align-items: center;
   justify-content: center;
   font-size: 3rem;
-  color: var(--mc-text-muted);
+  color: var(--mc-interactive-bright);
+  font-family: var(--mc-display-font);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(139, 108, 255, 0.28), transparent 34%),
+    linear-gradient(145deg, #17253a, #0b1320);
 }
 .mc-entity-hero-name {
   margin: 0.5rem 0 0;
   font-size: var(--mc-page-title-size);
+  line-height: 1.05;
+  font-family: var(--mc-display-font);
 }
 .mc-entity-hero-meta {
   margin: 0.35rem 0 0;
@@ -763,6 +827,7 @@ async function createEdge(edge: {
 }
 .mc-entity-hero-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--mc-gap-sm);
   margin: 1rem 0 0;
 }
@@ -770,6 +835,9 @@ async function createEdge(edge: {
   font-size: var(--mc-body-size);
   line-height: 1.6;
   max-width: 65ch;
+}
+.mc-entity-page > section {
+  margin-top: 2rem;
 }
 .mc-story-grid {
   display: grid;
@@ -821,6 +889,16 @@ async function createEdge(edge: {
   background: var(--mc-surface);
   border: 1px solid var(--mc-border);
   border-radius: var(--mc-radius-sm);
+}
+@media (max-width: 620px) {
+  .mc-entity-hero {
+    flex-direction: column;
+    padding: 1rem;
+  }
+  .mc-entity-hero-portrait {
+    width: 100%;
+    height: min(54vw, 220px);
+  }
 }
 .mc-edge-composer-title {
   margin: 0 0 0.6rem;

@@ -22,11 +22,14 @@ defineProps<{ title: string; meta?: string }>()
   align-items: baseline;
   gap: var(--mc-gap);
   margin: 1.5rem 0 0.75rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid rgba(36, 52, 74, 0.72);
 }
 .mc-section-title {
   margin: 0;
   font-size: var(--mc-section-title-size);
   font-weight: 600;
+  letter-spacing: 0.01em;
 }
 .mc-section-meta {
   margin: 0.25rem 0 0;

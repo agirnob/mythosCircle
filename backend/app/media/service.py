@@ -49,7 +49,7 @@ from app.store import (
     prune_entity_media,
     report_progress,
 )
-from app.store.candidates import BOSS_FIELDS, BOSS_ROLES
+from app.store.candidates import BOSS_ROLES
 from app.store.db import session_scope
 
 logger = logging.getLogger(__name__)
@@ -103,17 +103,12 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 #: twin: bytes 4-8 of every ISO-BMFF file carry the ``ftyp`` box type.
 MP4_SIGNATURE = b"ftyp"
 
-#: The AR24 boss-section keys the reveal prompt may join — the conditional
-#: boss block's own field list (AR24), so the video prompt is a projection
-#: of exactly the documented boss fields, never free text.
-BOSS_PROMPT_KEYS: tuple[str, ...] = BOSS_FIELDS
-
-#: The reveal framing appended to every bbeg prompt (spec-4.2 Design
-#: Notes): a pipeline constant with the same standing as the stat-block
-#: rules text — never user-supplied, never free text.
+#: The movement and camera direction appended to the committed appearance.
 REVEAL_FRAMING = (
-    "slow cinematic BBEG reveal: one dramatic shot establishing the "
-    "character's menace, presence, and scale"
+    "Slow cinematic character reveal. Begin in shadow, then gently reveal "
+    "the face and distinctive features with a gradual camera move. "
+    "Keep the character's appearance consistent with the source portrait. "
+    "One continuous shot, subtle motion, no cuts, text, or other characters."
 )
 
 
@@ -279,38 +274,16 @@ def bbeg_video_prompt(data: Any) -> str | None:
     """The reveal-video prompt for a committed boss-tier entity — or None
     when it cannot produce one (the run-fail / enqueue-422 condition).
 
-    ``data`` is the entity's committed AR24 record: the prompt joins the
-    ``appearance_prompt(...)`` output, the boss section's non-blank
-    values (``key: value`` lines), and an identity line
-    (``name — role``), then appends the pipeline's ``REVEAL_FRAMING``
-    constant. Missing/blank appearance or a missing/blank boss section —
-    no non-blank documented value — yields None. Shared by the enqueue
-    validator (store.jobs) and the runner, so the enqueue-time gate and
-    the run-time check can never disagree (the ``appearance_prompt``
-    pattern).
+    Only the appearance projection and reveal direction reach the video
+    provider. The boss-tier role is checked by the enqueue validator and
+    runner; combat data and identity never enter this prompt.
     """
     if not isinstance(data, dict):
         return None
     appearance = appearance_prompt(data.get("appearance"))
     if appearance is None:
         return None
-    boss = data.get("boss")
-    if not isinstance(boss, dict):
-        return None
-    boss_lines: list[str] = []
-    for key in BOSS_PROMPT_KEYS:
-        value = boss.get(key)
-        if isinstance(value, str) and value.strip():
-            boss_lines.append(f"{key}: {value.strip()}")
-    if not boss_lines:
-        return None
-    name = data.get("name")
-    role = data.get("role")
-    parts = [appearance, *boss_lines]
-    if isinstance(name, str) and name.strip() and isinstance(role, str) and role.strip():
-        parts.append(f"{name.strip()} — {role.strip()}")
-    parts.append(REVEAL_FRAMING)
-    return "\n".join(parts)
+    return f"{appearance}\n{REVEAL_FRAMING}"
 
 
 def run_portrait(
@@ -328,7 +301,7 @@ def run_portrait(
     guarded provider call (``background="transparent"`` routes through
     the rembg workflow by passing ``use_rembg`` on the call — the video
     runner's ``first_frame`` pattern) -> atomic file write ->
-    ``add_media`` row -> ``complete_job`` with ``{entity_id, filename}``.
+    ``add_media`` row -> ``complete_job`` with ``{entity_id, filename, prompt}``.
     Every failure propagates so the worker fails the job; no file/row is
     left behind by a failing run.
     """
@@ -468,7 +441,6 @@ def run_video(
     if data.get("role") not in BOSS_ROLES:
         # Run-time mirror of the enqueue gate's NOT_BOSS row: the job may
         # have queued while the DM demoted the entity, and a demotion
-        # that leaves boss data in place would still yield a prompt —
         # a clip for a non-boss is the wrong output, so fail cleanly.
         raise JobPayloadError(f"video: entity {entity_id} is no longer boss-tier (BBEG or Monster)")
     if supplied_prompt is not None:
@@ -483,7 +455,7 @@ def run_video(
             # The source-frame gate still applies with a supplied prompt
             # (spec-4.6 frozen): a reveal clip needs the entity's
             # source-frame appearance even when the DM owns the prompt
-            # text — only the boss-section projection is relaxed.
+            # text.
             raise JobPayloadError(
                 f"video: entity {entity_id} has no non-blank AR24 appearance — "
                 "a reveal needs a source-frame description even with a supplied prompt"
@@ -496,7 +468,7 @@ def run_video(
         if built is None:
             raise JobPayloadError(
                 f"video: entity {entity_id} has no usable reveal prompt — "
-                "a boss-tier reveal needs a non-blank AR24 appearance and boss section"
+                "add a non-blank appearance to render this reveal"
             )
         prompt = built
     first_frame: str | None = None
@@ -542,7 +514,7 @@ def run_video(
     # dangles over a missing file), then the manifest row through the
     # store (AD-1), then the terminal job write.
     _persist_media_output(
-        job, media_dir=media_dir, entity_id=entity_id, data=video_bytes, kind="video"
+        job, media_dir=media_dir, entity_id=entity_id, data=video_bytes, kind="video", prompt=prompt
     )
 
 
@@ -561,6 +533,7 @@ def _persist_media_output(
     entity_id: str,
     data: bytes,
     kind: str,
+    prompt: str | None = None,
 ) -> None:
     """The run_portrait/run_video shared write tail (epic-4 retro item
     12): atomic file write (temp + rename, file-before-row), the
@@ -627,7 +600,10 @@ def _persist_media_output(
         )
     try:
         report_progress(job.id, 1.0)
-        complete_job(job.id, result={"entity_id": entity_id, "filename": filename})
+        result = {"entity_id": entity_id, "filename": filename}
+        if kind == "video" and prompt is not None:
+            result["prompt"] = prompt
+        complete_job(job.id, result=result)
     except JobStateConflictError:
         # A cancel raced the terminal write: the file+row stay — the
         # artifact is real content with its file present (no dangling
@@ -635,36 +611,22 @@ def _persist_media_output(
         raise
 
 
-#: The MiniMax-H3 video-prompt writing guide ships in-repo (spec-4.6):
-#: loaded into the draft instruction VERBATIM (Ask-First 2 answer: full
-#: embed, no distillation) — never edited by code, only read into a
-#: prompt. The deploy-contract test pins its existence + non-empty.
-VIDEO_PROMPT_GUIDE_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "deploy"
-    / "guides"
-    / "VIDEO_PROMPT_WRITING_GUIDE_base_en.md"
-)
-
-
 def run_video_prompt(
     job: models.Job,
     llm: ChatCompletion,
     settings: LLMSettings,
 ) -> None:
-    """Draft a MiniMax-H3 I2VA reveal prompt for the job's boss entity
-    (spec-4.6).
+    """Draft a concise reveal prompt for the job's boss entity.
 
     The ``run_portrait`` discipline mirrored, but the prompt IS the
     output: payload contract (``{"entity_id": <ULID>}``) -> run-time
-    entity re-read -> boss-tier gate -> non-blank appearance gate (an
-    I2VA draft needs the source-frame description) -> the writing guide
-    loaded from its in-repo path -> one budget-guarded LLM call ->
-    non-blank result -> ``complete_job`` with ``{entity_id, prompt}``.
-    A draft is a job result the DM reviews/edits before any render —
-    never a media row, never a world-state write (AD-1); no file is
-    written. Every failure propagates so the worker fails the job; no
-    draft, no leftover.
+    entity re-read -> boss-tier gate -> non-blank appearance gate (a
+    reveal draft needs the source-frame description) -> one budget-guarded
+    LLM call -> non-blank result -> ``complete_job`` with ``{entity_id,
+    prompt}``. If the text model cannot be reached, use the same
+    appearance-based prompt as direct video rendering. A draft is a job
+    result the DM reviews/edits before any render — never a media row or
+    world-state write (AD-1); no file is written.
     """
     payload = job.payload
     if (
@@ -694,43 +656,41 @@ def run_video_prompt(
         )
     appearance = appearance_prompt(data.get("appearance"))
     if appearance is None:
-        # A MiniMax-I2VA draft needs the source-frame description: the
-        # entity's non-blank appearance must anchor the prompt's Picture 1
-        # alignment (matrix row DRAFT_NO_SOURCE).
+        # A reveal draft must stay anchored to the character's appearance.
         raise JobPayloadError(
             f"video prompt: entity {entity_id} has no non-blank AR24 appearance — "
-            "an I2VA draft needs a source-frame description"
+            "a reveal draft needs a source-frame description"
         )
 
-    try:
-        guide = VIDEO_PROMPT_GUIDE_PATH.read_text(encoding="utf-8")
-    except OSError as exc:
-        # The guide ships in-repo and is pinned by the deploy-contract
-        # test; a read failure is a deployment defect, never a silent
-        # prompt without the guide.
-        raise JobPayloadError(f"video prompt generation failed: guide unreadable: {exc}") from exc
-
-    instruction = _video_prompt_draft_instruction(data, appearance, guide)
+    instruction = _video_prompt_draft_instruction(appearance)
     budget = CallBudget(job)
 
     # Cancel-race poll (the build_in/generate/portrait pattern): a cancel
     # landing between claim and the provider call is a no-op.
     if not _job_still_running(job):
         return
+    fallback_used = False
     try:
         draft = budget.call(lambda: llm(instruction, settings=settings))
     except BudgetExceededError:
         raise
     except ProviderError as exc:
-        # The draft job's user-facing error vocabulary — "llm call
-        # failed" would be a lie for a video-prompt draft (worker
-        # _error_message speaks the LLM dialect; the media runner owns
-        # its own).
-        raise JobPayloadError(f"video prompt generation failed: {exc}") from exc
+        if exc.kind == "connection":
+            # Video rendering only needs the committed appearance and the
+            # portrait. A local video model may be running while the text
+            # model is unloaded, so keep the draft/edit flow usable.
+            logger.warning("text model unavailable for reveal prompt; using appearance draft")
+            draft = f"{appearance}\n{REVEAL_FRAMING}"
+            fallback_used = True
+        else:
+            raise JobPayloadError(f"video prompt generation failed: {exc}") from exc
     if not draft.strip():
         raise JobPayloadError("video prompt generation returned a blank draft")
     try:
-        complete_job(job.id, result={"entity_id": entity_id, "prompt": draft})
+        result = {"entity_id": entity_id, "prompt": draft}
+        if fallback_used:
+            result["source"] = "appearance_fallback"
+        complete_job(job.id, result=result)
     except JobStateConflictError:
         # A cancel raced the terminal write: a draft is just a job
         # result — nothing to clean up, and the cancelled job simply
@@ -738,60 +698,17 @@ def run_video_prompt(
         raise
 
 
-def _video_prompt_draft_instruction(data: dict[str, Any], appearance: str, guide: str) -> str:
-    """The single-prompt draft instruction: the writing guide verbatim
-    plus the entity's committed projections, closing with the I2VA
-    compliance demand (spec-4.6 Design Notes).
-
-    ``data`` is the committed AR24 record; ``appearance`` the already-
-    checked non-blank appearance projection (the runner computes it once
-    for the gate and reuses it here — the instruction must not repeat
-    the projection logic). The I2VA compliance demand is the guardrail
-    against the hallucinated-dialogue failure: the draft MUST lead with
-    the guide's Picture-1 alignment line and carry the three core
-    fields, with ``N/A`` for silence.
-    """
-    parts: list[str] = [
-        "You are writing the video prompt for a MiniMax-H3 image-to-video "
-        "generation: a slow cinematic BBEG reveal clip from the entity's "
-        "portrait. Follow the writing guide EXACTLY. Your prompt MUST: "
-        "(1) open with the guide's I2VA picture-alignment instruction; "
-        "(2) carry the three core fields `integrated_multimodal_description`, "
-        "`overall_soundscape`, `non_diegetic_music`; (3) use `overall_soundscape: N/A` "
-        "and `non_diegetic_music: N/A` when the scene is silent — never invent "
-        "dialogue, singing, or music the character would not have. "
-        "Committed character data:",
-        "",
-    ]
-    name = data.get("name")
-    role = data.get("role")
-    if isinstance(name, str) and name.strip() and isinstance(role, str) and role.strip():
-        parts.append(f"name — role: {name.strip()} — {role.strip()}")
-    parts.append(f"appearance: {appearance}")
-    boss = data.get("boss")
-    if isinstance(boss, dict):
-        boss_lines: list[str] = []
-        for key in BOSS_PROMPT_KEYS:
-            value = boss.get(key)
-            if isinstance(value, str) and value.strip():
-                boss_lines.append(f"{key}: {value.strip()}")
-        if boss_lines:
-            parts.append("boss: " + " | ".join(boss_lines))
-    for key in ("background", "goals"):
-        value = data.get(key)
-        if isinstance(value, str) and value.strip():
-            parts.append(f"{key}: {value.strip()}")
-    parts.extend(
-        [
-            "",
-            "THE WRITING GUIDE (verbatim, follow it exactly):",
-            "-----",
-            guide,
-            "-----",
-            "Emit ONLY the I2VA prompt itself — nothing else, no commentary, no markdown fences.",
-        ]
+def _video_prompt_draft_instruction(appearance: str) -> str:
+    """Ask for a short reveal prompt grounded only in committed appearance."""
+    return (
+        "Write a concise image-to-video prompt for a slow cinematic character reveal. "
+        "Use only the appearance below for character details and keep the source "
+        "portrait consistent. Reveal the character gradually in one continuous "
+        "shot with a subtle camera move. Do not add identity, backstory, combat "
+        "abilities, other characters, dialogue, music, captions, or extra lore. "
+        "Return only the video prompt in two sentences at most.\n\n"
+        f"Appearance:\n{appearance}"
     )
-    return "\n".join(parts)
 
 
 def _job_still_running(job: models.Job) -> bool:

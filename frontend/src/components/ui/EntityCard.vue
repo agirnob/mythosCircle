@@ -24,6 +24,7 @@ defineProps<{
       <p v-if="meta" class="mc-entity-meta">{{ meta }}</p>
       <p v-if="description" class="mc-entity-description">{{ description }}</p>
       <p v-if="relationInfo" class="mc-entity-relations">{{ relationInfo }}</p>
+      <slot />
       <div class="mc-entity-footer">
         <span class="mc-entity-primary">
           <slot name="primary" />
@@ -38,12 +39,20 @@ defineProps<{
 
 <style scoped>
 .mc-entity-card {
-  background: var(--mc-surface);
+  position: relative;
+  background: linear-gradient(160deg, rgba(19, 30, 46, 0.96), rgba(10, 18, 30, 0.96));
   border: 1px solid var(--mc-border);
   border-radius: var(--mc-radius);
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.14);
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+.mc-entity-card:hover {
+  border-color: var(--mc-border-bright);
+  transform: translateY(-2px);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.25), 0 0 28px rgba(139, 108, 255, 0.08);
 }
 .mc-entity-portrait {
   width: 100%;
@@ -56,7 +65,12 @@ defineProps<{
   align-items: center;
   justify-content: center;
   font-size: 2.5rem;
-  color: var(--mc-text-muted);
+  color: var(--mc-interactive-bright);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(139, 108, 255, 0.25), transparent 32%),
+    linear-gradient(145deg, #17253a, #0b1320);
+  font-family: var(--mc-display-font);
+  font-size: 3rem;
 }
 .mc-entity-body {
   padding: 0.9rem 1rem 1rem;

@@ -105,6 +105,7 @@ export const SRD_SKILLS: readonly string[] = [
 export const EDGE_KIND_RULES: Record<string, { src?: ReadonlySet<string>; dst?: ReadonlySet<string> }> = {
   located_in: { dst: new Set(['place']) },
   member_of: { src: new Set(['character', 'faction']), dst: new Set(['character', 'faction']) },
+  part_of: { src: new Set(['place', 'faction']), dst: new Set(['place', 'faction']) },
   loyalty: { src: new Set(['character', 'faction']), dst: new Set(['character', 'faction']) },
   bases_at: { src: new Set(['character', 'faction']), dst: new Set(['place']) },
   hails_from: { src: new Set(['character', 'faction']), dst: new Set(['place']) },

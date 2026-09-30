@@ -1570,7 +1570,7 @@ describe('WorldView', () => {
     expect(revealVideoButton(wrapper)).toBeDefined()
     // The valid-boss enabled state is a load-bearing pin: every other
     // video button test asserts disabled, so only this one catches a
-    // hasVideoPrompt/videoPromptFor regression that permanently disables
+    // appearance gate regression that permanently disables
     // the feature.
     expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeUndefined()
     expect(draftPromptButton(wrapper)).toBeDefined()
@@ -1623,14 +1623,12 @@ describe('WorldView', () => {
     wrapper.unmount()
   })
 
-  it('reveal video: a boss card without a usable prompt gets a disabled render button, but can draft', async () => {
+  it('reveal video: a boss card can render from appearance alone', async () => {
     stubVideoApi(bossWorld({ boss: { lair_actions: '   ' } }), { media: [] })
     const wrapper = mountView()
     await flushPromises()
-    expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeDefined()
-    // The two-phase flow needs only a boss-tier role + appearance to
-    // draft — the spec-4.6 point is that the DM drafts BEFORE a good boss
-    // section exists, so the draft button stays live.
+    expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeUndefined()
+    // Drafting stays optional when the boss section is incomplete.
     expect(draftPromptButton(wrapper)?.attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
@@ -1736,8 +1734,7 @@ describe('WorldView', () => {
     const textarea = revealPromptTextarea(wrapper)
     expect(textarea.exists()).toBe(true)
     expect((textarea.element as HTMLTextAreaElement).value).toBe(draft)
-    // A boss with NO boss section can now render — the draft IS the prompt
-    // source; the old bbeg gate is relaxed by the supplied prompt.
+    // A draft can still override the appearance-based automatic prompt.
     expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })

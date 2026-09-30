@@ -1,4 +1,4 @@
-"""Portrait media REST surface (spec-4.1, AD-10; spec-5.2 signed URLs).
+"""Media REST surface (spec-4.1, AD-10; spec-5.2 signed URLs).
 
 Authed, owner-only READ surface over the media manifest: the campaign's
 manifest list and the per-file image GET. Every read is ownership-404-
@@ -27,6 +27,10 @@ store owns the rows). The image file is served from
 ``media_dir/{campaign_id}/{entity_id}/{filename}`` over the same-origin
 session cookie (the cookie's path is ``/api``, so ``<img>`` GETs
 authenticate like any other API read).
+
+The reveal-prompt preview reads the committed character and returns the
+same appearance-based text the video runner would build automatically.
+The UI submits that visible text as an explicit video-job prompt.
 """
 
 import hashlib
@@ -46,15 +50,18 @@ from app.api.auth import COOKIE_NAME, get_current_account
 from app.api.common import store_error_as_http
 from app.core.config import DEFAULT_BASE_URL
 from app.core.settings import configured_base_url, configured_media_dir, media_url_secret
-from app.media.service import reclaim_media_file
+from app.media.service import bbeg_video_prompt, reclaim_media_file
 from app.store import (
+    BOSS_ROLES,
     MediaNotFoundError,
     StoreError,
     delete_one_media,
+    entity_for_campaign,
     get_campaign,
     get_media_file,
     list_media,
     models,
+    session_scope,
 )
 from app.store.auth import get_session_account
 
@@ -80,6 +87,12 @@ class MediaListResponse(BaseModel):
     """The campaign's media manifest, rowid (insertion) order."""
 
     media: list[MediaResponse]
+
+
+class RevealPromptResponse(BaseModel):
+    """The exact appearance-based prompt available for a reveal render."""
+
+    prompt: str
 
 
 def _media_response(row: models.Media) -> MediaResponse:
@@ -109,6 +122,33 @@ def list_campaign_media(
     except StoreError as exc:
         store_error_as_http(exc)
     return MediaListResponse(media=[_media_response(row) for row in rows])
+
+
+@router.get(
+    "/api/campaigns/{campaign_id}/entities/{entity_id}/reveal-prompt",
+    response_model=RevealPromptResponse,
+)
+def reveal_prompt_preview(
+    campaign_id: str,
+    entity_id: str,
+    current: Annotated[models.Account, Depends(get_current_account)],
+) -> RevealPromptResponse:
+    """Preview the canonical automatic prompt without enqueuing a job."""
+    if get_campaign(current.id, campaign_id) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    with session_scope() as session:
+        entity = entity_for_campaign(session, campaign_id, entity_id)
+        if entity is None:
+            raise HTTPException(status_code=404, detail="Entity not found.")
+        data = entity.data or {}
+    if data.get("role") not in BOSS_ROLES:
+        raise HTTPException(status_code=422, detail="A reveal video needs a BBEG or Monster.")
+    prompt = bbeg_video_prompt(data)
+    if prompt is None:
+        raise HTTPException(
+            status_code=422, detail="Add an appearance before rendering a reveal video."
+        )
+    return RevealPromptResponse(prompt=prompt)
 
 
 @router.delete(

@@ -428,19 +428,7 @@ def test_enqueue_video_not_boss_is_422(world: str) -> None:
     "data",
     [
         {"name": "V", "role": "BBEG"},  # no appearance, no boss
-        {"name": "V", "role": "BBEG", "appearance": {"face": "iron"}},  # no boss
-        {  # boss present but blank
-            "name": "V",
-            "role": "Monster",
-            "appearance": {"face": "iron"},
-            "boss": {"lair_actions": "   "},
-        },
-        {  # boss present but only unknown keys (never prompt sources)
-            "name": "V",
-            "role": "Monster",
-            "appearance": {"face": "iron"},
-            "boss": {"custom_bit": "free text"},
-        },
+        {"name": "V", "role": "BBEG", "appearance": {"face": "   "}},
         {  # blank appearance
             "name": "V",
             "role": "Monster",
@@ -451,7 +439,7 @@ def test_enqueue_video_not_boss_is_422(world: str) -> None:
 )
 def test_enqueue_video_no_usable_prompt_is_422(world: str, data: dict[str, Any]) -> None:
     """NO_VIDEO_PROMPT: a boss-tier entity without a non-blank appearance
-    + boss section is a 422 (the runner's fail condition mirrored at the
+    is a 422 (the runner's fail condition mirrored at the
     enqueue gate via the SAME ``bbeg_video_prompt`` builder), zero rows."""
     entity_id = _commit_boss(world, data=data)
     with pytest.raises(InvalidJobInputError, match="no usable reveal prompt"):
@@ -467,21 +455,21 @@ def test_enqueue_video_boss_entity_accepted(world: str) -> None:
     assert job.kind == "video" and job.state == "queued"
 
 
-def test_enqueue_video_supplied_prompt_accepted_and_relaxes_boss_section(
+def test_enqueue_video_without_boss_section_accepted(
     world: str,
 ) -> None:
-    """A supplied non-blank prompt (spec-4.6 RENDER_WITH_PROMPT) enqueues
-    even without a boss section — the DM's prompt is the source of truth
-    — but the boss-tier + appearance gates still hold."""
+    """A boss with appearance can use the automatic reveal prompt without boss data."""
     entity_id = _commit_boss(
         world,
         data={"name": "Vashka", "role": "BBEG", "appearance": {"face": "iron"}},
     )
+    automatic = enqueue_job(world, "video", {"entity_id": entity_id})
     job = enqueue_job(
         world,
         "video",
         {"entity_id": entity_id, "prompt": "DM's own reveal, no boss data"},
     )
+    assert automatic.kind == "video" and automatic.state == "queued"
     assert job.kind == "video" and job.state == "queued"
 
 
@@ -694,6 +682,37 @@ def test_enqueue_build_in_valid_position_one(world: str) -> None:
     # Whitespace-only entries are trimmed away; other content still counts.
     blank_trimmed = enqueue_job(world, "build_in", {"places": ["   "], "notes": "only notes count"})
     assert blank_trimmed.state == "queued"
+
+
+def test_enqueue_build_in_accepts_per_entity_registry_controls(world: str) -> None:
+    """Structured place/faction seeds carry their own registry controls;
+    the backend must not force one dial across the whole build-in job."""
+    job = enqueue_job(
+        world,
+        "build_in",
+        {
+            "places": [{"name": "Deepwater", "archetype": "City", "dial": "important"}],
+            "factions": [{"name": "The Lantern Guild", "archetype": "Guild", "dial": "draft"}],
+            "key_figures": [],
+        },
+    )
+    assert job.state == "queued"
+
+
+@pytest.mark.parametrize(
+    "section,entry",
+    [
+        ("places", {"name": "Deepwater", "archetype": "Cult"}),
+        ("factions", {"name": "The Guild", "archetype": "City"}),
+        ("places", {"name": "Deepwater", "dial": "epic"}),
+    ],
+)
+def test_enqueue_build_in_rejects_wrong_registry_controls(
+    world: str, section: str, entry: dict[str, str]
+) -> None:
+    """Archetypes are kind-specific and dials are closed at enqueue."""
+    with pytest.raises(InvalidJobInputError):
+        enqueue_job(world, "build_in", {section: [entry]})
 
 
 def test_enqueue_build_in_notes_at_cap_accepted(world: str) -> None:

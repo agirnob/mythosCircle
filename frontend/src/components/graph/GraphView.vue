@@ -33,6 +33,7 @@ import { EDGE_VOCAB } from '../profile/profile'
 import {
   avatarInitial,
   buildWorldGraph,
+  kindStyle,
   type GraphRenderEdge,
   type GraphRenderNode,
   type OneHop,
@@ -143,6 +144,14 @@ const kinds = computed(() => {
   return seen
 })
 
+const kindLegend = computed(() =>
+  kinds.value.map((kind) => ({
+    kind,
+    count: (baseGraph.value?.nodes ?? []).filter((node) => node.kind === kind).length,
+    style: kindStyle(kind),
+  })),
+)
+
 const edgeTypes = computed(() => {
   const seen = new Set<string>()
   const types: string[] = []
@@ -160,6 +169,13 @@ const edgeTypes = computed(() => {
   }
   return types
 })
+
+const edgeLegend = computed(() =>
+  edgeTypes.value.map((type) => ({
+    type,
+    count: (baseGraph.value?.edges ?? []).filter((edge) => edge.type === type).length,
+  })),
+)
 
 const nodeNameById = computed<Record<string, string>>(() => {
   const names: Record<string, string> = {}
@@ -306,6 +322,53 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
     <template v-else-if="exportData && baseGraph">
       <div class="graph-shell">
         <div class="toolbar">
+          <div class="kind-legend" aria-label="Entity groups">
+            <span class="legend-label">Groups</span>
+            <button
+              type="button"
+              class="kind-chip kind-chip-all"
+              :class="{ active: kindFilter === '' }"
+              :aria-pressed="kindFilter === ''"
+              @click="kindFilter = ''"
+            >
+              All <b>{{ baseGraph.nodes.length }}</b>
+            </button>
+            <button
+              v-for="item in kindLegend"
+              :key="item.kind"
+              type="button"
+              class="kind-chip"
+              :class="{ active: kindFilter === item.kind }"
+              :style="{ '--kind-color': item.style.color, '--kind-bg': item.style.background }"
+              :aria-pressed="kindFilter === item.kind"
+              @click="kindFilter = kindFilter === item.kind ? '' : item.kind"
+            >
+              {{ item.kind }} <b>{{ item.count }}</b>
+            </button>
+          </div>
+          <div v-if="edgeLegend.length" class="edge-legend" aria-label="Relationship groups">
+            <span class="legend-label">Relationships</span>
+            <button
+              type="button"
+              class="edge-chip edge-chip-all"
+              :class="{ active: edgeTypeFilter === '' }"
+              :aria-pressed="edgeTypeFilter === ''"
+              @click="edgeTypeFilter = ''"
+            >
+              All <b>{{ baseGraph.edges.length }}</b>
+            </button>
+            <button
+              v-for="item in edgeLegend"
+              :key="item.type"
+              type="button"
+              class="edge-chip"
+              :class="{ active: edgeTypeFilter === item.type }"
+              :aria-pressed="edgeTypeFilter === item.type"
+              @click="edgeTypeFilter = edgeTypeFilter === item.type ? '' : item.type"
+            >
+              {{ item.type.replaceAll('_', ' ') }} <b>{{ item.count }}</b>
+            </button>
+          </div>
           <div class="filters">
             <select
               v-model="kindFilter"
@@ -427,27 +490,27 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
   gap: 6px;
   align-items: center;
   font-size: 12.5px;
-  color: #6b7280;
+  color: var(--mc-text-muted);
 }
 .crumbs a {
-  color: #6b7280;
+  color: var(--mc-text-secondary);
 }
 .crumbs b {
-  color: #1c2330;
+  color: var(--mc-text-primary);
   font-weight: 600;
 }
 .crumbs .sep {
-  color: #c3c8d0;
+  color: var(--mc-text-faint);
 }
 .graph-shell {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  border: 1px solid #d8dbe0;
+  border: 1px solid var(--mc-border);
   border-radius: 10px;
   overflow: hidden;
-  background: #ffffff;
+  background: var(--mc-surface);
 }
 .toolbar {
   display: flex;
@@ -456,8 +519,75 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
   gap: 10px;
   flex-wrap: wrap;
   padding: 7px 14px;
-  border-bottom: 1px solid #d8dbe0;
-  background: #ffffff;
+  border-bottom: 1px solid var(--mc-border);
+  background: var(--mc-surface);
+}
+.kind-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+.legend-label {
+  color: var(--mc-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.kind-chip {
+  min-height: 26px;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--kind-color) 42%, var(--mc-border-bright));
+  border-radius: 999px;
+  color: var(--kind-color);
+  background: color-mix(in srgb, var(--kind-bg) 72%, var(--mc-surface));
+  font: 600 12px system-ui;
+  cursor: pointer;
+}
+.kind-chip b {
+  margin-left: 3px;
+  font-weight: 800;
+}
+.kind-chip:hover,
+.kind-chip.active {
+  border-color: var(--kind-color, #7a5c12);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--kind-color, #7a5c12) 14%, transparent);
+}
+.kind-chip-all {
+  --kind-color: var(--mc-text-secondary);
+  --kind-bg: var(--mc-surface-hover);
+}
+.edge-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+.edge-chip {
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid var(--mc-border);
+  border-radius: 999px;
+  color: var(--mc-text-secondary);
+  background: var(--mc-surface-raised);
+  font: 500 11px system-ui;
+  cursor: pointer;
+}
+.edge-chip:hover,
+.edge-chip.active {
+  border-color: var(--mc-interactive-bright);
+  color: var(--mc-text-primary);
+  background: var(--mc-surface-hover);
+}
+.edge-chip b {
+  margin-left: 3px;
+  font-weight: 800;
+}
+.edge-chip-all {
+  color: var(--mc-text-secondary);
 }
 .filters {
   display: flex;
@@ -469,30 +599,30 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
 .filters .btn,
 .zoom .btn {
   font: 12.5px system-ui;
-  color: #1c2330;
-  background: #fff;
-  border: 1px solid #d8dbe0;
+  color: var(--mc-text-primary);
+  background: var(--mc-input);
+  border: 1px solid var(--mc-border);
   border-radius: 7px;
   padding: 4px 9px;
 }
 .filters .btn.clear-focus {
-  color: #7a5c12;
-  background: #fff8e6;
-  border-color: #f0d9a8;
+  color: var(--mc-warning);
+  background: rgba(231, 184, 102, 0.12);
+  border-color: rgba(231, 184, 102, 0.45);
 }
 .lbl-toggle {
   display: flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid #d8dbe0;
+  border: 1px solid var(--mc-border);
   border-radius: 7px;
   padding: 4px 9px;
   font-size: 12.5px;
-  color: #6b7280;
+  color: var(--mc-text-secondary);
   cursor: pointer;
 }
 .lbl-toggle input {
-  accent-color: #b45309;
+  accent-color: var(--mc-interactive);
   margin: 0;
 }
 .zoom {
@@ -510,18 +640,18 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
 }
 .zoom .btn:hover,
 .filters .btn:hover {
-  background: #e8eefc;
+  background: var(--mc-surface-hover);
 }
 .canvas {
   position: relative;
   flex: 1;
   /* Floor so the canvas never collapses even if an ancestor chain regresses. */
   min-height: 240px;
-  background: #f4f5f7;
+  background: var(--mc-app-bg);
   outline: none;
 }
 .canvas:focus-visible {
-  box-shadow: inset 0 0 0 2px #b45309;
+  box-shadow: inset 0 0 0 2px var(--mc-interactive);
 }
 .state-card {
   position: absolute;
@@ -533,24 +663,24 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
   gap: 8px;
   text-align: center;
   padding: 24px;
-  background: #f4f5f7;
+  background: var(--mc-app-bg);
 }
 .notice {
   position: absolute;
   left: 50%;
   top: 14px;
   transform: translateX(-50%);
-  background: #fff8e6;
-  border: 1px solid #f0d9a8;
+  background: rgba(231, 184, 102, 0.12);
+  border: 1px solid rgba(231, 184, 102, 0.45);
   border-radius: 8px;
-  color: #7a5c12;
+  color: var(--mc-warning);
   font-size: 12.5px;
   padding: 8px 14px;
   z-index: 10;
   display: flex;
   gap: 8px;
   align-items: center;
-  box-shadow: 0 2px 6px rgba(20, 30, 50, 0.08);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
 }
 .hud {
   display: flex;
@@ -559,30 +689,30 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
   gap: 12px;
   flex-wrap: wrap;
   padding: 8px 14px;
-  border-top: 1px solid #d8dbe0;
-  background: #ffffff;
+  border-top: 1px solid var(--mc-border);
+  background: var(--mc-surface);
   font-size: 12.5px;
-  color: #6b7280;
+  color: var(--mc-text-muted);
 }
 .hud b {
-  color: #1c2330;
+  color: var(--mc-text-primary);
 }
 .hud .focus-hint {
-  color: #b45309;
+  color: var(--mc-warning);
 }
 .hud .hint {
   margin-left: auto;
 }
 .error {
-  color: #b91c1c;
+  color: var(--mc-danger);
 }
 .muted {
-  color: #6b7280;
+  color: var(--mc-text-muted);
 }
 .card {
-  border: 1px solid #d8dbe0;
+  border: 1px solid var(--mc-border);
   border-radius: 10px;
   padding: 16px;
-  background: #ffffff;
+  background: var(--mc-surface-raised);
 }
 </style>

@@ -108,6 +108,17 @@ export const REGEN_SECTIONS = [
   'boss',
 ] as const
 
+/** Flat entity regeneration contracts — mirrors backend FLAT_REGEN_SECTIONS. */
+export const FLAT_REGEN_SECTIONS = {
+  place: ['description', 'inhabitants', 'whats_hidden'],
+  faction: ['description', 'doctrine', 'assets'],
+} as const
+
+export function regenSectionsForKind(kind: string): readonly string[] {
+  if (kind === 'place' || kind === 'faction') return FLAT_REGEN_SECTIONS[kind]
+  return REGEN_SECTIONS
+}
+
 /**
  * Frontend mirror of 2.6's `_edge_label` (AD-23): neutral types render
  * bare; debt/grudge/loyalty/ally/enemy/controls/worships/protects carry
@@ -143,6 +154,11 @@ export function asString(value: unknown): string | null {
 export const FIELD_LABELS: Record<string, string> = {
   text: 'Text',
   name: 'Name',
+  description: 'Description',
+  inhabitants: 'Inhabitants',
+  whats_hidden: "What's hidden",
+  doctrine: 'Doctrine',
+  assets: 'Assets',
   role: 'Role',
   level_cr: 'Level / CR',
   race_type: 'Race / Type',

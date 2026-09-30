@@ -43,9 +43,10 @@ from typing import Any
 
 from app.core.settings import LLMSettings
 from app.pipeline.budget import CallBudget
-from app.pipeline.build_in import _enforce_stat_blocks
+from app.pipeline.build_in import _DIAL_MIN_WORDS, _enforce_stat_blocks
 from app.pipeline.fencing import strip_fence
 from app.pipeline.generate import _job_still_running
+from app.pipeline.prompt_catalog import prompt_contract
 from app.pipeline.retrieval import (
     DEFAULT_ENTITY_CAP,
     retrieve_neighborhood,
@@ -74,6 +75,7 @@ from app.store import (
 # snapshot must reference the same moment (accept_candidate -> _commit
 # precedent).
 from app.store.candidates import (
+    FLAT_REGEN_SECTIONS,
     REGEN_SECTIONS,
     _replace_candidate_payload,
     _stage_candidates,
@@ -184,9 +186,11 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
         if seed is None:
             raise JobPayloadError(f"regenerate: campaign {job.campaign_id} does not exist")
         entities, _edges = world_state(session, job.campaign_id)
-        record, seeds = _resolve_record(session, job.campaign_id, target_kind, target_id, entities)
+        record, seeds, entity_kind = _resolve_record(
+            session, job.campaign_id, target_kind, target_id, entities
+        )
 
-    requested = _requested_sections(payload, record)
+    requested = _requested_sections(payload, record, entity_kind)
     budget = CallBudget(job)
 
     # Cancel-race poll: a cancel between claim and the call is a no-op.
@@ -210,6 +214,7 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
         record,
         requested,
         (context_entities, context_edges),
+        entity_kind=entity_kind,
         guide=guide,
         dial=dial,
     )
@@ -239,7 +244,7 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
     # world_integration re-roll of a previously-canonical record cannot
     # hard-fail on the shape; a string matrix passes through.
     raw = canonicalize_reaction_matrix(raw)
-    _validate_output(raw, record, requested)
+    _validate_output(raw, record, requested, entity_kind=entity_kind, dial=dial)
 
     # The AR25 stat gate runs on THIS path too (2026-09-11): a re-rolled
     # stat_block is subject to exactly the same contract as a build-in one.
@@ -248,7 +253,11 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
     # swallowed the block, and the DM got a hero who cannot fight.
     # Scoped to re-rolls that actually touch the block: a DM re-rolling
     # `secret` must not have the job fail over an unrelated weak block.
-    if "stat_block" in requested and isinstance(raw.get("stat_block"), dict):
+    if (
+        entity_kind == "character"
+        and "stat_block" in requested
+        and isinstance(raw.get("stat_block"), dict)
+    ):
         checked, cancelled = _enforce_stat_blocks(
             job,
             budget,
@@ -263,7 +272,7 @@ def run_regenerate(job: models.Job, provider: Callable[..., str], settings: LLMS
         if cancelled:
             return
         raw = checked[0].data
-        _validate_output(raw, record, requested)
+        _validate_output(raw, record, requested, entity_kind=entity_kind, dial=dial)
 
     # Cancel-race poll before the write: a cancel during the call/validation
     # must not stage nor replace anything.
@@ -383,6 +392,10 @@ def _stage_entity_payload(
                 f"world state of campaign {campaign_id}"
             )
         fresh_record = copy.deepcopy(entity.data)
+        if entity.kind in FLAT_REGEN_SECTIONS:
+            fresh_record.setdefault("name", entity.name)
+            if "description" not in fresh_record and isinstance(entity.text, str):
+                fresh_record["description"] = entity.text
         payload = _splice(fresh_record, raw, requested)
         # AD-36: the dial is the DM's live setting from the shaped request
         # — authoritative, applied AFTER the splice (the splice preserves
@@ -458,8 +471,11 @@ def _resolve_record(
     target_kind: str,
     target_id: str,
     entities: Sequence[models.Entity],
-) -> tuple[dict[str, Any], Sequence[str] | None]:
-    """Resolve the target's AR24 record fresh inside the runner's session.
+) -> tuple[dict[str, Any], Sequence[str] | None, str]:
+    """Resolve the target record fresh inside the runner's session.
+
+    Character targets use the AR24 record contract. Place and faction targets use
+    their own flat section contract and are enriched in place through staging.
 
     An entity is looked up in the materialized world (a fresh read —
     undo/delete since enqueue fails the job, it never regenerates a
@@ -476,10 +492,15 @@ def _resolve_record(
                 f"regenerate: target entity {target_id} is no longer committed "
                 f"world state of campaign {campaign_id}"
             )
-        record = entity.data
+        record = copy.deepcopy(entity.data)
         if not isinstance(record, dict):
             raise JobPayloadError(f"regenerate: target entity {target_id} has no record")
+        if entity.kind in FLAT_REGEN_SECTIONS:
+            record.setdefault("name", entity.name)
+            if "description" not in record and isinstance(entity.text, str):
+                record["description"] = entity.text
         seeds: Sequence[str] | None = [target_id]
+        resolved_kind = entity.kind
     else:
         candidate = session.get(models.ProposedCandidate, target_id)
         if candidate is None or candidate.campaign_id != campaign_id:
@@ -507,11 +528,20 @@ def _resolve_record(
         ]
         if not seeds:
             seeds = None
-    return copy.deepcopy(record), seeds
+        resolved_kind = "character"
+    return copy.deepcopy(record), seeds, resolved_kind
 
 
-def _requested_sections(payload: Any, record: dict[str, Any]) -> list[str]:
-    """The requested section list: null/absent = the whole record —
+def _requested_sections(
+    payload: Any, record: dict[str, Any], entity_kind: str = "character"
+) -> list[str]:
+    """Return the canonical requested section list for the target kind.
+
+    Null/absent means the complete kind-specific set. Character targets omit
+    ``boss`` unless their role is BBEG/Monster; places and factions always use
+    their own complete enrichment set.
+
+    The requested section list: null/absent = the whole record —
     every regenerable content section EXCEPT ``boss`` on a target whose
     role is not BBEG/Monster (a whole re-roll of an NPC must never ask
     the model to re-write a section that must not exist on that record —
@@ -519,7 +549,10 @@ def _requested_sections(payload: Any, record: dict[str, Any]) -> list[str]:
     otherwise the validated list. Ordered canonically for the prompt and
     the splice (deterministic bytes)."""
     sections = payload.get("sections") if isinstance(payload, dict) else None
+    allowed = FLAT_REGEN_SECTIONS.get(entity_kind, REGEN_SECTIONS)
     if sections is None:
+        if entity_kind in FLAT_REGEN_SECTIONS:
+            return list(allowed)
         requested = list(SECTION_ORDER)
         role = record.get("role") if isinstance(record, dict) else None
         if role not in BOSS_ROLES:
@@ -527,17 +560,31 @@ def _requested_sections(payload: Any, record: dict[str, Any]) -> list[str]:
         return requested
     if not isinstance(sections, list) or not sections:
         raise JobPayloadError("regenerate: sections must be null or a non-empty list")
-    bad = [s for s in sections if not isinstance(s, str) or s not in REGEN_SECTIONS]
+    bad = [s for s in sections if not isinstance(s, str) or s not in allowed]
     if bad:
         raise JobPayloadError(f"regenerate: sections outside the closed set: {sorted(set(bad))}")
-    # Canonical order (SECTION_ORDER) regardless of the caller's ordering:
+    # Canonical order regardless of the caller's ordering:
     # the prompt and the splice depend on the requested SET, so the bytes
     # stay deterministic for the same set (AR6/AD-16). Duplicates collapse.
-    return [section for section in SECTION_ORDER if section in set(sections)]
+    return [section for section in allowed if section in set(sections)]
 
 
-def _validate_output(raw: dict[str, Any], record: dict[str, Any], requested: Sequence[str]) -> None:
-    """The re-rolled candidate must be a full AR24 record (same shape as
+def _validate_output(
+    raw: dict[str, Any],
+    record: dict[str, Any],
+    requested: Sequence[str],
+    *,
+    entity_kind: str = "character",
+    dial: str | None = None,
+) -> None:
+    """Validate a re-roll against the target kind's contract.
+
+    Character output must be a full AR24 record whose every non-requested
+    section is byte-identical. Flat place and faction output uses its own
+    section set and the same preservation rule; stat-block validation applies
+    only to characters.
+
+    The re-rolled candidate must be a full AR24 record (same shape as
     staging) whose every NON-requested section — identity anchor, edges,
     unknown keys — is byte-identical to the target: the DM-sanctioned
     change set is exactly the requested sections. A model that edits name
@@ -553,6 +600,32 @@ def _validate_output(raw: dict[str, Any], record: dict[str, Any], requested: Seq
     model's to write (the whole record is the change set), and only the
     byte-identical preservation rule below still applies.
     """
+    if entity_kind in FLAT_REGEN_SECTIONS:
+        violations: list[str] = []
+        active_dial = dial or record.get("dial") or "simple"
+        minimum = _DIAL_MIN_WORDS.get(active_dial, 1)
+        for section in requested:
+            value = raw.get(section)
+            if not isinstance(value, str) or not value.strip():
+                violations.append(f"{entity_kind}.{section} must be a non-blank string")
+                continue
+            words = len(value.split())
+            if words < minimum:
+                violations.append(
+                    f"{entity_kind}.{section} has {words} words; dial {active_dial} "
+                    f"requires at least {minimum}"
+                )
+        for key, value in record.items():
+            if key in requested or key == "dial":
+                continue
+            if raw.get(key) != value:
+                violations.append(f"{key} must stay byte-identical to the target record")
+        if violations:
+            raise JobPayloadError(
+                f"regenerate: re-rolled {entity_kind} fails the contract: "
+                + "; ".join(violations)
+            )
+        return
     is_flat = payload_section_violations(record) != []
     violations: list[str] = [] if is_flat else payload_section_violations(raw)
     for key, value in record.items():
@@ -609,8 +682,11 @@ def build_regenerate_prompt(
     *,
     guide: str | None = None,
     dial: str | None = None,
+    entity_kind: str = "character",
 ) -> str:
-    """The regenerate prompt (AR6/AR27/AD-16): pure and byte-deterministic.
+    """Build the deterministic character or flat-entity regenerate prompt.
+
+    The regenerate prompt (AR6/AR27/AD-16): pure and byte-deterministic.
 
     A function of the campaign seed fields, the target record (with the
     requested sections' contents REDACTED so the model cannot copy-echo
@@ -626,7 +702,8 @@ def build_regenerate_prompt(
     entities, edges = context
     # Canonical order for the requested SET: the builder is a pure function
     # of the set, so its bytes are deterministic for the same set (AR6/AD-16).
-    requested = [section for section in SECTION_ORDER if section in set(requested)]
+    allowed_order = FLAT_REGEN_SECTIONS.get(entity_kind, SECTION_ORDER)
+    requested = [section for section in allowed_order if section in set(requested)]
     requested_label = ", ".join(requested) or "(none)"
     # The REQUESTED sections' contents are NEVER shown in the target: a
     # copy-echo class measured twice on 2026-09-27 (whole re-rolls echoed
@@ -636,11 +713,21 @@ def build_regenerate_prompt(
     # unrequested sections, edges, and unknown keys stay — those must
     # echo byte-identical); with every section requested that leaves the
     # anchor + unknown keys.
-    whole = len(requested) == len(SECTION_ORDER)
+    whole = len(requested) == len(allowed_order)
     redact = set(requested)
     target_for_prompt = (
         {key: value for key, value in record.items() if key not in redact} if redact else record
     )
+    if entity_kind in FLAT_REGEN_SECTIONS:
+        return _build_flat_regenerate_prompt(
+            campaign_seed,
+            target_for_prompt,
+            requested,
+            context,
+            entity_kind=entity_kind,
+            guide=guide,
+            dial=dial,
+        )
     lines = [
         "You are re-rolling an existing TTRPG world character:",
         (
@@ -665,6 +752,8 @@ def build_regenerate_prompt(
             else ""
         ),
         "Respond with exactly one JSON object — nothing else.",
+        "",
+        prompt_contract("regenerate"),
         "",
         "CAMPAIGN SEED",
         f"title: {campaign_seed.title}",
@@ -744,6 +833,53 @@ def build_regenerate_prompt(
             "",
             spells_reference_text(),
         ]
+    return "\n".join(lines)
+
+
+def _build_flat_regenerate_prompt(
+    campaign_seed: models.Campaign,
+    target: dict[str, Any],
+    requested: Sequence[str],
+    context: tuple[Sequence[models.Entity], Sequence[models.Edge]],
+    *,
+    entity_kind: str,
+    guide: str | None,
+    dial: str | None,
+) -> str:
+    """Build the place/faction enrichment prompt from the flat contract."""
+    sections = ", ".join(requested)
+    active_dial = dial or target.get("dial") or "simple"
+    minimum = _DIAL_MIN_WORDS.get(active_dial, 1)
+    lines = [
+        f"You are enriching an existing TTRPG world {entity_kind}.",
+        "Respond with exactly one JSON object — nothing else.",
+        "",
+        prompt_contract("regenerate"),
+        "",
+        f"CAMPAIGN: {campaign_seed.title} — {campaign_seed.theme}",
+        f"TARGET {entity_kind.upper()} RECORD (preserve identity and unrequested fields):",
+        serialize_record(target),
+        "",
+        f"Regenerate exactly these sections: {sections}.",
+        f"The active dial is {active_dial}: generated fields need at least {minimum} words; "
+        f"aim for at least {minimum + 4} words so the detail floor is unambiguous.",
+        "Keep the target name, archetype, dial, and every unrequested key byte-identical.",
+        "Relations remain typed graph edges; do not output or reinterpret edges here.",
+        *(
+            ["", "DM GUIDE:", guide.strip()]
+            if isinstance(guide, str) and guide.strip()
+            else []
+        ),
+        "",
+        "COMMITTED WORLD CONTEXT",
+        serialize_context(*context),
+        "",
+        "OUTPUT CONTRACT",
+        "Return one JSON object containing the complete record with the requested fields",
+        "rewritten.",
+        json.dumps(dict.fromkeys(requested, "..."), sort_keys=True),
+        "All requested values must be non-blank strings.",
+    ]
     return "\n".join(lines)
 
 
