@@ -1580,12 +1580,7 @@ _RPTOK_MARKED_PATHS: frozenset[tuple[str, ...]] = frozenset(
 )
 
 #: The committed Dragon template file (the canonical owner export).
-_RPTOK_TEMPLATE_FILE = (
-    Path(__file__).resolve().parents[2]
-    / "_bmad-output"
-    / "implementation-artifacts"
-    / "maptool-token-template-dragon.xml"
-)
+_RPTOK_TEMPLATE_FILE = Path(__file__).resolve().parent / "fixtures" / "maptool-token-template-dragon.xml"
 
 
 def _assert_rptok_template_fidelity(root: ET.Element) -> None:

@@ -1,5 +1,7 @@
-# BMAD installed skill suite (reinstallable tooling, not project content)
+# BMAD tooling and generated planning artifacts
 .agents/
+/_bmad/
+/_bmad-output/
 
 # Scratch
 result

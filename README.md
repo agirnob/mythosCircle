@@ -57,8 +57,7 @@ MYTHOSCIRCLE_MEDIA_DIR=/absolute/path/to/media make dev
 
 ## Conventions
 
-The repo-wide conventions are canonical in
-`_bmad-output/specs/spec-mythosCircle/conventions.md`:
+The repo-wide conventions are:
 
 - ULID identifiers (not UUIDs); UTC ISO-8601 timestamps
 - error envelope `{code, message, details?}`; cursor pagination
