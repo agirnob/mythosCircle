@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../api/client'
@@ -129,6 +129,10 @@ const draftReady = ref(false)
 const draftStorageKey = `mythoscircle:build-in:${campaignId}`
 
 let disconnectSocket: (() => void) | null = null
+let statusTimer: ReturnType<typeof globalThis.setInterval> | null = null
+let statusPollPending = false
+const statusClock = ref(Date.now())
+const submittedJobId = ref<string | null>(null)
 
 onMounted(async () => {
   try {
@@ -263,10 +267,69 @@ watch([sectionText, quickSlots, generateCounts, flatSeedDrafts, notes], saveDraf
 
 onUnmounted(() => {
   disconnectSocket?.()
+  if (statusTimer !== null) globalThis.clearInterval(statusTimer)
 })
 
 const recentJobs = computed(() => jobs.buildInJobs(campaignId).slice(0, 10))
 const inFlight = computed(() => jobs.buildInInFlight(campaignId))
+const statusJob = computed(() =>
+  submittedJobId.value
+    ? (jobs.byId[submittedJobId.value] ?? null)
+    : (recentJobs.value.find((job) => job.state === 'queued' || job.state === 'running') ?? null),
+)
+const statusElapsed = computed(() => {
+  const started = statusJob.value?.started_at ?? statusJob.value?.created_at
+  if (!started) return 0
+  return Math.max(0, Math.floor((statusClock.value - Date.parse(started)) / 1000))
+})
+
+watch(
+  inFlight,
+  (active) => {
+    if (statusTimer !== null) globalThis.clearInterval(statusTimer)
+    statusTimer = null
+    if (!active) return
+    let ticks = 0
+    statusTimer = globalThis.setInterval(() => {
+      statusClock.value = Date.now()
+      ticks += 1
+      if (ticks % 3 !== 0 || statusPollPending) return
+      statusPollPending = true
+      void jobs
+        .syncList(campaignId)
+        .catch(() => {})
+        .finally(() => {
+          statusPollPending = false
+        })
+    }, 1000)
+  },
+  { immediate: true },
+)
+
+function statusPercent(job: Job): number {
+  return job.state === 'succeeded' ? 100 : Math.round(job.progress * 100)
+}
+
+function statusHeadline(job: Job): string {
+  if (job.state === 'queued') return 'Waiting to start'
+  if (job.state === 'succeeded') return 'World updated'
+  if (job.state === 'failed') return 'Build could not finish'
+  if (job.state === 'cancelled') return 'Build cancelled'
+  if (job.progress < 0.1) {
+    const counts = job.payload?.['generate_counts']
+    return counts && typeof counts === 'object' && Object.values(counts).some(Boolean)
+      ? 'Inventing names'
+      : 'Preparing the world'
+  }
+  if (job.progress < 0.4) return 'Writing the world'
+  if (job.progress < 0.5) return 'Checking details and connections'
+  return 'Saving the world'
+}
+
+function completedCount(job: Job): number | null {
+  const value = job.result?.['entity_count']
+  return typeof value === 'number' ? value : null
+}
 const hasContent = computed(() => {
   const anySection = sections.some(
     (section) => splitEntries(sectionText.value[section.key]).length > 0,
@@ -554,7 +617,14 @@ async function submit() {
   submitting.value = true
   saveDraft()
   try {
-    await jobs.submitBuildIn(campaignId, formSeed())
+    const submitted = await jobs.submitBuildIn(campaignId, formSeed())
+    submittedJobId.value = submitted.id
+    statusClock.value = Date.now()
+    await nextTick()
+    globalThis.document.getElementById('mc-build-status')?.scrollIntoView?.({
+      behavior: 'smooth',
+      block: 'nearest',
+    })
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : 'Could not enqueue the build-in.'
   } finally {
@@ -939,9 +1009,56 @@ function mergeLines(result: unknown): string[] {
             >
               {{ submitting ? 'Enqueuing…' : inFlight ? 'Building…' : 'Build my world' }}
             </button>
-            <p v-if="inFlight" class="muted small">
-              Still building — your seed text stays here, and a failed build keeps it for the retry.
-            </p>
+            <section
+              v-if="statusJob"
+              id="mc-build-status"
+              class="mc-build-status"
+              aria-live="polite"
+              aria-label="Build status"
+            >
+              <div class="mc-build-status-head">
+                <div>
+                  <p class="mc-card-kicker">Build status</p>
+                  <h2>{{ statusHeadline(statusJob) }}</h2>
+                </div>
+                <span class="mc-build-status-time">{{ statusElapsed }}s elapsed</span>
+              </div>
+              <template v-if="statusJob.state === 'queued' || statusJob.state === 'running'">
+                <p v-if="statusJob.state === 'queued'" class="muted small">
+                  Queue position {{ statusJob.queue_position ?? 'pending' }}. Your entries are saved
+                  while this runs.
+                </p>
+                <p v-else class="muted small">
+                  {{ statusPercent(statusJob) }}% through the build stages. Larger requests can take
+                  a few minutes; this status refreshes automatically.
+                </p>
+                <div
+                  class="mc-build-progress"
+                  role="progressbar"
+                  :aria-valuenow="statusPercent(statusJob)"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-label="Build progress"
+                >
+                  <span :style="{ width: `${statusPercent(statusJob)}%` }" />
+                </div>
+              </template>
+              <p v-else-if="statusJob.state === 'succeeded'" class="mc-build-status-success">
+                <template v-if="completedCount(statusJob) !== null"
+                  >{{ completedCount(statusJob) }}
+                  {{ completedCount(statusJob) === 1 ? 'entity was' : 'entities were' }} added to
+                  the world.</template
+                >
+                <template v-else>The build was added to the world.</template>
+                <RouterLink :to="{ name: 'world', params: { id: campaignId } }"
+                  >View world →</RouterLink
+                >
+              </p>
+              <p v-else-if="statusJob.error" class="error">{{ statusJob.error }}</p>
+              <p v-if="statusJob.state === 'failed'" class="muted small">
+                Your entries are still here, so you can retry.
+              </p>
+            </section>
           </form>
         </div>
       </div>
@@ -1015,6 +1132,54 @@ function mergeLines(result: unknown): string[] {
 .mc-build-form > button[type='submit']:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.mc-build-status {
+  display: grid;
+  gap: 0.65rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--mc-border-bright);
+  border-radius: var(--mc-radius);
+  background: var(--mc-surface-raised);
+}
+.mc-build-status-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 0.75rem;
+}
+.mc-build-status h2 {
+  margin: 0;
+  font-family: var(--mc-display-font);
+  font-size: 1.25rem;
+}
+.mc-build-status-time {
+  color: var(--mc-text-muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mc-build-status .muted,
+.mc-build-status .error,
+.mc-build-status-success {
+  margin: 0;
+}
+.mc-build-progress {
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--mc-border);
+}
+.mc-build-progress span {
+  display: block;
+  height: 100%;
+  min-width: 0.3rem;
+  border-radius: inherit;
+  background: var(--mc-interactive);
+  transition: width 0.3s ease;
+}
+.mc-build-status-success a {
+  margin-left: 0.4rem;
+  color: var(--mc-interactive-bright);
 }
 .mc-build-header {
   margin-bottom: 1.5rem;

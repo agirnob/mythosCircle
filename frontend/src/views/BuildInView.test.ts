@@ -132,6 +132,75 @@ describe('BuildInView seed form', () => {
     expect(body.payload.places).toEqual([])
   })
 
+  it('shows queue, running progress, and a completed count beside the build button', async () => {
+    const created = job({
+      payload: {
+        places: [],
+        factions: [],
+        key_figures: [],
+        notes: '',
+        generate_counts: { places: 20 },
+      },
+    })
+    mockApi({ created })
+    const wrapper = await mountView()
+    await wrapper.get('input[aria-label="Generate key places"]').setValue(20)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const status = wrapper.get('[aria-label="Build status"]')
+    expect(status.text()).toContain('Waiting to start')
+    expect(status.text()).toContain('Queue position 1')
+
+    socketCalls
+      .at(-1)!
+      .onMessage({ type: 'job_progress', job_id: created.id, state: 'running', progress: 0.2 })
+    await flushPromises()
+    expect(status.text()).toContain('Writing the world')
+    expect(status.get('[role="progressbar"]').attributes('aria-valuenow')).toBe('20')
+
+    jobList = [
+      job({
+        ...created,
+        state: 'succeeded',
+        progress: 0.5,
+        result: { entity_count: 20 },
+        queue_position: null,
+      }),
+    ]
+    socketCalls.at(-1)!.onMessage({ type: 'job_done', job_id: created.id, state: 'succeeded' })
+    await flushPromises()
+    expect(status.text()).toContain('20 entities were added to the world')
+    expect(status.find('a').exists()).toBe(true)
+  })
+
+  it('refreshes an active build from REST if live events do not arrive', async () => {
+    const created = job({
+      payload: {
+        places: [],
+        factions: [],
+        key_figures: [],
+        notes: '',
+        generate_counts: { places: 20 },
+      },
+    })
+    mockApi({ created })
+    const wrapper = await mountView()
+    vi.useFakeTimers()
+    try {
+      await wrapper.get('input[aria-label="Generate key places"]').setValue(20)
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+      jobList = [job({ ...created, state: 'running', progress: 0.2, queue_position: null })]
+      await vi.advanceTimersByTimeAsync(3000)
+      await flushPromises()
+      expect(wrapper.get('[aria-label="Build status"]').text()).toContain('Writing the world')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the seed text through the build and a failure — the DM retries without retyping', async () => {
     const created = job()
     mockApi({ created })
