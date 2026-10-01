@@ -249,8 +249,11 @@ onUnmounted(() => {
       </a>
     </div>
 
-    <div class="mc-media-block">
-      <h3>Portrait</h3>
+    <details class="mc-media-block mc-media-disclosure">
+      <summary class="mc-media-summary">
+        <span>Portrait</span>
+        <span class="mc-muted">{{ status(portraitJob, 'Portrait') ?? (portrait ? 'Portrait ready' : 'No portrait yet') }}</span>
+      </summary>
       <img v-if="portrait" :src="mediaUrl(portrait)" :alt="`${entity.name} portrait`" class="mc-media-image" />
       <p v-else class="mc-muted">No portrait yet.</p>
       <div class="mc-media-controls">
@@ -277,10 +280,13 @@ onUnmounted(() => {
       <p v-if="!appearanceReady" class="mc-muted">Add an appearance before generating media.</p>
       <p v-if="status(portraitJob, 'Portrait')" class="mc-muted">{{ status(portraitJob, 'Portrait') }}</p>
       <input v-if="portraitLink" :value="portraitLink" readonly aria-label="Portrait link" class="mc-media-link" @focus="($event.target as HTMLInputElement).select()" />
-    </div>
+    </details>
 
-    <div v-if="isBoss" class="mc-media-block">
-      <h3>Reveal video</h3>
+    <details v-if="isBoss" class="mc-media-block mc-media-disclosure">
+      <summary class="mc-media-summary">
+        <span>Reveal video</span>
+        <span class="mc-muted">{{ status(videoJob, 'Reveal video') ?? (video ? 'Video ready' : 'No video yet') }}</span>
+      </summary>
       <p v-if="video && jobs.videoInFlight(campaignId, entityId)" class="mc-muted">Showing the previous video while the new reveal renders.</p>
       <video v-if="video" :src="mediaUrl(video)" controls preload="metadata" class="mc-media-video" :aria-label="`${entity.name} reveal video`" />
       <details v-if="videoPromptUsed" class="mc-media-prompt-history">
@@ -305,7 +311,7 @@ onUnmounted(() => {
         </button>
       </div>
       <p v-if="status(videoJob, 'Reveal video')" class="mc-muted">{{ status(videoJob, 'Reveal video') }}</p>
-    </div>
+    </details>
     <p v-if="error" class="mc-action-error" role="alert">{{ error }}</p>
   </section>
 </template>
@@ -317,6 +323,15 @@ onUnmounted(() => {
 .mc-export-links a { display: inline-flex; align-items: center; min-height: 2.25rem; padding: .45rem .75rem; border: 1px solid var(--mc-border); border-radius: var(--mc-radius-sm); background: var(--mc-surface-raised); color: var(--mc-text-secondary); font-size: .85rem; text-decoration: none; }
 .mc-export-links a:hover { border-color: var(--mc-interactive); color: var(--mc-text-primary); background: var(--mc-glow-violet); }
 .mc-media-block { display: grid; gap: .7rem; padding: 1rem; border: 1px solid var(--mc-border); border-radius: var(--mc-radius); background: var(--mc-surface); }
+.mc-media-disclosure { padding: 0; }
+.mc-media-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .3rem .8rem; padding: 1rem; cursor: pointer; list-style: none; }
+.mc-media-summary::-webkit-details-marker { display: none; }
+.mc-media-summary::after { content: '＋'; color: var(--mc-interactive); font-weight: 700; }
+.mc-media-disclosure[open] > .mc-media-summary { border-bottom: 1px solid var(--mc-border); }
+.mc-media-disclosure[open] > .mc-media-summary::after { content: '−'; }
+.mc-media-disclosure > :not(summary) { margin-left: 1rem; margin-right: 1rem; }
+.mc-media-disclosure > :last-child { margin-bottom: 1rem; }
+.mc-media-summary > span:first-child { font-family: var(--mc-display-font); font-weight: 700; }
 .mc-media-image { width: min(100%, 24rem); max-height: 28rem; object-fit: cover; border-radius: var(--mc-radius-sm); }
 .mc-media-video { width: min(100%, 36rem); border-radius: var(--mc-radius-sm); }
 .mc-media-controls select, .mc-media-controls input, .mc-media-block textarea, .mc-media-link { min-width: 0; padding: .55rem .65rem; border: 1px solid var(--mc-border); border-radius: var(--mc-radius-sm); background: var(--mc-input); color: var(--mc-text-primary); }
