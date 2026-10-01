@@ -857,33 +857,36 @@ def _validate_image_payload(payload: dict[str, Any], session: Session, campaign_
 
     The payload is ``{"entity_id": <ULID>}`` plus the optional P1 knobs
     (``style`` / ``framing`` / ``background`` / ``custom_style``) — the
-    committed entity whose AR24 ``appearance`` is the portrait prompt
-    source (FR12; a portrait is a projection of the committed
-    character, never free text). The entity must exist in this campaign
-    (404 ``UnknownEntityError``) and its committed ``appearance`` must
-    be non-blank (422 ``InvalidJobInputError`` — the NO_APPEARANCE
-    matrix row: a forced enqueue for an appearance-less entity is a
-    422, never a queued job). The option values run the SAME
-    ``portrait_options`` and the blank check the SAME ``appearance_prompt``
-    the runner uses, so the enqueue gate and the run-time fail
+    committed entity profile selected by kind: character appearance,
+    place description, or faction description/doctrine/assets. The entity
+    must exist in this campaign (404 ``UnknownEntityError``); missing
+    source material is a 422, never a queued job. Options and the prompt
+    builder are shared with the runner, so the enqueue gate and run-time fail
     condition can never disagree (function-local import: the media
     service imports this package).
     """
-    from app.media.service import appearance_prompt, portrait_options
+    from app.media.service import entity_artwork_prompt, portrait_options
 
-    try:
-        portrait_options(payload)
-    except ValueError as exc:
-        raise InvalidJobInputError(str(exc)) from exc
     entity_id = payload["entity_id"]
     if not isinstance(entity_id, str) or not ids.is_valid_ulid(entity_id):
         raise InvalidJobInputError(f"image payload entity_id is not a ULID: {entity_id!r}")
     entity = session.get(models.Entity, entity_id)
     if entity is None or entity.campaign_id != campaign_id:
         raise UnknownEntityError(entity_id)
-    if appearance_prompt((entity.data or {}).get("appearance")) is None:
+    try:
+        options = portrait_options(payload, entity_kind=entity.kind)
+    except ValueError as exc:
+        raise InvalidJobInputError(str(exc)) from exc
+    if entity_artwork_prompt(
+        entity.kind, entity.name, entity.data or {}, text=entity.text, **options
+    ) is None:
         raise InvalidJobInputError(
-            f"image payload entity {entity_id} has no non-blank AR24 appearance"
+            f"{entity.kind.title()} artwork needs a non-blank description"
+            if entity.kind in {"place", "faction"}
+            else (
+                f"Character {entity.name!r} needs a non-blank appearance "
+                "before generating a portrait"
+            )
         )
 
 

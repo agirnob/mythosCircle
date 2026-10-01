@@ -1,10 +1,10 @@
-"""Portrait generation runner (spec-4.1, AD-10).
+"""Entity artwork generation runner (spec-4.1, AD-10).
 
-One ``image`` job = one portrait: re-read the COMMITTED entity at run
+One ``image`` job = one entity artwork: re-read the COMMITTED entity at run
 time (the queue is a global FIFO, so the job may sit queued while the
-world moves — the prompt must be a projection of the committed character
-at generation time, FR12), build the prompt from the entity's AR24
-``appearance`` section ONLY (never free text), budget-guard the
+world moves — the prompt must use the committed entity profile), build a
+kind-specific prompt from character appearance, place description, or
+faction description/doctrine/assets, budget-guard the
 ``images/generations`` call, write the file atomically (temp + rename,
 so a crash never leaves a half-written image) under
 ``media_dir/{campaign_id}/{entity_id}/{ulid}.png``, then record the
@@ -15,7 +15,7 @@ dangles) and complete the job with ``{entity_id, filename}``.
 Failure vocabulary (all -> ``fail_job`` with a user-facing message, no
 file/row left behind):
 - entity missing at run time (deleted since enqueue): stable message;
-- blank appearance: the enqueue validator already 422s this; a row
+- missing prompt source: the enqueue validator already 422s this; a row
   written outside the store (test helper, future caller) fails here too;
 - provider failure: ``ProviderError`` maps to an image-flavored message;
 - budget exceeded: ``BudgetExceededError`` passes through untouched.
@@ -143,7 +143,15 @@ def appearance_prompt(appearance: Any) -> str | None:
 PORTRAIT_STYLES: frozenset[str] = frozenset(
     {"photorealistic", "cartoonish", "illustration", "custom"}
 )
-PORTRAIT_FRAMINGS: frozenset[str] = frozenset({"portrait", "headshot", "full_body"})
+PORTRAIT_FRAMINGS: frozenset[str] = frozenset({
+    "portrait", "headshot", "full_body", "landscape", "establishing", "detail",
+    "emblem", "banner", "scene",
+})
+ARTWORK_FRAMINGS: dict[str, frozenset[str]] = {
+    "character": frozenset({"portrait", "headshot", "full_body"}),
+    "place": frozenset({"landscape", "establishing", "detail"}),
+    "faction": frozenset({"emblem", "banner", "scene"}),
+}
 PORTRAIT_BACKGROUNDS: frozenset[str] = frozenset({"scene", "plain", "dark", "transparent"})
 
 #: The prompt directive per preset — plain descriptive phrasing the
@@ -171,6 +179,19 @@ _FRAMING_DIRECTIVES: dict[str, str] = {
         "clearly visible and detailed with air above the head, both eyes visible, "
         "feet near the bottom edge, single subject, nothing cropped"
     ),
+    "landscape": "wide landscape artwork of the location, show its defining terrain and silhouette",
+    "establishing": (
+        "wide establishing view that communicates the location's scale, layout, and atmosphere"
+    ),
+    "detail": (
+        "close environmental study of a distinctive architectural or natural "
+        "feature of the location"
+    ),
+    "emblem": "a clear, memorable faction emblem or sigil, centered and legible, no lettering",
+    "banner": "a faction standard or banner displaying its visual symbols, no readable lettering",
+    "scene": (
+        "an evocative scene showing the faction's identity, members, and characteristic activity"
+    ),
 }
 _BACKGROUND_DIRECTIVES: dict[str, str] = {
     "scene": "background: a detailed surrounding scene",
@@ -180,7 +201,7 @@ _BACKGROUND_DIRECTIVES: dict[str, str] = {
 }
 
 
-def portrait_options(payload: Any) -> dict[str, str]:
+def portrait_options(payload: Any, *, entity_kind: str | None = "character") -> dict[str, str]:
     """Validate the optional P1 portrait knobs of an image job payload
     and return the present ones as plain strings.
 
@@ -194,6 +215,8 @@ def portrait_options(payload: Any) -> dict[str, str]:
     """
     if not isinstance(payload, dict):
         raise ValueError("image payload must be a JSON object")
+    if entity_kind is not None and entity_kind not in ARTWORK_FRAMINGS:
+        raise ValueError(f"image generation is not supported for entity kind {entity_kind!r}")
     allowed = frozenset({"entity_id", "style", "framing", "background", "custom_style"})
     unknown = set(payload) - allowed
     if unknown:
@@ -208,8 +231,13 @@ def portrait_options(payload: Any) -> dict[str, str]:
         options["style"] = style
     framing = payload.get("framing")
     if framing is not None:
-        if not isinstance(framing, str) or framing not in PORTRAIT_FRAMINGS:
-            raise ValueError(f"image payload framing must be one of {sorted(PORTRAIT_FRAMINGS)}")
+        allowed_framings = (
+            ARTWORK_FRAMINGS[entity_kind] if entity_kind is not None else PORTRAIT_FRAMINGS
+        )
+        if not isinstance(framing, str) or framing not in allowed_framings:
+            raise ValueError(
+                f"image payload framing must be one of {sorted(allowed_framings)}"
+            )
         options["framing"] = framing
     background = payload.get("background")
     if background is not None:
@@ -270,6 +298,74 @@ def portrait_prompt(
     return "\n".join(parts)
 
 
+def entity_artwork_prompt(
+    entity_kind: str,
+    name: str,
+    data: Any,
+    *,
+    text: str | None = None,
+    style: str | None = None,
+    framing: str | None = None,
+    background: str | None = None,
+    custom_style: str | None = None,
+) -> str | None:
+    """Build artwork from the committed profile appropriate to its kind.
+
+    Characters retain the established AR24 appearance-only portrait prompt.
+    Places use their setting description and archetype; factions use their
+    description, doctrine, and assets to depict an emblem, standard, or scene.
+    Hidden secrets are deliberately excluded from visual prompts.
+    """
+    if entity_kind == "character":
+        if not isinstance(data, dict):
+            return None
+        return portrait_prompt(
+            data.get("appearance"), style=style, framing=framing,
+            background=background, custom_style=custom_style,
+        )
+    if entity_kind not in {"place", "faction"} or not isinstance(data, dict):
+        return None
+
+    def value(key: str) -> str | None:
+        candidate = data.get(key)
+        return candidate.strip() if isinstance(candidate, str) and candidate.strip() else None
+
+    fallback_text = text.strip() if isinstance(text, str) and text.strip() else None
+    description = value("description") or fallback_text
+    if description is None:
+        return None
+    lines = [f"{entity_kind} artwork: {name.strip()}", description]
+    if entity_kind == "place":
+        for key in ("archetype", "inhabitants"):
+            detail = value(key)
+            if detail:
+                lines.append(f"{key}: {detail}")
+        subject = "Create evocative environment artwork; no character portrait or text."
+    else:
+        for key in ("doctrine", "assets"):
+            detail = value(key)
+            if detail:
+                lines.append(f"{key}: {detail}")
+        subject = (
+            "Create faction identity artwork; do not depict one person as the sole subject. "
+            "No readable text."
+        )
+    parts = [*lines, subject]
+    if framing:
+        parts.insert(0, _FRAMING_DIRECTIVES[framing])
+    if style and style != "custom":
+        parts.append(_STYLE_DIRECTIVES[style])
+    if custom_style:
+        parts.append(f"styling: {custom_style}")
+    if background:
+        parts.append(
+            "background: transparent cutout of the complete location or faction symbol, no text"
+            if background == "transparent"
+            else _BACKGROUND_DIRECTIVES[background]
+        )
+    return "\n".join(parts)
+
+
 def bbeg_video_prompt(data: Any) -> str | None:
     """The reveal-video prompt for a committed boss-tier entity — or None
     when it cannot produce one (the run-fail / enqueue-422 condition).
@@ -307,7 +403,7 @@ def run_portrait(
     """
     payload = job.payload
     try:
-        options = portrait_options(payload)
+        portrait_options(payload, entity_kind=None)
     except ValueError as exc:
         raise JobPayloadError(f"image: {exc}") from exc
     entity_id = payload["entity_id"]
@@ -319,9 +415,19 @@ def run_portrait(
         entity = session.get(models.Entity, entity_id)
         if entity is None or entity.campaign_id != job.campaign_id:
             raise JobPayloadError(f"image: entity {entity_id} does not exist in this campaign")
-        appearance = (entity.data or {}).get("appearance")
-    prompt = portrait_prompt(
-        appearance,
+        entity_kind = entity.kind
+        entity_name = entity.name
+        entity_text = entity.text
+        entity_data = entity.data or {}
+    try:
+        options = portrait_options(payload, entity_kind=entity_kind)
+    except ValueError as exc:
+        raise JobPayloadError(f"image: {exc}") from exc
+    prompt = entity_artwork_prompt(
+        entity_kind,
+        entity_name,
+        entity_data,
+        text=entity_text,
         style=options.get("style"),
         framing=options.get("framing"),
         background=options.get("background"),
@@ -329,7 +435,9 @@ def run_portrait(
     )
     if prompt is None:
         raise JobPayloadError(
-            f"image: entity {entity_id} has no non-blank AR24 appearance — a portrait needs one"
+            f"image: {entity_kind} {entity_name!r} needs a non-blank description"
+            if entity_kind in {"place", "faction"}
+            else f"image: character {entity_name!r} has no non-blank AR24 appearance"
         )
 
     budget = MediaCallBudget(job)

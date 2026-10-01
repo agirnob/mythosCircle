@@ -8,7 +8,7 @@ import { hasNonBlankAppearance } from '../../lib/appearance'
 import {
   PORTRAIT_BACKGROUNDS,
   PORTRAIT_BACKGROUND_LABELS,
-  PORTRAIT_FRAMINGS,
+  ARTWORK_FRAMINGS,
   PORTRAIT_FRAMING_LABELS,
   PORTRAIT_STYLES,
   PORTRAIT_STYLE_LABELS,
@@ -27,9 +27,10 @@ const props = defineProps<{ campaignId: string; entity: EntityExport }>()
 const world = useWorldStore()
 const jobs = useJobsStore()
 const error = ref('')
+const initialFraming = ARTWORK_FRAMINGS[props.entity.kind]?.[0] ?? 'headshot'
 const portraitDraft = ref({
   style: 'illustration' as PortraitStyle,
-  framing: 'headshot' as PortraitFraming,
+  framing: initialFraming as PortraitFraming,
   background: 'scene' as PortraitBackground,
   customStyle: '',
 })
@@ -47,6 +48,16 @@ const entityId = computed(() => props.entity.id)
 const revealDraftKey = computed(() => `mythoscircle:reveal-prompt:${props.campaignId}:${entityId.value}`)
 const data = computed(() => props.entity.data as Record<string, unknown>)
 const appearanceReady = computed(() => hasNonBlankAppearance(data.value['appearance']))
+const artworkReady = computed(() => {
+  if (props.entity.kind === 'character') return appearanceReady.value
+  const description = data.value['description']
+  return (typeof description === 'string' && !!description.trim()) ||
+    (typeof props.entity.text === 'string' && !!props.entity.text.trim())
+})
+const isCharacter = computed(() => props.entity.kind === 'character')
+const artworkLabel = computed(() => props.entity.kind === 'place' ? 'Place artwork' : props.entity.kind === 'faction' ? 'Faction artwork' : 'Portrait')
+const artworkSubject = computed(() => props.entity.kind === 'place' ? 'location' : props.entity.kind === 'faction' ? 'faction' : 'portrait')
+const availableFramings = computed(() => ARTWORK_FRAMINGS[props.entity.kind] ?? ARTWORK_FRAMINGS.character)
 const isBoss = computed(() => {
   const role = data.value['role']
   return typeof role === 'string' && BOSS_ROLES.has(role)
@@ -81,6 +92,11 @@ const canUseAutomaticPrompt = computed(() =>
   automaticRevealPrompt.value !== null && revealPrompt.value !== automaticRevealPrompt.value,
 )
 
+watch(() => props.entity.kind, (kind) => {
+  const options = ARTWORK_FRAMINGS[kind] ?? ARTWORK_FRAMINGS.character
+  if (!options.includes(portraitDraft.value.framing)) portraitDraft.value.framing = options[0]!
+})
+
 watch([() => props.campaignId, entityId], restoreRevealDraft)
 watch(
   [() => props.campaignId, entityId, () => JSON.stringify(data.value['appearance']), isBoss],
@@ -113,8 +129,8 @@ function status(job: ReturnType<typeof latestJob>, label: string): string | null
   if (job.state === 'queued') return `${label} queued — position ${job.queue_position ?? '…'}`
   if (job.state === 'running') return `${label} generating…`
   if (job.state === 'failed') {
-    if (label === 'Portrait' && /provider connection error|connection refused|all connection attempts failed|connecterror/i.test(job.error ?? '')) {
-      return 'Portrait generator is offline. Start the image service and try again.'
+    if (/provider connection error|connection refused|all connection attempts failed|connecterror/i.test(job.error ?? '')) {
+      return 'Image generator is offline. Start the image service and try again.'
     }
     return `${label} failed: ${job.error ?? 'unknown error'}`
   }
@@ -122,7 +138,7 @@ function status(job: ReturnType<typeof latestJob>, label: string): string | null
 }
 
 async function generatePortrait() {
-  if (!appearanceReady.value || jobs.portraitInFlight(props.campaignId, entityId.value)) return
+  if (!artworkReady.value || jobs.portraitInFlight(props.campaignId, entityId.value)) return
   error.value = ''
   try {
     await jobs.submitPortrait(props.campaignId, entityId.value, {
@@ -133,7 +149,7 @@ async function generatePortrait() {
     })
     await jobs.syncList(props.campaignId)
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : 'Could not generate the portrait.'
+    error.value = err instanceof ApiError ? err.message : `Could not generate ${artworkSubject.value} artwork.`
   }
 }
 
@@ -251,34 +267,34 @@ onUnmounted(() => {
 
     <details class="mc-media-block mc-media-disclosure">
       <summary class="mc-media-summary">
-        <span>Portrait</span>
-        <span class="mc-muted">{{ status(portraitJob, 'Portrait') ?? (portrait ? 'Portrait ready' : 'No portrait yet') }}</span>
+        <span>{{ artworkLabel }}</span>
+        <span class="mc-muted">{{ status(portraitJob, artworkLabel) ?? (portrait ? 'Artwork ready' : 'No artwork yet') }}</span>
       </summary>
-      <img v-if="portrait" :src="mediaUrl(portrait)" :alt="`${entity.name} portrait`" class="mc-media-image" />
-      <p v-else class="mc-muted">No portrait yet.</p>
+      <img v-if="portrait" :src="mediaUrl(portrait)" :alt="`${entity.name} ${artworkSubject} artwork`" class="mc-media-image" />
+      <p v-else class="mc-muted">No artwork yet.</p>
       <div class="mc-media-controls">
-        <select v-model="portraitDraft.style" aria-label="Portrait style" :disabled="!appearanceReady">
+        <select v-model="portraitDraft.style" :aria-label="`${artworkLabel} style`" :disabled="!artworkReady">
           <option v-for="style in PORTRAIT_STYLES" :key="style" :value="style">{{ PORTRAIT_STYLE_LABELS[style] }}</option>
         </select>
-        <input v-if="portraitDraft.style === 'custom'" v-model="portraitDraft.customStyle" placeholder="Describe the style…" :disabled="!appearanceReady" />
-        <select v-model="portraitDraft.framing" aria-label="Portrait framing" :disabled="!appearanceReady">
-          <option v-for="framing in PORTRAIT_FRAMINGS" :key="framing" :value="framing">{{ PORTRAIT_FRAMING_LABELS[framing] }}</option>
+        <input v-if="portraitDraft.style === 'custom'" v-model="portraitDraft.customStyle" placeholder="Describe the style…" :disabled="!artworkReady" />
+        <select v-model="portraitDraft.framing" :aria-label="`${artworkLabel} composition`" :disabled="!artworkReady">
+          <option v-for="framing in availableFramings" :key="framing" :value="framing">{{ PORTRAIT_FRAMING_LABELS[framing] }}</option>
         </select>
-        <select v-model="portraitDraft.background" aria-label="Portrait background" :disabled="!appearanceReady">
+        <select v-model="portraitDraft.background" :aria-label="`${artworkLabel} background`" :disabled="!artworkReady">
           <option v-for="background in PORTRAIT_BACKGROUNDS" :key="background" :value="background">{{ PORTRAIT_BACKGROUND_LABELS[background] }}</option>
         </select>
       </div>
       <div class="mc-media-buttons">
-        <button type="button" class="mc-btn mc-btn-secondary" :disabled="!appearanceReady || jobs.portraitInFlight(campaignId, entityId)" @click="generatePortrait">
-          {{ jobs.portraitInFlight(campaignId, entityId) ? 'Portrait queued…' : 'Generate portrait' }}
+        <button type="button" class="mc-btn mc-btn-secondary" :disabled="!artworkReady || jobs.portraitInFlight(campaignId, entityId)" @click="generatePortrait">
+          {{ jobs.portraitInFlight(campaignId, entityId) ? 'Artwork queued…' : `Generate ${artworkSubject} artwork` }}
         </button>
-        <button type="button" class="mc-btn mc-btn-secondary" :disabled="portraitLinkBusy" @click="getPortraitLink">
+        <button v-if="isCharacter" type="button" class="mc-btn mc-btn-secondary" :disabled="portraitLinkBusy" @click="getPortraitLink">
           {{ portraitLinkBusy ? 'Getting link…' : 'Copy portrait link' }}
         </button>
-        <button v-if="portrait" type="button" class="mc-btn mc-btn-secondary" @click="deletePortrait">Delete portrait</button>
+        <button v-if="portrait" type="button" class="mc-btn mc-btn-secondary" @click="deletePortrait">Delete artwork</button>
       </div>
-      <p v-if="!appearanceReady" class="mc-muted">Add an appearance before generating media.</p>
-      <p v-if="status(portraitJob, 'Portrait')" class="mc-muted">{{ status(portraitJob, 'Portrait') }}</p>
+      <p v-if="!artworkReady" class="mc-muted">{{ isCharacter ? 'Add an appearance before generating a portrait.' : 'Add a description before generating artwork.' }}</p>
+      <p v-if="status(portraitJob, artworkLabel)" class="mc-muted">{{ status(portraitJob, artworkLabel) }}</p>
       <input v-if="portraitLink" :value="portraitLink" readonly aria-label="Portrait link" class="mc-media-link" @focus="($event.target as HTMLInputElement).select()" />
     </details>
 

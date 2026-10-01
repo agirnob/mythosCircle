@@ -12,7 +12,7 @@ import { hasNonBlankAppearance } from '../lib/appearance'
 import {
   PORTRAIT_BACKGROUNDS,
   PORTRAIT_BACKGROUND_LABELS,
-  PORTRAIT_FRAMINGS,
+  ARTWORK_FRAMINGS,
   PORTRAIT_FRAMING_LABELS,
   PORTRAIT_STYLES,
   PORTRAIT_STYLE_LABELS,
@@ -361,7 +361,9 @@ const portraitDrafts = ref<Record<string, PortraitDraft>>({})
 function portraitDraft(entityId: string): PortraitDraft {
   const existing = portraitDrafts.value[entityId]
   if (existing) return existing
-  const draft = { ...PORTRAIT_DRAFT_DEFAULTS }
+  const entity = entities.value.find((candidate) => candidate.id === entityId)
+  const choices = entity ? artworkFramings(entity) : ARTWORK_FRAMINGS.character!
+  const draft = { ...PORTRAIT_DRAFT_DEFAULTS, framing: choices[0] ?? 'headshot' }
   portraitDrafts.value[entityId] = draft
   return draft
 }
@@ -468,6 +470,21 @@ function entityHasAppearance(entity: EntityExport): boolean {
   return hasNonBlankAppearance((data as Record<string, unknown>)['appearance'])
 }
 
+function entityHasArtworkSource(entity: EntityExport): boolean {
+  if (entity.kind === 'character') return entityHasAppearance(entity)
+  const description = entity.data['description']
+  return (typeof description === 'string' && !!description.trim()) ||
+    (typeof entity.text === 'string' && !!entity.text.trim())
+}
+
+function artworkFramings(entity: EntityExport): readonly PortraitFraming[] {
+  return ARTWORK_FRAMINGS[entity.kind] ?? ARTWORK_FRAMINGS.character!
+}
+
+function artworkLabel(entity: EntityExport): string {
+  return entity.kind === 'place' ? 'Place artwork' : entity.kind === 'faction' ? 'Faction artwork' : 'Portrait'
+}
+
 /** The latest image job for this entity (newest first) — status source. */
 function portraitJobFor(entityId: string) {
   return (
@@ -489,11 +506,11 @@ function portraitJobFor(entityId: string) {
 function portraitStatus(entity: EntityExport): string | null {
   const job = portraitJobFor(entity.id)
   if (!job) {
-    return entityHasAppearance(entity) ? null : 'Add an appearance to generate a portrait.'
+    return entityHasArtworkSource(entity) ? null : `Add a ${entity.kind === 'character' ? 'character appearance' : 'description'} to generate artwork.`
   }
-  if (job.state === 'queued') return `Portrait queued — position ${job.queue_position ?? '…'}`
-  if (job.state === 'running') return 'Generating portrait…'
-  if (job.state === 'failed') return `Portrait failed: ${job.error ?? 'unknown error'}`
+  if (job.state === 'queued') return `Artwork queued — position ${job.queue_position ?? '…'}`
+  if (job.state === 'running') return 'Generating artwork…'
+  if (job.state === 'failed') return `Artwork failed: ${job.error ?? 'unknown error'}`
   return null
 }
 
@@ -502,12 +519,12 @@ function portraitStatus(entity: EntityExport): string | null {
 function portraitFailure(entity: EntityExport): string | null {
   const job = portraitJobFor(entity.id)
   if (job?.state !== 'failed') return null
-  return `Portrait failed: ${job.error ?? 'unknown error'}`
+  return `Artwork failed: ${job.error ?? 'unknown error'}`
 }
 
 async function generatePortrait(entity: EntityExport) {
   if (jobs.portraitInFlight(campaignId, entity.id)) return
-  if (!entityHasAppearance(entity)) return // the backend gate, mirrored
+  if (!entityHasArtworkSource(entity)) return // the backend gate, mirrored
   portraitErrors.value[entity.id] = ''
   try {
     const draft = portraitDraft(entity.id)
@@ -522,7 +539,7 @@ async function generatePortrait(entity: EntityExport) {
     await jobs.syncList(campaignId)
   } catch (err) {
     portraitErrors.value[entity.id] =
-      err instanceof ApiError ? err.message : 'Could not generate the portrait.'
+      err instanceof ApiError ? err.message : 'Could not generate artwork.'
   }
 }
 
@@ -1437,31 +1454,32 @@ function additionalDataBlock(entity: EntityExport): string {
               <img
                 v-if="portraitFor(entity)"
                 :src="portraitUrl(entity)"
-                :alt="`${entity.name} portrait`"
+                :alt="`${entity.name} ${artworkLabel(entity).toLowerCase()}`"
                 class="portrait-img"
               />
               <p v-else-if="world.mediaFetchFailed(campaignId)" class="muted">
-                Portrait list unavailable.
+                Artwork list unavailable.
               </p>
-              <p v-else class="muted">No portrait.</p>
+              <p v-else class="muted">No artwork.</p>
               <p class="portrait-actions">
                 <button
                   type="button"
                   class="link"
                   :disabled="
-                    jobs.portraitInFlight(campaignId, entity.id) || !entityHasAppearance(entity)
+                    jobs.portraitInFlight(campaignId, entity.id) || !entityHasArtworkSource(entity)
                   "
                   @click="generatePortrait(entity)"
                 >
                   {{
                     jobs.portraitInFlight(campaignId, entity.id)
                       ? portraitJobFor(entity.id)?.state === 'running'
-                        ? 'Generating portrait…'
-                        : 'Portrait queued…'
-                      : 'Generate portrait'
+                        ? 'Generating artwork…'
+                        : 'Artwork queued…'
+                      : `Generate ${entity.kind === 'character' ? 'portrait' : `${entity.kind} artwork`}`
                   }}
                 </button>
                 <button
+                  v-if="entity.kind === 'character'"
                   type="button"
                   class="link"
                   :disabled="portraitLinkBusy === entity.id"
@@ -1486,14 +1504,14 @@ function additionalDataBlock(entity: EntityExport): string {
                   :disabled="deletingId !== null"
                   @click="removePortrait(entity)"
                 >
-                  {{ deletingId === entity.id ? 'Deleting…' : 'Delete portrait' }}
+                  {{ deletingId === entity.id ? 'Deleting…' : 'Delete artwork' }}
                 </button>
               </p>
-              <p class="portrait-options" :aria-disabled="!entityHasAppearance(entity)">
+              <p class="portrait-options" :aria-disabled="!entityHasArtworkSource(entity)">
                 <select
                   v-model="portraitDraft(entity.id).style"
-                  aria-label="Portrait style"
-                  :disabled="!entityHasAppearance(entity)"
+                  :aria-label="`${artworkLabel(entity)} style`"
+                  :disabled="!entityHasArtworkSource(entity)"
                 >
                   <option v-for="s in PORTRAIT_STYLES" :key="s" :value="s">
                     {{ PORTRAIT_STYLE_LABELS[s] }}
@@ -1504,21 +1522,21 @@ function additionalDataBlock(entity: EntityExport): string {
                   v-model="portraitDraft(entity.id).customStyle"
                   class="portrait-custom"
                   placeholder="Describe the style…"
-                  :disabled="!entityHasAppearance(entity)"
+                  :disabled="!entityHasArtworkSource(entity)"
                 />
                 <select
                   v-model="portraitDraft(entity.id).framing"
-                  aria-label="Portrait framing"
-                  :disabled="!entityHasAppearance(entity)"
+                  :aria-label="`${artworkLabel(entity)} composition`"
+                  :disabled="!entityHasArtworkSource(entity)"
                 >
-                  <option v-for="f in PORTRAIT_FRAMINGS" :key="f" :value="f">
+                  <option v-for="f in artworkFramings(entity)" :key="f" :value="f">
                     {{ PORTRAIT_FRAMING_LABELS[f] }}
                   </option>
                 </select>
                 <select
                   v-model="portraitDraft(entity.id).background"
-                  aria-label="Portrait background"
-                  :disabled="!entityHasAppearance(entity)"
+                  :aria-label="`${artworkLabel(entity)} background`"
+                  :disabled="!entityHasArtworkSource(entity)"
                 >
                   <option v-for="b in PORTRAIT_BACKGROUNDS" :key="b" :value="b">
                     {{ PORTRAIT_BACKGROUND_LABELS[b] }}

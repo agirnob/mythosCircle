@@ -9,7 +9,10 @@
  */
 
 export type PortraitStyle = 'photorealistic' | 'cartoonish' | 'illustration' | 'custom'
-export type PortraitFraming = 'portrait' | 'headshot' | 'full_body'
+export type PortraitFraming =
+  | 'portrait' | 'headshot' | 'full_body'
+  | 'landscape' | 'establishing' | 'detail'
+  | 'emblem' | 'banner' | 'scene'
 export type PortraitBackground = 'scene' | 'plain' | 'dark' | 'transparent'
 
 export interface PortraitOptions {
@@ -26,7 +29,14 @@ export const PORTRAIT_STYLES: readonly PortraitStyle[] = [
   'illustration',
   'custom',
 ]
-export const PORTRAIT_FRAMINGS: readonly PortraitFraming[] = ['portrait', 'headshot', 'full_body']
+export const PORTRAIT_FRAMINGS: readonly PortraitFraming[] = [
+  'portrait', 'headshot', 'full_body', 'landscape', 'establishing', 'detail', 'emblem', 'banner', 'scene',
+]
+export const ARTWORK_FRAMINGS: Record<string, readonly PortraitFraming[]> = {
+  character: ['portrait', 'headshot', 'full_body'],
+  place: ['landscape', 'establishing', 'detail'],
+  faction: ['emblem', 'banner', 'scene'],
+}
 export const PORTRAIT_BACKGROUNDS: readonly PortraitBackground[] = [
   'scene',
   'plain',
@@ -44,6 +54,12 @@ export const PORTRAIT_FRAMING_LABELS: Record<PortraitFraming, string> = {
   portrait: 'Portrait (waist-up)',
   headshot: 'Headshot',
   full_body: 'Full body',
+  landscape: 'Landscape',
+  establishing: 'Establishing view',
+  detail: 'Detail study',
+  emblem: 'Emblem / sigil',
+  banner: 'Faction banner',
+  scene: 'Faction scene',
 }
 export const PORTRAIT_BACKGROUND_LABELS: Record<PortraitBackground, string> = {
   scene: 'Scenic',
