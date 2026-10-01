@@ -60,63 +60,416 @@ _IDENTITY_KEYS = ("role", "level_cr", "race_type", "class_profession", "alignmen
 _STAT_BLOCK_KEY = "stat_block"
 
 SHEET_CSS = """\
-:root { color-scheme: light; }
-@page { size: auto; margin: 18mm 16mm; }
-* { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+:root {
+  color-scheme: light;
+  --ink: #28211c;
+  --muted: #74645a;
+  --red: #8e2926;
+  --rule: #b78261;
+  --paper: #fffaf0;
+  --wash: #f2e6d3;
+}
+@page {
+  size: auto;
+  margin: 15mm 14mm;
+}
+* {
+  box-sizing: border-box;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
 body {
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  color: #26201a; background: #ffffff; margin: 0 auto; max-width: 19cm;
-  padding: 2rem 1.5rem; line-height: 1.45; font-size: 11.5pt;
+  color: var(--ink);
+  background: #e9e2d8;
+  margin: 0 auto;
+  max-width: 1100px;
+  padding: clamp(1rem, 4vw, 3.5rem);
+  line-height: 1.5;
+  font-size: 11.5pt;
 }
-h1 { font-size: 1.9rem; margin: 0 0 0.15rem; color: #1a3a5c; letter-spacing: 0.02em; }
-h2, h3 { color: #1a3a5c; margin: 1.2rem 0 0.4rem; break-after: avoid; page-break-after: avoid; }
-.meta { color: #6b5d4f; font-size: 0.9rem; margin: 0.1rem 0; }
-.small { font-size: 0.8rem; }
-.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-.doc-header { border-bottom: 4px double #1a3a5c; margin-bottom: 1.2rem; padding-bottom: 0.4rem; }
+h1,
+  h2,
+  h3,
+  h4,
+  p {
+  margin-top: 0;
+}
+h1 {
+  font-size: clamp(2rem, 5vw, 3.4rem);
+  line-height: 1.02;
+  margin: 0 0 .55rem;
+  color: #241e1a;
+  letter-spacing: -.025em;
+}
+h2 {
+  color: var(--ink);
+  font-size: 1.4rem;
+  margin: 0 0 .3rem;
+  break-after: avoid;
+}
+h3 {
+  color: var(--red);
+  font-size: .84rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  margin: 1rem 0 .45rem;
+  break-after: avoid;
+}
+h4 {
+  color: var(--red);
+  font-size: .91rem;
+  margin: .8rem 0 .25rem;
+  break-after: avoid;
+}
+.meta {
+  color: var(--muted);
+  font-size: .9rem;
+  margin: .1rem 0;
+}
+.small {
+  font-size: .8rem;
+}
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.doc-header {
+  position: relative;
+  background: var(--paper);
+  border: 1px solid #d6c6ad;
+  border-top: 5px solid var(--red);
+  box-shadow: 0 10px 32px #49362612;
+  margin-bottom: 1.4rem;
+  padding: clamp(1.25rem, 4vw, 2.5rem);
+}
+.doc-kicker {
+  color: var(--red);
+  font: 700 .68rem/1.2 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  margin: 0 0 .65rem;
+}
 .entity-card {
-  background: #f8f3e6; border-top: 3px double #1a3a5c; border-bottom: 3px double #1a3a5c;
-  padding: 0.9rem 1.1rem 0.6rem; margin: 0 0 1.6rem; break-inside: avoid; page-break-inside: avoid;
+  position: relative;
+  background: var(--paper);
+  border: 1px solid #d6c6ad;
+  border-top: 4px solid var(--rule);
+  box-shadow: 0 5px 20px #4936260d;
+  padding: clamp(1rem, 3vw, 2rem);
+  margin: 0 0 1.3rem;
+  break-inside: auto;
 }
-.hero { text-align: center; margin: 0.6rem 0; break-inside: avoid; page-break-inside: avoid; }
-.hero img { max-width: 100%; max-height: 9cm; border: 1px solid #c9b28a; }
-.prose { white-space: pre-line; margin: 0.45rem 0; }
+.entity-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: .75rem;
+  border-bottom: 1px solid #dfd1bb;
+  margin-bottom: .9rem;
+}
+.entity-kind {
+  display: inline-block;
+  color: var(--red);
+  font: 700 .68rem/1.2 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  border: 1px solid #d2ae91;
+  padding: .32rem .5rem;
+  white-space: nowrap;
+}
+.hero {
+  float: right;
+  width: min(34%, 250px);
+  margin: 0 0 1rem 1.25rem;
+  break-inside: avoid;
+}
+.hero img {
+  display: block;
+  width: 100%;
+  max-height: 11cm;
+  object-fit: cover;
+  object-position: top;
+  border: 5px solid #fff;
+  outline: 1px solid #cdbb9f;
+  box-shadow: 0 5px 18px #33251b24;
+}
+.prose {
+  white-space: pre-line;
+  margin: .35rem 0 .7rem;
+}
+.entity-lead {
+  font-size: 1.04rem;
+  line-height: 1.58;
+  max-width: 70ch;
+}
+.character-notes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .65rem;
+  clear: both;
+}
+.character-notes section {
+  border-top: 1px solid #dfd1bb;
+  padding: .7rem .15rem .25rem;
+  break-inside: avoid;
+}
+.character-notes h3 {
+  margin: 0 0 .35rem;
+  font-size: .68rem;
+}
+.character-notes .note-appearance,
+  .character-notes .note-background,
+  .character-notes .note-catchphrases {
+  grid-column: 1 / -1;
+}
+.setting-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .65rem;
+  margin: 1rem 0;
+}
+.setting-facts section {
+  padding: .8rem 1rem;
+  background: #f6eddf;
+  border-left: 3px solid #bc8968;
+  break-inside: avoid;
+}
+.setting-facts h3 {
+  margin: 0 0 .35rem;
+  font-size: .67rem;
+}
 .stat-block {
-  background: #fdfaf1; border: 1px solid #c9b28a; padding: 0.7rem 0.9rem;
-  margin: 0.8rem 0; break-inside: avoid; page-break-inside: avoid;
+  --sb-ink: #29231e;
+  --sb-red: #8e2926;
+  background: #fff9ed;
+  color: var(--sb-ink);
+  border: 1px solid #c9a987;
+  border-top: 5px solid var(--sb-red);
+  border-bottom: 5px solid var(--sb-red);
+  padding: .85rem 1.05rem;
+  margin: 1rem 0 1.2rem;
+  box-shadow: 0 5px 18px #46301a12;
+  break-inside: auto;
 }
-.stat-block h3 {
-  margin-top: 0; border-bottom: 1px solid #1a3a5c; padding-bottom: 0.15rem;
+.stat-title {
+  color: var(--sb-red);
+  font-size: 1.65rem;
+  line-height: 1.1;
+  margin: 0 0 .18rem;
+  text-transform: none;
+  letter-spacing: -.02em;
+}
+.stat-subtitle {
+  font-style: italic;
+  margin: 0 0 .6rem;
+}
+.stat-divider {
+  height: 4px;
+  border: 0;
+  background: linear-gradient(90deg, var(--sb-red), #c99570 65%, transparent);
+  margin: .55rem 0;
+}
+.stat-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .25rem 1.1rem;
+  padding: .15rem 0;
+}
+.stat-fact {
+  min-width: 7rem;
+}
+.stat-fact strong,
+  .stat-term {
+  color: var(--sb-red);
+}
+.stat-abilities {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: center;
+  margin: .45rem 0;
+}
+.stat-abilities th {
+  color: var(--sb-red);
+  font: 700 .72rem ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .08em;
+  padding: .25rem;
+  border-bottom: 1px solid #d8bea1;
+}
+.stat-abilities td {
+  padding: .3rem .2rem;
+  border-bottom: 1px solid #eadcc8;
+  font-weight: 700;
+}
+.stat-abilities small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+}
+.stat-line {
+  margin: .42rem 0;
+}
+.stat-entry {
+  margin: .5rem 0;
+  break-inside: avoid;
+}
+.stat-entry strong {
+  font-style: italic;
+}
+.stat-label {
+  color: var(--sb-red);
+  font-weight: 700;
+}
+.stat-foot {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .3rem 1rem;
+  margin-top: .6rem;
 }
 .abilities {
-  display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.4rem;
-  text-align: center; margin: 0.5rem 0;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: .4rem;
+  text-align: center;
+  margin: .5rem 0;
 }
-.ab { break-inside: avoid; }
 .ab-k {
-  display: block; font-weight: 700; font-size: 0.8rem;
-  letter-spacing: 0.06em; color: #1a3a5c;
+  display: block;
+  font-weight: 700;
+  font-size: .8rem;
+  letter-spacing: .06em;
+  color: var(--red);
 }
-.ab-v { display: block; font-size: 1.05rem; }
-dl.fields dt { font-weight: 700; color: #1a3a5c; font-size: 0.9rem; margin-top: 0.35rem; }
-dl.fields dd { margin: 0 0 0.2rem 1rem; }
-ul.entries { margin: 0.35rem 0; padding-left: 1.2rem; }
-ul.entries li { margin: 0.15rem 0; break-inside: avoid; }
-.relations, .media { font-size: 0.95rem; }
-.badge { color: #8b1a1a; font-weight: 700; }
-table.edges { border-collapse: collapse; width: 100%; margin: 0.6rem 0; }
-table.edges th, table.edges td {
-  border: 1px solid #b9a97f; padding: 0.25rem 0.5rem;
-  text-align: left; font-size: 0.9rem;
+.ab-v {
+  display: block;
+  font-size: 1.05rem;
 }
-table.edges th { background: #1a3a5c; color: #ffffff; }
-table.edges tr { break-inside: avoid; page-break-inside: avoid; }
-details.appendix { margin-top: 1rem; font-size: 0.85rem; }
+dl.fields {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) 3fr;
+  gap: .15rem .75rem;
+  margin: .4rem 0;
+}
+dl.fields dt {
+  font-weight: 700;
+  color: #59463a;
+  font-size: .88rem;
+}
+dl.fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+ul.entries {
+  margin: .3rem 0;
+  padding-left: 1.2rem;
+}
+ul.entries li {
+  margin: .18rem 0;
+  break-inside: avoid;
+}
+.relations,
+  .media {
+  font-size: .94rem;
+}
+.badge {
+  color: var(--red);
+  font-weight: 700;
+}
+.world-section {
+  margin: 1.8rem 0;
+}
+.world-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: .75rem;
+  padding-bottom: .5rem;
+  border-bottom: 2px solid var(--red);
+  margin-bottom: .8rem;
+}
+.world-section-title h2 {
+  margin: 0;
+}
+.world-section-title span {
+  color: var(--muted);
+  font: 700 .7rem ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+.world-section .entity-card {
+  break-inside: auto;
+}
+.world-section .character-notes {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.world-section .character-notes .note-catchphrases {
+  display: none;
+}
+.world-index {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+  list-style: none;
+  padding: 0;
+}
+.world-index a {
+  display: inline-block;
+  padding: .35rem .65rem;
+  background: var(--paper);
+  border: 1px solid #d6c6ad;
+  text-decoration: none;
+}
+table.edges {
+  border-collapse: collapse;
+  width: 100%;
+  margin: .6rem 0;
+  background: var(--paper);
+}
+table.edges th,
+  table.edges td {
+  border: 1px solid #d6c6ad;
+  padding: .45rem .6rem;
+  text-align: left;
+  font-size: .9rem;
+}
+table.edges th {
+  background: #3b302a;
+  color: #fff9ed;
+  font: 700 .7rem ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+table.edges tr {
+  break-inside: avoid;
+}
+details.appendix {
+  margin-top: 1.2rem;
+  padding-top: .7rem;
+  border-top: 1px solid #d6c6ad;
+  font-size: .82rem;
+}
 details.appendix pre {
-  white-space: pre-wrap; word-break: break-word; background: #f1ead9; padding: 0.6rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f2e6d3;
+  padding: .8rem;
+  overflow-wrap: anywhere;
 }
-a { color: inherit; }
-p { orphans: 3; widows: 3; }
+a {
+  color: inherit;
+}
+p {
+  orphans: 3;
+  widows: 3;
+}
+@media (max-width: 640px) {
+  body { padding: .75rem; }
+  .hero { float: none; width: min(100%, 300px); margin: 0 auto 1rem; }
+  .character-notes, .setting-facts, .stat-foot { grid-template-columns: 1fr; }
+  .character-notes .note-appearance, .character-notes .note-background,
+  .character-notes .note-catchphrases { grid-column: auto; }
+  dl.fields { grid-template-columns: 1fr; gap: 0; }
+  dl.fields dd { margin: 0 0 .35rem; }
+}
 """
 
 
@@ -380,7 +733,13 @@ def _esc(value: Any) -> str:
 
 def _label(key: str) -> str:
     """Humanized section label ('on_defeat' -> 'On defeat')."""
-    return str(key).replace("_", " ").capitalize()
+    labels = {
+        "whats_hidden": "What's hidden",
+        "cr": "Challenge rating",
+        "hp": "Hit points",
+        "ac": "Armor class",
+    }
+    return labels.get(str(key), str(key).replace("_", " ").capitalize())
 
 
 def _is_scalar(value: Any) -> bool:
@@ -453,25 +812,215 @@ def _abilities_grid(value: dict[str, Any]) -> str:
     return f'<div class="abilities">{"".join(cells)}</div>'
 
 
-def _stat_block_panel(stat_block: Any) -> str:
-    """The dedicated stat-block section. A layout preference over the
-    committed shape (spec-2.4/AR25: identity, attributes, combat, skills,
-    actions, traits, spells) — every key still renders, unknown or not."""
+def _stat_modifier(value: Any) -> str:
+    number = _forge_number(value)
+    if number is None:
+        return ""
+    modifier = math.floor((number - 10) / 2)
+    return f" ({modifier:+d})"
+
+
+def _signed_number(value: Any) -> str:
+    number = _forge_number(value)
+    if number is None:
+        return ""
+    return f"{number:+g}"
+
+
+def _stat_entries(value: Any) -> str:
+    if not isinstance(value, list):
+        return _render_value(value)
+    entries: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            entries.append(f'<p class="stat-entry">{_inline(item)}</p>')
+            continue
+        name = item.get("name")
+        description = item.get("description")
+        sentence = damage_parts_sentence(item.get("damage"))
+        if (
+            sentence is not None
+            and isinstance(description, str)
+            and not _states_damage_dice(description, sentence)
+        ):
+            description = f"{description} {sentence}" if description else sentence
+        if sentence is not None and not isinstance(description, str):
+            description = sentence
+        detail = _inline(description) if description is not None else ""
+        attack = _forge_number(item.get("to_hit"))
+        attack_text = (
+            f" <span class='stat-label'>{_signed_number(attack)} to hit.</span>"
+            if attack is not None
+            else ""
+        )
+        title = f"<strong>{_esc(name)}.</strong>" if isinstance(name, str) and name else ""
+        entries.append(f'<p class="stat-entry">{title}{attack_text} {detail}</p>')
+    return "".join(entries)
+
+
+def _stat_block_panel(stat_block: Any, data: dict[str, Any] | None = None) -> str:
+    """A familiar 5e-inspired stat block, rendered from the committed
+    values while leaving the original record untouched in the appendix."""
     if not isinstance(stat_block, dict):
         return f"<section>{_render_value(stat_block)}</section>"
-    parts = ["<h3>Stat Block</h3>"]
-    for key, value in _ordered(stat_block, _STAT_BLOCK_ORDER):
-        if key == "attributes" and isinstance(value, dict):
-            parts.append(_abilities_grid(value))
-        elif isinstance(value, dict):
-            parts.append(
-                f"<h4>{_esc(_label(str(key)))}</h4>"
-                f"{_render_mapping(value, _KEY_ORDER.get(key, ()))}"
+    data = data or {}
+    identity_value = stat_block.get("identity")
+    identity: dict[str, Any] = identity_value if isinstance(identity_value, dict) else {}
+    attributes_value = stat_block.get("attributes")
+    attributes: dict[str, Any] = attributes_value if isinstance(attributes_value, dict) else {}
+    combat_value = stat_block.get("combat")
+    combat: dict[str, Any] = combat_value if isinstance(combat_value, dict) else {}
+    saves_value = stat_block.get("saves")
+    saves: dict[str, Any] = saves_value if isinstance(saves_value, dict) else {}
+    role = identity.get("role") or data.get("role")
+    race = identity.get("race") or data.get("race_type")
+    size = stat_block.get("size") or data.get("size")
+    cls = identity.get("class") or data.get("class_profession")
+    alignment = identity.get("alignment") or data.get("alignment")
+    level_or_cr = identity.get("level") if identity.get("level") is not None else identity.get("cr")
+    if role == "Monster":
+        label = f"Challenge {level_or_cr}" if level_or_cr is not None else "Creature"
+        creature_type = ", ".join(str(part) for part in (size, race, alignment) if part)
+        subtitle = " · ".join(part for part in (creature_type, label) if part)
+    else:
+        label = (
+            f"{role or 'Character'}{f' · Level {level_or_cr}' if level_or_cr is not None else ''}"
+        )
+        subtitle = " · ".join(
+            str(part)
+            for part in (
+                label,
+                " ".join(str(part) for part in (race, cls) if part),
+                str(alignment) if alignment else "",
             )
+            if part
+        )
+
+    parts = [
+        f'<h3 class="stat-title">{_esc(str(data.get("name") or "Stat Block"))}</h3>',
+        f'<p class="stat-subtitle">{_esc(subtitle or label)}</p>',
+        '<hr class="stat-divider"/>',
+    ]
+    facts: list[tuple[str, Any]] = []
+    for label_text, candidates in (
+        ("Armor Class", ("ac", "armor_class")),
+        ("Hit Points", ("hp", "hit_points")),
+        ("Hit Dice", ("hit_dice",)),
+        ("Speed", ("speed",)),
+        ("Initiative", ("initiative",)),
+    ):
+        value = next((combat[key] for key in candidates if combat.get(key) is not None), None)
+        if value is None and label_text == "Speed":
+            value = stat_block.get("speed")
+        if value is not None:
+            facts.append((label_text, value))
+    if facts:
+        parts.append(
+            '<div class="stat-facts">'
+            + "".join(
+                f'<div class="stat-fact"><strong>{_esc(label_text)}</strong> {_inline(value)}</div>'
+                for label_text, value in facts
+            )
+            + "</div>"
+        )
+    if attributes:
+        parts.append(
+            '<table class="stat-abilities"><thead><tr>'
+            + "".join(
+                f"<th>{_esc(key.upper())}</th>" for key in _ABILITY_ORDER if key in attributes
+            )
+            + "</tr></thead><tbody><tr>"
+            + "".join(
+                f"<td>{_inline(attributes[key])}<small>{_esc(_stat_modifier(attributes[key]))}</small></td>"
+                for key in _ABILITY_ORDER
+                if key in attributes
+            )
+            + "</tr></tbody></table>"
+        )
+
+    compact_fields = (
+        ("Saving Throws", saves),
+        ("Skills", stat_block.get("skills")),
+        ("Damage Vulnerabilities", stat_block.get("damage_vulnerabilities")),
+        ("Damage Resistances", stat_block.get("damage_resistances")),
+        ("Damage Immunities", stat_block.get("damage_immunities")),
+        ("Condition Immunities", stat_block.get("condition_immunities")),
+        ("Senses", stat_block.get("senses")),
+        ("Languages", stat_block.get("languages")),
+        ("Passive Perception", stat_block.get("passive_perception")),
+        ("Proficiency Bonus", stat_block.get("proficiency_bonus")),
+    )
+    for label_text, value in compact_fields:
+        if value is None or value == [] or value == {} or value == "":
+            continue
+        if label_text == "Saving Throws" and isinstance(value, dict):
+            rendered = ", ".join(
+                f"{_esc(str(key).upper())} {_signed_number(bonus)}"
+                for key, bonus in _ordered(value, _ABILITY_ORDER)
+            )
+        elif label_text == "Skills" and isinstance(value, list):
+            rendered = ", ".join(
+                f"{_esc(item.get('name', ''))} {_signed_number(item.get('bonus'))}"
+                if isinstance(item, dict) and _forge_number(item.get("bonus")) is not None
+                else _inline(item.get("name", item) if isinstance(item, dict) else item)
+                for item in value
+            )
+        elif isinstance(value, list):
+            rendered = ", ".join(_inline(item) for item in value)
+        elif isinstance(value, dict):
+            rendered = ", ".join(f"{_esc(_label(str(k)))} {_inline(v)}" for k, v in value.items())
         else:
-            rendered = _render_value(value)
-            if rendered:
-                parts.append(f"<h4>{_esc(_label(str(key)))}</h4>{rendered}")
+            rendered = _inline(value)
+        parts.append(
+            '<p class="stat-line"><strong class="stat-term">'
+            f"{_esc(label_text)}</strong> {rendered}</p>"
+        )
+
+    known = {
+        "identity",
+        "attributes",
+        "combat",
+        "saves",
+        "skills",
+        "damage_vulnerabilities",
+        "damage_resistances",
+        "damage_immunities",
+        "condition_immunities",
+        "senses",
+        "languages",
+        "passive_perception",
+        "proficiency_bonus",
+        "speed",
+        "initiative",
+    }
+    for key in ("traits", "actions", "spells", "features", "resources"):
+        value = stat_block.get(key)
+        if not value:
+            continue
+        parts.append(f'<hr class="stat-divider"/><h4>{_esc(_label(key))}</h4>')
+        parts.append(
+            _stat_entries(value)
+            if key in {"traits", "actions", "features"}
+            else _render_value(value)
+        )
+        known.add(key)
+
+    spellcasting = stat_block.get("spellcasting")
+    if isinstance(spellcasting, dict) and spellcasting:
+        parts.append('<hr class="stat-divider"/><h4>Spellcasting</h4>')
+        parts.append(_render_mapping(spellcasting, _KEY_ORDER["spellcasting"]))
+        known.add("spellcasting")
+    boss = data.get("boss")
+    if isinstance(boss, dict) and boss:
+        parts.append('<hr class="stat-divider"/><h4>Legendary Actions &amp; Lair</h4>')
+        parts.append(_render_mapping(boss, _KEY_ORDER["boss"]))
+    extra = [
+        (key, value) for key, value in _ordered(stat_block, _STAT_BLOCK_ORDER) if key not in known
+    ]
+    for key, value in extra:
+        parts.append(
+            f'<hr class="stat-divider"/><h4>{_esc(_label(key))}</h4>{_render_value(value, key)}'
+        )
     return (
         '<section class="stat-block" data-entity-part="stat_block">' + "".join(parts) + "</section>"
     )
@@ -543,31 +1092,82 @@ def _entity_sections(
         key for key in _IDENTITY_KEYS if isinstance(data.get(key), str) and data[key]
     }
     identity_bits = [str(data[key]) for key in _IDENTITY_KEYS if key in identity_consumed]
-    header = [
-        f"<h2>{_esc(names[entity.id])}</h2>",
-        f'<p class="meta">{_esc(entity.kind)}'
-        + (f" · {_esc(' · '.join(identity_bits))}" if identity_bits else "")
-        + "</p>",
-    ]
-    body = []
+    kind = str(entity.kind).lower()
+    article_id = f' id="entity-{_html.escape(entity.id, quote=True)}"' if not appendix else ""
+    heading = (
+        f'<header class="entity-heading"><div><p class="doc-kicker">{_esc(kind)} dossier</p>'
+        f"<h2>{_esc(names[entity.id])}</h2>"
+        + (f'<p class="meta">{_esc(" · ".join(identity_bits))}</p>' if identity_bits else "")
+        + f'</div><span class="entity-kind">{_esc(kind)}</span></header>'
+    )
+    body: list[str] = []
     if embed:
         body.append(_hero_figure(export, entity))
     if entity.text is not None:
-        body.append(f'<p class="prose">{_esc(entity.text)}</p>')
-    for key, value in data.items():
-        if key == _STAT_BLOCK_KEY:
-            body.append(_stat_block_panel(value))
-        elif (
-            key in identity_consumed
-            or (key == "name" and isinstance(value, str))
-            or value is None
-            or value == ""
-        ):
-            continue
-        else:
-            rendered = _render_value(value, str(key))
+        body.append(f'<p class="prose entity-lead">{_esc(entity.text)}</p>')
+
+    if kind == "character" and _STAT_BLOCK_KEY in data:
+        body.append(_stat_block_panel(data[_STAT_BLOCK_KEY], data))
+
+    profile_keys = (
+        "appearance",
+        "personality",
+        "background",
+        "goals",
+        "relationships",
+        "secret",
+        "rumor",
+        "party_hook",
+        "voice_style",
+        "catchphrases",
+    )
+    profile: list[str] = []
+    used = set(identity_consumed) | {"name"}
+    if kind == "character":
+        used.add(_STAT_BLOCK_KEY)
+        for key in profile_keys:
+            value = data.get(key)
+            if value is None or value == "":
+                continue
+            rendered = _render_value(value, key)
             if rendered:
-                body.append(f"<section><h3>{_esc(_label(str(key)))}</h3>{rendered}</section>")
+                profile.append(
+                    f'<section class="note-{_html.escape(key, quote=True)}">'
+                    f"<h3>{_esc(_label(key))}</h3>{rendered}</section>"
+                )
+            used.add(key)
+        if profile:
+            body.append(f'<div class="character-notes">{"".join(profile)}</div>')
+    else:
+        setting: list[str] = []
+        for key in (
+            "description",
+            "inhabitants",
+            "whats_hidden",
+            "doctrine",
+            "assets",
+            "archetype",
+            "dial",
+        ):
+            value = data.get(key)
+            if value is None or value == "":
+                continue
+            rendered = _render_value(value, key)
+            if rendered:
+                setting.append(f"<section><h3>{_esc(_label(key))}</h3>{rendered}</section>")
+            used.add(key)
+        if setting:
+            body.append(f'<div class="setting-facts">{"".join(setting)}</div>')
+
+    for key, value in data.items():
+        if key in used or value is None or value == "":
+            continue
+        if key == _STAT_BLOCK_KEY:
+            body.append(_stat_block_panel(value, data))
+            continue
+        rendered = _render_value(value, str(key))
+        if rendered:
+            body.append(f"<section><h3>{_esc(_label(str(key)))}</h3>{rendered}</section>")
     relations = []
     subject = _esc(names.get(entity.id, entity.id))
     for edge in export.edges:
@@ -589,17 +1189,29 @@ def _entity_sections(
             "<details class='appendix'><summary>Complete committed record (JSON)</summary>"
             f"<pre>{_esc(appendix_json)}</pre></details>"
         )
-    return f'<article class="entity-card">{"".join(header)}{"".join(body)}</article>'
+    return (
+        f'<article{article_id} class="entity-card kind-{_html.escape(kind, quote=True)}">'
+        f"{heading}{''.join(body)}</article>"
+    )
 
 
-def _document(title: str, subtitle: str, body: str) -> str:
+def _document(
+    title: str,
+    subtitle: str,
+    body: str,
+    *,
+    body_class: str = "entity-document",
+    kicker: str = "",
+) -> str:
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n<head>\n<meta charset="utf-8"/>\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1"/>\n'
         f"<title>{_esc(title)}</title>\n"
-        f"<style>{SHEET_CSS}</style>\n</head>\n<body>\n"
-        f'<header class="doc-header"><h1>{_esc(title)}</h1>{subtitle}</header>\n'
+        f"<style>{SHEET_CSS}</style>\n</head>\n"
+        f'<body class="{_html.escape(body_class, quote=True)}">\n'
+        f'<header class="doc-header"><p class="doc-kicker">{_esc(kicker)}</p>'
+        f"<h1>{_esc(title)}</h1>{subtitle}</header>\n"
         f"{body}\n</body>\n</html>\n"
     )
 
@@ -614,7 +1226,7 @@ def _revision_meta(export: WorldExport) -> str:
 
 
 def render_entity_html(export: WorldExport, entity_id: str) -> str:
-    """The single-character sheet: portrait embedded, stat block, every
+    """The single-entity sheet: portrait embedded, stat block, every
     committed section, relations, media, and the verbatim JSON appendix."""
     names = name_labels(export)
     entity = next(e for e in export.entities if e.id == entity_id)
@@ -622,10 +1234,14 @@ def render_entity_html(export: WorldExport, entity_id: str) -> str:
         f'<p class="meta">{_esc(export.campaign.title)} · {_esc(export.campaign.theme)}</p>'
         + _revision_meta(export)
     )
+    data = entity.data if isinstance(entity.data, dict) else {}
+    role = str(data.get("role") or "character").lower()
     return _document(
         names[entity.id],
         subtitle,
         _entity_sections(export, entity, names, embed=True, appendix=True) + "\n",
+        body_class=f"entity-document {role}-sheet",
+        kicker="Monster stat block" if role == "monster" else "Character sheet",
     )
 
 
@@ -642,10 +1258,49 @@ def render_world_html(export: WorldExport) -> str:
         else "",
         _revision_meta(export),
     ]
-    body_parts = [
-        _entity_sections(export, entity, names, embed=False, appendix=False)
-        for entity in export.entities
+    group_order = ("place", "faction", "character")
+    groups = {
+        kind: [entity for entity in export.entities if str(entity.kind).lower() == kind]
+        for kind in group_order
+    }
+    other_entities = [
+        entity for entity in export.entities if str(entity.kind).lower() not in group_order
     ]
+    index_items = []
+    body_parts = []
+    for kind in group_order:
+        members = groups[kind]
+        if not members:
+            continue
+        title = f"{kind.title()}s" if kind != "faction" else "Factions"
+        index_items.append(f'<li><a href="#section-{kind}">{_esc(title)} · {len(members)}</a></li>')
+        cards = "".join(
+            _entity_sections(export, entity, names, embed=False, appendix=False)
+            for entity in members
+        )
+        body_parts.append(
+            f'<section class="world-section" id="section-{kind}">'
+            '<header class="world-section-title">'
+            f"<h2>{_esc(title)}</h2><span>{len(members)} records</span></header>"
+            f"{cards}</section>"
+        )
+    if other_entities:
+        index_items.append(f'<li><a href="#section-other">Other · {len(other_entities)}</a></li>')
+        cards = "".join(
+            _entity_sections(export, entity, names, embed=False, appendix=False)
+            for entity in other_entities
+        )
+        body_parts.append(
+            '<section class="world-section" id="section-other">'
+            '<header class="world-section-title"><h2>Other records</h2></header>'
+            f"{cards}</section>"
+        )
+    if index_items:
+        body_parts.insert(
+            0,
+            '<nav aria-label="World contents"><ul class="world-index">'
+            f"{''.join(index_items)}</ul></nav>",
+        )
     if export.edges:
         rows = [
             f"<tr><td>{_esc(names.get(edge.src, edge.src))}</td>"
@@ -658,7 +1313,13 @@ def render_world_html(export: WorldExport) -> str:
             "<thead><tr><th>source</th><th>type</th><th>counter</th><th>target</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></section>"
         )
-    return _document(export.campaign.title, "".join(subtitle_parts), "".join(body_parts))
+    return _document(
+        export.campaign.title,
+        "".join(subtitle_parts),
+        "".join(body_parts),
+        body_class="world-document",
+        kicker="Campaign atlas",
+    )
 
 
 # ---------------------------------------------------------------------------
