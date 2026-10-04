@@ -22,6 +22,23 @@ const button = (wrapper: ReturnType<typeof mount>, text: string) =>
   wrapper.findAll('button').find((b) => b.text() === text)!
 
 describe('TonightNotes SQL editor', () => {
+  it('closes clean editors and unsaved new notes without writing to the database', async () => {
+    const save = vi.spyOn(useTonightStore(), 'saveNotes')
+    const wrapper = mount(TonightNotes, { props: { ...props, savedText: '' } })
+    expect(button(wrapper, 'Cancel').attributes('disabled')).toBeUndefined()
+    await button(wrapper, 'Cancel').trigger('click')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    await button(wrapper, 'Add notes').trigger('click')
+    await wrapper.get('textarea').setValue('Unsaved new notes')
+    await button(wrapper, 'Cancel').trigger('click')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Unsaved new notes')
+    await button(wrapper, 'Add notes').trigger('click')
+    expect(wrapper.get('textarea').element.value).toBe('')
+    expect(save).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('uses explicit save/cancel and preserves multiline text without browser autosave', async () => {
     const save = vi.spyOn(useTonightStore(), 'saveNotes').mockResolvedValue({ refreshed: true })
     const wrapper = mount(TonightNotes, { props })
@@ -35,6 +52,10 @@ describe('TonightNotes SQL editor', () => {
     expect(wrapper.find('context').exists()).toBe(false)
     await wrapper.get('textarea').setValue('discard')
     await button(wrapper, 'Cancel').trigger('click')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('discard')
+    expect(wrapper.get('.mc-notes-saved').text()).toBe('<context>\nSecond line')
+    await button(wrapper, 'Edit notes').trigger('click')
     expect(wrapper.get('textarea').element.value).toBe('<context>\nSecond line')
   })
 
@@ -108,6 +129,62 @@ describe('TonightNotes SQL editor', () => {
   })
 })
 
+it('keeps closed notes current, restores keyboard focus, and reopens with the current save baseline', async () => {
+  const save = vi.spyOn(useTonightStore(), 'saveNotes').mockResolvedValue({ refreshed: true })
+  const wrapper = mount(TonightNotes, { props, attachTo: document.body })
+  await button(wrapper, 'Cancel').trigger('click')
+  expect(wrapper.find('textarea').exists()).toBe(false)
+  expect(wrapper.get('.mc-notes-saved').text()).toBe('Saved notes')
+  expect(button(wrapper, 'Edit notes').attributes('aria-label')).toBe('Edit notes for Blacksmith')
+  expect(document.activeElement).toBe(button(wrapper, 'Edit notes').element)
+  await wrapper.setProps({ savedText: 'Remote saved note' })
+  expect(wrapper.get('.mc-notes-saved').text()).toBe('Remote saved note')
+  expect(wrapper.find('textarea').exists()).toBe(false)
+  await button(wrapper, 'Edit notes').trigger('click')
+  expect(document.activeElement).toBe(wrapper.get('textarea').element)
+  await wrapper.get('textarea').setValue('New draft')
+  await button(wrapper, 'Save notes').trigger('click')
+  await flushPromises()
+  expect(save).toHaveBeenCalledWith('C1', 'E1', 'New draft', 'Remote saved note')
+  await button(wrapper, 'Cancel').trigger('click')
+  await wrapper.setProps({ savedText: '' })
+  expect(wrapper.find('.mc-notes-saved').exists()).toBe(false)
+  await button(wrapper, 'Add notes').trigger('click')
+  expect(wrapper.get('textarea').element.value).toBe('')
+  wrapper.unmount()
+})
+
+it('discards failed drafts and closes a reviewed conflict using the latest confirmed notes', async () => {
+  const save = vi.spyOn(useTonightStore(), 'saveNotes').mockRejectedValue(new Error('Offline'))
+  const wrapper = mount(TonightNotes, { props })
+  await wrapper.get('textarea').setValue('Failed draft')
+  await button(wrapper, 'Save notes').trigger('click')
+  await flushPromises()
+  await button(wrapper, 'Cancel').trigger('click')
+  expect(wrapper.find('textarea').exists()).toBe(false)
+  expect(wrapper.get('.mc-notes-saved').text()).toBe('Saved notes')
+  expect(wrapper.text()).not.toContain('Offline')
+  await button(wrapper, 'Edit notes').trigger('click')
+  save.mockRejectedValue(new ApiError(409, 'stale', 'Changed'))
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(JSON.stringify({ session: { E1: { notes: 'Reviewed notes' } }, knowledge: {} })),
+  )
+  await wrapper.get('textarea').setValue('Conflicting draft')
+  await button(wrapper, 'Save notes').trigger('click')
+  await flushPromises()
+  await button(wrapper, 'Cancel').trigger('click')
+  expect(wrapper.find('pre').exists()).toBe(false)
+  expect(wrapper.get('.mc-notes-saved').text()).toBe('Reviewed notes')
+  await button(wrapper, 'Edit notes').trigger('click')
+  expect(wrapper.get('textarea').element.value).toBe('Reviewed notes')
+  await button(wrapper, 'Cancel').trigger('click')
+  useAuthStore().clearSession()
+  await wrapper.vm.$nextTick()
+  expect(wrapper.text()).not.toContain('Reviewed notes')
+  expect(wrapper.find('textarea').element?.disabled).toBe(true)
+  wrapper.unmount()
+})
+
 it.each([{ campaignId: 'C2' }, { entityId: 'E2' }])(
   'ignores late saves after scope changes: %o',
   async (target) => {
@@ -169,6 +246,8 @@ it('reconciles a successful save with newer returned server text and keeps Cance
   await wrapper.get('textarea').setValue('Newer server note')
   expect(button(wrapper, 'Cancel').attributes('disabled')).toBeUndefined()
   await button(wrapper, 'Cancel').trigger('click')
+  expect(wrapper.find('textarea').exists()).toBe(false)
+  await button(wrapper, 'Edit notes').trigger('click')
   expect(wrapper.get('textarea').element.value).toBe('Latest server note')
 })
 
@@ -215,10 +294,13 @@ it('disables overlapping conflict review and ignores a review dismissed before i
     ),
   )
   await flushPromises()
-  expect(wrapper.get('textarea').element.value).toBe('Saved notes')
+  expect(wrapper.find('textarea').exists()).toBe(false)
   expect(wrapper.find('pre').exists()).toBe(false)
+  await button(wrapper, 'Edit notes').trigger('click')
+  expect(wrapper.get('textarea').element.value).toBe('Saved notes')
   await wrapper.get('textarea').setValue('Different draft')
   await button(wrapper, 'Cancel').trigger('click')
+  await button(wrapper, 'Edit notes').trigger('click')
   expect(wrapper.get('textarea').element.value).toBe('Saved notes')
 })
 
@@ -240,6 +322,8 @@ it('preserves the newer applied projection when the save refresh was superseded'
   expect(wrapper.get('textarea').element.value).toBe('Newer applied text')
   await wrapper.get('textarea').setValue('Draft after saving')
   await button(wrapper, 'Cancel').trigger('click')
+  expect(wrapper.find('textarea').exists()).toBe(false)
+  await button(wrapper, 'Edit notes').trigger('click')
   expect(wrapper.get('textarea').element.value).toBe('Newer applied text')
   wrapper.unmount()
 })

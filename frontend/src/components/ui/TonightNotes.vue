@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { ApiError, apiFetch } from '../../api/client'
 import type { components } from '../../api/schema'
 import { sessionGeneration, SessionChangedError } from '../../api/session'
@@ -18,6 +18,9 @@ const fieldId = useId()
 const draft = ref('')
 const baseline = ref('')
 const confirmed = ref('')
+const editing = ref(true)
+const notesField = ref<globalThis.HTMLTextAreaElement | null>(null)
+const editButton = ref<globalThis.HTMLButtonElement | null>(null)
 const busy = ref(false)
 const status = ref('')
 const conflict = ref(false)
@@ -28,7 +31,6 @@ const scope = computed(() =>
   auth.account?.id ? JSON.stringify([auth.account.id, props.campaignId, props.entityId]) : '',
 )
 const dirty = computed(() => draft.value !== baseline.value)
-const canReload = computed(() => dirty.value || draft.value !== confirmed.value || conflict.value)
 let version = 0
 onBeforeUnmount(() => {
   version++
@@ -43,6 +45,7 @@ watch(
     draft.value = value && !accountChanged ? props.savedText : ''
     baseline.value = draft.value
     confirmed.value = draft.value
+    editing.value = true
     busy.value = false
     conflict.value = false
     reviewed.value = false
@@ -66,13 +69,25 @@ function updateDraft(event: globalThis.Event) {
   draft.value = field.value
   status.value = ''
 }
-function cancel() {
+function reloadSaved() {
   reviewVersion++
   reviewing.value = false
   draft.value = confirmed.value
   baseline.value = confirmed.value
   conflict.value = false
   status.value = ''
+}
+function cancel() {
+  reloadSaved()
+  editing.value = false
+  void nextTick(() => editButton.value?.focus())
+}
+function edit() {
+  draft.value = confirmed.value
+  baseline.value = confirmed.value
+  status.value = ''
+  editing.value = true
+  void nextTick(() => notesField.value?.focus())
 }
 function keepDraft() {
   reviewVersion++
@@ -157,9 +172,12 @@ async function review() {
 
 <template>
   <section class="mc-tonight-notes">
-    <label :for="fieldId" class="mc-notes-label">Notes for {{ entityName }}</label>
+    <label v-if="editing" :for="fieldId" class="mc-notes-label">Notes for {{ entityName }}</label>
+    <p v-else class="mc-notes-label">Notes for {{ entityName }}</p>
     <textarea
+      v-if="editing"
       :id="fieldId"
+      ref="notesField"
       :value="draft"
       :disabled="!scope || busy"
       :data-scope="scope"
@@ -168,7 +186,19 @@ async function review() {
       class="mc-notes-input"
       @input="updateDraft"
     />
-    <div class="mc-notes-actions">
+    <p v-if="!editing && confirmed" class="mc-notes-saved">{{ confirmed }}</p>
+    <button
+      v-if="!editing"
+      ref="editButton"
+      type="button"
+      class="mc-btn mc-btn-secondary"
+      :disabled="!scope"
+      :aria-label="`${confirmed ? 'Edit' : 'Add'} notes for ${entityName}`"
+      @click="edit"
+    >
+      {{ confirmed ? 'Edit notes' : 'Add notes' }}
+    </button>
+    <div v-if="editing" class="mc-notes-actions">
       <button
         type="button"
         class="mc-btn mc-btn-secondary"
@@ -180,7 +210,7 @@ async function review() {
       <button
         type="button"
         class="mc-btn mc-btn-secondary"
-        :disabled="busy || !canReload"
+        :disabled="busy"
         @click="cancel"
       >
         Cancel
@@ -200,7 +230,7 @@ async function review() {
         Retry review
       </button>
       <template v-else>
-        <button type="button" class="mc-btn mc-btn-secondary" @click="cancel">
+        <button type="button" class="mc-btn mc-btn-secondary" @click="reloadSaved">
           Reload saved notes
         </button>
         <button type="button" class="mc-btn mc-btn-secondary" @click="keepDraft">
