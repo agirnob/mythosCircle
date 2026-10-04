@@ -641,3 +641,186 @@ def test_revisions_surgical_take_back_projects_actual_changed_fields(client: Any
     assert client.post(f"{path}/undo", json={"revision_id": damaged_revision}).status_code == 204
     result = client.get(f"{path}/revisions").json()["revisions"][0]["events"][0]
     assert result["details"] == ["HP: 47"]
+
+
+def test_entity_notes_lifecycle_history_and_surgical_undo(client: Any) -> None:
+    _register_login(client)
+    campaign = _create_campaign(client)
+    place, entity = _commit_world(campaign)
+    path = f"/api/campaigns/{campaign}"
+    verb = f"{path}/entities/{entity}/session-verb"
+    # Empty notes do not fabricate state on an untouched entity.
+    count = _chain_len(campaign)
+    assert (
+        client.post(verb, json={"update": {"notes": ""}, "expected_notes": ""}).status_code == 204
+    )
+    assert _chain_len(campaign) == count
+    assert _run_state(client, campaign)["session"] == {}
+    assert client.post(verb, json={"update": {"defeated": True}}).status_code == 204
+    assert (
+        client.post(
+            f"{path}/entities/{entity}/knowledge-toggle", json={"field": "secret", "known": True}
+        ).status_code
+        == 204
+    )
+    note = "Defeated at the forge.\n<Still owes the party a sword>"
+    assert (
+        client.post(verb, json={"update": {"notes": note}, "expected_notes": ""}).status_code == 204
+    )
+    added = _head(campaign).id
+    count = _chain_len(campaign)
+    assert (
+        client.post(verb, json={"update": {"notes": note}, "expected_notes": note}).status_code
+        == 204
+    )
+    assert _chain_len(campaign) == count
+    # Fresh read projections use SQL, not client memory, and keep unrelated flags.
+    assert _run_state(client, campaign)["session"][entity] == {"defeated": True, "notes": note}
+    assert _run_state(client, campaign)["knowledge"][entity] == {"secret": True}
+    independent = TestClient(client.app, base_url="https://testserver")
+    assert (
+        independent.post(
+            "/api/auth/login", json={"email": "dm@example.com", "password": "correct-battery-horse"}
+        ).status_code
+        == 200
+    )
+    assert _run_state(independent, campaign)["session"][entity]["notes"] == note
+    independent.close()
+    assert client.post(verb, json={"update": {"item": True}}).status_code == 204
+    assert (
+        client.post(verb, json={"update": {"notes": "newer"}, "expected_notes": note}).status_code
+        == 204
+    )
+    assert client.post(f"{path}/undo", json={"revision_id": added}).status_code == 204
+    assert _run_state(client, campaign)["session"][entity]["notes"] == "newer"
+    assert (
+        client.post(verb, json={"update": {"notes": ""}, "expected_notes": "newer"}).status_code
+        == 204
+    )
+    assert client.post(f"{path}/undo", json={}).status_code == 204
+    assert _run_state(client, campaign)["session"][entity]["notes"] == "newer"
+    feed = client.get(f"{path}/revisions?limit=100").json()["revisions"]
+    details = [
+        detail for revision in feed for event in revision["events"] for detail in event["details"]
+    ]
+    assert "Added notes" in details and "Updated notes" in details and "Cleared notes" in details
+    assert all(note not in detail and "newer" not in detail for detail in details)
+    assert all(
+        event["action"] == "edited" for revision in feed[:-1] for event in revision["events"]
+    )
+    # A note-only row is supported, and undo removes precisely its creation.
+    place_verb = f"{path}/entities/{place}/session-verb"
+    assert (
+        client.post(
+            place_verb, json={"update": {"notes": "only notes"}, "expected_notes": ""}
+        ).status_code
+        == 204
+    )
+    assert _run_state(client, campaign)["session"][place] == {"notes": "only notes"}
+    assert client.post(f"{path}/undo", json={}).status_code == 204
+    assert place not in _run_state(client, campaign)["session"]
+    assert client.get(f"{path}/revisions").json()["revisions"][0]["events"][0]["details"] == [
+        "Removed notes"
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"update": {"notes": 2}, "expected_notes": ""},
+        {"update": {"notes": None}, "expected_notes": ""},
+        {"update": {"notes": "x" * 20001}, "expected_notes": ""},
+        {"update": {"notes": "text"}},
+        {"update": {"notes": "text"}, "expected_notes": []},
+        {"update": {"notes": "text"}, "expected_notes": None},
+    ],
+)
+def test_notes_invalid_payload_has_no_revision(client: Any, payload: Any) -> None:
+    _register_login(client)
+    campaign = _create_campaign(client)
+    _, entity = _commit_world(campaign)
+    count = _chain_len(campaign)
+    assert (
+        client.post(
+            f"/api/campaigns/{campaign}/entities/{entity}/session-verb", json=payload
+        ).status_code
+        == 422
+    )
+    assert _chain_len(campaign) == count
+    assert _run_state(client, campaign)["session"] == {}
+
+
+def test_notes_stale_private_and_missing_targets(client: Any) -> None:
+    _register_login(client)
+    campaign = _create_campaign(client)
+    _, entity = _commit_world(campaign)
+    path = f"/api/campaigns/{campaign}/entities/{entity}/session-verb"
+    assert (
+        client.post(path, json={"update": {"notes": "current"}, "expected_notes": ""}).status_code
+        == 204
+    )
+    count = _chain_len(campaign)
+    assert (
+        client.post(path, json={"update": {"notes": "stale"}, "expected_notes": ""}).status_code
+        == 409
+    )
+    assert _chain_len(campaign) == count
+    assert (
+        client.post(
+            f"/api/campaigns/{campaign}/entities/{ids.new_id()}/session-verb",
+            json={"update": {"notes": "ghost"}, "expected_notes": ""},
+        ).status_code
+        == 404
+    )
+    other = _create_campaign(client, "Other")
+    assert (
+        client.post(
+            f"/api/campaigns/{other}/entities/{entity}/session-verb",
+            json={"update": {"notes": "cross"}, "expected_notes": ""},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.request(
+            "DELETE",
+            f"/api/campaigns/{campaign}/entities/{entity}",
+            json={"cascade": True, "confirm": True},
+        ).status_code
+        == 204
+    )
+    count = _chain_len(campaign)
+    assert (
+        client.post(
+            path, json={"update": {"notes": "ghost"}, "expected_notes": "current"}
+        ).status_code
+        == 404
+    )
+    assert _chain_len(campaign) == count
+    client.post("/api/auth/logout")
+    _register_login(client, "other@example.com")
+    assert client.post(path, content="invalid-json").status_code == 404
+    assert client.post(path, json={"update": {"notes": []}, "expected_notes": 7}).status_code == 404
+    assert client.get(f"/api/campaigns/{campaign}/run-state").status_code == 404
+    assert _chain_len(campaign) == count
+
+
+@pytest.mark.parametrize("character", ["a", "😀"])
+def test_notes_accept_exactly_20000_unicode_codepoints(client: Any, character: str) -> None:
+    _register_login(client)
+    campaign = _create_campaign(client)
+    _, entity = _commit_world(campaign)
+    path = f"/api/campaigns/{campaign}/entities/{entity}/session-verb"
+    notes = character * 20_000
+    assert (
+        client.post(path, json={"update": {"notes": notes}, "expected_notes": ""}).status_code
+        == 204
+    )
+    assert _run_state(client, campaign)["session"][entity]["notes"] == notes
+    count = _chain_len(campaign)
+    assert (
+        client.post(
+            path, json={"update": {"notes": notes + character}, "expected_notes": notes}
+        ).status_code
+        == 422
+    )
+    assert _chain_len(campaign) == count

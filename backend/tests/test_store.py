@@ -2703,3 +2703,24 @@ def test_unmodified_state_creation_take_back_deletes_and_redoes(world: str, fami
         assert _session_row(world, entity) == {"defeated": True}
     else:
         assert _knowledge_rows(world, entity) == {"secret": True}
+
+
+def test_notes_compare_is_atomic_under_concurrent_writes(world: str) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    _, entity = _seed_world(world)
+    gate = Barrier(2)
+
+    def save(text: str) -> str:
+        gate.wait()
+        try:
+            commit_session_verb(world, entity, update={"notes": text}, expected_notes="")
+            return "saved"
+        except StaleRevisionError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(save, ["first", "second"]))
+    assert sorted(results) == ["conflict", "saved"]
+    assert _session_row(world, entity)["notes"] in {"first", "second"}

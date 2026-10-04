@@ -39,6 +39,8 @@ export interface TonightEntry {
   fetching: boolean
   /** A refetch is owed once the in-flight fetch settles. */
   dirty: boolean
+  projectionVersion?: number
+  appliedProjectionVersion?: number
 }
 
 function emptyEntry(): TonightEntry {
@@ -100,6 +102,70 @@ export const useTonightStore = defineStore('tonight', {
       )
       await this.fetchTonight(campaignId)
     },
+    /** Notes POST is authoritative; projection refresh failure cannot undo a save. */
+    async saveNotes(campaignId: string, entityId: string, notes: string, expectedNotes: string) {
+      const generation = sessionGeneration()
+      await apiFetch(
+        `/api/campaigns/${encodeURIComponent(campaignId)}/entities/${encodeURIComponent(entityId)}/session-verb`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ update: { notes }, expected_notes: expectedNotes }),
+        },
+      )
+      if (generation !== sessionGeneration()) throw new SessionChangedError()
+      const entry = this.ensureEntry(campaignId)
+      const minimumVersion = (entry.projectionVersion ?? 0) + 1
+      const result = await this.refreshProjections(campaignId)
+      if (generation !== sessionGeneration()) throw new SessionChangedError()
+      if (!result.refreshed) {
+        if (
+          this.byCampaign[campaignId] === entry &&
+          entry.runState &&
+          (entry.appliedProjectionVersion ?? 0) >= minimumVersion
+        ) {
+          const latest = entry.runState.session[entityId]?.notes
+          return { refreshed: true, savedText: typeof latest === 'string' ? latest : '' }
+        }
+        // A failed save refresh may have invalidated the initial read. Ensure
+        // a trailing read can populate it or report a usable load error.
+        if (entry.fetching || !entry.runState) void this.fetchTonight(campaignId)
+        return { refreshed: false }
+      }
+      const value = result.runState.session[entityId]?.notes
+      return { refreshed: true, savedText: typeof value === 'string' ? value : '' }
+    },
+    /** Every actual projection read shares one sequence, including save refreshes. */
+    async refreshProjections(campaignId: string) {
+      const generation = sessionGeneration()
+      const entry = this.ensureEntry(campaignId)
+      const version = (entry.projectionVersion ?? 0) + 1
+      entry.projectionVersion = version
+      const current = () =>
+        generation === sessionGeneration() &&
+        this.byCampaign[campaignId] === entry &&
+        entry.projectionVersion === version
+      try {
+        const [runState, feed] = await Promise.all([
+          apiFetch<RunStateResponse>(`/api/campaigns/${encodeURIComponent(campaignId)}/run-state`),
+          apiFetch<RevisionsResponse>(
+            `/api/campaigns/${encodeURIComponent(campaignId)}/revisions?limit=20`,
+          ),
+        ])
+        if (!current()) return { refreshed: false as const }
+        entry.runState = runState
+        entry.appliedProjectionVersion = version
+        entry.revisions = feed.revisions
+        entry.error = null
+        return { refreshed: true as const, runState }
+      } catch (err) {
+        if (generation !== sessionGeneration() || err instanceof SessionChangedError)
+          throw new SessionChangedError()
+        if (current() && !(err instanceof ApiError && err.status === 404)) {
+          entry.error = err instanceof ApiError ? err.message : 'Could not load Tonight.'
+        }
+        return { refreshed: false as const }
+      }
+    },
     /** One Tier-2b knowledge toggle (AD-29): absolute target state, one
      * undoable step; a same-value repeat is a no-op. Run-state refetches
      * on success; ApiError propagates. */
@@ -121,24 +187,9 @@ export const useTonightStore = defineStore('tonight', {
       entry.fetching = true
       entry.loading = true
       try {
-        const [runState, feed] = await Promise.all([
-          apiFetch<RunStateResponse>(`/api/campaigns/${encodeURIComponent(campaignId)}/run-state`),
-          apiFetch<RevisionsResponse>(
-            `/api/campaigns/${encodeURIComponent(campaignId)}/revisions?limit=20`,
-          ),
-        ])
-        entry.runState = runState
-        entry.revisions = feed.revisions
-        entry.error = null
+        await this.refreshProjections(campaignId)
       } catch (err) {
         if (generation !== sessionGeneration() || err instanceof SessionChangedError) return
-        // The feed and run-state ride one entry: a failure of either
-        // surface keeps the other's last-known projection (never blanks
-        // on a transient error). A 404/ownership miss is the view's
-        // existing not-found flow, not a Tonight error.
-        if (!(err instanceof ApiError && err.status === 404)) {
-          entry.error = err instanceof ApiError ? err.message : 'Could not load Tonight.'
-        }
       } finally {
         entry.fetching = false
         entry.loading = false

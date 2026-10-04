@@ -105,3 +105,18 @@ def test_knowledge_changes_and_timestamp_only_compensation(field: str) -> None:
 @pytest.mark.parametrize("kind", ["entity_created", "entity_updated", "edge_deleted"])
 def test_ordinary_events_have_no_additional_details(kind: str) -> None:
     assert _event_details(event(kind, {}, {"data": {"defeated": True}})) == []
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "detail"),
+    [
+        ({}, {"notes": "secret prose"}, "Added notes"),
+        ({"notes": "old"}, {"notes": "new"}, "Updated notes"),
+        ({"notes": "old"}, {"notes": ""}, "Cleared notes"),
+        ({"notes": ""}, {}, "Removed notes"),
+    ],
+)
+def test_note_details_never_include_note_text(before: Any, after: Any, detail: str) -> None:
+    assert _event_details(event("session_state_updated", {"data": before}, {"data": after})) == [
+        detail
+    ]

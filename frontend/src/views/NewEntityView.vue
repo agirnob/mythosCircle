@@ -243,7 +243,13 @@ const dialLevels = computed<string[]>(() => tonight.kindsFor(campaignId)?.dial_l
 /** Non-boolean session markers render as small facts (the AD-27 scar
  * `hp: -12`, allegiance strings, …). */
 const sessionFacts = computed<[string, unknown][]>(() =>
-  Object.entries(sessionImage.value).filter(([, value]) => value !== true && value !== false),
+  Object.entries(sessionImage.value).filter(
+    ([key, value]) => key !== 'notes' && value !== true && value !== false,
+  ),
+)
+
+const sessionNotes = computed(() =>
+  typeof sessionImage.value.notes === 'string' ? sessionImage.value.notes : '',
 )
 
 /** Edge-composer candidates: every other entity in the campaign. */
@@ -611,6 +617,7 @@ async function createEdge(edge: {
             </li>
           </ul>
           <p v-else class="mc-muted">No consequences yet.</p>
+          <p v-if="sessionNotes" class="mc-saved-session-notes">{{ sessionNotes }}</p>
           <p v-if="dialLevels.length > 0" class="mc-dial-line">
             <DialPicker :levels="dialLevels" :current="dial" @change="setDial" />
           </p>
@@ -749,6 +756,10 @@ async function createEdge(edge: {
 </template>
 
 <style scoped>
+.mc-saved-session-notes {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .mc-entity-hero {
   display: flex;
   gap: 1.5rem;

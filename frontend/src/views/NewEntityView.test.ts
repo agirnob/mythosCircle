@@ -92,3 +92,17 @@ describe('NewEntityView edit sessions', () => {
     wrapper.unmount()
   })
 })
+
+it('renders saved multiline session notes as prose while preserving consequence facts', async () => {
+  const { wrapper } = setup()
+  useTonightStore().ensureEntry('C1').runState = {
+    session: { E1: { notes: '<Forge promise>\nBring back the blade.', hp: 8, defeated: true } },
+    knowledge: {},
+  }
+  await flushPromises()
+  expect(wrapper.get('.mc-saved-session-notes').text()).toBe('<Forge promise>\nBring back the blade.')
+  expect(wrapper.find('forge').exists()).toBe(false)
+  expect(wrapper.get('.mc-session-facts').text()).toContain('hp')
+  expect(wrapper.get('.mc-session-facts').text()).not.toContain('notes')
+  wrapper.unmount()
+})

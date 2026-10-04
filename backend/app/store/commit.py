@@ -511,6 +511,8 @@ def _validate_state_image(data: Any) -> None:
     the log alone can rebuild."""
     if not isinstance(data, dict):
         raise InvalidRunStateError("session state must be an object")
+    if "notes" in data and (not isinstance(data["notes"], str) or len(data["notes"]) > 20_000):
+        raise InvalidRunStateError("notes must be a string of at most 20,000 characters")
     try:
         json.dumps(data, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -586,6 +588,7 @@ def commit_session_verb(
     *,
     update: dict[str, Any],
     base_revision: str | None = None,
+    expected_notes: str | None = None,
 ) -> models.Revision:
     """One Tier-2a consequence verb (mark defeated / flip allegiance /
     resolve thread / spend item) as ONE undoable revision (AD-26, AD-28).
@@ -613,8 +616,17 @@ def commit_session_verb(
             raise UnknownEntityError(entity_id)
         _validate_state_image(update)
         current = _resolve_state_image(session, campaign_id, entity_id)
-        merged = {**current, **update}
         latest = latest_revision(session, campaign_id)
+        if "notes" in update:
+            if not isinstance(expected_notes, str):
+                raise InvalidRunStateError("expected_notes must be a string when saving notes")
+            if current.get("notes", "") != expected_notes:
+                raise StaleRevisionError(latest.id if latest is not None else None)
+        elif expected_notes is not None and not isinstance(expected_notes, str):
+            raise InvalidRunStateError("expected_notes must be a string")
+        merged = {**current, **update}
+        if "notes" not in current and update.get("notes") == "":
+            merged.pop("notes", None)
         if (
             json.dumps(merged, sort_keys=True, allow_nan=False)
             == json.dumps(current, sort_keys=True, allow_nan=False)

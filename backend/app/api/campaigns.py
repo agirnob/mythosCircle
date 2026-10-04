@@ -514,6 +514,18 @@ def _event_details(event: models.Event) -> list[str]:
         details = []
         for key in sorted(previous.keys() | current.keys()):
             label = _detail_key(key)
+            if key == "notes":
+                if key not in current:
+                    details.append("Removed notes")
+                elif key not in previous or previous[key] != current[key]:
+                    details.append(
+                        "Cleared notes"
+                        if current[key] == ""
+                        else "Added notes"
+                        if not previous.get(key)
+                        else "Updated notes"
+                    )
+                continue
             if key not in current:
                 details.append(f"{label}: removed")
             elif key not in previous or _json.dumps(previous[key], sort_keys=True) != _json.dumps(

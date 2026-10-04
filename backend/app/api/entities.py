@@ -31,6 +31,7 @@ from app.api.common import store_error_as_http
 from app.core.settings import configured_media_dir
 from app.media.service import reclaim_entity_media
 from app.store import StoreError, get_campaign, models
+from app.store.commit import InvalidRunStateError
 from app.store.commit import (
     commit_knowledge_toggle as store_knowledge_toggle,
 )
@@ -206,6 +207,10 @@ async def session_verb(
     """One Tier-2a consequence verb as ONE undoable revision (AD-26,
     AD-28) — the Tonight verb-row wire surface (spec-v3-tier2-routes).
 
+    Notes updates require ``expected_notes`` (the previously read text; empty
+    when absent), and notes must be a string of at most 20,000 characters.
+    The store compares notes atomically, rejecting stale text with 409.
+
     Body ``{"update": {…}, "base_revision"?: str}``: ``update`` is the
     verb's delta, a strict-JSON object the store MERGES onto the
     entity's current session-state image and commits in full
@@ -234,7 +239,15 @@ async def session_verb(
         raise HTTPException(status_code=422, detail="'update' must be an object.")
     base_revision = _optional_base(payload)
     try:
-        store_session_verb(campaign_id, entity_id, update=update, base_revision=base_revision)
+        if "expected_notes" in payload and not isinstance(payload["expected_notes"], str):
+            raise InvalidRunStateError("expected_notes must be a string")
+        store_session_verb(
+            campaign_id,
+            entity_id,
+            update=update,
+            base_revision=base_revision,
+            expected_notes=payload.get("expected_notes"),
+        )
     except StoreError as exc:
         store_error_as_http(exc)
 
