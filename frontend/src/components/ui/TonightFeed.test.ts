@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 import TonightFeed from './TonightFeed.vue'
@@ -59,5 +59,25 @@ describe('TonightFeed', () => {
   it('renders an empty message for an empty feed', () => {
     const wrapper = mount(TonightFeed, { props: { revisions: [] } })
     expect(wrapper.text()).toContain('No changes yet.')
+  })
+
+  it('renders escaped details and preserves multiple events of the same kind on update', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const events = [
+      { ...feed[0]!.events[1]!, details: ['Marked defeated', '<img src=x onerror=alert(1)>'] },
+      { ...feed[0]!.events[1]!, target_names: ['The Anchor'], details: ['Resolved thread'] },
+    ]
+    const wrapper = mount(TonightFeed, { props: { revisions: [{ ...feed[0]!, events }] } })
+    expect(wrapper.findAll('.mc-feed-line')).toHaveLength(2)
+    expect(wrapper.text()).toContain('<img src=x onerror=alert(1)>')
+    expect(wrapper.find('img').exists()).toBe(false)
+    await wrapper.setProps({ revisions: [{ ...feed[0]!, events: [...events].reverse() }] })
+    const lines = wrapper.findAll('.mc-feed-line')
+    expect(lines[0]!.text()).toContain('The Anchor')
+    expect(lines[0]!.text()).toContain('Resolved thread')
+    expect(lines[1]!.text()).toContain('Mira')
+    expect(lines[1]!.text()).toContain('Marked defeated')
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

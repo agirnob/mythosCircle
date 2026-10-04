@@ -401,6 +401,7 @@ class EventSummary(BaseModel):
     action: str
     target_names: list[str]
     kind: str
+    details: list[str] = Field(default_factory=list)
 
 
 class RevisionSummary(BaseModel):
@@ -430,7 +431,7 @@ def revisions_history(
     """The Tonight recent-changes read (AD-35): read-only, owner-gated,
     bounded (default 20, clamped to max 100), newest first. Summaries
     are display-ready ``{revision_id, created_at, actor, action,
-    target_names, kind}``; verb commits and their take-backs both map
+    target_names, kind, details}``; verb commits and their take-backs both map
     to ``edited`` (AD-27 — the feed never distinguishes undo from
     edit). Unknown/foreign campaign is the single 404 (no oracle)."""
     if get_campaign(current.id, campaign_id) is None:
@@ -486,7 +487,63 @@ def _event_summary(
         action=action,
         target_names=target_names,
         kind=stream,
+        details=_event_details(event),
     )
+
+
+_SESSION_FLAG_DETAILS = {
+    "defeated": ("Cleared defeated", "Marked defeated"),
+    "allegiance": ("Restored allegiance", "Flipped allegiance"),
+    "thread": ("Reopened thread", "Resolved thread"),
+    "item": ("Restored item", "Spent item"),
+}
+
+
+def _event_details(event: models.Event) -> list[str]:
+    """Project committed images only, including compensating events' actual deltas.
+
+    JSON serialization compares nested types as well as values (True != 1),
+    while key membership keeps a missing field distinct from an explicit null.
+    Timestamp-only updates do not describe a change to session or knowledge.
+    """
+    before = event.payload.get("before") or {}
+    after = event.payload.get("after") or {}
+    if event.type.startswith("session_state_"):
+        previous = before.get("data") or {}
+        current = after.get("data") or {}
+        details = []
+        for key in sorted(previous.keys() | current.keys()):
+            label = _detail_key(key)
+            if key not in current:
+                details.append(f"{label}: removed")
+            elif key not in previous or _json.dumps(previous[key], sort_keys=True) != _json.dumps(
+                current[key], sort_keys=True
+            ):
+                value = current[key]
+                if key in _SESSION_FLAG_DETAILS and isinstance(value, bool):
+                    details.append(_SESSION_FLAG_DETAILS[key][int(value)])
+                else:
+                    rendered = _json.dumps(value, ensure_ascii=False, sort_keys=True)
+                    details.append(f"{label}: {rendered}")
+        return details
+    if event.type.startswith("knowledge_state_"):
+        field = str(event.payload.get("field") or after.get("field") or before.get("field"))
+        label = field.replace("_", " ").replace("-", " ")
+        if not after and before:
+            return [f"Removed {label} knowledge marker"]
+        if after and (not before or before.get("known") is not after.get("known")):
+            return [
+                f"Revealed {label} to party"
+                if after.get("known") is True
+                else f"{label.capitalize()} hidden from party"
+            ]
+    return []
+
+
+def _detail_key(key: str) -> str:
+    if key == "hp":
+        return "HP"
+    return key.replace("_", " ").replace("-", " ").capitalize()
 
 
 class RunStateResponse(BaseModel):

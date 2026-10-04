@@ -549,3 +549,95 @@ def test_verbs_and_toggles_never_leak_into_export(client: Any) -> None:
     after = _export(client, campaign_id)
     assert after["entities"] == before["entities"]
     assert after["edges"] == before["edges"]
+
+
+def test_revisions_details_use_historical_images_and_real_undo(client: Any) -> None:
+    _register_login(client)
+    campaign_id = _create_campaign(client)
+    _place_id, character_id = _commit_world(campaign_id)
+    path = f"/api/campaigns/{campaign_id}"
+    seed_export = _export(client, campaign_id)
+    for defeated in (True, False):
+        assert (
+            client.post(
+                f"{path}/entities/{character_id}/session-verb",
+                json={"update": {"defeated": defeated, "hp": 8}},
+            ).status_code
+            == 204
+        )
+    assert client.post(f"{path}/undo", json={}).status_code == 204
+    for known in (True, False):
+        assert (
+            client.post(
+                f"{path}/entities/{character_id}/knowledge-toggle",
+                json={"field": "party_hook", "known": known},
+            ).status_code
+            == 204
+        )
+    assert client.post(f"{path}/undo", json={}).status_code == 204
+    assert client.post(f"{path}/undo", json={}).status_code == 204
+    # Taking back a newly added flag explicitly describes its removal.
+    assert (
+        client.post(
+            f"{path}/entities/{character_id}/session-verb",
+            json={"update": {"thread": True}},
+        ).status_code
+        == 204
+    )
+    assert client.post(f"{path}/undo", json={}).status_code == 204
+    chain_length = _chain_len(campaign_id)
+    state = _run_state(client, campaign_id)
+    response = client.get(f"{path}/revisions")
+    assert response.status_code == 200
+    revisions = response.json()["revisions"]
+    details = [r["events"][0]["details"] for r in revisions[:-1]]
+    assert details == [
+        ["Thread: removed"],
+        ["Resolved thread"],
+        ["Party hook hidden from party"],
+        ["Revealed party hook to party"],
+        ["Party hook hidden from party"],
+        ["Revealed party hook to party"],
+        ["Marked defeated"],
+        ["Cleared defeated"],
+        ["Marked defeated", "HP: 8"],
+    ]
+    assert all(r["events"][0]["action"] == "edited" for r in revisions[:-1])
+    assert all(e["details"] == [] for e in revisions[-1]["events"])
+    assert _chain_len(campaign_id) == chain_length
+    assert _run_state(client, campaign_id) == state
+    assert _export(client, campaign_id)["entities"] == seed_export["entities"]
+    _register_login(client, "other@example.com")
+    foreign = client.get(f"{path}/revisions")
+    unknown = client.get(f"/api/campaigns/{'0' * 26}/revisions")
+    assert foreign.status_code == unknown.status_code == 404
+    assert foreign.json() == unknown.json()
+
+
+def test_revisions_surgical_take_back_projects_actual_changed_fields(client: Any) -> None:
+    _register_login(client)
+    campaign_id = _create_campaign(client)
+    _place_id, character_id = _commit_world(campaign_id)
+    path = f"/api/campaigns/{campaign_id}"
+    toggle = f"{path}/entities/{character_id}/knowledge-toggle"
+    assert client.post(toggle, json={"field": "secret", "known": True}).status_code == 204
+    reveal_revision = _head(campaign_id).id
+    assert client.post(toggle, json={"field": "secret", "known": False}).status_code == 204
+    # Undoing the older reveal preserves the later hidden value, with no detail.
+    assert client.post(f"{path}/undo", json={"revision_id": reveal_revision}).status_code == 204
+    result = client.get(f"{path}/revisions").json()["revisions"][0]["events"][0]
+    assert result["action"] == "edited"
+    assert result["details"] == []
+    assert client.post(toggle, json={"field": "rumor", "known": False}).status_code == 204
+    assert client.post(f"{path}/undo", json={}).status_code == 204
+    result = client.get(f"{path}/revisions").json()["revisions"][0]["events"][0]
+    assert result["details"] == ["Removed rumor knowledge marker"]
+
+    verb = f"{path}/entities/{character_id}/session-verb"
+    assert client.post(verb, json={"update": {"hp": 40}}).status_code == 204
+    assert client.post(verb, json={"update": {"hp": 28}}).status_code == 204
+    damaged_revision = _head(campaign_id).id
+    assert client.post(verb, json={"update": {"hp": 35, "defeated": True}}).status_code == 204
+    assert client.post(f"{path}/undo", json={"revision_id": damaged_revision}).status_code == 204
+    result = client.get(f"{path}/revisions").json()["revisions"][0]["events"][0]
+    assert result["details"] == ["HP: 47"]

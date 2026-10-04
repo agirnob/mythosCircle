@@ -27,8 +27,8 @@ function shortTime(iso: string): string {
     <li v-for="revision in revisions" :key="revision.revision_id" class="mc-feed-revision">
       <ul class="mc-feed-events">
         <li
-          v-for="event in revision.events"
-          :key="event.revision_id + event.kind"
+          v-for="(event, eventIndex) in revision.events"
+          :key="revision.revision_id + ':' + eventIndex"
           class="mc-feed-line"
         >
           <span class="mc-feed-action">{{ event.action }}</span>
@@ -37,6 +37,11 @@ function shortTime(iso: string): string {
           <time class="mc-feed-time" :datetime="event.created_at">
             {{ shortTime(event.created_at) }}
           </time>
+          <ul v-if="event.details?.length" class="mc-feed-details">
+            <li v-for="(detail, detailIndex) in event.details" :key="detailIndex">
+              {{ detail }}
+            </li>
+          </ul>
         </li>
       </ul>
     </li>
@@ -98,5 +103,13 @@ function shortTime(iso: string): string {
   color: var(--mc-text-muted);
   font-size: var(--mc-meta-size);
   white-space: nowrap;
+}
+.mc-feed-details {
+  flex-basis: 100%;
+  min-width: 0;
+  margin: 0 0 0.45rem;
+  padding-left: 1rem;
+  color: var(--mc-text-secondary);
+  overflow-wrap: anywhere;
 }
 </style>

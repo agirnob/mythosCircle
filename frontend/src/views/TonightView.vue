@@ -8,35 +8,40 @@
  * undo from edit, it shows what the API sends). The state summary joins
  * the run-state's entity ids to names through the world store.
  */
-import { computed, onMounted } from 'vue'
+import { computed, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 import EmptyState from '../components/ui/EmptyState.vue'
 import ErrorState from '../components/ui/ErrorState.vue'
 import SectionHeader from '../components/ui/SectionHeader.vue'
 import TonightFeed from '../components/ui/TonightFeed.vue'
+import TonightNotes from '../components/ui/TonightNotes.vue'
 import StatusBadge from '../components/ui/StatusBadge.vue'
 import { useCampaignsStore } from '../stores/campaigns'
 import { useTonightStore } from '../stores/tonight'
 import { useWorldStore } from '../stores/world'
 
 const route = useRoute()
-const campaignId = route.params.id as string
+const campaignId = computed(() => route.params.id as string)
 
 const tonight = useTonightStore()
 const world = useWorldStore()
 const campaigns = useCampaignsStore()
 
-onMounted(() => {
-  void world.load(campaignId).catch(() => {})
-  void tonight.fetchKinds(campaignId)
-  void tonight.load(campaignId).catch(() => {})
-  if (!campaigns.current || campaigns.current.id !== campaignId) {
-    void campaigns.fetchOne(campaignId).catch(() => {})
-  }
-})
+watch(
+  campaignId,
+  (id) => {
+    void world.load(id).catch(() => {})
+    void tonight.fetchKinds(id)
+    void tonight.load(id).catch(() => {})
+    if (!campaigns.current || campaigns.current.id !== id) {
+      void campaigns.fetchOne(id).catch(() => {})
+    }
+  },
+  { immediate: true },
+)
 
-const entry = computed(() => tonight.entry(campaignId))
+const entry = computed(() => tonight.entry(campaignId.value))
 const revisions = computed(() => entry.value.revisions ?? [])
 const runState = computed(() => entry.value.runState)
 
@@ -51,7 +56,7 @@ const stateful = computed<
     knowledge: [string, boolean][]
   }[]
 >(() => {
-  const names = new Map((world.entry(campaignId).world?.entities ?? []).map((e) => [e.id, e]))
+  const names = new Map((world.entry(campaignId.value).world?.entities ?? []).map((e) => [e.id, e]))
   const out: {
     id: string
     name: string
@@ -95,7 +100,7 @@ const stateful = computed<
     <header class="mc-page-header">
       <div>
         <h1 class="mc-page-title">Tonight</h1>
-        <p v-if="campaigns.current" class="mc-page-description">
+        <p v-if="campaigns.current?.id === campaignId" class="mc-page-description">
           Session state and recent changes for {{ campaigns.current.title }}.
         </p>
       </div>
@@ -105,6 +110,8 @@ const stateful = computed<
         </RouterLink>
       </p>
     </header>
+
+    <TonightNotes :campaign-id="campaignId" />
 
     <template v-if="stateful.length > 0">
       <SectionHeader title="State" meta="now" />

@@ -1167,6 +1167,8 @@ export interface components {
             target_names: string[];
             /** Kind */
             kind: string;
+            /** Details */
+            details?: string[];
         };
         /** GenericWorldCreate */
         GenericWorldCreate: {
