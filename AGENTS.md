@@ -13,6 +13,7 @@ Living-world NPC and world generator for TTRPG Game Masters. The DM remains the 
 ## Open Code Review in Codex
 
 - For an Open Code Review request, use the plugin's `open-code-review-delegate` skill by default. Run `ocr delegate preview --format json` for the requested Git target, then `ocr delegate rule --format json` for every reviewable file and review the selected diffs in Codex.
+- For a whole-code review of the backend and frontend, run `ocr scan --preview --format json --path backend/app,frontend/src` to enumerate files without an OCR LLM, use `ocr delegate rule --format json` to resolve rules, and review the full source files in bounded batches. Account for every excluded file; split source files marked `too_large` into sections for manual review, and include tests when the request covers them.
 - Use OCR-managed `ocr review` only when the user explicitly requests it and an OCR LLM provider is configured. The Codex session does not supply an API endpoint or key to the OCR CLI.
 - If the working tree is clean and no review target is named, review `HEAD` with `--commit HEAD`; report the chosen target.
 
