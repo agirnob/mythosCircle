@@ -35,7 +35,7 @@ const matches = computed(() =>
     .filter((item) => item.name.toLocaleLowerCase().includes(query.value.toLocaleLowerCase()))
     .slice(0, 20),
 )
-const related = computed(() => references.value.filter((item) => item.field == null))
+const relatedEntityIds = computed(() => new Set(references.value.map((item) => item.entity_id)))
 onMounted(() => {
   ;(props.entry ? contextField.value : headlineField.value)?.focus()
 })
@@ -141,8 +141,8 @@ function keydown(event: globalThis.KeyboardEvent) {
   if (event.key === 'Tab') activeField.value = null
 }
 function toggleRelated(entity: { id: string; name: string }) {
-  const existing = related.value.find((item) => item.entity_id === entity.id)
-  if (existing) references.value = references.value.filter((item) => item !== existing)
+  if (relatedEntityIds.value.has(entity.id))
+    references.value = references.value.filter((item) => item.entity_id !== entity.id)
   else
     references.value.push({
       entity_id: entity.id,
@@ -245,16 +245,18 @@ function save() {
       <p v-if="!matches.length">No matching entity. This mention stays plain text.</p>
     </div>
     <p id="journal-mention-hint" class="mc-muted">
-      Type @ to link a character, place, or faction. Choose a match with ↑ ↓ and Enter.
+      Type @ and choose a suggestion to link an entity and select it under Related entities.
+      Use ↑ ↓ and Enter, or click a suggestion.
     </p>
     <details>
       <summary>Related entities · optional</summary>
+      <p class="mc-muted">Unchecking an entity removes its links and keeps the text.</p>
       <div class="mc-journal-related">
         <label v-for="entity in entities" :key="entity.id"
           ><input
             type="checkbox"
             :disabled="busy"
-            :checked="related.some((item) => item.entity_id === entity.id)"
+            :checked="relatedEntityIds.has(entity.id)"
             @change="toggleRelated(entity)"
           />{{ entity.name }} <small>{{ entity.kind }} · {{ entity.id.slice(-6) }}</small></label
         >

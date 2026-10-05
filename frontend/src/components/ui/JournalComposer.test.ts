@@ -27,6 +27,9 @@ describe('Journal mention identity', () => {
     await wrapper.get('#journal-headline').setValue('😀 @')
     await wrapper.get('#journal-headline').trigger('keydown', { key: 'ArrowDown' })
     await wrapper.get('#journal-headline').trigger('keydown', { key: 'Enter' })
+    const checkboxes = wrapper.findAll<HTMLInputElement>('input[type=checkbox]')
+    expect(checkboxes[0]!.element.checked).toBe(false)
+    expect(checkboxes[1]!.element.checked).toBe(true)
     await wrapper.get('#journal-context').setValue('Unknown @text')
     await wrapper.get('form').trigger('submit')
     const draft = wrapper.emitted('save')![0]![0] as JournalDraft
@@ -35,6 +38,47 @@ describe('Journal mention identity', () => {
       { entity_id: 'E2', label: '同名', token: '@同名', field: 'headline', start: 2, end: 5 },
     ])
     expect(draft.context).toBe('Unknown @text')
+    wrapper.unmount()
+  })
+  it('includes saved mentions in related selection and unlinks every occurrence when unchecked', async () => {
+    const wrapper = setup({
+      headline: '@同名 arrived',
+      context: 'Met @同名',
+      references: [
+        { entity_id: 'E1', label: '同名', token: '@同名', field: 'headline', start: 0, end: 3 },
+        { entity_id: 'E1', label: '同名', token: '@同名', field: 'context', start: 4, end: 7 },
+        { entity_id: 'E1', label: '同名', field: null, start: null, end: null },
+      ],
+    })
+    const checkbox = wrapper.findAll<HTMLInputElement>('input[type=checkbox]')[0]!
+    expect(checkbox.element.checked).toBe(true)
+    await checkbox.setValue(false)
+    expect(checkbox.element.checked).toBe(false)
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('save')![0]![0]).toEqual({
+      headline: '@同名 arrived',
+      context: 'Met @同名',
+      references: [],
+    })
+    await checkbox.setValue(true)
+    await wrapper.get('form').trigger('submit')
+    expect((wrapper.emitted('save')![1]![0] as JournalDraft).references).toEqual([
+      { entity_id: 'E1', label: '同名', field: null, start: null, end: null },
+    ])
+    wrapper.unmount()
+  })
+  it('clears the automatic related selection when the only mention is removed', async () => {
+    const wrapper = setup({
+      headline: 'Arrival',
+      context: '@同名',
+      references: [
+        { entity_id: 'E2', label: '同名', token: '@同名', field: 'context', start: 0, end: 3 },
+      ],
+    })
+    const checkbox = wrapper.findAll<HTMLInputElement>('input[type=checkbox]')[1]!
+    expect(checkbox.element.checked).toBe(true)
+    await wrapper.get('#journal-context').setValue('No mention')
+    expect(checkbox.element.checked).toBe(false)
     wrapper.unmount()
   })
   it('shifts spans when text is inserted before mentions and unbinds edited tokens', async () => {
