@@ -589,60 +589,168 @@ def commit_session_verb(
     update: dict[str, Any],
     base_revision: str | None = None,
     expected_notes: str | None = None,
+    session_id: str | None = None,
+    headline: str | None = None,
+    context: str = "",
+    references: Sequence[dict[str, Any]] = (),
+    request_key: str | None = None,
 ) -> models.Revision:
     """One Tier-2a consequence verb (mark defeated / flip allegiance /
     resolve thread / spend item) as ONE undoable revision (AD-26, AD-28).
 
     ``update`` is the verb's delta; the store merges it onto the current
     session-state image and commits the full resulting image (rebuild-
-    faithful, AD-26). A value-identical merge commits nothing and
-    returns the head — the second fire of a double-clicked verb changes
-    nothing (EXPERIENCE Flow 6's double-fire gate).
+    faithful, AD-26). A value-identical legacy merge returns the head.
+    A paired journal action that changes nothing rejects with 409 and
+    remembers its request key, so a later retry cannot unexpectedly apply
+    it after the state changes. Successful retries return their original revision.
 
     Rejects (no state change) with ``UnknownCampaignError``,
     ``UnknownEntityError``, ``InvalidRunStateError``, or
     ``StaleRevisionError``.
     """
+    from app.store.journal import JournalConflictError
+
     with session_scope() as session:
-        if session.get(models.Campaign, campaign_id) is None:
-            raise UnknownCampaignError(campaign_id)
-        entity = session.scalars(
-            select(models.Entity).where(
-                models.Entity.campaign_id == campaign_id,
-                models.Entity.id == entity_id,
-            )
-        ).first()
-        if entity is None:
-            raise UnknownEntityError(entity_id)
-        _validate_state_image(update)
-        current = _resolve_state_image(session, campaign_id, entity_id)
-        latest = latest_revision(session, campaign_id)
-        if "notes" in update:
-            if not isinstance(expected_notes, str):
-                raise InvalidRunStateError("expected_notes must be a string when saving notes")
-            if current.get("notes", "") != expected_notes:
-                raise StaleRevisionError(latest.id if latest is not None else None)
-        elif expected_notes is not None and not isinstance(expected_notes, str):
-            raise InvalidRunStateError("expected_notes must be a string")
-        merged = {**current, **update}
-        if "notes" not in current and update.get("notes") == "":
-            merged.pop("notes", None)
-        if (
-            json.dumps(merged, sort_keys=True, allow_nan=False)
-            == json.dumps(current, sort_keys=True, allow_nan=False)
-            and latest is not None
-        ):
-            return latest
-        if base_revision is None:
-            base_revision = latest.id if latest is not None else None
-        return _commit(
+        result = _commit_session_verb(
             session,
             campaign_id,
-            [],
-            [],
-            base_revision,
-            session_ops=[models.SessionStateInput(entity_id=entity_id, data=merged)],
+            entity_id,
+            update=update,
+            base_revision=base_revision,
+            expected_notes=expected_notes,
+            session_id=session_id,
+            headline=headline,
+            context=context,
+            references=references,
+            request_key=request_key,
         )
+    if isinstance(result, JournalConflictError):
+        # The original rejected outcome is durable, so retrying it later cannot
+        # unexpectedly apply a previously unchanged action to a different state.
+        raise result
+    return result
+
+
+def _commit_session_verb(
+    session: Session,
+    campaign_id: str,
+    entity_id: str,
+    *,
+    update: dict[str, Any],
+    base_revision: str | None = None,
+    expected_notes: str | None = None,
+    session_id: str | None = None,
+    headline: str | None = None,
+    context: str = "",
+    references: Sequence[dict[str, Any]] = (),
+    request_key: str | None = None,
+):
+    if session.get(models.Campaign, campaign_id) is None:
+        raise UnknownCampaignError(campaign_id)
+    from app.store.journal import (
+        JournalInputError,
+        _create_entry,
+        _references,
+        _reject_request,
+        _retry,
+        _session,
+        _text,
+    )
+
+    request_payload = {
+        "kind": "action",
+        "entity_id": entity_id,
+        "update": update,
+        "session_id": session_id,
+        "headline": headline,
+        "context": context,
+        "references": list(references),
+        "base_revision": base_revision,
+        "expected_notes": expected_notes,
+    }
+    if session_id is not None:
+        if request_key is None:
+            raise JournalInputError("request_key is required for a journal action")
+        retry = _retry(session, campaign_id, request_key, request_payload, models.JournalEntry)
+        if retry is not None:
+            original = session.get(models.Revision, retry.action_revision_id)
+            if original is None:
+                raise CorruptEventError(retry.id, "journal action revision missing")
+            return original
+        _session(session, campaign_id, session_id)
+    entity = session.scalars(
+        select(models.Entity).where(
+            models.Entity.campaign_id == campaign_id,
+            models.Entity.id == entity_id,
+        )
+    ).first()
+    if entity is None:
+        raise UnknownEntityError(entity_id)
+    if session_id is not None:
+        selected_headline = headline if headline is not None else f"Changed {entity.name}"[:180]
+        _text(selected_headline, "headline", 180)
+        _text(context, "context", 20_000, blank=True)
+        _references(session, campaign_id, references, selected_headline, context)
+    _validate_state_image(update)
+    current = _resolve_state_image(session, campaign_id, entity_id)
+    latest = latest_revision(session, campaign_id)
+    if "notes" in update:
+        if not isinstance(expected_notes, str):
+            raise InvalidRunStateError("expected_notes must be a string when saving notes")
+        if current.get("notes", "") != expected_notes:
+            raise StaleRevisionError(latest.id if latest is not None else None)
+    elif expected_notes is not None and not isinstance(expected_notes, str):
+        raise InvalidRunStateError("expected_notes must be a string")
+    merged = {**current, **update}
+    if "notes" not in current and update.get("notes") == "":
+        merged.pop("notes", None)
+    if (
+        json.dumps(merged, sort_keys=True, allow_nan=False)
+        == json.dumps(current, sort_keys=True, allow_nan=False)
+        and latest is not None
+    ):
+        if session_id is not None:
+            return _reject_request(
+                session,
+                campaign_id,
+                request_key,
+                request_payload,
+                "action does not change current state; record prose as a journal event",
+            )
+        return latest
+    if base_revision is None:
+        base_revision = latest.id if latest is not None else None
+    revision = _commit(
+        session,
+        campaign_id,
+        [],
+        [],
+        base_revision,
+        session_ops=[models.SessionStateInput(entity_id=entity_id, data=merged)],
+    )
+    if session_id is not None:
+        session.flush()
+        source = session.scalar(
+            select(models.Event).where(
+                models.Event.revision_id == revision.id,
+                models.Event.type.in_(["session_state_created", "session_state_updated"]),
+            )
+        )
+        _create_entry(
+            session,
+            campaign_id,
+            session_id=session_id,
+            headline=selected_headline,
+            context=context,
+            references=references,
+            request_key=request_key,
+            source_event_id=source.id if source is not None else None,
+            revision=revision,
+            action_entity_id=entity_id,
+            request_payload=request_payload,
+        )
+    return revision
 
 
 def commit_knowledge_toggle(

@@ -12,7 +12,11 @@
  * regeneration, portraits) stays in the existing surfaces, linked from
  * here.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import { sessionGeneration, SessionChangedError } from '../api/session'
+import { requestKey } from '../api/journal'
+import type { JournalDraft, JournalEntry } from '../api/journal'
+import JournalComposer from '../components/ui/JournalComposer.vue'
 import EntityStatBlock from '../components/ui/EntityStatBlock.vue'
 import EntityMediaActions from '../components/ui/EntityMediaActions.vue'
 
@@ -150,6 +154,7 @@ onMounted(() => {
   // + feed projections join the sheet.
   void tonight.fetchKinds(campaignId)
   void tonight.load(campaignId).catch(() => {})
+  void tonight.fetchJournal(campaignId, { entityId })
 })
 
 const entry = computed(() => world.entry(campaignId))
@@ -338,12 +343,115 @@ function messageFrom(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback
 }
 
-async function fireVerb(update: Record<string, unknown>) {
+const pendingAction = ref<Record<string, unknown> | null>(null)
+const actionSessionId = ref('')
+const actionContext = ref('')
+const actionKey = ref('')
+const actionBusy = ref(false)
+const storyEdit = ref<JournalEntry | null>(null)
+const storyError = ref('')
+function beginStoryEdit(row: JournalEntry) {
+  storyEdit.value = row
+  storyError.value = ''
+}
+let actionVersion = 0
+onBeforeUnmount(() => {
+  actionVersion++
+})
+const relatedStory = computed(
+  () => tonightEntry.value.journal[tonight.journalKey({ entityId })]?.entries ?? [],
+)
+const storyEditSession = computed(() =>
+  tonightEntry.value.sessions.find((session) => session.id === storyEdit.value?.session_id),
+)
+function fireVerb(update: Record<string, unknown>) {
+  pendingAction.value = update
+  actionSessionId.value = tonightEntry.value.activeSessionId ?? ''
+  actionContext.value = ''
+  actionKey.value = requestKey()
+  actionError.value = null
+}
+function consequenceHeadline(update: Record<string, unknown>) {
+  const name = entity.value?.name ?? 'Entity'
+  const descriptions: Record<string, [string, string]> = {
+    defeated: ['marked undefeated', 'defeated'],
+    allegiance: ['allegiance restored', 'allegiance flipped'],
+    thread: ['thread reopened', 'thread resolved'],
+    item: ['item restored', 'item spent'],
+  }
+  const [key, value] = Object.entries(update)[0] ?? ['', false]
+  return Array.from(`${name} — ${descriptions[key]?.[value === true ? 1 : 0] ?? 'state changed'}`)
+    .slice(0, 180)
+    .join('')
+}
+async function applyAction() {
+  if (!pendingAction.value || !actionSessionId.value || actionBusy.value) return
+  const version = actionVersion,
+    generation = sessionGeneration()
+  const current = () => version === actionVersion && generation === sessionGeneration()
+  actionBusy.value = true
   actionError.value = null
   try {
-    await tonight.fireVerb(campaignId, entityId, update)
+    await tonight.fireVerb(campaignId, entityId, pendingAction.value, {
+      session_id: actionSessionId.value,
+      headline: consequenceHeadline(pendingAction.value),
+      context: actionContext.value,
+      references: [
+        {
+          entity_id: entityId,
+          label: entity.value?.name ?? 'Entity',
+          field: null,
+          start: null,
+          end: null,
+        },
+      ],
+      request_key: actionKey.value,
+    })
+    if (!current()) return
+    pendingAction.value = null
+    await tonight.fetchJournal(campaignId, { entityId })
   } catch (err) {
-    actionError.value = messageFrom(err, 'Could not apply that consequence.')
+    if (current() && !(err instanceof SessionChangedError))
+      actionError.value = messageFrom(
+        err,
+        'Could not apply that consequence. Your context is kept.',
+      )
+  } finally {
+    if (current()) actionBusy.value = false
+  }
+}
+async function saveStoryContext(draft: JournalDraft) {
+  const row = storyEdit.value
+  if (!row || actionBusy.value) return
+  const version = actionVersion,
+    generation = sessionGeneration()
+  const current = () => version === actionVersion && generation === sessionGeneration()
+  actionBusy.value = true
+  storyError.value = ''
+  try {
+    await tonight.saveJournal(campaignId, row.session_id, draft, requestKey(), row)
+    if (!current()) return
+    storyEdit.value = null
+  } catch (err) {
+    if (current())
+      storyError.value = messageFrom(err, 'Could not save the context. Your draft is kept.')
+  } finally {
+    if (current()) actionBusy.value = false
+  }
+}
+async function takeBackStory(row: JournalEntry) {
+  if (actionBusy.value) return
+  const version = actionVersion,
+    generation = sessionGeneration()
+  actionBusy.value = true
+  actionError.value = null
+  try {
+    await tonight.correctJournal(campaignId, row)
+  } catch (err) {
+    if (version === actionVersion && generation === sessionGeneration())
+      actionError.value = messageFrom(err, 'Could not take back the action.')
+  } finally {
+    if (version === actionVersion && generation === sessionGeneration()) actionBusy.value = false
   }
 }
 
@@ -609,15 +717,122 @@ async function createEdge(edge: {
         <section v-if="tonightEntry.runState || actionError">
           <SectionHeader title="Tonight" meta="session state" />
           <p v-if="actionError" class="mc-action-error" role="alert">{{ actionError }}</p>
-          <VerbRow :session="sessionImage" @fire="fireVerb" />
+          <VerbRow :session="sessionImage" :disabled="actionBusy" @fire="fireVerb" />
+          <form v-if="pendingAction" class="mc-consequence-form" @submit.prevent="applyAction">
+            <h3>Record consequence</h3>
+            <label for="consequence-session">Play session</label>
+            <select
+              id="consequence-session"
+              v-model="actionSessionId"
+              required
+              :disabled="actionBusy"
+            >
+              <option value="">Choose a play session</option>
+              <option
+                v-for="playSession in tonightEntry.sessions"
+                :key="playSession.id"
+                :value="playSession.id"
+              >
+                Session {{ playSession.sequence }} — {{ playSession.title }}
+              </option>
+            </select>
+            <p v-if="!tonightEntry.sessions.length">
+              <RouterLink :to="{ name: 'tonight', params: { id: campaignId } }" class="mc-link"
+                >Create a named session in Tonight</RouterLink
+              >
+            </p>
+            <label for="consequence-context">Context · optional</label
+            ><textarea
+              id="consequence-context"
+              v-model="actionContext"
+              rows="3"
+              :disabled="actionBusy"
+            />
+            <div>
+              <button
+                type="button"
+                class="mc-btn mc-btn-secondary"
+                :disabled="actionBusy"
+                @click="pendingAction = null"
+              >
+                Cancel</button
+              ><button
+                type="submit"
+                class="mc-btn mc-btn-primary"
+                :disabled="actionBusy || !actionSessionId"
+              >
+                {{ actionBusy ? 'Saving…' : 'Apply and record' }}
+              </button>
+            </div>
+          </form>
           <ul v-if="sessionFacts.length > 0" class="mc-session-facts">
             <li v-for="[key, value] in sessionFacts" :key="key" class="mc-session-fact">
               <span class="mc-session-key">{{ key }}</span>
               <span class="mc-session-value">{{ String(value) }}</span>
             </li>
           </ul>
-          <p v-else class="mc-muted">No consequences yet.</p>
+          <p
+            v-else-if="
+              !Object.entries(sessionImage).some(
+                ([key, value]) => key !== 'notes' && value !== false && value != null,
+              )
+            "
+            class="mc-muted"
+          >
+            No consequences yet.
+          </p>
           <p v-if="sessionNotes" class="mc-saved-session-notes">{{ sessionNotes }}</p>
+          <div v-if="relatedStory.length" class="mc-related-story">
+            <h3>In the story</h3>
+            <ul>
+              <li v-for="storyEntry in relatedStory" :key="storyEntry.id">
+                <RouterLink
+                  :to="{
+                    name: 'tonight',
+                    params: { id: campaignId },
+                    query: { entry: storyEntry.id, session: storyEntry.session_id },
+                  }"
+                  class="mc-link"
+                  >{{ storyEntry.headline }}</RouterLink
+                ><span v-if="storyEntry.corrected" class="mc-muted"> · action taken back</span
+                ><button
+                  type="button"
+                  class="mc-story-edit"
+                  :disabled="actionBusy"
+                  @click="beginStoryEdit(storyEntry)"
+                >
+                  {{ storyEntry.context ? 'Edit context' : 'Add context' }}</button
+                ><button
+                  v-if="storyEntry.action_revision_id && !storyEntry.corrected"
+                  type="button"
+                  class="mc-story-edit"
+                  :disabled="actionBusy"
+                  @click="takeBackStory(storyEntry)"
+                >
+                  Take back action
+                </button>
+              </li>
+            </ul>
+            <button
+              v-if="tonightEntry.journal[tonight.journalKey({ entityId })]?.nextCursor"
+              type="button"
+              class="mc-story-edit"
+              @click="tonight.fetchJournal(campaignId, { entityId }, true)"
+            >
+              More story events
+            </button>
+          </div>
+          <JournalComposer
+            v-if="storyEdit && storyEditSession"
+            :key="storyEdit.id"
+            :entry="storyEdit"
+            :session="storyEditSession"
+            :entities="entry.world?.entities ?? []"
+            :busy="actionBusy"
+            :error="storyError"
+            @save="saveStoryContext"
+            @cancel="storyEdit = null"
+          />
           <p v-if="dialLevels.length > 0" class="mc-dial-line">
             <DialPicker :levels="dialLevels" :current="dial" @change="setDial" />
           </p>
@@ -756,6 +971,52 @@ async function createEdge(edge: {
 </template>
 
 <style scoped>
+.mc-consequence-form {
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-sm);
+  padding: 1rem;
+  margin-top: 1rem;
+}
+.mc-consequence-form label {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-size: 0.85rem;
+}
+.mc-consequence-form select,
+.mc-consequence-form textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin-bottom: 0.8rem;
+  padding: 0.6rem;
+  font: inherit;
+  color: var(--mc-text-primary);
+  background: var(--mc-surface);
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-sm);
+}
+.mc-consequence-form > div {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.mc-related-story h3 {
+  font-size: 1rem;
+}
+.mc-related-story li {
+  margin-block: 0.6rem;
+  overflow-wrap: anywhere;
+}
+.mc-story-edit {
+  color: var(--mc-canonical);
+  background: none;
+  border: 0;
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
 .mc-saved-session-notes {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

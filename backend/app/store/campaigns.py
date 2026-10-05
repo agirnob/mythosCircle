@@ -182,6 +182,15 @@ def delete_campaign(owner_id: str, campaign_id: str) -> bool:
         row = session.get(models.Campaign, campaign_id)
         if row is None or row.owner_id != owner_id:
             return False
+        session.execute(
+            delete(models.JournalRequest).where(models.JournalRequest.campaign_id == campaign_id)
+        )
+        session.execute(
+            delete(models.JournalEntry).where(models.JournalEntry.campaign_id == campaign_id)
+        )
+        session.execute(
+            delete(models.PlaySession).where(models.PlaySession.campaign_id == campaign_id)
+        )
         session.execute(delete(models.Event).where(models.Event.campaign_id == campaign_id))
         session.execute(delete(models.Revision).where(models.Revision.campaign_id == campaign_id))
         for state_model in (models.EntitySessionState, models.EntityKnowledgeState):

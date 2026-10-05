@@ -10,11 +10,11 @@ describe('VerbRow', () => {
       props: { session: { defeated: true, hp: -12 } },
     })
     const text = wrapper.text()
-    expect(text).toContain('Defeated — take back') // active affordance reads the state
+    expect(text).toContain('Mark undefeated') // active affordance reads the state
     expect(text).toContain('Flip allegiance')
     expect(text).toContain('Resolve thread')
     expect(text).toContain('Spend item')
-    expect(text).not.toContain('Take it back') // take-back is the reverse verb now
+    expect(text).not.toContain('Take it back') // linked take-back is offered with story provenance
   })
 
   it('fires the defeated delta once and the toggle verbs flip', async () => {
@@ -30,7 +30,7 @@ describe('VerbRow', () => {
     expect(wrapper.emitted('fire')![3]![0]).toEqual({ item: true })
   })
 
-  it('an active affordance fires its INVERSE on the next click — take-back is the reverse verb', async () => {
+  it('an active affordance emits an absolute false state for a new action', async () => {
     const wrapper = mount(VerbRow, { props: { session: { defeated: true, allegiance: true } } })
     const buttons = wrapper.findAll('button')
     await buttons[0]!.trigger('click')

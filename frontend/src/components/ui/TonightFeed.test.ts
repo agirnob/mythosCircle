@@ -10,6 +10,7 @@ const feed = [
     created_at: '2026-09-27T10:30:00Z',
     events: [
       {
+        event_id: 'event-2',
         revision_id: 'rev-2',
         created_at: '2026-09-27T10:30:00Z',
         actor: 'dm',
@@ -18,6 +19,7 @@ const feed = [
         kind: 'knowledge',
       },
       {
+        event_id: 'event-2',
         revision_id: 'rev-2',
         created_at: '2026-09-27T10:30:00Z',
         actor: 'dm',
@@ -32,6 +34,7 @@ const feed = [
     created_at: '2026-09-27T09:00:00Z',
     events: [
       {
+        event_id: 'event-1',
         revision_id: 'rev-1',
         created_at: '2026-09-27T09:00:00Z',
         actor: 'dm',

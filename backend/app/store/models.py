@@ -72,6 +72,58 @@ class Campaign(Base):
     is_generic: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[str] = mapped_column(String(40))
 
+    active_session_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+
+
+class PlaySession(Base):
+    """A named play date, independent from editorial and creation time."""
+
+    __tablename__ = "play_session"
+    __table_args__ = (UniqueConstraint("campaign_id", "sequence"),)
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaign.id"), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    play_date: Mapped[str] = mapped_column(String(10))
+    sequence: Mapped[int] = mapped_column(Integer)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
+    deleted_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class JournalEntry(Base):
+    """Versioned story prose and reference snapshots, separate from state."""
+
+    __tablename__ = "journal_entry"
+    __table_args__ = (Index("ix_journal_session_position", "session_id", "position"),)
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaign.id"), index=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("play_session.id"), index=True)
+    headline: Mapped[str] = mapped_column(String(180))
+    context: Mapped[str] = mapped_column(Text, default="")
+    references: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    position: Mapped[int] = mapped_column(Integer)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    source_event_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    action_revision_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    action_entity_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    corrected: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
+    deleted_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class JournalRequest(Base):
+    """Durable original request/response, unaffected by later entry edits."""
+
+    __tablename__ = "journal_request"
+    __table_args__ = (UniqueConstraint("campaign_id", "request_key"),)
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaign.id"), index=True)
+    request_key: Mapped[str] = mapped_column(String(128))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    response: Mapped[dict[str, Any]] = mapped_column(JSON)
+
 
 class Revision(Base):
     """One version of a campaign's world graph.

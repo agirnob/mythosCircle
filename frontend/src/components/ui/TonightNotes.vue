@@ -12,6 +12,7 @@ const props = defineProps<{
   entityName: string
   savedText: string
 }>()
+const emit = defineEmits<{ cancel: [] }>()
 const auth = useAuthStore()
 const tonight = useTonightStore()
 const fieldId = useId()
@@ -81,6 +82,7 @@ function cancel() {
   reloadSaved()
   editing.value = false
   void nextTick(() => editButton.value?.focus())
+  emit('cancel')
 }
 function edit() {
   draft.value = confirmed.value
@@ -207,12 +209,7 @@ async function review() {
       >
         {{ busy ? 'Saving…' : 'Save notes' }}
       </button>
-      <button
-        type="button"
-        class="mc-btn mc-btn-secondary"
-        :disabled="busy"
-        @click="cancel"
-      >
+      <button type="button" class="mc-btn mc-btn-secondary" :disabled="busy" @click="cancel">
         Cancel
       </button>
     </div>

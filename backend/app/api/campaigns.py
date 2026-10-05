@@ -41,7 +41,7 @@ from app.store.campaigns import (
     update_campaign,
 )
 from app.store.db import session_scope
-from app.store.read import latest_revision, revision_chain, revision_events, world_entities
+from app.store.read import latest_revision, revision_events, world_entities
 from app.store.undo import undo as store_undo
 
 logger = logging.getLogger(__name__)
@@ -402,6 +402,9 @@ class EventSummary(BaseModel):
     target_names: list[str]
     kind: str
     details: list[str] = Field(default_factory=list)
+    event_id: str
+    source_event_id: str | None = None
+    entry_id: str | None = None
 
 
 class RevisionSummary(BaseModel):
@@ -420,39 +423,98 @@ class RevisionsResponse(BaseModel):
     default: int
     max: int
     revisions: list[RevisionSummary]
+    next_cursor: str | None = None
 
 
-@router.get("/api/campaigns/{campaign_id}/revisions", response_model=RevisionsResponse)
+@router.get(
+    "/api/campaigns/{campaign_id}/revisions",
+    response_model=RevisionsResponse,
+    openapi_extra={
+        "parameters": [
+            {
+                "name": "limit",
+                "in": "query",
+                "schema": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            },
+            {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+        ]
+    },
+)
 def revisions_history(
     campaign_id: str,
     current: Annotated[models.Account, Depends(get_current_account)],
-    limit: int = Query(default=20, ge=1, le=100),
+    request: Request,
 ) -> RevisionsResponse:
-    """The Tonight recent-changes read (AD-35): read-only, owner-gated,
-    bounded (default 20, clamped to max 100), newest first. Summaries
-    are display-ready ``{revision_id, created_at, actor, action,
-    target_names, kind, details}``; verb commits and their take-backs both map
-    to ``edited`` (AD-27 — the feed never distinguishes undo from
-    edit). Unknown/foreign campaign is the single 404 (no oracle)."""
+    """Private, bounded newest-first audit history with a scoped revision anchor."""
     if get_campaign(current.id, campaign_id) is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")
-    clamped = min(max(limit, 1), 100)
+    try:
+        limit = int(request.query_params.get("limit", "20"))
+        if not 1 <= limit <= 100:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100.") from None
+    cursor = request.query_params.get("cursor")
     with session_scope() as session:
-        entities = world_entities(session, campaign_id)
-        names = {entity.id: entity.name for entity in entities}
-        chain = list(revision_chain(session, campaign_id))
-        summaries: list[RevisionSummary] = []
-        for revision in reversed(chain[-clamped:]):
-            events = revision_events(session, campaign_id, revision.id)
-            event_summaries = [_event_summary(revision, event, names) for event in events]
-            summaries.append(
-                RevisionSummary(
-                    revision_id=revision.id,
-                    created_at=revision.created_at,
-                    events=event_summaries,
+        rowid = literal_column("revision.rowid")
+        query = select(models.Revision).where(models.Revision.campaign_id == campaign_id)
+        if cursor is not None:
+            try:
+                anchor_id = decode_cursor(cursor)
+                anchor = session.scalar(
+                    select(rowid)
+                    .select_from(models.Revision)
+                    .where(
+                        models.Revision.campaign_id == campaign_id,
+                        models.Revision.id == anchor_id,
+                    )
                 )
+                if anchor is None:
+                    raise InvalidCursorError("cursor names no revision in this campaign")
+            except InvalidCursorError as exc:
+                store_error_as_http(exc)
+            query = query.where(rowid < anchor)
+        rows = list(session.scalars(query.order_by(rowid.desc()).limit(limit + 1)))
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        names = {entity.id: entity.name for entity in world_entities(session, campaign_id)}
+        summaries = [
+            RevisionSummary(
+                revision_id=revision.id,
+                created_at=revision.created_at,
+                events=[
+                    _event_summary(revision, event, names)
+                    for event in revision_events(session, campaign_id, revision.id)
+                ],
             )
-        return RevisionsResponse(default=20, max=100, revisions=summaries)
+            for revision in rows
+        ]
+        source_ids = [
+            event.source_event_id
+            for revision in summaries
+            for event in revision.events
+            if event.source_event_id is not None
+        ]
+        if source_ids:
+            # Retain tombstones: an already promoted action cannot be promoted twice.
+            linked_entries = dict(
+                session.execute(
+                    select(models.JournalEntry.source_event_id, models.JournalEntry.id).where(
+                        models.JournalEntry.campaign_id == campaign_id,
+                        models.JournalEntry.source_event_id.in_(source_ids),
+                    )
+                ).all()
+            )
+            for revision in summaries:
+                for event in revision.events:
+                    if event.entry_id is None and event.source_event_id is not None:
+                        event.entry_id = linked_entries.get(event.source_event_id)
+        return RevisionsResponse(
+            default=20,
+            max=100,
+            revisions=summaries,
+            next_cursor=encode_cursor(rows[-1].id) if has_more else None,
+        )
 
 
 def _event_summary(
@@ -463,17 +525,32 @@ def _event_summary(
     payload against the committed roster — an id that names no current
     row (deleted since) falls back to the raw id, never a crash."""
     stream = event.type.split("_", 1)[0]
+    snapshot = event.payload.get("after") or event.payload.get("before") or {}
     target_ids: list[str] = []
-    if stream == "edge":
-        snapshot = event.payload.get("after") or event.payload.get("before") or {}
+    if event.type.startswith("journal_entry_"):
+        target_ids.append(str(snapshot.get("headline") or "Story event"))
+        stream = "journal"
+    elif event.type.startswith("play_session_"):
+        target_ids.append(str(snapshot.get("title") or "Play session"))
+        stream = "play_session"
+    elif event.type == "campaign_active_session_updated":
+        target_ids.append("Active play session")
+        stream = "play_session"
+    elif stream == "edge":
         for endpoint in (snapshot.get("src"), snapshot.get("dst")):
             if isinstance(endpoint, str):
                 target_ids.append(endpoint)
     else:
         target_ids.append(str(event.payload.get("id")))
     target_names = [names.get(tid, tid) for tid in target_ids]
-    if event.type.startswith(("session_state_", "knowledge_state_")) or event.type.endswith(
-        "_updated"
+    if event.type.endswith("_corrected") or (
+        stream == "journal"
+        and snapshot.get("corrected") is True
+        and not (event.payload.get("before") or {}).get("corrected")
+    ):
+        action = "corrected"
+    elif event.type.startswith(("session_state_", "knowledge_state_")) or event.type.endswith(
+        ("_updated", "_activated")
     ):
         action = "edited"
     elif event.type.endswith("_created"):
@@ -488,6 +565,13 @@ def _event_summary(
         target_names=target_names,
         kind=stream,
         details=_event_details(event),
+        event_id=event.id,
+        source_event_id=(
+            event.id
+            if event.type.startswith(("session_state_", "knowledge_state_"))
+            else snapshot.get("source_event_id")
+        ),
+        entry_id=str(event.payload.get("id")) if stream == "journal" else None,
     )
 
 
@@ -508,6 +592,38 @@ def _event_details(event: models.Event) -> list[str]:
     """
     before = event.payload.get("before") or {}
     after = event.payload.get("after") or {}
+    if event.type == "campaign_active_session_updated":
+        return [
+            "Changed active play session"
+            if after.get("active_session_id")
+            else "Cleared active play session"
+        ]
+    if event.type.startswith("journal_entry_"):
+        if not after or (after.get("deleted_at") and not before.get("deleted_at")):
+            return ["Removed story event"]
+        if not before:
+            return ["Recorded story event"]
+        details = []
+        for key, label in (("headline", "Headline"), ("context", "Context")):
+            if before.get(key) != after.get(key):
+                details.append(f"{label}: {after.get(key, '')}")
+        if before.get("references") != after.get("references"):
+            details.append("Updated linked entities")
+        if before.get("position") != after.get("position"):
+            details.append("Moved story event")
+        if before.get("corrected") != after.get("corrected"):
+            details.append("Took back linked consequence")
+        return details
+    if event.type.startswith("play_session_"):
+        if not after or (after.get("deleted_at") and not before.get("deleted_at")):
+            return ["Removed play session"]
+        if not before:
+            return ["Created play session"]
+        return [
+            f"{label}: {after.get(key, '')}"
+            for key, label in (("title", "Title"), ("play_date", "Play date"))
+            if before.get(key) != after.get(key)
+        ]
     if event.type.startswith("session_state_"):
         previous = before.get("data") or {}
         current = after.get("data") or {}

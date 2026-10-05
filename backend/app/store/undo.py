@@ -29,6 +29,7 @@ media delete is likewise not undoable. The HTTP surface is ``POST
 /api/campaigns/{campaign_id}/undo`` (spec-4.3 follow-up).
 """
 
+import json
 from collections.abc import Sequence
 from typing import Any
 
@@ -118,6 +119,35 @@ def _preflight(session: Session, events: Sequence[models.Event]) -> None:
         payload = event.payload
         _require_keys(event, payload)
         row = _state_row(session, event, payload)
+        if (
+            event.type.startswith(("journal_entry_", "play_session_"))
+            or event.type == "campaign_active_session_updated"
+        ):
+            if row is None or (
+                isinstance(row, (models.JournalEntry, models.PlaySession))
+                and row.campaign_id != event.campaign_id
+            ):
+                raise CorruptEventError(event.id, "journal row missing for inverse")
+            if isinstance(row, models.Campaign) and row.id != event.campaign_id:
+                raise CorruptEventError(event.id, "active session event names another campaign")
+            if event.type not in (
+                "journal_entry_created",
+                "journal_entry_updated",
+                "play_session_created",
+                "play_session_updated",
+                "campaign_active_session_updated",
+            ):
+                raise CorruptEventError(event.id, "unknown journal event type")
+            from app.store.journal import snapshot
+
+            current = (
+                {"active_session_id": row.active_session_id}
+                if isinstance(row, models.Campaign)
+                else snapshot(row)
+            )
+            if json.dumps(current, sort_keys=True) != json.dumps(payload["after"], sort_keys=True):
+                raise CorruptEventError(event.id, "journal row differs from its committed event")
+            continue
         if event.type in (
             "entity_created",
             "entity_updated",
@@ -146,6 +176,12 @@ def _preflight(session: Session, events: Sequence[models.Event]) -> None:
 
 def _state_row(session: Session, event: models.Event, payload: dict[str, Any]) -> Any:
     """The materialized row an event's inverse targets, or None."""
+    if event.type.startswith("journal_entry_"):
+        return session.get(models.JournalEntry, payload["id"])
+    if event.type.startswith("play_session_"):
+        return session.get(models.PlaySession, payload["id"])
+    if event.type == "campaign_active_session_updated":
+        return session.get(models.Campaign, payload["id"])
     if event.type.startswith("entity"):
         return session.get(models.Entity, payload["id"])
     if event.type.startswith("edge"):
@@ -176,7 +212,12 @@ def _apply_inverse(
     event: models.Event,
 ) -> None:
     payload = event.payload
-    if event.type == "entity_created":
+    if (
+        event.type.startswith(("journal_entry_", "play_session_"))
+        or event.type == "campaign_active_session_updated"
+    ):
+        _inverse_journal(session, campaign_id, revision_id, created_at, event)
+    elif event.type == "entity_created":
         _inverse_entity_deleted(session, campaign_id, revision_id, created_at, event)
     elif event.type == "entity_updated":
         _inverse_entity_update(session, campaign_id, revision_id, created_at, event)
@@ -292,6 +333,84 @@ _SESSION_KEYS = ("data", "updated_at")
 _KNOWLEDGE_KEYS = ("field", "known", "updated_at")
 #: Required payload snapshot fields per known event type (AD-1).
 _REQUIRED: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+    "play_session_created": (
+        (
+            "after",
+            ("title", "play_date", "sequence", "version", "created_at", "updated_at", "deleted_at"),
+        ),
+    ),
+    "play_session_updated": (
+        (
+            "before",
+            ("title", "play_date", "sequence", "version", "created_at", "updated_at", "deleted_at"),
+        ),
+        (
+            "after",
+            ("title", "play_date", "sequence", "version", "created_at", "updated_at", "deleted_at"),
+        ),
+    ),
+    "journal_entry_created": (
+        (
+            "after",
+            (
+                "session_id",
+                "headline",
+                "context",
+                "references",
+                "position",
+                "version",
+                "created_at",
+                "updated_at",
+                "deleted_at",
+                "corrected",
+                "source_event_id",
+                "action_revision_id",
+                "action_entity_id",
+            ),
+        ),
+    ),
+    "journal_entry_updated": (
+        (
+            "before",
+            (
+                "session_id",
+                "headline",
+                "context",
+                "references",
+                "position",
+                "version",
+                "created_at",
+                "updated_at",
+                "deleted_at",
+                "corrected",
+                "source_event_id",
+                "action_revision_id",
+                "action_entity_id",
+            ),
+        ),
+        (
+            "after",
+            (
+                "session_id",
+                "headline",
+                "context",
+                "references",
+                "position",
+                "version",
+                "created_at",
+                "updated_at",
+                "deleted_at",
+                "corrected",
+                "source_event_id",
+                "action_revision_id",
+                "action_entity_id",
+            ),
+        ),
+    ),
+    "campaign_active_session_updated": (
+        ("before", ("active_session_id",)),
+        ("after", ("active_session_id",)),
+    ),
     "entity_created": (("after", _ENTITY_KEYS),),
     "entity_updated": (("before", _ENTITY_KEYS), ("after", _ENTITY_KEYS)),
     "entity_deleted": (("before", _ENTITY_KEYS),),
@@ -308,6 +427,44 @@ _REQUIRED: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
     "knowledge_state_updated": (("before", _KNOWLEDGE_KEYS), ("after", _KNOWLEDGE_KEYS)),
     "knowledge_state_deleted": (("before", _KNOWLEDGE_KEYS),),
 }
+
+
+def _inverse_journal(
+    session: Session, campaign_id: str, revision_id: str, created_at: str, event: models.Event
+) -> None:
+    from app.store.journal import snapshot
+
+    row = _state_row(session, event, event.payload)
+    if event.type == "campaign_active_session_updated":
+        before = {"active_session_id": row.active_session_id}
+        row.active_session_id = event.payload["before"]["active_session_id"]
+        _add_event(
+            session,
+            campaign_id,
+            revision_id,
+            event.type,
+            {"id": row.id, "before": before, "after": {"active_session_id": row.active_session_id}},
+            created_at,
+        )
+        return
+    before = snapshot(row)
+    if event.type.endswith("_created"):
+        # Removal retains the retry receipt and stable source identity.
+        row.deleted_at = created_at
+    else:
+        for key, value in event.payload["before"].items():
+            if key not in ("id", "campaign_id", "version", "updated_at"):
+                setattr(row, key, value)
+    row.version += 1
+    row.updated_at = created_at
+    _add_event(
+        session,
+        campaign_id,
+        revision_id,
+        event.type.rsplit("_", 1)[0] + "_updated",
+        {"id": row.id, "before": before, "after": snapshot(row)},
+        created_at,
+    )
 
 
 def _require_keys(event: models.Event, payload: dict[str, Any]) -> None:
@@ -609,9 +766,15 @@ def _surgical_inverse(
     still holds the verb's result (a later same-field edit stands);
     keys the verb added are removed only when untouched since."""
     result = dict(current)
+
+    def same(left: Any, right: Any) -> bool:
+        return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+
     for key in set(before) | set(after):
         if key in before and key in after:
             prev, applied = before[key], after[key]
+            if same(prev, applied):
+                continue
             cur_value = current.get(key)
             if (
                 isinstance(cur_value, (int, float))
@@ -623,17 +786,17 @@ def _surgical_inverse(
             ):
                 # Additive arithmetic: current + (before - applied).
                 result[key] = cur_value + (prev - applied)
-            elif current.get(key) == after[key]:
+            elif key in current and same(current[key], after[key]):
                 result[key] = before[key]
             # else: a later edit owns the field — it stands.
         elif key in after and key not in before:
             # The verb added this key; the inverse removes it only when
             # untouched since.
-            if current.get(key) == after[key]:
+            if key in current and same(current[key], after[key]):
                 result.pop(key, None)
         elif key in before and key not in after:
             # The verb removed the key; the inverse restores it only
             # when nothing re-added it.
-            if current.get(key) is None:
+            if key not in current:
                 result[key] = before[key]
     return result

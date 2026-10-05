@@ -21,6 +21,7 @@ from app.api import (
     exports,
     health,
     jobs,
+    journal,
     media,
     ws,
 )
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     application.include_router(jobs.router)
     application.include_router(ws.router)
     application.include_router(entities.router)
+    application.include_router(journal.router)
     application.include_router(edges.router)
     application.include_router(exports.router)
     application.include_router(candidates.router)

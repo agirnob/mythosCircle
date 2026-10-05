@@ -1,19 +1,7 @@
 <script setup lang="ts">
-/**
- * Verb row (v3 Tier-2a; AD-26/28, EXPERIENCE Flow 6) — the four
- * consequence-verb affordances rendered from the entity's CURRENT session
- * image. The image is open (the AD-27 scar `{"hp": -12}` is a verb), so
- * this component is presentational: each affordance emits its delta and
- * the parent fires the session-verb route.
- *
- * Take-back IS the reverse verb (the DM's gesture is the target state):
- * an active affordance's next click fires the inverse delta —
- * `{defeated: false}` for the active Defeated chip — one revision, fully
- * deterministic from the session image, never a revision-hunting undo
- * (the feed cannot identify which revision set a state, and a
- * take-back-of-a-take-back would re-apply it). Double-fire safety stays
- * the backend's no-op.
- */
+/** Consequence controls emit absolute state changes. The sheet chooses
+ * a play session and optional context before committing. Linked action
+ * take-back uses the journal correction endpoint and its provenance. */
 const props = defineProps<{
   /** The entity's current session image (absent keys = not applied). */
   session: Record<string, unknown>
@@ -31,8 +19,7 @@ function isActive(value: unknown): boolean {
   return value === true
 }
 
-/** The toggle-style verbs: click emits the INVERSE of the displayed
- * state, so the second click of an active affordance takes it back. */
+/** Clicking changes the displayed absolute flag; it is a new action. */
 function toggle(key: string) {
   return { [key]: !isActive(props.session[key]) }
 }
@@ -47,7 +34,7 @@ function toggle(key: string) {
       :disabled="disabled"
       @click="$emit('fire', toggle('defeated'))"
     >
-      {{ isActive(session.defeated) ? 'Defeated — take back' : 'Mark defeated' }}
+      {{ isActive(session.defeated) ? 'Mark undefeated' : 'Mark defeated' }}
     </button>
     <button
       type="button"

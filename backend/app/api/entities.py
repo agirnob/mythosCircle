@@ -241,12 +241,35 @@ async def session_verb(
     try:
         if "expected_notes" in payload and not isinstance(payload["expected_notes"], str):
             raise InvalidRunStateError("expected_notes must be a string")
+        journal_fields: dict[str, Any] = {}
+        if "session_id" in payload:
+            # Journal input uses the same typed validation and reference contract.
+            from app.api.journal import JournalEntryCreate, _validate  # noqa: PLC0415
+
+            journal = _validate(
+                JournalEntryCreate,
+                {
+                    "session_id": payload["session_id"],
+                    "headline": payload.get("headline", "World state changed"),
+                    "context": payload.get("context", ""),
+                    "references": payload.get("references", []),
+                    "request_key": payload.get("request_key"),
+                },
+            )
+            journal_fields = journal.model_dump(
+                include={"session_id", "headline", "context", "references", "request_key"}
+            )
+            if "headline" not in payload:
+                journal_fields.pop("headline")
+        elif any(key in payload for key in ("headline", "context", "references", "request_key")):
+            raise HTTPException(status_code=422, detail="Journal actions require a session_id.")
         store_session_verb(
             campaign_id,
             entity_id,
             update=update,
             base_revision=base_revision,
             expected_notes=payload.get("expected_notes"),
+            **journal_fields,
         )
     except StoreError as exc:
         store_error_as_http(exc)

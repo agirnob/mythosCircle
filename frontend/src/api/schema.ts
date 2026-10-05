@@ -243,12 +243,7 @@ export interface paths {
         };
         /**
          * Revisions History
-         * @description The Tonight recent-changes read (AD-35): read-only, owner-gated,
-         *     bounded (default 20, clamped to max 100), newest first. Summaries
-         *     are display-ready ``{revision_id, created_at, actor, action,
-         *     target_names, kind}``; verb commits and their take-backs both map
-         *     to ``edited`` (AD-27 — the feed never distinguishes undo from
-         *     edit). Unknown/foreign campaign is the single 404 (no oracle).
+         * @description Private, bounded newest-first audit history with a scoped revision anchor.
          */
         get: operations["revisions_history_api_campaigns__campaign_id__revisions_get"];
         put?: never;
@@ -500,6 +495,10 @@ export interface paths {
          * @description One Tier-2a consequence verb as ONE undoable revision (AD-26,
          *     AD-28) — the Tonight verb-row wire surface (spec-v3-tier2-routes).
          *
+         *     Notes updates require ``expected_notes`` (the previously read text; empty
+         *     when absent), and notes must be a string of at most 20,000 characters.
+         *     The store compares notes atomically, rejecting stale text with 409.
+         *
          *     Body ``{"update": {…}, "base_revision"?: str}``: ``update`` is the
          *     verb's delta, a strict-JSON object the store MERGES onto the
          *     entity's current session-state image and commits in full
@@ -552,6 +551,113 @@ export interface paths {
          *     non-boolean ``known``, and a non-string ``base_revision`` are 422.
          */
         post: operations["knowledge_toggle_api_campaigns__campaign_id__entities__entity_id__knowledge_toggle_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/play-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Sessions */
+        get: operations["list_sessions_api_campaigns__campaign_id__play_sessions_get"];
+        put?: never;
+        /** Create Session */
+        post: operations["create_session_api_campaigns__campaign_id__play_sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/play-sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Session */
+        delete: operations["delete_session_api_campaigns__campaign_id__play_sessions__session_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Session */
+        patch: operations["update_session_api_campaigns__campaign_id__play_sessions__session_id__patch"];
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/play-sessions/{session_id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate Session */
+        post: operations["activate_session_api_campaigns__campaign_id__play_sessions__session_id__activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/journal-entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Entries */
+        get: operations["list_entries_api_campaigns__campaign_id__journal_entries_get"];
+        put?: never;
+        /** Create Entry */
+        post: operations["create_entry_api_campaigns__campaign_id__journal_entries_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/journal-entries/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Entry */
+        get: operations["get_entry_api_campaigns__campaign_id__journal_entries__entry_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Entry */
+        delete: operations["delete_entry_api_campaigns__campaign_id__journal_entries__entry_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Entry */
+        patch: operations["update_entry_api_campaigns__campaign_id__journal_entries__entry_id__patch"];
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/journal-entries/{entry_id}/correct": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Correct Entry */
+        post: operations["correct_entry_api_campaigns__campaign_id__journal_entries__entry_id__correct_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -951,6 +1057,11 @@ export interface components {
             /** Email */
             email: string;
         };
+        /** ActiveSessionResponse */
+        ActiveSessionResponse: {
+            /** Active Session Id */
+            active_session_id: string | null;
+        };
         /** ArchetypeExport */
         ArchetypeExport: {
             /** Kind */
@@ -1169,6 +1280,12 @@ export interface components {
             kind: string;
             /** Details */
             details?: string[];
+            /** Event Id */
+            event_id: string;
+            /** Source Event Id */
+            source_event_id?: string | null;
+            /** Entry Id */
+            entry_id?: string | null;
         };
         /** GenericWorldCreate */
         GenericWorldCreate: {
@@ -1251,6 +1368,59 @@ export interface components {
             /** Queue Position */
             queue_position: number | null;
         };
+        /** JournalEntriesResponse */
+        JournalEntriesResponse: {
+            /** Entries */
+            entries: components["schemas"]["JournalEntryResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** JournalEntryResponse */
+        JournalEntryResponse: {
+            /** Id */
+            id: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Session Id */
+            session_id: string;
+            /** Headline */
+            headline: string;
+            /** Context */
+            context: string;
+            /** References */
+            references: components["schemas"]["JournalReference"][];
+            /** Position */
+            position: number;
+            /** Version */
+            version: number;
+            /** Source Event Id */
+            source_event_id: string | null;
+            /** Action Revision Id */
+            action_revision_id: string | null;
+            /** Action Entity Id */
+            action_entity_id?: string | null;
+            /** Corrected */
+            corrected: boolean;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** JournalReference */
+        JournalReference: {
+            /** Entity Id */
+            entity_id: string;
+            /** Label */
+            label: string;
+            /** Field */
+            field?: ("headline" | "context") | null;
+            /** Start */
+            start?: number | null;
+            /** End */
+            end?: number | null;
+            /** Token */
+            token?: string | null;
+        };
         /**
          * KindsResponse
          * @description The code-wins registry (AD-34): the endpoint owns no vocabulary —
@@ -1331,6 +1501,34 @@ export interface components {
             /** Entity Id */
             entity_id: string;
         };
+        /** PlaySessionResponse */
+        PlaySessionResponse: {
+            /** Id */
+            id: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Title */
+            title: string;
+            /** Play Date */
+            play_date: string;
+            /** Sequence */
+            sequence: number;
+            /** Version */
+            version: number;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** PlaySessionsResponse */
+        PlaySessionsResponse: {
+            /** Sessions */
+            sessions: components["schemas"]["PlaySessionResponse"][];
+            /** Active Session Id */
+            active_session_id: string | null;
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
         /**
          * PortraitUrlResponse
          * @description A signed, expiring portrait URL for Forge's per-unit portrait
@@ -1392,6 +1590,8 @@ export interface components {
             max: number;
             /** Revisions */
             revisions: components["schemas"]["RevisionSummary"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /**
          * RunStateResponse
@@ -1851,6 +2051,7 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
+                cursor?: string;
             };
             header?: never;
             path: {
@@ -2263,6 +2464,476 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sessions_api_campaigns__campaign_id__play_sessions_get: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaySessionsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_session_api_campaigns__campaign_id__play_sessions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Title */
+                    title: string;
+                    /** Play Date */
+                    play_date: string;
+                    /** Request Key */
+                    request_key?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaySessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_session_api_campaigns__campaign_id__play_sessions__session_id__delete: {
+        parameters: {
+            query: {
+                version: number;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+                session_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_session_api_campaigns__campaign_id__play_sessions__session_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                session_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Version */
+                    version: number;
+                    /** Title */
+                    title?: string | null;
+                    /** Play Date */
+                    play_date?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaySessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    activate_session_api_campaigns__campaign_id__play_sessions__session_id__activate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                session_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_entries_api_campaigns__campaign_id__journal_entries_get: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+                session_id?: string;
+                entity_id?: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JournalEntriesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_entry_api_campaigns__campaign_id__journal_entries_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Session Id */
+                    session_id: string;
+                    /** Headline */
+                    headline: string;
+                    /**
+                     * Context
+                     * @default
+                     */
+                    context?: string;
+                    /** References */
+                    references?: {
+                        /** Entity Id */
+                        entity_id: string;
+                        /** Label */
+                        label: string;
+                        /** Field */
+                        field?: ("headline" | "context") | null;
+                        /** Start */
+                        start?: number | null;
+                        /** End */
+                        end?: number | null;
+                        /** Token */
+                        token?: string | null;
+                    }[];
+                    /** Request Key */
+                    request_key: string;
+                    /** Position */
+                    position?: number | null;
+                    /** Source Event Id */
+                    source_event_id?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JournalEntryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_entry_api_campaigns__campaign_id__journal_entries__entry_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                entry_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JournalEntryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_entry_api_campaigns__campaign_id__journal_entries__entry_id__delete: {
+        parameters: {
+            query: {
+                version: number;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+                entry_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_entry_api_campaigns__campaign_id__journal_entries__entry_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                entry_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Version */
+                    version: number;
+                    /** Headline */
+                    headline?: string | null;
+                    /** Context */
+                    context?: string | null;
+                    /** References */
+                    references?: {
+                        /** Entity Id */
+                        entity_id: string;
+                        /** Label */
+                        label: string;
+                        /** Field */
+                        field?: ("headline" | "context") | null;
+                        /** Start */
+                        start?: number | null;
+                        /** End */
+                        end?: number | null;
+                        /** Token */
+                        token?: string | null;
+                    }[] | null;
+                    /** Position */
+                    position?: number | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JournalEntryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    correct_entry_api_campaigns__campaign_id__journal_entries__entry_id__correct_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                entry_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Version */
+                    version: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JournalEntryResponse"];
+                };
             };
             /** @description Validation Error */
             422: {

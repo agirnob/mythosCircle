@@ -49,6 +49,12 @@ from app.store.commit import (
     EdgeKindViolationError,
     InvalidRunStateError,
 )
+from app.store.journal import (
+    JournalConflictError,
+    JournalInputError,
+    JournalNotFoundError,
+    JournalUnicodeError,
+)
 
 __all__ = ["StoreHTTPException", "store_error_as_http"]
 
@@ -64,6 +70,8 @@ def store_error_as_http(exc: Exception) -> NoReturn:
     user error — re-raising surfaces it as a 500 so it can never be
     mistaken for a recoverable client mistake.
     """
+    if isinstance(exc, JournalUnicodeError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if isinstance(
         exc,
         (
@@ -73,6 +81,7 @@ def store_error_as_http(exc: Exception) -> NoReturn:
             UnknownEntityError,
             UnknownEdgeError,
             MediaNotFoundError,
+            JournalNotFoundError,
         ),
     ):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -88,6 +97,7 @@ def store_error_as_http(exc: Exception) -> NoReturn:
             DuplicateEdgeError,
             LiveEdgesError,
             EntityEditConflictError,
+            JournalConflictError,
         ),
     ):
         if isinstance(exc, LiveEdgesError):
@@ -127,6 +137,7 @@ def store_error_as_http(exc: Exception) -> NoReturn:
             BlankEdgeReasonError,
             EdgeKindViolationError,
             InvalidRunStateError,
+            JournalInputError,
         ),
     ):
         raise HTTPException(status_code=422, detail=str(exc)) from exc

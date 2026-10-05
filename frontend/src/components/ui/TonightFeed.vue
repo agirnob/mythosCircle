@@ -11,7 +11,9 @@ import type { components } from '../../api/schema'
 
 defineProps<{
   revisions: components['schemas']['RevisionSummary'][]
+  allowPromotion?: boolean
 }>()
+defineEmits<{ promote: [eventId: string, names: string[], details: string[]] }>()
 
 /** A short display stamp — `YYYY-MM-DD HH:MM` in the DM's local time. */
 function shortTime(iso: string): string {
@@ -42,6 +44,17 @@ function shortTime(iso: string): string {
               {{ detail }}
             </li>
           </ul>
+          <button
+            v-if="event.source_event_id && !event.entry_id && ['session', 'knowledge'].includes(event.kind)"
+            type="button"
+            class="mc-feed-promote"
+            :disabled="!allowPromotion"
+            @click="
+              $emit('promote', event.source_event_id, event.target_names, event.details ?? [])
+            "
+          >
+            Copy to journal
+          </button>
         </li>
       </ul>
     </li>
@@ -50,6 +63,18 @@ function shortTime(iso: string): string {
 </template>
 
 <style scoped>
+.mc-feed-promote {
+  border: 0;
+  padding: 0.25rem 0;
+  background: none;
+  color: var(--mc-canonical);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.mc-feed-promote:disabled {
+  opacity: 0.45;
+}
 .mc-feed {
   list-style: none;
   margin: 0;
