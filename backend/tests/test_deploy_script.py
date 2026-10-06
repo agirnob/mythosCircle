@@ -27,10 +27,22 @@ def test_deploy_stage_dry_run_builds_tree(tmp_path: Path) -> None:
     """DEPLOY_STAGE installs Caddyfile, unit, config, env, cron, and the
     frontend build under the stage root — the full flow without root."""
     stage = tmp_path / "stage"
+    # Dependency resolution and frontend compilation have their own CI jobs.
+    # Exercise installation without network downloads or altering node_modules.
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    (binaries / "uv").write_text("#!/bin/sh\nmkdir -p .venv\n")
+    (binaries / "npm").write_text(
+        '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do\n'
+        'if [ "$1" = --outDir ]; then shift; mkdir -p "$1"; '
+        'printf "<!DOCTYPE html>" > "$1/index.html"; fi\nshift\ndone\n'
+    )
+    for binary in binaries.iterdir():
+        binary.chmod(0o755)
     env = {
         "DEPLOY_STAGE": str(stage),
         "SKIP_SERVICE": "1",
-        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "PATH": f"{binaries}:/usr/bin:/bin:/usr/local/bin",
         "HOME": str(tmp_path),
     }
     result = subprocess.run(

@@ -4,7 +4,10 @@ Living-world NPC and world generator for TTRPG Game Masters. The DM remains the 
 
 ## Working rules
 
-- Solo repository: commit and push directly; no PR gate.
+- Start new work from an up-to-date `develop` branch on `feature/<name>` or `fix/<name>`; never implement directly on `main` or `develop`.
+- Push the work branch and open a pull request into `develop`. Require the `CI gate` check before merging. Release through a pull request from `develop` into `main`.
+- `main` is production: its successful GitHub Actions run deploys the tested Docker images to the existing Portainer stack. Do not bypass checks or deploy development branches. Direct hotfix pushes require explicit user authorization.
+- Before publishing, run the relevant local checks and keep CI green. Document deployment or workflow changes in `deploy/AUTO_DEPLOY.md`. Repository rules apply to future agents as well as human changes.
 - Write world state only through `backend/app/store/`, the sole graph writer.
 - Keep secrets out of `deploy/config.toml` and the client build; use environment variables.
 - Campaigns are private to their invited user. Do not introduce public campaign endpoints.

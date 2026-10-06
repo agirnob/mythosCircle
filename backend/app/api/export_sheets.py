@@ -912,6 +912,8 @@ def _stat_block_panel(stat_block: Any, data: dict[str, Any] | None = None) -> st
         value = next((combat[key] for key in candidates if combat.get(key) is not None), None)
         if value is None and label_text == "Speed":
             value = stat_block.get("speed")
+        if value is None and label_text == "Initiative":
+            value = stat_block.get("initiative")
         if value is not None:
             facts.append((label_text, value))
     if facts:
@@ -994,6 +996,7 @@ def _stat_block_panel(stat_block: Any, data: dict[str, Any] | None = None) -> st
         "initiative",
     }
     for key in ("traits", "actions", "spells", "features", "resources"):
+        known.add(key)
         value = stat_block.get(key)
         if not value:
             continue
@@ -1003,13 +1006,12 @@ def _stat_block_panel(stat_block: Any, data: dict[str, Any] | None = None) -> st
             if key in {"traits", "actions", "features"}
             else _render_value(value)
         )
-        known.add(key)
 
     spellcasting = stat_block.get("spellcasting")
+    known.add("spellcasting")
     if isinstance(spellcasting, dict) and spellcasting:
         parts.append('<hr class="stat-divider"/><h4>Spellcasting</h4>')
         parts.append(_render_mapping(spellcasting, _KEY_ORDER["spellcasting"]))
-        known.add("spellcasting")
     boss = data.get("boss")
     if isinstance(boss, dict) and boss:
         parts.append('<hr class="stat-divider"/><h4>Legendary Actions &amp; Lair</h4>')
