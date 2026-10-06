@@ -27,6 +27,7 @@ Living-world NPC and world generator for TTRPG Game Masters. The DM remains the 
 - Deployment: `deploy/`.
 - Run backend tests from `backend/` with `.venv/bin/pytest -q`.
 - Run frontend tests, type checks, and a production build from `frontend/` with `npm test -- --run`, `npm run typecheck`, and `npm run build`.
+- Verify frontend changes with Node.js 22, matching GitHub Actions and Docker; a passing run under another Node version does not replace that check.
 
 ## Conventions
 

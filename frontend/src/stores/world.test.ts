@@ -133,6 +133,16 @@ describe('world store', () => {
     await world.load('C1')
     expect(exportCalls).toHaveLength(1)
 
+    // WS dispatch starts background snapshot work; its promise only waits
+    // for jobs-store processing. Let each fetch settle before sending the
+    // next frame (overlapping frames are tested separately below).
+    async function expectSettledExports(count: number) {
+      await vi.waitFor(() => {
+        expect(exportCalls).toHaveLength(count)
+        expect(world.entry('C1').fetching).toBe(false)
+      })
+    }
+
     // Sub-threshold progress (before the wave-1 commit) is ignored.
     await world.handleJobMessage('C1', wsMessage({ type: 'job_progress', progress: 0.25 }))
     expect(exportCalls).toHaveLength(1)
@@ -142,17 +152,17 @@ describe('world store', () => {
 
     // 0.5 = wave-1 commit; 1.0 = wave-2 commit.
     await world.handleJobMessage('C1', wsMessage({ type: 'job_progress', progress: 0.5 }))
-    expect(exportCalls).toHaveLength(2)
+    await expectSettledExports(2)
     await world.handleJobMessage('C1', wsMessage({ type: 'job_progress', progress: 1.0 }))
-    expect(exportCalls).toHaveLength(3)
+    await expectSettledExports(3)
 
     // Terminal frames refetch: a mid-wave-2 failure still leaves wave 1.
     await world.handleJobMessage('C1', wsMessage({ type: 'job_done', state: 'succeeded' }))
-    expect(exportCalls).toHaveLength(4)
+    await expectSettledExports(4)
     await world.handleJobMessage('C1', wsMessage({ type: 'job_failed', state: 'failed' }))
-    expect(exportCalls).toHaveLength(5)
+    await expectSettledExports(5)
     await world.handleJobMessage('C1', wsMessage({ type: 'job_cancelled', state: 'cancelled' }))
-    expect(exportCalls).toHaveLength(6)
+    await expectSettledExports(6)
 
     // queue_changed carries no world change.
     await world.handleJobMessage('C1', wsMessage({ type: 'queue_changed', state: 'queued' }))
