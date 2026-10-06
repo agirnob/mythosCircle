@@ -363,7 +363,8 @@ function portraitDraft(entityId: string): PortraitDraft {
   if (existing) return existing
   const entity = entities.value.find((candidate) => candidate.id === entityId)
   const choices = entity ? artworkFramings(entity) : ARTWORK_FRAMINGS.character!
-  const draft = { ...PORTRAIT_DRAFT_DEFAULTS, framing: choices[0] ?? 'headshot' }
+  const framing = choices.includes('headshot') ? 'headshot' : choices[0] ?? 'headshot'
+  const draft = { ...PORTRAIT_DRAFT_DEFAULTS, framing }
   portraitDrafts.value[entityId] = draft
   return draft
 }
@@ -506,11 +507,13 @@ function portraitJobFor(entityId: string) {
 function portraitStatus(entity: EntityExport): string | null {
   const job = portraitJobFor(entity.id)
   if (!job) {
-    return entityHasArtworkSource(entity) ? null : `Add a ${entity.kind === 'character' ? 'character appearance' : 'description'} to generate artwork.`
+    return entityHasArtworkSource(entity) ? null : entity.kind === 'character'
+      ? 'Add an appearance to generate a portrait.'
+      : 'Add a description to generate artwork.'
   }
-  if (job.state === 'queued') return `Artwork queued — position ${job.queue_position ?? '…'}`
-  if (job.state === 'running') return 'Generating artwork…'
-  if (job.state === 'failed') return `Artwork failed: ${job.error ?? 'unknown error'}`
+  if (job.state === 'queued') return `${artworkLabel(entity)} queued — position ${job.queue_position ?? '…'}`
+  if (job.state === 'running') return `Generating ${artworkLabel(entity).toLowerCase()}…`
+  if (job.state === 'failed') return `${artworkLabel(entity)} failed: ${job.error ?? 'unknown error'}`
   return null
 }
 
@@ -519,7 +522,7 @@ function portraitStatus(entity: EntityExport): string | null {
 function portraitFailure(entity: EntityExport): string | null {
   const job = portraitJobFor(entity.id)
   if (job?.state !== 'failed') return null
-  return `Artwork failed: ${job.error ?? 'unknown error'}`
+  return `${artworkLabel(entity)} failed: ${job.error ?? 'unknown error'}`
 }
 
 async function generatePortrait(entity: EntityExport) {
@@ -1458,9 +1461,9 @@ function additionalDataBlock(entity: EntityExport): string {
                 class="portrait-img"
               />
               <p v-else-if="world.mediaFetchFailed(campaignId)" class="muted">
-                Artwork list unavailable.
+                {{ artworkLabel(entity) }} list unavailable.
               </p>
-              <p v-else class="muted">No artwork.</p>
+              <p v-else class="muted">No {{ entity.kind === 'character' ? 'portrait' : 'artwork' }}.</p>
               <p class="portrait-actions">
                 <button
                   type="button"
@@ -1473,8 +1476,8 @@ function additionalDataBlock(entity: EntityExport): string {
                   {{
                     jobs.portraitInFlight(campaignId, entity.id)
                       ? portraitJobFor(entity.id)?.state === 'running'
-                        ? 'Generating artwork…'
-                        : 'Artwork queued…'
+                        ? `Generating ${artworkLabel(entity).toLowerCase()}…`
+                        : `${artworkLabel(entity)} queued…`
                       : `Generate ${entity.kind === 'character' ? 'portrait' : `${entity.kind} artwork`}`
                   }}
                 </button>
@@ -1504,7 +1507,7 @@ function additionalDataBlock(entity: EntityExport): string {
                   :disabled="deletingId !== null"
                   @click="removePortrait(entity)"
                 >
-                  {{ deletingId === entity.id ? 'Deleting…' : 'Delete artwork' }}
+                  {{ deletingId === entity.id ? 'Deleting…' : `Delete ${entity.kind === 'character' ? 'portrait' : 'artwork'}` }}
                 </button>
               </p>
               <p class="portrait-options" :aria-disabled="!entityHasArtworkSource(entity)">
@@ -1526,7 +1529,7 @@ function additionalDataBlock(entity: EntityExport): string {
                 />
                 <select
                   v-model="portraitDraft(entity.id).framing"
-                  :aria-label="`${artworkLabel(entity)} composition`"
+                  :aria-label="`${artworkLabel(entity)} ${entity.kind === 'character' ? 'framing' : 'composition'}`"
                   :disabled="!entityHasArtworkSource(entity)"
                 >
                   <option v-for="f in artworkFramings(entity)" :key="f" :value="f">

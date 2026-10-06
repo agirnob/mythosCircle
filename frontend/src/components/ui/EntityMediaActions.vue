@@ -27,7 +27,7 @@ const props = defineProps<{ campaignId: string; entity: EntityExport }>()
 const world = useWorldStore()
 const jobs = useJobsStore()
 const error = ref('')
-const initialFraming = ARTWORK_FRAMINGS[props.entity.kind]?.[0] ?? 'headshot'
+const initialFraming = props.entity.kind === 'character' ? 'headshot' : ARTWORK_FRAMINGS[props.entity.kind]?.[0] ?? 'headshot'
 const portraitDraft = ref({
   style: 'illustration' as PortraitStyle,
   framing: initialFraming as PortraitFraming,
@@ -94,7 +94,9 @@ const canUseAutomaticPrompt = computed(() =>
 
 watch(() => props.entity.kind, (kind) => {
   const options = ARTWORK_FRAMINGS[kind] ?? ARTWORK_FRAMINGS.character
-  if (!options.includes(portraitDraft.value.framing)) portraitDraft.value.framing = options[0]!
+  if (!options.includes(portraitDraft.value.framing)) {
+    portraitDraft.value.framing = kind === 'character' ? 'headshot' : options[0]!
+  }
 })
 
 watch([() => props.campaignId, entityId], restoreRevealDraft)
