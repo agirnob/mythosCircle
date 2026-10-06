@@ -9,6 +9,8 @@ lint/type checks/tests/build on work branches and pull requests. The `CI gate`
 must pass before a release. It uses locked project dependencies and pinned
 GitHub Actions. Tests use temporary databases and mocked generation providers;
 they do not require the image, video, or LLM servers.
+Checks rerun when a pull request is edited, including a change of base branch,
+so a gate failure for an old target is replaced by a check against the new target.
 
 Only `main` pushes (or a manual workflow run on `main`) build release Docker
 images and deploy. GitHub builds both images, labels them with the commit SHA,

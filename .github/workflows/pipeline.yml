@@ -5,6 +5,7 @@ on:
     branches: [main, develop, 'feature/**', 'fix/**']
   pull_request:
     branches: [main, develop]
+    types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
 permissions:
