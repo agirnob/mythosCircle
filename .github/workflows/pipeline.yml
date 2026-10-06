@@ -1,0 +1,146 @@
+name: CI and production
+
+on:
+  push:
+    branches: [main, develop, 'feature/**', 'fix/**']
+  pull_request:
+    branches: [main, develop]
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  backend:
+    name: Backend checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install locked dependencies
+        working-directory: backend
+        run: |
+          python -m pip install uv
+          uv sync --locked
+      - name: Lint and test
+        working-directory: backend
+        run: |
+          uv run ruff check app tests
+          uv run pytest -q
+      - name: Check deployment scripts
+        run: |
+          for script in deploy/*.sh; do bash -n "$script"; done
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test -- --run
+      - run: npm run build
+
+  gate:
+    name: CI gate
+    if: always()
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require production PRs to come from develop
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ] && [ "$BASE_BRANCH" = main ]; then
+            if [ "$HEAD_BRANCH" != develop ]; then
+              echo 'Release through a develop → main pull request.' >&2
+              exit 1
+            fi
+          fi
+      - name: Require both checks to pass
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+        run: test "$BACKEND_RESULT" = success && test "$FRONTEND_RESULT" = success
+
+  images:
+    name: Build release images
+    needs: gate
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build the exact release
+        run: |
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -f deploy/docker/Dockerfile.api -t "mythoscircle-api:git-$GITHUB_SHA" .
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -f deploy/docker/Dockerfile.web -t "mythoscircle-web:git-$GITHUB_SHA" .
+          docker save "mythoscircle-api:git-$GITHUB_SHA" "mythoscircle-web:git-$GITHUB_SHA" | gzip > release-images.tar.gz
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: production-images-${{ github.sha }}
+          path: release-images.tar.gz
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy production
+    needs: images
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, Linux, X64, mythoscircle-production]
+    environment:
+      name: production
+      url: https://world.miscco.uk
+    timeout-minutes: 30
+    concurrency:
+      group: mythoscircle-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: production-images-${{ github.sha }}
+          path: ${{ runner.temp }}/mythoscircle-release
+      - name: Load release images
+        run: docker load -i "$RUNNER_TEMP/mythoscircle-release/release-images.tar.gz"
+      - name: Deploy with backup and rollback
+        env:
+          MYTHOS_AUTO_IMAGES_READY: '1'
+        run: bash deploy/auto-deploy.sh
+      - name: Remove downloaded archive
+        if: always()
+        run: rm -f "$RUNNER_TEMP/mythoscircle-release/release-images.tar.gz"
