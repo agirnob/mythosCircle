@@ -867,6 +867,10 @@ def _validate_image_payload(payload: dict[str, Any], session: Session, campaign_
     """
     from app.media.service import entity_artwork_prompt, portrait_options
 
+    try:
+        portrait_options(payload, entity_kind=None)
+    except ValueError as exc:
+        raise InvalidJobInputError(str(exc)) from exc
     entity_id = payload["entity_id"]
     if not isinstance(entity_id, str) or not ids.is_valid_ulid(entity_id):
         raise InvalidJobInputError(f"image payload entity_id is not a ULID: {entity_id!r}")
