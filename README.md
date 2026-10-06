@@ -15,7 +15,7 @@ Monorepo layout:
 
 - [uv](https://docs.astral.sh/uv/) — provisions the pinned Python 3.12
   automatically (the host Python may be anything; do not run the app on it)
-- Node.js 20+ with npm
+- Node.js 22 with npm (the version used by CI and Docker builds)
 - Caddy 2 (deployment only)
 
 ## Setup
@@ -38,6 +38,11 @@ committed lockfiles).
 | `make typecheck`   | `mypy --strict` (backend) + `vue-tsc --noEmit` (frontend)               |
 
 ## Running locally
+
+Start new work on `feature/<name>` or `fix/<name>` from `develop`. Merge work
+through a pull request into `develop`, then release with a `develop` → `main`
+pull request. GitHub Actions checks the code and deploys successful `main`
+releases to the production Docker stack. See [pipeline setup and operations](deploy/AUTO_DEPLOY.md).
 
 ```sh
 make dev

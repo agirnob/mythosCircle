@@ -811,7 +811,7 @@ def test_entity_export_html_sheet(
     # 'name' key never duplicates the card heading.
     assert html_body.index("data:image") < html_body.index("The ember in the ledger")
     assert "<h3>Name</h3>" not in html_body
-    assert "Stat Block" in html_body and "Ember Lance" in html_body  # panel + actions
+    assert 'class="stat-block"' in html_body and "Ember Lance" in html_body  # panel + actions
     assert "widget_config" in html_body  # unknown key survives verbatim…
     assert '"deep": true' in html_body  # …inside the appendix JSON
     assert "Vespera --debt(5)--> The Guild" in html_body  # relations render
@@ -1063,16 +1063,11 @@ def test_entity_html_stat_block_order_is_canonical(client: Any) -> None:
             ).text
         )
 
-    def panel(h: str) -> str:
-        start = h.index('class="stat-block"')
-        return h[start : h.index("</section>", start)]
-
     a, b = sheet(a_id), sheet(b_id)
-    expected = ["Identity", "Combat", "Skills", "Actions", "Traits", "Spells"]
-    assert re.findall(r"<h4>(.*?)</h4>", panel(a)) == expected
-    assert re.findall(r"<h4>(.*?)</h4>", panel(b)) == expected
-    # The abilities grid leads with STR even when cha was committed first.
-    assert panel(a).index('ab-k">STR') < panel(a).index('ab-k">DEX') < panel(a).index('ab-k">CHA')
+    assert _panel(a) == _panel(b)
+    assert re.findall(r"<h4>(.*?)</h4>", _panel(a)) == []  # no empty sections
+    # The abilities table leads with STR even when cha was committed first.
+    assert _panel(a).index("<th>STR") < _panel(a).index("<th>DEX") < _panel(a).index("<th>CHA")
     # The appendix keeps the committed insertion order verbatim.
     assert a.index('"cha"') < a.index('"wis"') < a.index('"str"')
 
@@ -2831,21 +2826,21 @@ def test_portrait_url_origin_from_config_file(
 _NEW_STAT_GROUPS: dict[str, dict[str, Any]] = {
     "hit_dice": {
         "commit": {"combat": {"ac": 20, "hp": 140, "hit_dice": "24d10 + 192", "speed": "30 ft."}},
-        "markup": "<dt>Hp</dt><dd>140</dd><dt>Hit dice</dt><dd>24d10 + 192</dd><dt>Speed</dt>",
+        "markup": '<strong>Hit Dice</strong> 24d10 + 192',
     },
     "saves": {
         # Committed wis-first: the sheet renders the canonical score order.
         "commit": {"saves": {"wis": 18, "con": 15}},
-        "markup": "<dt>Con</dt><dd>15</dd><dt>Wis</dt><dd>18</dd>",
+        "markup": '<strong class="stat-term">Saving Throws</strong> CON +15, WIS +18',
     },
-    "initiative": {"commit": {"initiative": 3}, "markup": "<h4>Initiative</h4><p>3</p>"},
+    "initiative": {"commit": {"initiative": 3}, "markup": "<strong>Initiative</strong> 3"},
     "passive_perception": {
         "commit": {"passive_perception": 14},
-        "markup": "<h4>Passive perception</h4><p>14</p>",
+        "markup": '<strong class="stat-term">Passive Perception</strong> 14',
     },
     "proficiency_bonus": {
         "commit": {"proficiency_bonus": 5},
-        "markup": "<h4>Proficiency bonus</h4><p>5</p>",
+        "markup": '<strong class="stat-term">Proficiency Bonus</strong> 5',
     },
     "spellcasting": {
         "commit": {"spellcasting": {"slots": [4, 3, 3, 3, 1], "attack_bonus": 13, "dc": 21}},
@@ -2856,7 +2851,7 @@ _NEW_STAT_GROUPS: dict[str, dict[str, Any]] = {
     "features": {
         "commit": {"features": ["Divine Smite", "Aura of Protection"]},
         "markup": "<h4>Features</h4>"
-        '<ul class="entries"><li>Divine Smite</li><li>Aura of Protection</li></ul>',
+        '<p class="stat-entry">Divine Smite</p><p class="stat-entry">Aura of Protection</p>',
     },
     "resources": {
         "commit": {"resources": {"lay_on_hands": 85, "channel_divinity": 2}},
@@ -2908,7 +2903,12 @@ def _block_sheet(client: Any, data: dict[str, Any]) -> str:
 def _panel(html_body: str) -> str:
     """The stat-block panel of a rendered sheet."""
     start = html_body.index('class="stat-block"')
-    return html_body[start : html_body.index("</section>", start)]
+    depth = 1
+    for tag in re.finditer(r"<section\b[^>]*>|</section>", html_body[start:]):
+        depth += -1 if tag.group() == "</section>" else 1
+        if depth == 0:
+            return html_body[start : start + tag.start()]
+    raise AssertionError("Unclosed stat-block section")
 
 
 @pytest.mark.parametrize("group", sorted(_NEW_STAT_GROUPS))
@@ -2934,42 +2934,28 @@ def test_entity_html_new_sections_follow_the_spec_order(client: Any) -> None:
         overrides.update(case["commit"])
     sheet = _block_sheet(client, {"stat_block": _structured_block(**overrides)})
     panel = _panel(sheet)
-    assert re.findall(r"<h4>(.*?)</h4>", panel) == [
-        "Identity",
-        "Combat",
-        "Saves",
-        "Initiative",
-        "Passive perception",
-        "Proficiency bonus",
-        "Skills",
-        "Actions",
-        "Traits",
-        "Spells",
-        "Spellcasting",
-        "Features",
-        "Resources",
+    assert re.findall(r"<h4>(.*?)</h4>", panel) == ["Features", "Resources", "Spellcasting"]
+    labels = [
+        "Armor Class", "Hit Points", "Hit Dice", "Initiative", "<th>STR",
+        "Saving Throws", "Passive Perception", "Proficiency Bonus", "<h4>Features",
+        "<h4>Resources", "<h4>Spellcasting",
     ]
-    assert "<dt>Hp</dt><dd>140</dd><dt>Hit dice</dt><dd>24d10 + 192</dd>" in panel
+    positions = [panel.index(label) for label in labels]
+    assert positions == sorted(positions)
+    assert "<strong>Hit Points</strong> 140" in panel
     assert "<dt>Lay on hands</dt><dd>85</dd>" in panel  # resources close the panel
 
 
 def test_entity_html_pre_change_block_emits_no_new_sections(client: Any) -> None:
     """NEW_STATS_ABSENT (sheet): the 5-1 fixture — a block committed before
-    these fields existed — renders the same six sections as always, with no
+    these fields existed — keeps its content in the redesigned sheet, with no
     new heading and no empty one."""
     campaign_id, vespera_id = _sheet_world(client)
     sheet = client.get(
         f"/api/campaigns/{campaign_id}/entities/{vespera_id}/export", params={"format": "html"}
     ).text
     panel = _panel(sheet)
-    assert re.findall(r"<h4>(.*?)</h4>", panel) == [
-        "Identity",
-        "Combat",
-        "Skills",
-        "Actions",
-        "Traits",
-        "Spells",
-    ]
+    assert re.findall(r"<h4>(.*?)</h4>", panel) == ["Actions"]
     for case in _NEW_STAT_GROUPS.values():
         assert case["markup"] not in sheet
 
