@@ -10,7 +10,7 @@ import TonightNotes from './TonightNotes.vue'
 beforeEach(() => {
   vi.restoreAllMocks()
   setActivePinia(createPinia())
-  useAuthStore().account = { id: 'A', email: 'a@example.com' }
+  useAuthStore().account = { id: 'A', email: 'a@example.com', is_admin: false }
 })
 const props = {
   campaignId: 'C1',
@@ -113,7 +113,7 @@ describe('TonightNotes SQL editor', () => {
     expect(wrapper.get('textarea').element.value).toBe('My draft')
     await button(wrapper, 'Save notes').trigger('click')
     const field = wrapper.get('textarea').element
-    useAuthStore().account = { id: 'B', email: 'b@example.com' }
+    useAuthStore().account = { id: 'B', email: 'b@example.com', is_admin: false }
     field.value = 'Old account stale input'
     field.dispatchEvent(new Event('input', { bubbles: true }))
     await wrapper.vm.$nextTick()

@@ -419,6 +419,7 @@ class Account(Base):
     id: Mapped[str] = mapped_column(String(26), primary_key=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    disabled_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40))
 
 

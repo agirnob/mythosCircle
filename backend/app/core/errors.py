@@ -117,7 +117,10 @@ def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
         request.url.path,
         exc_info=exc,
     )
-    return _envelope(500, INTERNAL_ERROR_CODE, INTERNAL_ERROR_MESSAGE)
+    response = _envelope(500, INTERNAL_ERROR_CODE, INTERNAL_ERROR_MESSAGE)
+    if request.url.path.startswith("/api/admin/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def register_error_handlers(application: FastAPI) -> None:

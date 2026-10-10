@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 
 import type { components } from '../api/schema'
 import { ApiError } from '../api/client'
@@ -11,6 +11,8 @@ import { useCampaignsStore } from '../stores/campaigns'
 
 type Campaign = components['schemas']['CampaignResponse']
 
+const route = useRoute()
+const noticeDismissed = ref(false)
 const campaigns = useCampaignsStore()
 const loadError = ref<string | null>(null)
 
@@ -112,6 +114,12 @@ onMounted(async () => {
 
 <template>
   <div class="mc-worlds-page">
+    <p v-if="route.query.notice === 'admin-access-denied' && !noticeDismissed" role="status">
+      Administrator access denied. Your campaigns remain available.
+      <button type="button" class="mc-btn mc-btn-secondary" @click="noticeDismissed = true">
+        Dismiss
+      </button>
+    </p>
     <p class="mc-eyebrow">Campaign library</p>
     <PageHeader
       title="Your worlds"

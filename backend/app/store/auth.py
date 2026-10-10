@@ -36,6 +36,10 @@ _DUMMY_HASH = _hasher.hash("mythoscircle-dummy-password")
 _NEVER_EXPIRE_DAYS = 36_500 * 30  # ~year 9999
 
 
+class InactiveAccountError(StoreError):
+    """A session cannot be created for a missing or suspended identity."""
+
+
 class EmailTakenError(StoreError):
     """An account with this (normalized) email already exists."""
 
@@ -87,7 +91,7 @@ def verify_login(email: str, password: str) -> models.Account | None:
             # wrong password — a 500 on a known account would leak
             # existence (review round 1, AR29).
             return None
-        return account
+        return account if account is not None and account.disabled_at is None else None
 
 
 def create_session(account_id: str) -> tuple[str, models.LoginSession]:
@@ -102,6 +106,9 @@ def create_session(account_id: str) -> tuple[str, models.LoginSession]:
         time.now_plus_days(ttl_days) if ttl_days else time.now_plus_days(_NEVER_EXPIRE_DAYS)
     )
     with session_scope() as session:
+        account = session.get(models.Account, account_id)
+        if account is None or account.disabled_at is not None:
+            raise InactiveAccountError("Invalid credentials.")
         session_row = models.LoginSession(
             id=ids.new_id(),
             account_id=account_id,
@@ -132,7 +139,7 @@ def get_session_account(token: str) -> models.Account | None:
         if _is_expired(session_row.expires_at):
             return None
         account = session.get(models.Account, session_row.account_id)
-        return account
+        return account if account is not None and account.disabled_at is None else None
 
 
 def revoke_session(token: str) -> None:

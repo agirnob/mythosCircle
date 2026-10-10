@@ -790,3 +790,37 @@ def test_portrait_option_types_return_422(
     )
     assert response.status_code == 422
     assert option in response.text
+
+
+def test_suspension_preserves_signed_lifetime_but_blocks_minting(
+    client: TestClient,
+    media_api: Callable[[], str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+    from urllib.parse import parse_qs, urlsplit
+
+    from app.store.admin import set_disabled
+
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_URL_SECRET", "scratch-signing-key")
+    monkeypatch.setenv("MYTHOSCIRCLE_MEDIA_DIR", str(tmp_path / "media"))
+    campaign_id = media_api()
+    entity_id = _commit_entity(campaign_id, "A traveler in a silver cloak")
+    filename = f"{ids.new_id()}.png"
+    add_media(campaign_id, entity_id, filename)
+    path = tmp_path / "media" / campaign_id / entity_id / filename
+    path.parent.mkdir(parents=True)
+    path.write_bytes(PNG_BYTES)
+    account_id = client.get("/api/auth/me").json()["id"]
+    mint_path = f"/api/campaigns/{campaign_id}/entities/{entity_id}/portrait-url"
+    minted = client.get(mint_path)
+    assert minted.status_code == 200
+    url = urlsplit(minted.json()["url"])
+    signed_path = f"{url.path}?{url.query}"
+    expires = int(parse_qs(url.query)["exp"][0])
+    set_disabled(account_id, True, admin_ids=frozenset())
+    assert client.get(mint_path).status_code == 401
+    assert client.get(signed_path).content == PNG_BYTES
+    monkeypatch.setattr(time, "time", lambda: expires + 1)
+    assert client.get(signed_path).status_code == 404

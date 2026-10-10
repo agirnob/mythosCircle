@@ -180,7 +180,7 @@ describe('WorldView', () => {
   it('onAuthFailure clears the auth account and pushes the login route', async () => {
     apiFetchMock.mockResolvedValue(worldExport())
     const auth = useAuthStore()
-    auth.account = { id: 'A1', email: 'dm@example.com' } as Account
+    auth.account = { id: 'A1', email: 'dm@example.com', is_admin: false } as Account
 
     const wrapper = mountView()
     await flushPromises()

@@ -17,8 +17,8 @@ affected socket dropped, but the loop keeps delivering subsequent
 events.
 
 Auth gate (AD-9): the socket is a private channel — the handshake
-accepts first, then the session cookie is resolved to an account and
-the campaign checked for ownership. Any failure closes with 4401
+resolves the session cookie and checks campaign ownership before
+accepting. Any failure closes with 4401
 (fatal, no reconnects) BEFORE the socket joins the hub; only an
 authenticated owner is ever registered, so the hub never broadcasts to
 or leaks existence for a foreign campaign.
@@ -32,6 +32,7 @@ from collections import defaultdict
 from typing import Any
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
 
 from app.api.auth import COOKIE_NAME
 from app.store import get_campaign, get_session_account, models
@@ -44,6 +45,7 @@ from app.store.jobs import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+_SOCKET_TRANSPORT_TIMEOUT_SECONDS = 1.0
 
 
 def _build_message(event: str, job: models.Job, queue_position: int | None) -> dict[str, Any]:
@@ -63,6 +65,10 @@ class JobHub:
     """In-process broadcast hub keyed by campaign_id."""
 
     def __init__(self) -> None:
+        # Bounded coordinator stripes: lock first, then store transaction.
+        # Transactions always finish before transport I/O.
+        self._account_locks = [asyncio.Lock() for _ in range(64)]
+        self._identities: dict[WebSocket, tuple[str, str]] = {}
         self._subscribers: dict[str, set[WebSocket]] = defaultdict(set)
         self._pending: queue.SimpleQueue[tuple[str, models.Job, int | None]] = queue.SimpleQueue()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -73,6 +79,7 @@ class JobHub:
         """Lifespan startup: register the store listener and start the drain task."""
         if self._drain_task is not None:
             return
+        self._account_locks = [asyncio.Lock() for _ in range(64)]
         self._loop = asyncio.get_running_loop()
         wakeup = asyncio.Event()
         self._wakeup = wakeup
@@ -99,6 +106,7 @@ class JobHub:
                 with contextlib.suppress(RuntimeError):
                     await socket.close()
         self._subscribers.clear()
+        self._identities.clear()
 
     def _on_store_event(self, event: str, job: models.Job, queue_position: int | None) -> None:
         self._pending.put((event, job, queue_position))
@@ -133,7 +141,12 @@ class JobHub:
             # A subscriber that stops reading must not wedge the drain (and
             # through it the store caller, which fires the listener
             # synchronously inside its commit).
-            await asyncio.wait_for(socket.send_json(message), timeout=10.0)
+            async def eligible_send() -> None:
+                # Check inside the scheduled coroutine, immediately before send.
+                if socket in self._subscribers.get(job.campaign_id, ()):
+                    await socket.send_json(message)
+
+            await asyncio.wait_for(eligible_send(), timeout=10.0)
 
         results = await asyncio.gather(
             *(_send(socket) for socket in sockets),
@@ -146,10 +159,40 @@ class JobHub:
                 with contextlib.suppress(RuntimeError):
                     await socket.close()
 
-    def register(self, socket: WebSocket, campaign_id: str) -> None:
+    def account_lock(self, account_id: str) -> asyncio.Lock:
+        return self._account_locks[hash(account_id) % len(self._account_locks)]
+
+    async def invalidate_account(self, account_id: str) -> None:
+        """Detach synchronously, then attempt bounded transport closure."""
+        sockets = [
+            (socket, campaign_id)
+            for socket, (owner_id, campaign_id) in self._identities.items()
+            if owner_id == account_id
+        ]
+        for socket, campaign_id in sockets:
+            self.unregister(socket, campaign_id)
+
+        async def close(socket: WebSocket) -> None:
+            try:
+                async with asyncio.timeout(_SOCKET_TRANSPORT_TIMEOUT_SECONDS):
+                    await socket.close(code=4401)
+            except Exception:
+                logger.warning("detached job socket transport close failed or timed out")
+
+        await asyncio.gather(*(close(socket) for socket, _ in sockets))
+
+    def register(
+        self,
+        socket: WebSocket,
+        campaign_id: str,
+        account_id: str | None = None,
+    ) -> None:
         self._subscribers[campaign_id].add(socket)
+        if account_id is not None:
+            self._identities[socket] = (account_id, campaign_id)
 
     def unregister(self, socket: WebSocket, campaign_id: str) -> None:
+        self._identities.pop(socket, None)
         sockets = self._subscribers.get(campaign_id)
         if sockets is None:
             return
@@ -161,29 +204,51 @@ class JobHub:
 hub = JobHub()
 
 
+async def _deny_socket(websocket: WebSocket) -> None:
+    try:
+        async with asyncio.timeout(_SOCKET_TRANSPORT_TIMEOUT_SECONDS):
+            await websocket.accept()
+            await websocket.close(code=4401)
+    except Exception:
+        logger.warning("job socket denial transport failed or timed out")
+
+
 @router.websocket("/api/ws/jobs")
 async def jobs_ws(websocket: WebSocket, campaign_id: str = Query(...)) -> None:
     """Subscribe to a campaign's job broadcasts (AD-17).
 
-    Auth gate (AD-9): ``accept()`` runs FIRST (the denial path sends a
-    close frame, which requires the completed handshake), then the
-    session cookie is resolved via ``get_session_account`` and the
-    campaign checked via ``get_campaign``; a missing/invalid session or
-    an unowned campaign closes with 4401 WITHOUT registering in the hub.
-    Only after auth passes does the socket join the campaign's
-    subscriber set.
+    Auth resolves before acceptance so a successful handshake is ready
+    for broadcasts. Denials accept then close with 4401 without ever
+    registering. Authentication is rechecked under the access-transition
+    coordinator immediately before accepting and registering.
 
     The server only broadcasts; inbound frames are drained so clients can
     keep the connection alive with pings. Disconnects are tolerated and
     the socket is removed from the hub (and closed if it failed a send).
     """
-    await websocket.accept()
     token = websocket.cookies.get(COOKIE_NAME)
-    account = get_session_account(token) if token is not None else None
-    if account is None or get_campaign(account.id, campaign_id) is None:
-        await websocket.close(code=4401)
+    account = await run_in_threadpool(get_session_account, token) if token is not None else None
+    if account is None or token is None:
+        await _deny_socket(websocket)
         return
-    hub.register(websocket, campaign_id)
+    async with hub.account_lock(account.id):
+        # Resolve again under the transition lock: a handshake authenticated
+        # before suspension must never register after its cleanup.
+        current = await run_in_threadpool(get_session_account, token)
+        campaign = await run_in_threadpool(get_campaign, account.id, campaign_id)
+        if current is None or campaign is None:
+            await _deny_socket(websocket)
+            return
+        # A successful handshake is ready to receive broadcasts immediately.
+        try:
+            # timeout() runs acceptance in this task, so registration has no
+            # extra scheduling gap after the successful transport operation.
+            async with asyncio.timeout(_SOCKET_TRANSPORT_TIMEOUT_SECONDS):
+                await websocket.accept()
+        except Exception:
+            logger.warning("job socket acceptance failed or timed out")
+            return
+        hub.register(websocket, campaign_id, account.id)
     try:
         while True:
             await websocket.receive_text()

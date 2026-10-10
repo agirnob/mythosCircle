@@ -91,6 +91,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Users */
+        get: operations["list_users_api_admin_users_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users/{account_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set Status */
+        patch: operations["set_status_api_admin_users__account_id__patch"];
+        trace?: never;
+    };
     "/api/campaigns": {
         parameters: {
             query?: never;
@@ -1056,11 +1090,40 @@ export interface components {
             id: string;
             /** Email */
             email: string;
+            /** Is Admin */
+            is_admin: boolean;
+        };
+        /** AccountStatusRequest */
+        AccountStatusRequest: {
+            /** Disabled */
+            disabled: boolean;
         };
         /** ActiveSessionResponse */
         ActiveSessionResponse: {
             /** Active Session Id */
             active_session_id: string | null;
+        };
+        /** AdminUser */
+        AdminUser: {
+            /** Id */
+            id: string;
+            /** Email */
+            email: string;
+            /** Is Admin */
+            is_admin: boolean;
+            /** Disabled At */
+            disabled_at: string | null;
+            /** Created At */
+            created_at: string;
+            /** Campaign Count */
+            campaign_count: number;
+        };
+        /** AdminUserList */
+        AdminUserList: {
+            /** Users */
+            users: components["schemas"]["AdminUser"][];
+            /** Next Cursor */
+            next_cursor: string | null;
         };
         /** ArchetypeExport */
         ArchetypeExport: {
@@ -1771,6 +1834,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AccountResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_users_api_admin_users_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_status_api_admin_users__account_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUser"];
                 };
             };
             /** @description Validation Error */

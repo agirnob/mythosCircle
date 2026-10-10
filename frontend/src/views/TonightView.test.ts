@@ -40,7 +40,7 @@ const story = (id: string, sessionId = 'S1'): JournalEntry => ({
 async function setup(legacy = '') {
   const pinia = createPinia()
   setActivePinia(pinia)
-  useAuthStore().account = { id: 'A', email: 'a@example.com' }
+  useAuthStore().account = { id: 'A', email: 'a@example.com', is_admin: false }
   const stored = new Map<string, string>()
   if (legacy) stored.set('mythoscircle:tonight:A:C1', legacy)
   vi.stubGlobal('localStorage', {

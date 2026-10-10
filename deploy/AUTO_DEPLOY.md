@@ -79,3 +79,39 @@ The running application keeps serving while the runner is stopped. To resume,
 enable/start the service again. Do not interrupt a deployment during backup or
 rollback. For an emergency manual release of a checked-out `main` revision,
 `bash deploy/auto-deploy.sh` can also build images locally on the server.
+
+
+## Administrator access
+
+Administrator grants are environment-only account ULIDs in
+`MYTHOSCIRCLE_ADMIN_ACCOUNT_IDS` (comma-separated, whitespace trimmed,
+duplicates ignored). Empty grants nobody; malformed nonempty IDs prevent
+startup. Registration stays open and never grants administrator access.
+Suspension applies to one account, leaving its campaigns and queued work intact.
+Old signed portrait links remain independently valid until expiry (up to seven days).
+
+To activate access, sign in to an existing **active** account and obtain its
+`id` from authenticated `GET /api/auth/me` (browser developer tools or an
+authenticated API client). In the actual Portainer-managed API service in
+`/home/homest/mythos-redeploy.yml`, wire `MYTHOSCIRCLE_ADMIN_ACCOUNT_IDS` into
+the API container environment and supply that account ID. Recreate the API
+container, then verify `/api/auth/me` returns `is_admin: true`. Changes to
+repository Compose templates alone cannot activate the external stack. A
+Portainer variable without a matching service environment entry also has no
+effect. Keep the external Compose configuration and deployment runner's
+interpolation environment consistent: the runner does not automatically inherit
+Portainer variables. A literal environment entry in the externally managed
+service is another operator-managed option. Never put grants in frontend build
+variables or `config.toml`.
+
+To revoke access, remove the ID and recreate the API container. Detection occurs
+on the next admin navigation/request. To recover from a syntactically valid
+wrong ID or an allowlist containing only disabled accounts, use operator access
+to replace it with a known active account's ID and recreate the API. Startup
+never promotes accounts or edits suspension state. Another active administrator
+may restore a disabled account that was subsequently added to the allowlist;
+configured administrators cannot be disabled through the application.
+
+These are operator activation/recovery instructions. Feature implementation does
+not change production configuration, deploy a development branch, or bypass the
+`CI gate` and `develop` → `main` release pull request.
