@@ -26,7 +26,7 @@ describe('account isolation', () => {
   })
   function seed() {
     const auth = useAuthStore()
-    auth.account = { id: 'A', email: 'a@example.com' }
+    auth.account = { id: 'A', email: 'a@example.com', is_admin: false }
     const stores = [
       useCampaignsStore(),
       useCandidatesStore(),
@@ -61,7 +61,7 @@ describe('account isolation', () => {
           new Response(JSON.stringify({ message: 'Session required' }), { status: 401 }),
         )
         await expect(apiFetch('/api/private')).rejects.toThrow('Session required')
-      } else auth.account = { id: 'B', email: 'b@example.com' }
+      } else auth.account = { id: 'B', email: 'b@example.com', is_admin: false }
       expect(useCampaignsStore().campaigns).toEqual([])
       expect(useCampaignsStore().current).toBeNull()
       for (const store of stores.slice(1))
@@ -72,7 +72,7 @@ describe('account isolation', () => {
   )
   it('ignores late campaign, media, candidate, job and Tonight responses after switching accounts', async () => {
     const auth = useAuthStore()
-    auth.account = { id: 'A', email: 'a@example.com' }
+    auth.account = { id: 'A', email: 'a@example.com', is_admin: false }
     const pending: ReturnType<typeof deferred>[] = []
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
       const request = deferred()
@@ -87,7 +87,7 @@ describe('account isolation', () => {
       useTonightStore().fetchTonight('C1'),
     ]
     const settled = Promise.allSettled(actions)
-    auth.account = { id: 'B', email: 'b@example.com' }
+    auth.account = { id: 'B', email: 'b@example.com', is_admin: false }
     for (const request of pending)
       request.resolve(
         ok({
@@ -108,7 +108,7 @@ describe('account isolation', () => {
   })
   it('does not schedule a dirty world refetch or let a late 401 log out the new account', async () => {
     const auth = useAuthStore()
-    auth.account = { id: 'A', email: 'a@example.com' }
+    auth.account = { id: 'A', email: 'a@example.com', is_admin: false }
     const request = deferred()
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockReturnValue(request.promise)
     const handler = vi.fn(() => auth.clearSession())
@@ -116,7 +116,7 @@ describe('account isolation', () => {
     const world = useWorldStore()
     const loading = world.load('C1')
     await world.load('C1')
-    auth.account = { id: 'B', email: 'b@example.com' }
+    auth.account = { id: 'B', email: 'b@example.com', is_admin: false }
     request.resolve(new Response('{}', { status: 401 }))
     await loading
     expect(fetchMock).toHaveBeenCalledOnce()
@@ -126,7 +126,7 @@ describe('account isolation', () => {
   })
   it('does not invalidate a new login when the preceding logout request finishes', async () => {
     const auth = useAuthStore()
-    auth.account = { id: 'A', email: 'a@example.com' }
+    auth.account = { id: 'A', email: 'a@example.com', is_admin: false }
     const logoutRequest = deferred(),
       loginRequest = deferred()
     vi.spyOn(globalThis, 'fetch')
@@ -136,7 +136,7 @@ describe('account isolation', () => {
     const login = auth.login('b@example.com', 'password')
     logoutRequest.resolve(new Response(null, { status: 204 }))
     await logout
-    loginRequest.resolve(ok({ id: 'B', email: 'b@example.com' }))
+    loginRequest.resolve(ok({ id: 'B', email: 'b@example.com', is_admin: false }))
     await login
     expect(auth.account?.id).toBe('B')
   })
@@ -150,7 +150,7 @@ describe('account isolation', () => {
     const hydration = auth.hydrate()
     const assertion = expect(hydration).rejects.toBeInstanceOf(SessionChangedError)
     await auth.logout()
-    request.resolve(ok({ id: 'A', email: 'a@example.com' }))
+    request.resolve(ok({ id: 'A', email: 'a@example.com', is_admin: false }))
     await assertion
     expect(auth.account).toBeNull()
   })

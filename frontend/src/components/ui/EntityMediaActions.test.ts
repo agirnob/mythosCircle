@@ -74,7 +74,7 @@ describe('EntityMediaActions reveal prompt', () => {
 
   it('does not start requests or subscribe if the account changes before its mount hook', async () => {
     const auth = useAuthStore()
-    auth.account = { id: 'A', email: 'a@example.com' }
+    auth.account = { id: 'A', email: 'a@example.com', is_admin: false }
     vi.mocked(connectJobSocket).mockClear()
     const wrapper = mount(EntityMediaActions, {
       props: { campaignId: 'C1', entity },

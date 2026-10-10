@@ -5,7 +5,10 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import type { components } from '../api/schema'
 
-const { apiFetchMock } = vi.hoisted(() => ({ apiFetchMock: vi.fn() }))
+const { apiFetchMock, route } = vi.hoisted(() => ({
+  apiFetchMock: vi.fn(),
+  route: { query: {} as Record<string, string> },
+}))
 
 vi.mock('../api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -23,6 +26,7 @@ vi.mock('../api/client', () => ({
 
 vi.mock('vue-router', () => ({
   RouterLink: { template: '<a><slot /></a>' },
+  useRoute: () => route,
 }))
 
 import { ApiError } from '../api/client'
@@ -218,4 +222,21 @@ describe('CampaignsView world delete', () => {
     expect(wrapper.text()).toContain('The world was deleted, but the list could not be refreshed.')
     expect(wrapper.text()).toContain('Database unavailable.')
   })
+})
+
+it('shows and dismisses only the fixed administrator-denied notice', async () => {
+  setActivePinia(createPinia())
+  route.query = { notice: 'admin-access-denied' }
+  apiFetchMock.mockResolvedValue({ campaigns: [], themes: [], next_cursor: null })
+  const wrapper = mount(CampaignsView)
+  await flushPromises()
+  expect(wrapper.get('[role="status"]').text()).toContain('Administrator access denied')
+  await wrapper.get('[role="status"] button').trigger('click')
+  expect(wrapper.find('[role="status"]').exists()).toBe(false)
+  wrapper.unmount()
+  route.query = { notice: '<script>anything</script>' }
+  const other = mount(CampaignsView)
+  expect(other.find('[role="status"]').exists()).toBe(false)
+  other.unmount()
+  route.query = {}
 })

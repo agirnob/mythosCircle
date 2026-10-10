@@ -155,3 +155,15 @@ def test_video_prompt_writing_guide_ships_and_is_readable() -> None:
         assert field in text, f"the writing guide must document {field!r}"
     # The I2VA picture-alignment instruction the draft MUST open with.
     assert "is fully referenced" in text
+
+
+def test_admin_allowlist_forwarded_only_to_api_with_empty_default() -> None:
+    for name in ("docker-compose.yml", "docker-compose.portainer.yml"):
+        compose = (DEPLOY_DIR / name).read_text()
+        api, web = compose.split("\n  api:", 1)[1].split("\n  web:", 1)
+        assert "MYTHOSCIRCLE_ADMIN_ACCOUNT_IDS: ${MYTHOSCIRCLE_ADMIN_ACCOUNT_IDS:-}" in api
+        assert "MYTHOSCIRCLE_ADMIN_ACCOUNT_IDS" not in web
+    assert "MYTHOSCIRCLE_ADMIN_ACCOUNT_IDS" not in (DEPLOY_DIR / "config.toml").read_text()
+    instructions = (DEPLOY_DIR / "AUTO_DEPLOY.md").read_text()
+    assert "/home/homest/mythos-redeploy.yml" in instructions
+    assert "runner does not automatically inherit" in instructions

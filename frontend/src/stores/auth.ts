@@ -13,6 +13,12 @@ type Account = components['schemas']['AccountResponse']
 export const useAuthStore = defineStore('auth', () => {
   const account = ref<Account | null>(null)
   const hydrated = ref(false)
+  let capabilityGeneration = 0
+  const isAdmin = computed(() => account.value?.is_admin === true)
+  function denyAdmin() {
+    capabilityGeneration++
+    if (account.value) account.value = { ...account.value, is_admin: false }
+  }
   const isAuthenticated = computed(() => account.value !== null)
   const privateStores = [
     useCampaignsStore(),
@@ -37,8 +43,10 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
   async function hydrate() {
+    const generation = ++capabilityGeneration
     try {
-      account.value = await apiFetch<Account>('/api/auth/me')
+      const current = await apiFetch<Account>('/api/auth/me')
+      if (generation === capabilityGeneration) account.value = current
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) clearSession()
       else throw error
@@ -67,5 +75,16 @@ export const useAuthStore = defineStore('auth', () => {
       /* Best effort when the cookie is gone or the server is down. */
     }
   }
-  return { account, hydrated, isAuthenticated, hydrate, login, register, logout, clearSession }
+  return {
+    account,
+    hydrated,
+    isAuthenticated,
+    isAdmin,
+    denyAdmin,
+    hydrate,
+    login,
+    register,
+    logout,
+    clearSession,
+  }
 })

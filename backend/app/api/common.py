@@ -44,6 +44,7 @@ from app.store import (
     UnknownEdgeError,
     UnknownEntityError,
 )
+from app.store.admin import AccountNotFoundError, ProtectedAdministratorError
 from app.store.commit import (
     BlankEdgeReasonError,
     EdgeKindViolationError,
@@ -75,6 +76,7 @@ def store_error_as_http(exc: Exception) -> NoReturn:
     if isinstance(
         exc,
         (
+            AccountNotFoundError,
             JobNotFoundError,
             CandidateNotFoundError,
             UnknownCampaignError,
@@ -88,6 +90,7 @@ def store_error_as_http(exc: Exception) -> NoReturn:
     if isinstance(
         exc,
         (
+            ProtectedAdministratorError,
             JobStateConflictError,
             CandidateSettledError,
             DuplicateJobError,

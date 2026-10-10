@@ -96,6 +96,7 @@ def init_db(url: str = DEFAULT_DB_URL) -> Engine:
     _migrate_proposed_candidate_entity_base(_engine)
     _migrate_edge_reason(_engine)
     _migrate_login_session(_engine)
+    _migrate_account_disabled(_engine)
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 
@@ -487,3 +488,12 @@ def app_db_url() -> str:
 def init_app_db() -> Engine:
     """Initialize the store from the app's environment (idempotent)."""
     return init_db(app_db_url())
+
+
+def _migrate_account_disabled(engine: Engine) -> None:
+    """Add suspension without changing existing accounts or worlds."""
+    from sqlalchemy import inspect, text
+
+    if "disabled_at" not in {column["name"] for column in inspect(engine).get_columns("account")}:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE account ADD COLUMN disabled_at VARCHAR(40)"))
