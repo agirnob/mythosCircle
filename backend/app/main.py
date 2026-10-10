@@ -9,9 +9,12 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 from app.api import (
+    admin,
     auth,
     campaigns,
     candidates,
@@ -27,7 +30,7 @@ from app.api import (
 )
 from app.core.errors import register_error_handlers
 from app.core.logging_setup import setup_logging
-from app.core.settings import cookie_secure_override
+from app.core.settings import admin_account_ids, cookie_secure_override
 from app.pipeline.worker import worker_loop
 from app.store import init_app_db
 from app.store.jobs import recover_stale_running
@@ -66,15 +69,27 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     """Build the FastAPI application (app factory)."""
     application = FastAPI(title="mythosCircle API", version="0.1.0", lifespan=lifespan)
+
+    @application.middleware("http")
+    async def private_admin_responses(
+        request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        response = await call_next(request)
+        if request.url.path.startswith("/api/admin/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     setup_logging()  # JSON-lines file logging first — every handler logs structured
     register_error_handlers(application)
     # Fail boot loudly on a garbage MYTHOSCIRCLE_COOKIE_SECURE (spec-6-4):
     # the tri-state reader's ValueError surfaces at construction, never as
     # a per-request 500 from _set_session_cookie on every login/register.
     cookie_secure_override()
+    application.state.admin_account_ids = admin_account_ids()
     init_app_db()  # world store: schema + WAL, idempotent
     recover_stale_running()  # AR11: re-queue a crashed worker's running job
     application.include_router(auth.router)
+    application.include_router(admin.router)
     application.include_router(campaigns.router)
     application.include_router(health.router)
     application.include_router(jobs.router)

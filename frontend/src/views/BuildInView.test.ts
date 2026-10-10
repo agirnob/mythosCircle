@@ -121,19 +121,19 @@ describe('BuildInView seed form', () => {
     vi.stubGlobal('localStorage', { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value), removeItem: (key: string) => saved.delete(key), clear: () => saved.clear() })
     mockApi()
     const auth = useAuthStore()
-    auth.account = { id: 'A', email: 'a@example.com' }
+    auth.account = { id: 'A', email: 'a@example.com', is_admin: false }
     const first = await mountView()
     await field(first, 'Free-form notes').setValue('Private A notes')
     await flushPromises()
     first.unmount()
     expect(localStorage.getItem('mythoscircle:build-in:A:C1')).toContain('Private A notes')
-    auth.account = { id: 'B', email: 'b@example.com' }
+    auth.account = { id: 'B', email: 'b@example.com', is_admin: false }
     const second = await mountView()
     expect((field(second, 'Free-form notes').element as HTMLTextAreaElement).value).toBe('')
     await field(second, 'Free-form notes').setValue('Private B notes')
     await flushPromises()
     second.unmount()
-    auth.account = { id: 'A', email: 'a@example.com' }
+    auth.account = { id: 'A', email: 'a@example.com', is_admin: false }
     const restored = await mountView()
     expect((field(restored, 'Free-form notes').element as HTMLTextAreaElement).value).toBe('Private A notes')
     restored.unmount()

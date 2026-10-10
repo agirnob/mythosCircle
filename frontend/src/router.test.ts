@@ -41,3 +41,70 @@ describe('router', () => {
     expect(resolved.meta.requiresAuth).toBe(true)
   })
 })
+
+// Exercise the registered guards with real navigation, including fresh grants.
+import { beforeEach, afterEach, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+import { useAuthStore } from './stores/auth'
+
+describe('administrator navigation authorization', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.restoreAllMocks()
+  })
+  afterEach(() => vi.restoreAllMocks())
+  it('denies anonymous entry independently of cached hydration', async () => {
+    useAuthStore().hydrated = true
+    await router.push('/admin')
+    expect(router.currentRoute.value.name).toBe('login')
+  })
+  it('refreshes cached grants and redirects ordinary users with the fixed notice', async () => {
+    const auth = useAuthStore()
+    auth.hydrated = true
+    auth.account = { id: 'A', email: 'a@example.com', is_admin: true }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'A',
+          email: 'a@example.com',
+          is_admin: false,
+        }),
+      ),
+    )
+    await router.push('/admin')
+    expect(router.currentRoute.value.name).toBe('campaigns')
+    expect(router.currentRoute.value.query.notice).toBe('admin-access-denied')
+    expect(auth.isAdmin).toBe(false)
+  })
+  it('allows fresh administrators and rechecks query-only navigation without discarding capability', async () => {
+    const auth = useAuthStore()
+    auth.hydrated = true
+    auth.account = { id: 'A', email: 'a@example.com', is_admin: true }
+    const deny = vi.spyOn(auth, 'denyAdmin')
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: 'A',
+            email: 'a@example.com',
+            is_admin: true,
+          }),
+        ),
+    )
+    await router.push('/admin')
+    expect(router.currentRoute.value.name).toBe('admin')
+    await router.push('/admin?q=example')
+    expect(router.currentRoute.value.name).toBe('admin')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(deny).not.toHaveBeenCalled()
+  })
+  it('fails closed when fresh capability cannot be fetched', async () => {
+    const auth = useAuthStore()
+    auth.hydrated = true
+    auth.account = { id: 'A', email: 'a@example.com', is_admin: true }
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'))
+    await router.push('/admin?fresh=failed')
+    expect(router.currentRoute.value.name).toBe('campaigns')
+    expect(auth.isAdmin).toBe(false)
+  })
+})

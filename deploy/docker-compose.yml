@@ -35,6 +35,7 @@ services:
       # and never learns the public scheme, so the Secure flag is declared
       # explicitly (AD-22, env-only; unset keeps the dev plain-http flow).
       MYTHOSCIRCLE_COOKIE_SECURE: "true"
+      MYTHOSCIRCLE_ADMIN_ACCOUNT_IDS: ${MYTHOSCIRCLE_ADMIN_ACCOUNT_IDS:-}
       MYTHOSCIRCLE_MEDIA_URL_SECRET: ${MYTHOSCIRCLE_MEDIA_URL_SECRET:?MYTHOSCIRCLE_MEDIA_URL_SECRET is required}
       # LLM lives on the dev PC (Unsloth Studio); the laptop reaches it
       # over the LAN. Requires one /v1/load per Unsloth restart.

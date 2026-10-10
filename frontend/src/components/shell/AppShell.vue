@@ -74,6 +74,9 @@ async function logout() {
           <RouterLink :to="{ name: 'forge-global' }" class="mc-nav-link">Forge</RouterLink>
         </nav>
       </template>
+      <nav v-if="auth.isAdmin" class="mc-nav-group" aria-label="Administration">
+        <RouterLink :to="{ name: 'admin' }" class="mc-nav-link">Admin users</RouterLink>
+      </nav>
       <div class="mc-account">
         <span v-if="auth.isAuthenticated" class="mc-account-email">{{ auth.account?.email }}</span>
         <button v-if="auth.isAuthenticated" type="button" class="mc-btn-ghost" @click="logout">

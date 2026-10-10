@@ -20,7 +20,7 @@ const Renderer = defineComponent({
 it('preserves graph filters and renderer on focus queries, remounting on campaign and account changes', async () => {
   const pinia = createPinia()
   const auth = useAuthStore(pinia)
-  auth.account = { id: 'A', email: 'a@example.com' }
+  auth.account = { id: 'A', email: 'a@example.com', is_admin: false }
   const world = useWorldStore(pinia)
   vi.spyOn(world, 'load').mockResolvedValue()
   vi.spyOn(world, 'fetchMedia').mockResolvedValue()
@@ -63,7 +63,7 @@ it('preserves graph filters and renderer on focus queries, remounting on campaig
   await flushPromises()
   expect(wrapper.getComponent(GraphView).element).not.toBe(graph)
   const nextGraph = wrapper.getComponent(GraphView).element
-  auth.account = { id: 'B', email: 'b@example.com' }
+  auth.account = { id: 'B', email: 'b@example.com', is_admin: false }
   await flushPromises()
   expect(wrapper.getComponent(GraphView).element).not.toBe(nextGraph)
   wrapper.unmount()
@@ -84,7 +84,7 @@ it('never mounts the protected graph when anonymous or while logout is pending',
   await flushPromises()
   expect(wrapper.findComponent(GraphView).exists()).toBe(false)
   expect(load).not.toHaveBeenCalled()
-  auth.account = { id: 'A', email: 'a@example.com' }; await flushPromises()
+  auth.account = { id: 'A', email: 'a@example.com', is_admin: false }; await flushPromises()
   expect(wrapper.findComponent(GraphView).exists()).toBe(true)
   expect(load).toHaveBeenCalledOnce()
   let resolveLogout!: (response: Response) => void

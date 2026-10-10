@@ -5,6 +5,12 @@ import { useAuthStore } from './stores/auth'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    {
+      path: '/admin',
+      name: 'admin',
+      component: () => import('./views/AdminView.vue'),
+      meta: { requiresAuth: true, requiresAdmin: true },
+    },
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },
     { path: '/register', name: 'register', component: () => import('./views/RegisterView.vue') },
     {
@@ -114,6 +120,15 @@ router.beforeEach(async (to) => {
   }
   if (to.meta.requiresAuth && !auth.isAuthenticated) {
     return { name: 'login', query: { next: to.fullPath } }
+  }
+  if (to.meta.requiresAdmin) {
+    try {
+      await auth.hydrate()
+    } catch {
+      auth.denyAdmin()
+    }
+    if (!auth.isAuthenticated) return { name: 'login', query: { next: to.fullPath } }
+    if (!auth.isAdmin) return { name: 'campaigns', query: { notice: 'admin-access-denied' } }
   }
   if ((to.name === 'login' || to.name === 'register') && auth.isAuthenticated) {
     return { name: 'campaigns' }

@@ -12,13 +12,14 @@ same envelope — no user enumeration (AR29).
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.core.ratelimit import AttemptLimiter
 from app.core.settings import cookie_secure_override, session_ttl_days
 from app.store import models
 from app.store.auth import (
     EmailTakenError,
+    InactiveAccountError,
     create_session,
     get_session_account,
     register_account,
@@ -53,6 +54,7 @@ _SESSION_REQUIRED = HTTPException(
 
 
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     email: EmailStr
     password: str = Field(min_length=8, max_length=200)
 
@@ -65,10 +67,15 @@ class LoginRequest(BaseModel):
 class AccountResponse(BaseModel):
     id: str
     email: str
+    is_admin: bool
 
 
-def _account_response(account: models.Account) -> AccountResponse:
-    return AccountResponse(id=account.id, email=account.email)
+def _account_response(account: models.Account, request: Request) -> AccountResponse:
+    return AccountResponse(
+        id=account.id,
+        email=account.email,
+        is_admin=account.id in request.app.state.admin_account_ids,
+    )
 
 
 def _client_ip(request: Request) -> str:
@@ -151,9 +158,12 @@ def register(payload: RegisterRequest, response: Response, request: Request) -> 
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     _register_limiter.record(_client_ip(request))  # count successful registrations
     # Sign-up is sign-in: the DM lands authenticated (spec-2.1 dogfood flow).
-    token, _session = create_session(account.id)
+    try:
+        token, _session = create_session(account.id)
+    except InactiveAccountError as exc:
+        raise _UNAUTHORIZED from exc
     _set_session_cookie(response, token, secure=request.url.scheme == "https")
-    return _account_response(account)
+    return _account_response(account, request)
 
 
 @router.post("/api/auth/login")
@@ -177,9 +187,12 @@ def login(payload: LoginRequest, response: Response, request: Request) -> Accoun
     if account is None:
         _login_limiter.record(key)  # failures-only (review round 1)
         raise _UNAUTHORIZED
-    token, _session = create_session(account.id)
+    try:
+        token, _session = create_session(account.id)
+    except InactiveAccountError as exc:
+        raise _UNAUTHORIZED from exc
     _set_session_cookie(response, token, secure=request.url.scheme == "https")
-    return _account_response(account)
+    return _account_response(account, request)
 
 
 @router.post("/api/auth/logout", status_code=204)
@@ -194,6 +207,8 @@ def logout(
 
 
 @router.get("/api/auth/me")
-def me(current: Annotated[models.Account, Depends(get_current_account)]) -> AccountResponse:
+def me(
+    request: Request, current: Annotated[models.Account, Depends(get_current_account)]
+) -> AccountResponse:
     """Return the authenticated account."""
-    return _account_response(current)
+    return _account_response(current, request)

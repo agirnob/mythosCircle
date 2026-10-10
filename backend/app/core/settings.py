@@ -519,3 +519,18 @@ def configured_log_file() -> str | None:
     if config_mod.LOG_FILE_ENV in os.environ:
         return os.environ[config_mod.LOG_FILE_ENV]
     return runtime_config().log_file
+
+
+def admin_account_ids() -> frozenset[str]:
+    """Environment-only operator grants, captured by the app at startup."""
+    from app.core.ids import is_valid_ulid
+
+    values = frozenset(
+        value.strip()
+        for value in os.environ.get("MYTHOSCIRCLE_ADMIN_ACCOUNT_IDS", "").split(",")
+        if value.strip()
+    )
+    # ULIDs encode 128 bits in 26 base32 digits: the first digit is 0-7.
+    if any(not is_valid_ulid(value) or value[0] not in "01234567" for value in values):
+        raise ValueError("MYTHOSCIRCLE_ADMIN_ACCOUNT_IDS must contain valid ULIDs")
+    return values
