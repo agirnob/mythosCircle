@@ -508,3 +508,12 @@ class KnowledgeFlipInput:
     entity_id: str
     field: str
     known: bool = False
+
+
+class AdminLLMSettings(Base):
+    """Singleton non-secret operator routing, created on existing databases."""
+
+    __tablename__ = "admin_llm_settings"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_admin_llm_singleton"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON)

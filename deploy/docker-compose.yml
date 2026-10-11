@@ -47,6 +47,8 @@ services:
       # Unsloth demands Bearer off-loopback; key comes from stack env
       # (required — fail closed like the media secret).
       MYTHOSCIRCLE_LLM_API_KEY: ${MYTHOSCIRCLE_LLM_API_KEY:?MYTHOSCIRCLE_LLM_API_KEY is required}
+      # Optional: configure in the API environment before selecting Gemini in admin.
+      MYTHOSCIRCLE_GEMINI_API_KEY: ${MYTHOSCIRCLE_GEMINI_API_KEY:-}
       # Render backends live on the dev PC (.108), not the laptop: Unsloth
       # + ComfyUI bind loopback there; the reverse tunnel surfaces them on
       # laptop ports (see LLM note above).

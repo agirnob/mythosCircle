@@ -31,7 +31,10 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 async function start() {
-  const wrapper = mount(AdminView, { attachTo: document.body })
+  const wrapper = mount(AdminView, {
+    attachTo: document.body,
+    global: { stubs: { AdminLlmSettings: true } },
+  })
   await flushPromises()
   return wrapper
 }

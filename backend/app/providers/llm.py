@@ -13,11 +13,13 @@ literal.
 
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import httpx
 
 from app.core.journal import record
+from app.core.llm_routing import additional_attempt
 from app.core.settings import LLMSettings
 
 #: A provider call: one user prompt in, assistant text out. ``...``
@@ -126,12 +128,14 @@ def _complete(
             {"role": "user", "content": user_prompt},
         ],
     }
-    if settings.enable_thinking is not None:
+    if settings.provider != "gemini" and settings.enable_thinking is not None:
         # A reasoning model with thinking on will spend its whole budget
         # reasoning and never emit content (measured 2026-09-10: 8000 tokens,
         # 26,580 chars, zero content). Sent only when configured — ``None``
         # keeps the body free of a field some backends reject outright.
         body["chat_template_kwargs"] = {"enable_thinking": settings.enable_thinking}
+    if settings.provider == "gemini" and settings.reasoning_effort is not None:
+        body["reasoning_effort"] = settings.reasoning_effort
     if settings.temperature is not None:
         # Sampling controls (improvement plan G) ride the body ONLY when
         # configured — ``None`` omits the field so the provider's own
@@ -214,6 +218,8 @@ def chat_completion(
     one record per physical call, written where the prompt, response,
     finish reason, and usage all exist.
     """
+    if settings.provider == "gemini" and settings.reasoning_effort is None:
+        settings = replace(settings, reasoning_effort="low")
     started = time.monotonic()
     outcome = _complete(user_prompt, settings=settings, transport=transport)
     record(
@@ -226,6 +232,15 @@ def chat_completion(
         duration_ms=int((time.monotonic() - started) * 1000),
     )
     if outcome.error is not None:
+        transient = outcome.error in {"connection", "timeout"} or (
+            outcome.error == "http"
+            and (outcome.status_code == 429 or (outcome.status_code or 0) >= 500)
+        )
+        if transient and settings.routing is not None and settings.routing.backup is not None:
+            backup = settings.routing.fallback_settings(settings)
+            return additional_attempt(
+                lambda: chat_completion(user_prompt, settings=backup, transport=transport)
+            )
         raise ProviderError(outcome.error, status_code=outcome.status_code)
     assert outcome.content is not None
     return outcome.content

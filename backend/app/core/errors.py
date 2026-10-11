@@ -83,7 +83,20 @@ def _envelope(
 
 def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
     """422: request failed validation (user error, no state change)."""
-    details = {"errors": jsonable_encoder(exc.errors())}
+    errors = exc.errors()
+    if request.url.path.startswith("/api/admin/llm-settings"):
+        # Reject secret fields/credential URLs without echoing their input
+        # or validator context into the administrative response.
+        safe_errors = [
+            {key: item[key] for key in ("loc", "msg", "type") if key in item} for item in errors
+        ]
+        first = safe_errors[0] if safe_errors else {}
+        location = ".".join(str(part) for part in first.get("loc", ()) if part != "body")
+        message = str(first.get("msg", "Invalid provider settings."))
+        if location:
+            message = f"{location}: {message}"
+        return _envelope(422, VALIDATION_ERROR_CODE, message, {"errors": safe_errors})
+    details = {"errors": jsonable_encoder(errors)}
     return _envelope(422, VALIDATION_ERROR_CODE, "Request validation failed.", details)
 
 
