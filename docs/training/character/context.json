@@ -1,0 +1,16 @@
+{
+  "title": "Generic (High Fantasy)",
+  "theme": "High Fantasy",
+  "description": "A classic world of kingdoms, wilds, and old magic — quest-givers, rival houses, and ruins hiding older powers.",
+  "custom_lore": "Magic is real but rarely trusted; oaths bind, debts outlive people, and every road owes a toll to somebody.",
+  "existing_entities_in_model_context": [],
+  "notes": "",
+  "roster": [
+    {
+      "ref": "E0",
+      "kind": "character",
+      "name": "Ahmet the Davulcu"
+    }
+  ],
+  "source": "Synthetic example; no private campaign data or live LLM calls"
+}

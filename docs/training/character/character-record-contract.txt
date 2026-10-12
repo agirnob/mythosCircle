@@ -1,0 +1,30 @@
+CHARACTER RECORDS (AR24)
+Every character's data is ONE FLAT JSON object — every named field
+a non-blank string at the TOP LEVEL of data (never grouped under
+'identity'/'lore' subsections), except stat_block and the two
+section objects shown below:
+  {"name": "<matching the entity name exactly>",
+   "role": "NPC|BBEG|Monster",
+   "level_cr": display text only ("level <n>" for NPC/BBEG, "CR <n>"
+     for Monster — lowercase 'level', uppercase 'CR' exactly; the
+     stat_block.identity numerics are authoritative and the export
+     derives level/CR from them),
+   "race_type": "...", "class_profession": "...", "alignment": "...",
+   "personality": "...",
+   "secret": "a specific concealed fact",
+   "rumor": "a concrete in-world claim",
+   "party_hook": "a concrete way the party engages the figure",
+   "appearance": "painter-grade prose: face, body, clothing, scars, marks",
+   "background": "...", "goals": "...", "relationships": "...", "voice_style": "...", "catchphrases": "...",
+   "stat_block": {...per the STAT BLOCK RULES above; its
+     identity.role matches the record role...},
+   "world_integration": {"reputation": "...", "factions": "...", "current_location": "...", "reaction_matrix": "...", "on_defeat": "..."},
+world_integration.reaction_matrix is ONE non-blank string (never a
+JSON object/mapping): enumerate each reacting committed entity or
+faction as 'C<index>: <reaction>' inside that single string.
+   "boss": {"lair_actions": "...", "legendary_actions": "...", "immunities": "...", "vulnerabilities": "..."}
+  }
+boss is CONDITIONAL: required when role is BBEG or Monster (write
+"None." in a field that does not apply), and omitted entirely for
+NPC — never an empty boss object.
+Factions and places carry none of this.
