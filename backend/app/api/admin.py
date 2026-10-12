@@ -151,7 +151,9 @@ def test_llm_settings(
             "Reply with OK.",
             settings=replace(
                 settings,
-                timeout=min(settings.timeout, 15),
+                # Free-tier Gemini can take over a minute even for a short
+                # probe. Preserve smaller operator limits and bound the wait.
+                timeout=min(settings.timeout, 120 if payload.provider == "gemini" else 15),
                 max_tokens=2048,
                 reasoning_effort="low" if payload.provider == "gemini" else None,
             ),

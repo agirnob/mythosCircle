@@ -127,8 +127,31 @@ def test_connection_test_bounded_and_sanitized(
     assert result.status_code == 200 and result.json()["success"] is False
     assert result.headers["cache-control"] == "no-store"
     assert "private-key" not in result.text and "429" in result.json()["message"]
-    assert len(calls) == 1 and calls[0].max_tokens == 2048 and calls[0].timeout <= 15
+    assert len(calls) == 1 and calls[0].max_tokens == 2048 and calls[0].timeout == 120
     assert calls[0].routing is None and calls[0].reasoning_effort == "low"
+
+
+@pytest.mark.parametrize("configured,expected", [(0.5, 0.5), (90, 90), (600, 120)])
+def test_gemini_probe_respects_smaller_timeouts_and_caps_long_waits(
+    configured: float,
+    expected: float,
+    admin_api: tuple[TestClient, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import admin
+
+    monkeypatch.setenv("MYTHOSCIRCLE_GEMINI_API_KEY", "private-key")
+
+    def complete(prompt: str, *, settings: Any) -> str:
+        assert settings.timeout == expected
+        return "OK"
+
+    monkeypatch.setattr(admin, "chat_completion", complete)
+    profile = defaults().gemini.model_copy(update={"timeout": configured})
+    result = admin_api[0].post(
+        "/api/admin/llm-settings/test", json={"provider": "gemini", "profile": profile.model_dump()}
+    )
+    assert result.status_code == 200 and result.json()["success"] is True
 
 
 def test_existing_deployment_timeout_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

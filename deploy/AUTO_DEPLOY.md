@@ -123,7 +123,8 @@ choose a distinct **Backup**, test each connection, then **Save provider setting
 Local settings are prefilled from the deployment. Gemini is prefilled with
 `gemini-3.8-flash` and Google's fixed HTTPS OpenAI-compatible endpoint. Advanced
 provider settings are optional. Connection tests use the current form values
-without saving, make one bounded completion (15-second HTTP timeout, 2048
+without saving, make one bounded completion (up to a 120-second HTTP timeout
+for Gemini, 15 seconds for local providers, 2048
 output tokens including reasoning; Gemini uses low-effort reasoning in tests
 and normal generation), and return
 sanitized status. They never fall back or write world state.

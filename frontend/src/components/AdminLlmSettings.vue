@@ -12,6 +12,7 @@ const emit = defineEmits<{ accessLost: [] }>()
 const auth = useAuthStore()
 const settings = ref<Settings | null>(null)
 const busy = ref(false)
+const testingProvider = ref<Provider | null>(null)
 const error = ref('')
 const feedback = ref('')
 let generation = 0
@@ -22,6 +23,7 @@ function clear() {
   generation++
   settings.value = null
   busy.value = false
+  testingProvider.value = null
   error.value = ''
   feedback.value = ''
 }
@@ -85,6 +87,7 @@ async function save() {
 async function test(provider: Provider) {
   if (!active || busy.value || !settings.value) return
   const version = ++generation
+  testingProvider.value = provider
   busy.value = true
   error.value = ''
   feedback.value = ''
@@ -103,7 +106,10 @@ async function test(provider: Provider) {
   } catch (err) {
     failure(err, version)
   } finally {
-    if (version === generation) busy.value = false
+    if (version === generation) {
+      busy.value = false
+      testingProvider.value = null
+    }
   }
 }
 function validatePositiveTimeout(event: Event) {
@@ -158,7 +164,13 @@ onBeforeUnmount(() => {
       Choose a primary provider and an optional backup for connection failures, rate limits and
       server errors.
     </p>
-    <p v-if="busy" role="status">Working…</p>
+    <p v-if="busy" role="status">
+      {{
+        testingProvider === 'gemini'
+          ? 'Testing Gemini… This may take up to two minutes.'
+          : 'Working…'
+      }}
+    </p>
     <p v-if="error" role="alert">
       {{ error }}
       <button type="button" class="mc-btn mc-btn-secondary" :disabled="busy" @click="retryAction()">

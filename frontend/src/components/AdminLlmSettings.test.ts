@@ -84,6 +84,22 @@ describe('administrator LLM settings', () => {
     expect(wrapper.text()).toContain('Portainer stack variables')
     wrapper.unmount()
   })
+  it('explains the wait while a Gemini connection test is pending', async () => {
+    const wrapper = await start()
+    let resolve!: (value: unknown) => void
+    apiFetch.mockReturnValueOnce(
+      new Promise((res) => {
+        resolve = res
+      }),
+    )
+    await button(wrapper, 'Test Gemini connection').trigger('click')
+    expect(wrapper.text()).toContain('Testing Gemini… This may take up to two minutes.')
+    resolve({ success: true, message: 'Connection test succeeded.' })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('This may take up to two minutes.')
+    expect(wrapper.text()).toContain('Connection test succeeded.')
+    wrapper.unmount()
+  })
   it('retries a failed save with the same unsaved settings', async () => {
     const wrapper = await start()
     await wrapper.findAll('select')[0]!.setValue('gemini')
