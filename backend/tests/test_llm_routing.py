@@ -301,15 +301,19 @@ def test_saved_routing_authentication_and_payload_in_both_directions(
         if is_gemini:
             assert body["reasoning_effort"] == "low"
             assert "chat_template_kwargs" not in body
+            assert "seed" not in body
         else:
             assert body["chat_template_kwargs"] == {"enable_thinking": True}
             assert "reasoning_effort" not in body
+            assert body["seed"] == 20260912
         if len(requests) == 1:
             return httpx.Response(503)
         return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
 
     try:
-        settings = replace(resolve_job_settings(), max_tokens=517, response_format=schema)
+        settings = replace(
+            resolve_job_settings(), max_tokens=517, response_format=schema, seed=20260912
+        )
         assert (
             budget().call(
                 lambda: chat_completion(

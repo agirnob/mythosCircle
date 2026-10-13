@@ -145,7 +145,10 @@ def _complete(
         body["temperature"] = settings.temperature
     if settings.top_p is not None:
         body["top_p"] = settings.top_p
-    if settings.seed is not None:
+    # Google's OpenAI-compatible endpoint rejects the seed parameter with
+    # HTTP 400. Repair passes add a seed even when the admin leaves it
+    # blank, so omit it at the provider boundary (including fallback).
+    if settings.seed is not None and settings.provider != "gemini":
         body["seed"] = settings.seed
     if settings.response_format is not None:
         # Opt-in per-call schema (spec: JSON-schema generation) — carried
