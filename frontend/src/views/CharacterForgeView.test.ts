@@ -8,9 +8,10 @@ import type { components } from '../api/schema'
 
 type Job = components['schemas']['JobResponse']
 
-const { pushMock, apiFetchMock, socketCalls } = vi.hoisted(() => ({
+const { pushMock, apiFetchMock, socketCalls, routeParams } = vi.hoisted(() => ({
   pushMock: vi.fn(),
   apiFetchMock: vi.fn(),
+  routeParams: { id: 'C1' } as { id?: string },
   socketCalls: [] as Array<{
     campaignId: string
     onMessage: (message: unknown) => void
@@ -19,7 +20,7 @@ const { pushMock, apiFetchMock, socketCalls } = vi.hoisted(() => ({
 
 vi.mock('vue-router', () => ({
   RouterLink: { template: '<a><slot /></a>' },
-  useRoute: () => ({ params: { id: 'C1' } }),
+  useRoute: () => ({ params: routeParams }),
   useRouter: () => ({ push: pushMock }),
 }))
 
@@ -95,10 +96,14 @@ let jobList: Job[] = []
 
 /** Scripted apiFetch: the export shape and the two write paths the view
  * uses — POST /api/jobs (the hybrid build gate) and the jobs list sync. */
-function mockApi(options: { gateError?: ApiError; cancelError?: ApiError } = {}) {
+function mockApi(options: { gateError?: ApiError; cancelError?: ApiError; generic?: boolean } = {}) {
   apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
     const url = String(path)
-    if (url === '/api/campaigns/C1') return CAMPAIGN
+    const campaign = { ...CAMPAIGN, is_generic: options.generic === true }
+    if (url === '/api/campaigns') return { campaigns: [campaign] }
+    if (url === '/api/campaigns/themes') return { themes: ['High Fantasy', 'Grimdark'] }
+    if (url === '/api/campaigns/generic' && init?.method === 'POST') return campaign
+    if (url === '/api/campaigns/C1') return campaign
     if (url === '/api/campaigns/C1/export') return WORLD
     if (url.endsWith('/cancel') && init?.method === 'POST') {
       if (options.cancelError) throw options.cancelError
@@ -150,6 +155,7 @@ describe('CharacterForgeView (nudge contract)', () => {
     vi.clearAllMocks()
     jobList = []
     gateBodies.length = 0
+    routeParams.id = 'C1'
     mockApi()
   })
 
@@ -280,6 +286,34 @@ describe('CharacterForgeView (nudge contract)', () => {
     await flushPromises()
     expect(wrapper.get('.generation-status').text()).toContain('Checking and repairing character stats')
     expect(wrapper.get('progress').attributes('value')).toBe('40')
+  })
+
+  it('restores Generic library history and its active character when reopening global Forge', async () => {
+    delete routeParams.id
+    mockApi({ generic: true })
+    jobList = [
+      job({ id: 'J-running', state: 'running', progress: 0.4, payload: { key_figures: [{ name: 'Ahmet' }] } }),
+      job({ id: 'J-failed', state: 'failed', error: 'Provider failed', payload: { key_figures: ['Vesper'] } }),
+    ]
+    const wrapper = await mountView()
+    expect(wrapper.get('.generation-status').text()).toContain('Generating: Ahmet')
+    expect(wrapper.text()).toContain('Recent builds')
+    expect(wrapper.text()).toContain('Vesper')
+    expect(wrapper.text()).toContain('Provider failed')
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/jobs?campaign_id=C1')
+    expect(apiFetchMock.mock.calls.some(([url, init]) => url === '/api/campaigns/generic' && init?.method === 'POST')).toBe(false)
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('keeps a route-pinned Generic library in draft mode', async () => {
+    mockApi({ generic: true })
+    const wrapper = await mountView()
+    await fillName(wrapper)
+    expect(wrapper.get('button[type="submit"]').text()).toBe('Generate into the library')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(buildInBodies()[0].payload).toMatchObject({ theme: 'High Fantasy' })
+    expect(buildInBodies()[0].payload).not.toHaveProperty('places')
   })
 
   it.each(['queued', 'running'])('cancels a %s generation and preserves the form', async (state) => {
