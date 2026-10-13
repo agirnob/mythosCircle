@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import { apiFetch, ApiError } from '../api/client'
@@ -100,10 +100,95 @@ async function pickWorld(id: string) {
 
 onUnmounted(() => {
   disconnectSocket?.()
+  if (statusTimer !== null) globalThis.clearInterval(statusTimer)
 })
 
 const recentJobs = computed(() => jobs.buildInJobs(campaignId.value).slice(0, 10))
 const inFlight = computed(() => jobs.buildInInFlight(campaignId.value))
+const activeJob = computed(() => jobs.buildInJobs(campaignId.value).find(
+  (job) => job.state === 'queued' || job.state === 'running',
+) ?? null)
+const statusClock = ref(Date.now())
+const cancelling = ref(false)
+const cancelFeedback = ref<string | null>(null)
+let statusTimer: ReturnType<typeof globalThis.setInterval> | null = null
+let statusPollPending = false
+
+watch(() => activeJob.value?.id, (id) => {
+  if (statusTimer !== null) globalThis.clearInterval(statusTimer)
+  statusTimer = null
+  if (!id) return
+  cancelFeedback.value = null
+  statusClock.value = Date.now()
+  let ticks = 0
+  const currentCampaign = campaignId.value
+  statusTimer = globalThis.setInterval(() => {
+    statusClock.value = Date.now()
+    ticks += 1
+    if (ticks % 5 !== 0 || statusPollPending || socketGeneration !== sessionGeneration()) return
+    statusPollPending = true
+    void jobs.syncList(currentCampaign).catch(() => {}).finally(() => {
+      statusPollPending = false
+    })
+  }, 1000)
+}, { immediate: true })
+
+function characterNames(job: Job): string {
+  const figures = job.payload?.['key_figures']
+  if (!Array.isArray(figures)) return 'Character'
+  const names = figures.map((figure: unknown) => {
+    if (typeof figure === 'string') return figure.trim()
+    if (figure && typeof figure === 'object' && 'name' in figure && typeof figure.name === 'string') {
+      return figure.name.trim()
+    }
+    return ''
+  }).filter(Boolean)
+  return names.join(', ') || 'Character'
+}
+
+function progressPercent(job: Job): number {
+  return Number.isFinite(job.progress) ? Math.round(Math.min(1, Math.max(0, job.progress)) * 100) : 0
+}
+
+function stageLabel(job: Job): string {
+  if (job.state === 'queued') return 'Waiting to start'
+  if (job.progress < 0.1) return 'Preparing your character'
+  if (job.progress < 0.2) return 'Writing your character'
+  if (job.progress < 0.3) return 'Checking names and connections'
+  if (job.progress < 0.4) return 'Completing the character record'
+  if (job.progress < 0.45) return 'Checking and repairing character stats'
+  if (job.progress < 0.5) return 'Saving your character and connections'
+  return 'Completing the world build'
+}
+
+function elapsedLabel(job: Job): string {
+  const started = Date.parse(job.started_at ?? job.created_at)
+  const seconds = Number.isFinite(started) ? Math.max(0, Math.floor((statusClock.value - started) / 1000)) : 0
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
+
+async function cancelGeneration(job: Job) {
+  if (cancelling.value) return
+  cancelling.value = true
+  cancelFeedback.value = null
+  try {
+    await jobs.cancel(job.id)
+    cancelFeedback.value = 'Generation cancelled. Your form is ready to try again.'
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) {
+      try {
+        await jobs.syncList(job.campaign_id)
+        cancelFeedback.value = 'This generation has already finished. Its latest status is shown below.'
+      } catch {
+        cancelFeedback.value = 'Could not refresh the generation status. Please retry.'
+      }
+    } else {
+      cancelFeedback.value = err instanceof ApiError ? err.message : 'Could not cancel generation. Please retry.'
+    }
+  } finally {
+    cancelling.value = false
+  }
+}
 const isDraft = computed(() => draftMode.value)
 
 /** The themed fetch of the campaign list also fills the theme list
@@ -189,7 +274,7 @@ function resultLine(job: Job): string | null {
     <h1>Character forge</h1>
     <p class="muted">
       Nudge a character into being. Fill what you know — those fields are yours and commit
-      verbatim; leave a field blank and the local model writes it. Nothing you write is ever
+      verbatim; leave a field blank and the selected model writes it. Nothing you write is ever
       changed. Build into a world you pick below, or generate into your Generic library without
       touching any world.
     </p>
@@ -251,6 +336,25 @@ function resultLine(job: Job): string | null {
     <p v-else-if="campaigns.loading && !campaigns.current" class="muted">Loading…</p>
 
     <template v-if="!loadError">
+      <div v-if="activeJob" class="card generation-status" aria-labelledby="generation-title">
+        <div class="generation-heading">
+          <div>
+            <h2 id="generation-title">{{ activeJob.state === 'queued' ? 'Queued' : 'Generating' }}: {{ characterNames(activeJob) }}</h2>
+            <p class="muted" role="status">{{ stageLabel(activeJob) }}</p>
+          </div>
+          <button type="button" :disabled="cancelling" @click="cancelGeneration(activeJob)">
+            {{ cancelling ? 'Cancelling…' : 'Cancel generation' }}
+          </button>
+        </div>
+        <progress v-if="activeJob.state === 'running'" :value="progressPercent(activeJob)" max="100" aria-label="Character generation progress" />
+        <p class="muted small">
+          <template v-if="activeJob.state === 'queued'">Queue position: {{ activeJob.queue_position ?? '…' }} · Waiting {{ elapsedLabel(activeJob) }}</template>
+          <template v-else>{{ progressPercent(activeJob) }}% · Elapsed {{ elapsedLabel(activeJob) }}</template>
+        </p>
+        <p class="muted small">Stages can take several minutes. Progress updates when a stage finishes.</p>
+        <p class="muted small">Cancelling stops further results from being saved. A model request already in progress may still need to finish.</p>
+      </div>
+      <p v-if="cancelFeedback" role="status">{{ cancelFeedback }}</p>
       <form class="card" @submit.prevent="submit">
         <CharacterSheetEditor ref="editorRef" :campaign-id="campaignId" />
 
@@ -266,7 +370,7 @@ function resultLine(job: Job): string | null {
             characters never influence the generation.
           </template>
           <template v-else>
-            The build runs once: your fields commit verbatim, the blanks are written by the local
+            The build runs once: your fields commit verbatim, the blanks are written by the selected
             model, and missing relation targets are created in the same wave. Characters never
             merge — every build is a fresh, distinct person even with a duplicate name.
           </template>
@@ -277,6 +381,8 @@ function resultLine(job: Job): string | null {
         <h2>Recent builds</h2>
         <div v-for="job in recentJobs" :key="job.id" class="job-row">
           <dl>
+            <dt>Character</dt>
+            <dd>{{ characterNames(job) }}</dd>
             <dt>State</dt>
             <dd>{{ stateLabel(job) }}</dd>
             <template v-if="resultLine(job)">
@@ -295,6 +401,21 @@ function resultLine(job: Job): string | null {
 </template>
 
 <style scoped>
+.generation-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.generation-heading h2 {
+  margin-top: 0;
+  overflow-wrap: anywhere;
+}
+.generation-status progress {
+  width: 100%;
+  accent-color: #8ab4ff;
+}
 .picker-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

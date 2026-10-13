@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import type { VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
@@ -47,6 +47,10 @@ vi.mock('../api/client', () => ({
 
 import { ApiError } from '../api/client'
 import CharacterForgeView from './CharacterForgeView.vue'
+import { useJobsStore } from '../stores/jobs'
+
+enableAutoUnmount(afterEach)
+afterEach(() => vi.useRealTimers())
 
 const CAMPAIGN = {
   id: 'C1',
@@ -91,11 +95,16 @@ let jobList: Job[] = []
 
 /** Scripted apiFetch: the export shape and the two write paths the view
  * uses — POST /api/jobs (the hybrid build gate) and the jobs list sync. */
-function mockApi(options: { gateError?: ApiError } = {}) {
+function mockApi(options: { gateError?: ApiError; cancelError?: ApiError } = {}) {
   apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
     const url = String(path)
     if (url === '/api/campaigns/C1') return CAMPAIGN
     if (url === '/api/campaigns/C1/export') return WORLD
+    if (url.endsWith('/cancel') && init?.method === 'POST') {
+      if (options.cancelError) throw options.cancelError
+      const original = jobList.find((entry) => url === `/api/jobs/${entry.id}/cancel`)!
+      return { ...original, state: 'cancelled', queue_position: null }
+    }
     if (url === '/api/jobs' && init?.method === 'POST') {
       if (options.gateError) throw options.gateError
       return { id: 'J9', campaign_id: 'C1', kind: 'build_in', payload: gateBodies.pop(), state: 'queued', progress: 0, max_llm_calls: 64, max_media_calls: 0, error: null, result: null, created_at: '2026-09-16T10:00:00Z', started_at: null, finished_at: null, queue_position: 1 }
@@ -259,5 +268,73 @@ describe('CharacterForgeView (nudge contract)', () => {
     ]
     const wrapper = await mountView()
     expect(wrapper.text()).toContain('built (merged with 1 existing)')
+  })
+
+  it('shows the character being generated and live progress', async () => {
+    jobList = [job({ state: 'running', progress: 0.1, payload: { key_figures: [{ name: 'Ahmet' }] } })]
+    const wrapper = await mountView()
+    expect(wrapper.get('.generation-status').text()).toContain('Generating: Ahmet')
+    expect(wrapper.get('.generation-status').text()).toContain('Writing your character')
+    expect(wrapper.get('progress').attributes('value')).toBe('10')
+    useJobsStore().upsert({ ...jobList[0]!, progress: 0.4 })
+    await flushPromises()
+    expect(wrapper.get('.generation-status').text()).toContain('Checking and repairing character stats')
+    expect(wrapper.get('progress').attributes('value')).toBe('40')
+  })
+
+  it.each(['queued', 'running'])('cancels a %s generation and preserves the form', async (state) => {
+    jobList = [job({ state, payload: { key_figures: ['Ahmet'] } })]
+    const wrapper = await mountView()
+    await fillName(wrapper, 'My next character')
+    await wrapper.get('.generation-status button').trigger('click')
+    await flushPromises()
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/jobs/J1/cancel', { method: 'POST' })
+    expect(useJobsStore().byId['J1']?.state).toBe('cancelled')
+    expect(wrapper.find('.generation-status').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Generation cancelled.')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+    expect((labeled(wrapper, 'Name').get('input').element as HTMLInputElement).value).toBe('My next character')
+  })
+
+  it('keeps the generation active and shows a cancellation failure', async () => {
+    jobList = [job({ state: 'running' })]
+    mockApi({ cancelError: new ApiError(503, 'unavailable', 'Please retry cancellation.') })
+    const wrapper = await mountView()
+    await wrapper.get('.generation-status button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Please retry cancellation.')
+    expect(wrapper.get('.generation-status button').attributes('disabled')).toBeUndefined()
+    expect(useJobsStore().byId['J1']?.state).toBe('running')
+  })
+
+  it('refreshes the result if generation finishes before cancellation', async () => {
+    jobList = [job({ state: 'running' })]
+    mockApi({ cancelError: new ApiError(409, 'conflict', 'Already finished') })
+    const wrapper = await mountView()
+    jobList = [job({ state: 'succeeded', progress: 1 })]
+    await wrapper.get('.generation-status button').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.generation-status').exists()).toBe(false)
+    expect(wrapper.text()).toContain('already finished')
+    expect(useJobsStore().byId['J1']?.state).toBe('succeeded')
+  })
+
+  it('shows queue position and polls progress until unmounted', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-16T10:00:05Z'))
+    jobList = [job({ queue_position: 2 })]
+    const wrapper = await mountView()
+    expect(wrapper.get('.generation-status').text()).toContain('Queue position: 2')
+    expect(wrapper.get('.generation-status').text()).toContain('Waiting 5s')
+    expect(wrapper.find('progress').exists()).toBe(false)
+    jobList = [job({ state: 'running', progress: 0.3, started_at: '2026-09-16T10:00:08Z' })]
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushPromises()
+    expect(wrapper.get('.generation-status').text()).toContain('Completing the character record')
+    expect(wrapper.get('.generation-status').text()).toContain('Elapsed 2s')
+    wrapper.unmount()
+    apiFetchMock.mockClear()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(apiFetchMock).not.toHaveBeenCalled()
   })
 })
