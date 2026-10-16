@@ -122,10 +122,22 @@ In **Administration → Text generation providers**, choose **Primary**, optiona
 choose a distinct **Backup**, test each connection, then **Save provider settings**.
 Local settings are prefilled from the deployment. Gemini is prefilled with
 `gemini-3.8-flash` and Google's fixed HTTPS OpenAI-compatible endpoint. Advanced
-provider settings also include OpenRouter, prefilled with `openrouter/free` and
-`https://openrouter.ai/api/v1/`. Its free router may select a different model
-for each request. For Forge, choose a model that supports structured JSON and
-the desired output limit; check that model's price, limits, and data handling.
+provider settings also include OpenRouter at `https://openrouter.ai/api/v1/`,
+prefilled with this ordered route:
+
+1. `nvidia/nemotron-3.5-super-vl:free` (free, JSON Schema, 131,072 output tokens)
+2. `google/gemma-4-26b-a4b-it:free` (free, JSON output, 32,768 output tokens)
+3. `deepseek/deepseek-v4-flash-0731:nitro` (paid, JSON Schema, fast-provider routing)
+
+OpenRouter tries the next model for rate limits and upstream errors. Gemma is
+omitted for calls requesting over 32,768 output tokens. Provider selection sorts
+by throughput and enforces a ceiling of $0.15/M input and $0.30/M output tokens;
+if no provider meets the ceiling, the call fails without an unbounded charge.
+The admin may edit the model and fallback list or restore this route with **Use
+recommended free-first route**. The paid DeepSeek step needs OpenRouter credits;
+check [OpenRouter pricing](https://openrouter.ai/pricing) and model limits before
+sending campaign content. Free NVIDIA endpoints log prompts under their
+published [usage terms](https://openrouter.ai/nvidia/nemotron-3.5-super-vl:free).
 Connection tests use the current form values
 without saving, make one bounded completion (up to a 120-second HTTP timeout
 for Gemini and OpenRouter, 15 seconds for local providers, 2048

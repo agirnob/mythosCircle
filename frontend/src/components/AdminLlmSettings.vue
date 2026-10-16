@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* global Event, HTMLInputElement */
+/* global Event, HTMLInputElement, HTMLTextAreaElement */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ApiError, apiFetch } from '../api/client'
 import type { components } from '../api/schema'
@@ -139,6 +139,23 @@ function setOptionalNumber(
   const value = (event.target as HTMLInputElement).value
   settings.value[provider][field] = value === '' ? null : Number(value)
 }
+function setOpenRouterFallbacks(event: Event) {
+  if (!settings.value) return
+  settings.value.openrouter.fallback_models = (event.target as HTMLTextAreaElement).value
+    .split('\n')
+    .map((model) => model.trim())
+    .filter(Boolean)
+}
+function useRecommendedOpenRouterRoute() {
+  if (!settings.value) return
+  settings.value.openrouter.model = 'nvidia/nemotron-3.5-super-vl:free'
+  settings.value.openrouter.fallback_models = [
+    'google/gemma-4-26b-a4b-it:free',
+    'deepseek/deepseek-v4-flash-0731:nitro',
+  ]
+  settings.value.openrouter.timeout = 600
+  settings.value.openrouter.max_tokens = 50000
+}
 watch(
   () => settings.value?.primary,
   (primary) => {
@@ -263,13 +280,34 @@ onBeforeUnmount(() => {
           here.
         </p>
         <p v-if="provider === 'openrouter'">
-          The default free router may choose different models. For reliable Forge output, choose a
-          model that supports structured JSON and your output token limit. Check its price and
-          limits on
+          Tries the first model, then the listed fallbacks on OpenRouter rate limits or errors.
+          Gemma 4 26B A4B is skipped above 32,768 output tokens.
+          <span
+            v-if="
+              settings.openrouter.fallback_models?.includes('deepseek/deepseek-v4-flash-0731:nitro')
+            "
+            >DeepSeek is paid and uses credits if reached.</span
+          >
+          The fastest provider under $0.15 input / $0.30 output per million tokens is chosen. Check
+          current prices and limits on
           <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer"
             >OpenRouter</a
+          >. Free NVIDIA endpoints log prompts; review the
+          <a
+            href="https://openrouter.ai/nvidia/nemotron-3.5-super-vl:free"
+            target="_blank"
+            rel="noopener noreferrer"
+            >usage terms</a
           >.
         </p>
+        <button
+          v-if="provider === 'openrouter'"
+          type="button"
+          class="mc-btn mc-btn-secondary"
+          @click="useRecommendedOpenRouterRoute"
+        >
+          Use recommended free-first route
+        </button>
         <p v-if="provider === 'gemini' && !settings.gemini_key_configured">
           Add MYTHOSCIRCLE_GEMINI_API_KEY to the API service environment in your Compose stack and
           set its value in Portainer stack variables. Recreate the API container, then reload this
@@ -314,6 +352,15 @@ onBeforeUnmount(() => {
                 max="131072"
                 required
             /></label>
+            <label v-if="provider === 'openrouter'"
+              >Fallback models (one model ID per line, in order)
+              <textarea
+                class="mc-input"
+                :value="settings.openrouter.fallback_models?.join('\n') ?? ''"
+                rows="3"
+                @input="setOpenRouterFallbacks"
+              ></textarea>
+            </label>
           </div>
           <div class="profile-fields">
             <label

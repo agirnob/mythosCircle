@@ -234,7 +234,11 @@ def test_saved_profile_from_before_openrouter_has_safe_default() -> None:
     old = defaults().model_dump(exclude={"openrouter"})
     loaded = LLMRoutingConfig.model_validate(old)
     assert loaded.openrouter.endpoint == OPENROUTER_ENDPOINT
-    assert loaded.openrouter.model == "openrouter/free"
+    assert loaded.openrouter.model == "nvidia/nemotron-3.5-super-vl:free"
+    assert loaded.openrouter.fallback_models == [
+        "google/gemma-4-26b-a4b-it:free",
+        "deepseek/deepseek-v4-flash-0731:nitro",
+    ]
 
 
 def test_openrouter_backup_uses_its_own_key_and_fixed_endpoint(
@@ -246,6 +250,7 @@ def test_openrouter_backup_uses_its_own_key_and_fixed_endpoint(
     init_db(f"sqlite:///{tmp_path / 'openrouter-routing.db'}")
     monkeypatch.setenv("MYTHOSCIRCLE_GEMINI_API_KEY", "gemini-sentinel")
     monkeypatch.setenv("MYTHOSCIRCLE_OPENROUTER_API_KEY", "router-sentinel")
+    monkeypatch.setenv("MYTHOSCIRCLE_JOURNAL_DIR", str(tmp_path))
     config = defaults().model_copy(update={"primary": "gemini", "backup": "openrouter"})
     save(config)
     requests = []
@@ -258,26 +263,65 @@ def test_openrouter_backup_uses_its_own_key_and_fixed_endpoint(
             return httpx.Response(429)
         assert str(request.url) == OPENROUTER_ENDPOINT + "chat/completions"
         assert request.headers["authorization"] == "Bearer router-sentinel"
-        assert body["model"] == "openrouter/free"
+        assert body["model"] == "nvidia/nemotron-3.5-super-vl:free"
+        assert body["models"] == [
+            "google/gemma-4-26b-a4b-it:free",
+            "deepseek/deepseek-v4-flash-0731:nitro",
+        ]
+        assert body["provider"] == {
+            "sort": "throughput",
+            "max_price": {"prompt": 0.15, "completion": 0.30},
+        }
         assert body["max_tokens"] == 517
         assert "chat_template_kwargs" not in body
         assert "reasoning_effort" not in body
-        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek/deepseek-v4-flash-0731",
+                "choices": [{"message": {"content": "OK"}}],
+            },
+        )
 
     try:
         settings = replace(resolve_job_settings(), max_tokens=517, enable_thinking=True)
-        assert (
-            budget().call(
-                lambda: chat_completion(
-                    "prompt", settings=settings, transport=httpx.MockTransport(respond)
+        with journal_context("openrouter-job"):
+            assert (
+                budget().call(
+                    lambda: chat_completion(
+                        "prompt", settings=settings, transport=httpx.MockTransport(respond)
+                    )
                 )
+                == "OK"
             )
-            == "OK"
-        )
         assert len(requests) == 2
+        entries = [
+            json.loads(line)
+            for line in (tmp_path / "openrouter-job.jsonl").read_text().splitlines()
+        ]
+        assert entries[-1]["model"] == "deepseek/deepseek-v4-flash-0731"
     finally:
         if previous:
             init_db(previous)
+
+
+def test_openrouter_skips_gemma_when_call_needs_over_32768_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.llm_routing import resolve_profile
+
+    monkeypatch.setenv("MYTHOSCIRCLE_OPENROUTER_API_KEY", "router-sentinel")
+    settings = resolve_profile("openrouter", defaults().openrouter)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["max_tokens"] == 50000
+        assert body["models"] == ["deepseek/deepseek-v4-flash-0731:nitro"]
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    assert (
+        chat_completion("prompt", settings=settings, transport=httpx.MockTransport(respond)) == "OK"
+    )
 
 
 @pytest.mark.parametrize("kind", ["image", "video", "add_character", "text"])

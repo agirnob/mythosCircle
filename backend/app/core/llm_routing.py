@@ -16,12 +16,18 @@ GEMINI_API_KEY = "MYTHOSCIRCLE_GEMINI_API_KEY"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
 OPENROUTER_API_KEY = "MYTHOSCIRCLE_OPENROUTER_API_KEY"
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/"
+OPENROUTER_GEMMA_FREE = "google/gemma-4-26b-a4b-it:free"
+OPENROUTER_DEEPSEEK_FAST = "deepseek/deepseek-v4-flash-0731:nitro"
 ProfileName = Literal["local", "gemini", "openrouter"]
 
 
 def default_openrouter_profile() -> "LLMProfile":
     return LLMProfile(
-        endpoint=OPENROUTER_ENDPOINT, model="openrouter/free", timeout=120, max_tokens=8192
+        endpoint=OPENROUTER_ENDPOINT,
+        model="nvidia/nemotron-3.5-super-vl:free",
+        timeout=600,
+        max_tokens=50000,
+        fallback_models=[OPENROUTER_GEMMA_FREE, OPENROUTER_DEEPSEEK_FAST],
     )
 
 
@@ -35,6 +41,7 @@ class LLMProfile(BaseModel):
     temperature: float | None = Field(default=None, ge=0, le=2)
     top_p: float | None = Field(default=None, gt=0, le=1)
     seed: int | None = Field(default=None, ge=0, le=2147483647)
+    fallback_models: list[str] = Field(default_factory=list, max_length=5)
 
     @field_validator("endpoint")
     @classmethod
@@ -65,6 +72,15 @@ class LLMProfile(BaseModel):
         if not value.strip():
             raise ValueError("Enter a model name.")
         return value.strip()
+
+    @field_validator("fallback_models")
+    @classmethod
+    def valid_fallback_models(cls, value: list[str]) -> list[str]:
+        if any(not model.strip() or len(model) > 200 or model != model.strip() for model in value):
+            raise ValueError("Enter one valid fallback model ID per line.")
+        if len(value) != len(set(value)):
+            raise ValueError("Fallback model IDs must be distinct.")
+        return value
 
 
 class LLMRoutingConfig(BaseModel):
@@ -109,7 +125,14 @@ class LLMTestResult(BaseModel):
 def defaults() -> LLMRoutingConfig:
     local = llm_settings()
     return LLMRoutingConfig(
-        local=LLMProfile(**{name: getattr(local, name) for name in LLMProfile.model_fields}),
+        local=LLMProfile(
+            **{
+                name: getattr(local, name)
+                for name in LLMProfile.model_fields
+                if name != "fallback_models"
+            },
+            fallback_models=list(local.fallback_models),
+        ),
         gemini=LLMProfile(
             endpoint=GEMINI_ENDPOINT, model="gemini-3.8-flash", timeout=120, max_tokens=8192
         ),
@@ -144,10 +167,11 @@ def resolve_profile(provider: ProfileName, profile: LLMProfile) -> LLMSettings:
         "openrouter": OPENROUTER_API_KEY,
     }[provider]
     return LLMSettings(
-        **profile.model_dump(),
+        **profile.model_dump(exclude={"fallback_models"}),
         api_key=os.environ.get(key_name) or None,
         provider=provider,
         reasoning_effort="low" if provider == "gemini" else None,
+        fallback_models=tuple(profile.fallback_models) if provider == "openrouter" else (),
     )
 
 

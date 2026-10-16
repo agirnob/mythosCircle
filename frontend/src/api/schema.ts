@@ -1558,6 +1558,8 @@ export interface components {
             top_p?: number | null;
             /** Seed */
             seed?: number | null;
+            /** Fallback Models */
+            fallback_models?: string[];
         };
         /** LLMRoutingConfig */
         LLMRoutingConfig: {

@@ -84,6 +84,7 @@ def test_persistence_and_safe_projection(
         {"gemini": {"endpoint": "https://other.example/v1"}},
         {"primary": "openrouter"},
         {"openrouter": {"endpoint": "https://other.example/v1"}},
+        {"openrouter": {"fallback_models": ["google/example", "google/example"]}},
     ],
 )
 def test_invalid_save_is_atomic(
@@ -179,6 +180,32 @@ def test_openrouter_key_is_required_but_never_saved_or_returned(
     assert "router-private" not in result.text
     assert "gemini-private" not in result.text
     assert "api_key" not in result.text
+
+
+def test_openrouter_connection_test_uses_unsaved_model_route(
+    admin_api: tuple[TestClient, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.api import admin
+
+    monkeypatch.setenv("MYTHOSCIRCLE_OPENROUTER_API_KEY", "router-private")
+    calls = []
+
+    def complete(prompt: str, *, settings: Any) -> str:
+        calls.append(settings)
+        return "OK"
+
+    monkeypatch.setattr(admin, "chat_completion", complete)
+    profile = defaults().openrouter.model_copy(update={"model": "custom/test:free"})
+    result = admin_api[0].post(
+        "/api/admin/llm-settings/test",
+        json={"provider": "openrouter", "profile": profile.model_dump()},
+    )
+    assert result.status_code == 200 and result.json()["success"] is True
+    assert calls[0].model == "custom/test:free"
+    assert calls[0].fallback_models == tuple(profile.fallback_models)
+    assert calls[0].timeout == 120 and calls[0].max_tokens == 2048
+    assert calls[0].api_key == "router-private"
+    assert "router-private" not in result.text
 
 
 @pytest.mark.parametrize("kind", ["truncated", "empty"])

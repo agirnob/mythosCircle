@@ -35,7 +35,9 @@ const settings: components['schemas']['LLMSettingsView'] = {
   openrouter: {
     ...profile,
     endpoint: 'https://openrouter.ai/api/v1/',
-    model: 'openrouter/free',
+    model: 'nvidia/nemotron-3.5-super-vl:free',
+    max_tokens: 50000,
+    fallback_models: ['google/gemma-4-26b-a4b-it:free', 'deepseek/deepseek-v4-flash-0731:nitro'],
   },
   saved: false,
   local_key_configured: false,
@@ -99,6 +101,7 @@ describe('administrator LLM settings', () => {
     const test = JSON.parse(apiFetch.mock.calls.at(-1)![1].body)
     expect(test.provider).toBe('openrouter')
     expect(test.profile.endpoint).toBe('https://openrouter.ai/api/v1/')
+    expect(test.profile.fallback_models).toHaveLength(2)
     apiFetch.mockResolvedValueOnce({ ...settings, backup: 'openrouter', saved: true })
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -112,6 +115,25 @@ describe('administrator LLM settings', () => {
     const wrapper = await start()
     expect(button(wrapper, 'Test OpenRouter connection').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('MYTHOSCIRCLE_OPENROUTER_API_KEY')
+    wrapper.unmount()
+  })
+  it('lets an administrator replace the older free router with the recommended route', async () => {
+    apiFetch.mockResolvedValueOnce({
+      ...settings,
+      openrouter: { ...settings.openrouter, model: 'openrouter/free', fallback_models: [] },
+    })
+    const wrapper = await start()
+    await button(wrapper, 'Use recommended free-first route').trigger('click')
+    apiFetch.mockResolvedValueOnce({ ...settings, saved: true })
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const body = JSON.parse(apiFetch.mock.calls.at(-1)![1].body)
+    expect(body.openrouter.model).toBe('nvidia/nemotron-3.5-super-vl:free')
+    expect(body.openrouter.fallback_models).toEqual([
+      'google/gemma-4-26b-a4b-it:free',
+      'deepseek/deepseek-v4-flash-0731:nitro',
+    ])
+    expect(body.openrouter.max_tokens).toBe(50000)
     wrapper.unmount()
   })
   it('explains the wait while a Gemini connection test is pending', async () => {
