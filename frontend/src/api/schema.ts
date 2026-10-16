@@ -1566,11 +1566,12 @@ export interface components {
              * @default local
              * @enum {string}
              */
-            primary: "local" | "gemini";
+            primary: "local" | "gemini" | "openrouter";
             /** Backup */
-            backup?: ("local" | "gemini") | null;
+            backup?: ("local" | "gemini" | "openrouter") | null;
             local: components["schemas"]["LLMProfile"];
             gemini: components["schemas"]["LLMProfile"];
+            openrouter?: components["schemas"]["LLMProfile"];
         };
         /** LLMSettingsView */
         LLMSettingsView: {
@@ -1579,17 +1580,20 @@ export interface components {
              * @default local
              * @enum {string}
              */
-            primary: "local" | "gemini";
+            primary: "local" | "gemini" | "openrouter";
             /** Backup */
-            backup?: ("local" | "gemini") | null;
+            backup?: ("local" | "gemini" | "openrouter") | null;
             local: components["schemas"]["LLMProfile"];
             gemini: components["schemas"]["LLMProfile"];
+            openrouter: components["schemas"]["LLMProfile"];
             /** Saved */
             saved: boolean;
             /** Local Key Configured */
             local_key_configured: boolean;
             /** Gemini Key Configured */
             gemini_key_configured: boolean;
+            /** Openrouter Key Configured */
+            openrouter_key_configured: boolean;
         };
         /** LLMTestRequest */
         LLMTestRequest: {
@@ -1597,7 +1601,7 @@ export interface components {
              * Provider
              * @enum {string}
              */
-            provider: "local" | "gemini";
+            provider: "local" | "gemini" | "openrouter";
             profile: components["schemas"]["LLMProfile"];
         };
         /** LLMTestResult */

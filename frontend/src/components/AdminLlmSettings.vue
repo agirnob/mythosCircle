@@ -7,7 +7,13 @@ import { useAuthStore } from '../stores/auth'
 
 type Settings = components['schemas']['LLMSettingsView']
 type Config = components['schemas']['LLMRoutingConfig']
-type Provider = 'local' | 'gemini'
+type Provider = 'local' | 'gemini' | 'openrouter'
+const providers = ['local', 'gemini', 'openrouter'] as const
+const providerNames: Record<Provider, string> = {
+  local: 'local',
+  gemini: 'Gemini',
+  openrouter: 'OpenRouter',
+}
 const emit = defineEmits<{ accessLost: [] }>()
 const auth = useAuthStore()
 const settings = ref<Settings | null>(null)
@@ -56,8 +62,8 @@ async function load() {
 }
 function config(): Config | null {
   if (!settings.value) return null
-  const { primary, backup, local, gemini } = settings.value
-  return { primary, backup, local, gemini }
+  const { primary, backup, local, gemini, openrouter } = settings.value
+  return { primary, backup, local, gemini, openrouter }
 }
 async function save() {
   const body = config()
@@ -166,8 +172,8 @@ onBeforeUnmount(() => {
     </p>
     <p v-if="busy" role="status">
       {{
-        testingProvider === 'gemini'
-          ? 'Testing Gemini… This may take up to two minutes.'
+        testingProvider === 'gemini' || testingProvider === 'openrouter'
+          ? `Testing ${providerNames[testingProvider]}… This may take up to two minutes.`
           : 'Working…'
       }}
     </p>
@@ -196,6 +202,9 @@ onBeforeUnmount(() => {
               <option value="gemini" :disabled="!settings.gemini_key_configured">
                 Google Gemini
               </option>
+              <option value="openrouter" :disabled="!settings.openrouter_key_configured">
+                OpenRouter
+              </option>
             </select>
           </label>
           <label
@@ -211,22 +220,55 @@ onBeforeUnmount(() => {
               >
                 Google Gemini
               </option>
+              <option
+                value="openrouter"
+                :disabled="settings.primary === 'openrouter' || !settings.openrouter_key_configured"
+              >
+                OpenRouter
+              </option>
             </select>
           </label>
         </div>
       </fieldset>
-      <fieldset v-for="provider in ['local', 'gemini'] as const" :key="provider" :disabled="busy">
-        <legend>{{ provider === 'local' ? 'Local OpenAI-compatible' : 'Google Gemini' }}</legend>
+      <fieldset v-for="provider in providers" :key="provider" :disabled="busy">
+        <legend>
+          {{
+            provider === 'local'
+              ? 'Local OpenAI-compatible'
+              : provider === 'gemini'
+                ? 'Google Gemini'
+                : 'OpenRouter'
+          }}
+        </legend>
         <p>
           {{
             provider === 'local'
               ? settings.local_key_configured
                 ? 'Local key configured.'
                 : 'No local key configured (optional).'
-              : settings.gemini_key_configured
-                ? 'Gemini key configured.'
-                : 'Gemini key missing.'
+              : provider === 'gemini'
+                ? settings.gemini_key_configured
+                  ? 'Gemini key configured.'
+                  : 'Gemini key missing.'
+                : settings.openrouter_key_configured
+                  ? 'OpenRouter key configured.'
+                  : 'OpenRouter key missing.'
           }}
+        </p>
+        <p v-if="provider === 'openrouter' && !settings.openrouter_key_configured">
+          Add MYTHOSCIRCLE_OPENROUTER_API_KEY to the API service environment in your Compose stack
+          and set its value in Portainer stack variables. Recreate the API container, then reload
+          this panel. For this installation, update /home/homest/mythos-redeploy.yml and the
+          deployment runner environment as described in deploy/AUTO_DEPLOY.md. Never enter the key
+          here.
+        </p>
+        <p v-if="provider === 'openrouter'">
+          The default free router may choose different models. For reliable Forge output, choose a
+          model that supports structured JSON and your output token limit. Check its price and
+          limits on
+          <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer"
+            >OpenRouter</a
+          >.
         </p>
         <p v-if="provider === 'gemini' && !settings.gemini_key_configured">
           Add MYTHOSCIRCLE_GEMINI_API_KEY to the API service environment in your Compose stack and
@@ -243,7 +285,7 @@ onBeforeUnmount(() => {
                 class="mc-input"
                 type="url"
                 required
-                :readonly="provider === 'gemini'"
+                :readonly="provider !== 'local'"
             /></label>
             <label
               >Model<input
@@ -322,10 +364,13 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="mc-btn mc-btn-secondary"
-          :disabled="provider === 'gemini' && !settings.gemini_key_configured"
+          :disabled="
+            (provider === 'gemini' && !settings.gemini_key_configured) ||
+            (provider === 'openrouter' && !settings.openrouter_key_configured)
+          "
           @click="test(provider)"
         >
-          Test {{ provider === 'local' ? 'local' : 'Gemini' }} connection
+          Test {{ providerNames[provider] }} connection
         </button>
       </fieldset>
       <p>

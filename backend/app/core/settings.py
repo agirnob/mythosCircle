@@ -91,7 +91,7 @@ class LLMSettings:
     endpoint: str = DEFAULT_LLM_ENDPOINT
     model: str = DEFAULT_LLM_MODEL
     api_key: str | None = field(default=None, repr=False)
-    provider: Literal["local", "gemini"] = "local"
+    provider: Literal["local", "gemini", "openrouter"] = "local"
     routing: "LLMRouting | None" = field(default=None, repr=False, compare=False)
     timeout: float = DEFAULT_LLM_TIMEOUT
     #: Hard ceiling on one completion (never unbounded — see config.py).

@@ -82,12 +82,15 @@ def test_persistence_and_safe_projection(
         {"local": {"temperature": 3}},
         {"local": {"api_key": "secret"}},
         {"gemini": {"endpoint": "https://other.example/v1"}},
+        {"primary": "openrouter"},
+        {"openrouter": {"endpoint": "https://other.example/v1"}},
     ],
 )
 def test_invalid_save_is_atomic(
     admin_api: tuple[TestClient, str, str], monkeypatch: pytest.MonkeyPatch, change: dict[str, Any]
 ) -> None:
     monkeypatch.delenv("MYTHOSCIRCLE_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("MYTHOSCIRCLE_OPENROUTER_API_KEY", raising=False)
     client = admin_api[0]
     initial = defaults().model_dump()
     assert client.put("/api/admin/llm-settings", json=initial).status_code == 200
@@ -157,6 +160,25 @@ def test_gemini_probe_respects_smaller_timeouts_and_caps_long_waits(
 def test_existing_deployment_timeout_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MYTHOSCIRCLE_LLM_TIMEOUT", "2400")
     assert defaults().local.timeout == 2400
+
+
+def test_openrouter_key_is_required_but_never_saved_or_returned(
+    admin_api: tuple[TestClient, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = admin_api[0]
+    config = defaults().model_dump()
+    config.update(primary="openrouter", backup="gemini")
+    monkeypatch.setenv("MYTHOSCIRCLE_GEMINI_API_KEY", "gemini-private")
+    monkeypatch.delenv("MYTHOSCIRCLE_OPENROUTER_API_KEY", raising=False)
+    assert client.put("/api/admin/llm-settings", json=config).status_code == 422
+    monkeypatch.setenv("MYTHOSCIRCLE_OPENROUTER_API_KEY", "router-private")
+    result = client.put("/api/admin/llm-settings", json=config)
+    assert result.status_code == 200
+    assert result.json()["openrouter_key_configured"] is True
+    assert result.json()["primary"] == "openrouter"
+    assert "router-private" not in result.text
+    assert "gemini-private" not in result.text
+    assert "api_key" not in result.text
 
 
 @pytest.mark.parametrize("kind", ["truncated", "empty"])

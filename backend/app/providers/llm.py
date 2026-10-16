@@ -128,7 +128,7 @@ def _complete(
             {"role": "user", "content": user_prompt},
         ],
     }
-    if settings.provider != "gemini" and settings.enable_thinking is not None:
+    if settings.provider == "local" and settings.enable_thinking is not None:
         # A reasoning model with thinking on will spend its whole budget
         # reasoning and never emit content (measured 2026-09-10: 8000 tokens,
         # 26,580 chars, zero content). Sent only when configured — ``None``

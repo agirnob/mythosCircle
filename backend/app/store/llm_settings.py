@@ -24,6 +24,7 @@ def view() -> LLMSettingsView:
         saved=saved is not None,
         local_key_configured=key_configured("local"),
         gemini_key_configured=key_configured("gemini"),
+        openrouter_key_configured=key_configured("openrouter"),
     )
 
 
@@ -42,4 +43,5 @@ def save(config: LLMRoutingConfig) -> LLMSettingsView:
         saved=True,
         local_key_configured=key_configured("local"),
         gemini_key_configured=key_configured("gemini"),
+        openrouter_key_configured=key_configured("openrouter"),
     )

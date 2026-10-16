@@ -14,7 +14,15 @@ from app.core.settings import LLM_API_KEY, LLMSettings, llm_settings
 
 GEMINI_API_KEY = "MYTHOSCIRCLE_GEMINI_API_KEY"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
-ProfileName = Literal["local", "gemini"]
+OPENROUTER_API_KEY = "MYTHOSCIRCLE_OPENROUTER_API_KEY"
+OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/"
+ProfileName = Literal["local", "gemini", "openrouter"]
+
+
+def default_openrouter_profile() -> "LLMProfile":
+    return LLMProfile(
+        endpoint=OPENROUTER_ENDPOINT, model="openrouter/free", timeout=120, max_tokens=8192
+    )
 
 
 class LLMProfile(BaseModel):
@@ -65,6 +73,8 @@ class LLMRoutingConfig(BaseModel):
     backup: ProfileName | None = None
     local: LLMProfile
     gemini: LLMProfile
+    # Older saved rows predate OpenRouter; loading them supplies this profile.
+    openrouter: LLMProfile = Field(default_factory=default_openrouter_profile)
 
     @model_validator(mode="after")
     def validate_routing(self) -> "LLMRoutingConfig":
@@ -72,13 +82,17 @@ class LLMRoutingConfig(BaseModel):
             raise ValueError("Primary and backup must be different providers.")
         if self.gemini.endpoint != GEMINI_ENDPOINT:
             raise ValueError("Gemini uses Google's fixed HTTPS endpoint.")
+        if self.openrouter.endpoint != OPENROUTER_ENDPOINT:
+            raise ValueError("OpenRouter uses its fixed HTTPS endpoint.")
         return self
 
 
 class LLMSettingsView(LLMRoutingConfig):
+    openrouter: LLMProfile
     saved: bool
     local_key_configured: bool
     gemini_key_configured: bool
+    openrouter_key_configured: bool
 
 
 class LLMTestRequest(BaseModel):
@@ -99,25 +113,39 @@ def defaults() -> LLMRoutingConfig:
         gemini=LLMProfile(
             endpoint=GEMINI_ENDPOINT, model="gemini-3.8-flash", timeout=120, max_tokens=8192
         ),
+        openrouter=default_openrouter_profile(),
     )
 
 
 def key_configured(provider: ProfileName) -> bool:
-    return bool(os.environ.get(GEMINI_API_KEY if provider == "gemini" else LLM_API_KEY, "").strip())
+    name = {
+        "local": LLM_API_KEY,
+        "gemini": GEMINI_API_KEY,
+        "openrouter": OPENROUTER_API_KEY,
+    }[provider]
+    return bool(os.environ.get(name, "").strip())
 
 
 def require_key(provider: ProfileName) -> None:
-    if provider == "gemini" and not key_configured(provider):
-        raise ValueError("Configure MYTHOSCIRCLE_GEMINI_API_KEY in the API environment first.")
+    if provider in {"gemini", "openrouter"} and not key_configured(provider):
+        name = GEMINI_API_KEY if provider == "gemini" else OPENROUTER_API_KEY
+        raise ValueError(f"Configure {name} in the API environment first.")
 
 
 def resolve_profile(provider: ProfileName, profile: LLMProfile) -> LLMSettings:
     require_key(provider)
     if provider == "gemini" and profile.endpoint != GEMINI_ENDPOINT:
         raise ValueError("Gemini uses Google's fixed HTTPS endpoint.")
+    if provider == "openrouter" and profile.endpoint != OPENROUTER_ENDPOINT:
+        raise ValueError("OpenRouter uses its fixed HTTPS endpoint.")
+    key_name = {
+        "local": LLM_API_KEY,
+        "gemini": GEMINI_API_KEY,
+        "openrouter": OPENROUTER_API_KEY,
+    }[provider]
     return LLMSettings(
         **profile.model_dump(),
-        api_key=os.environ.get(GEMINI_API_KEY if provider == "gemini" else LLM_API_KEY) or None,
+        api_key=os.environ.get(key_name) or None,
         provider=provider,
         reasoning_effort="low" if provider == "gemini" else None,
     )
@@ -140,7 +168,6 @@ class LLMRouting:
                 "temperature",
                 "top_p",
                 "seed",
-                "reasoning_effort",
             )
         }
         return replace(self.backup, response_format=actual.response_format, **changes)

@@ -122,9 +122,13 @@ In **Administration → Text generation providers**, choose **Primary**, optiona
 choose a distinct **Backup**, test each connection, then **Save provider settings**.
 Local settings are prefilled from the deployment. Gemini is prefilled with
 `gemini-3.8-flash` and Google's fixed HTTPS OpenAI-compatible endpoint. Advanced
-provider settings are optional. Connection tests use the current form values
+provider settings also include OpenRouter, prefilled with `openrouter/free` and
+`https://openrouter.ai/api/v1/`. Its free router may select a different model
+for each request. For Forge, choose a model that supports structured JSON and
+the desired output limit; check that model's price, limits, and data handling.
+Connection tests use the current form values
 without saving, make one bounded completion (up to a 120-second HTTP timeout
-for Gemini, 15 seconds for local providers, 2048
+for Gemini and OpenRouter, 15 seconds for local providers, 2048
 output tokens including reasoning; Gemini uses low-effort reasoning in tests
 and normal generation), and return
 sanitized status. They never fall back or write world state.
@@ -158,11 +162,24 @@ To activate Gemini on the actual installation:
    **Gemini key configured**. Select Gemini as primary (and Local as backup if
    wanted), run **Test Gemini connection**, then **Save provider settings**.
 
-Repository Compose templates include optional Gemini passthrough, but updating
-them does not update the externally managed stack. Replacing or removing an
-API key requires recreating the API container. If removing the Gemini key, save
-Local with no Gemini backup first; a saved Gemini selection cannot run without
-its environment key.
+To activate OpenRouter, create a key in [OpenRouter Keys](https://openrouter.ai/settings/keys).
+Add this entry to the **API service `environment:` block** of the same external
+stack:
+
+```yaml
+MYTHOSCIRCLE_OPENROUTER_API_KEY: ${MYTHOSCIRCLE_OPENROUTER_API_KEY:-}
+```
+
+Set `MYTHOSCIRCLE_OPENROUTER_API_KEY` in Portainer stack variables and in the
+deployment runner's protected interpolation environment. Recreate the API
+container, reload the admin panel, confirm **OpenRouter key configured**, test
+the connection, and save OpenRouter as primary or backup. Never put the key in
+this repository, the browser, or the database.
+
+Repository Compose templates include optional Gemini and OpenRouter passthrough,
+but updating them does not update the externally managed stack. Replacing or
+removing an API key requires recreating the API container. Before removing a
+key, save routing that does not select its provider.
 
 Routing is snapshotted when each job starts. Running jobs retain their provider
 settings; subsequent jobs use newly saved settings. A connection/timeout error,

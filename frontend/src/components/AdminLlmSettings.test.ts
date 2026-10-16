@@ -32,9 +32,15 @@ const settings: components['schemas']['LLMSettingsView'] = {
     endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/',
     model: 'gemini-3.8-flash',
   },
+  openrouter: {
+    ...profile,
+    endpoint: 'https://openrouter.ai/api/v1/',
+    model: 'openrouter/free',
+  },
   saved: false,
   local_key_configured: false,
   gemini_key_configured: true,
+  openrouter_key_configured: true,
 }
 function button(wrapper: ReturnType<typeof mount>, label: string) {
   return wrapper.findAll('button').find((node) => node.text() === label)!
@@ -70,7 +76,7 @@ describe('administrator LLM settings', () => {
     const body = JSON.parse(apiFetch.mock.calls.at(-1)![1].body)
     expect(body.primary).toBe('gemini')
     expect(body.backup).toBe('local')
-    expect(Object.keys(body)).toEqual(['primary', 'backup', 'local', 'gemini'])
+    expect(Object.keys(body)).toEqual(['primary', 'backup', 'local', 'gemini', 'openrouter'])
     expect(JSON.stringify(body)).not.toContain('key')
     expect(wrapper.text()).toContain('Saved. Jobs started from now on')
     wrapper.unmount()
@@ -82,6 +88,30 @@ describe('administrator LLM settings', () => {
     expect(wrapper.text()).toContain('/home/homest/mythos-redeploy.yml')
     expect(wrapper.text()).toContain('Recreate the API container')
     expect(wrapper.text()).toContain('Portainer stack variables')
+    wrapper.unmount()
+  })
+  it('configures OpenRouter as a backup without sending its secret to the browser', async () => {
+    const wrapper = await start()
+    await wrapper.findAll('select')[1]!.setValue('openrouter')
+    apiFetch.mockResolvedValueOnce({ success: true, message: 'Connection test succeeded.' })
+    await button(wrapper, 'Test OpenRouter connection').trigger('click')
+    await flushPromises()
+    const test = JSON.parse(apiFetch.mock.calls.at(-1)![1].body)
+    expect(test.provider).toBe('openrouter')
+    expect(test.profile.endpoint).toBe('https://openrouter.ai/api/v1/')
+    apiFetch.mockResolvedValueOnce({ ...settings, backup: 'openrouter', saved: true })
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const body = JSON.parse(apiFetch.mock.calls.at(-1)![1].body)
+    expect(body.backup).toBe('openrouter')
+    expect(JSON.stringify(body)).not.toContain('api_key')
+    wrapper.unmount()
+  })
+  it('disables OpenRouter until the API service has its key', async () => {
+    apiFetch.mockResolvedValueOnce({ ...settings, openrouter_key_configured: false })
+    const wrapper = await start()
+    expect(button(wrapper, 'Test OpenRouter connection').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('MYTHOSCIRCLE_OPENROUTER_API_KEY')
     wrapper.unmount()
   })
   it('explains the wait while a Gemini connection test is pending', async () => {

@@ -11,7 +11,13 @@ import httpx
 import pytest
 
 from app.core.journal import journal_context
-from app.core.llm_routing import GEMINI_ENDPOINT, LLMRouting, defaults
+from app.core.llm_routing import (
+    GEMINI_ENDPOINT,
+    OPENROUTER_ENDPOINT,
+    LLMRouting,
+    LLMRoutingConfig,
+    defaults,
+)
 from app.core.settings import LLMSettings
 from app.pipeline.budget import BudgetExceededError, CallBudget
 from app.pipeline.llm_routing import resolve_job_settings
@@ -222,6 +228,56 @@ def test_fallback_keeps_actual_constraints_even_when_equal_to_primary() -> None:
     fallback = settings.routing.fallback_settings(settings)
     assert fallback.max_tokens == 100
     assert fallback.provider == "gemini" and fallback.model == "gemini-3.8-flash"
+
+
+def test_saved_profile_from_before_openrouter_has_safe_default() -> None:
+    old = defaults().model_dump(exclude={"openrouter"})
+    loaded = LLMRoutingConfig.model_validate(old)
+    assert loaded.openrouter.endpoint == OPENROUTER_ENDPOINT
+    assert loaded.openrouter.model == "openrouter/free"
+
+
+def test_openrouter_backup_uses_its_own_key_and_fixed_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.store import db
+
+    previous = str(db._engine.url) if db._engine is not None else None
+    init_db(f"sqlite:///{tmp_path / 'openrouter-routing.db'}")
+    monkeypatch.setenv("MYTHOSCIRCLE_GEMINI_API_KEY", "gemini-sentinel")
+    monkeypatch.setenv("MYTHOSCIRCLE_OPENROUTER_API_KEY", "router-sentinel")
+    config = defaults().model_copy(update={"primary": "gemini", "backup": "openrouter"})
+    save(config)
+    requests = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = json.loads(request.content)
+        if len(requests) == 1:
+            assert request.headers["authorization"] == "Bearer gemini-sentinel"
+            return httpx.Response(429)
+        assert str(request.url) == OPENROUTER_ENDPOINT + "chat/completions"
+        assert request.headers["authorization"] == "Bearer router-sentinel"
+        assert body["model"] == "openrouter/free"
+        assert body["max_tokens"] == 517
+        assert "chat_template_kwargs" not in body
+        assert "reasoning_effort" not in body
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    try:
+        settings = replace(resolve_job_settings(), max_tokens=517, enable_thinking=True)
+        assert (
+            budget().call(
+                lambda: chat_completion(
+                    "prompt", settings=settings, transport=httpx.MockTransport(respond)
+                )
+            )
+            == "OK"
+        )
+        assert len(requests) == 2
+    finally:
+        if previous:
+            init_db(previous)
 
 
 @pytest.mark.parametrize("kind", ["image", "video", "add_character", "text"])
