@@ -1,0 +1,54 @@
+{
+  "record_violations": [],
+  "stat_block_violations": [],
+  "runs": {
+    "complete": {
+      "state": "succeeded",
+      "calls": 1,
+      "telemetry": {
+        "total": 1,
+        "by_label": {
+          "wave1": {
+            "calls": 1,
+            "seconds": 0.0
+          }
+        }
+      }
+    },
+    "record-repair": {
+      "state": "succeeded",
+      "calls": 2,
+      "telemetry": {
+        "total": 2,
+        "by_label": {
+          "wave1": {
+            "calls": 1,
+            "seconds": 0.0
+          },
+          "record": {
+            "calls": 1,
+            "seconds": 0.0
+          }
+        }
+      }
+    },
+    "stat-repair": {
+      "state": "succeeded",
+      "calls": 2,
+      "telemetry": {
+        "total": 2,
+        "by_label": {
+          "wave1": {
+            "calls": 1,
+            "seconds": 0.0
+          },
+          "stat": {
+            "calls": 1,
+            "seconds": 0.0
+          }
+        }
+      }
+    }
+  },
+  "method": "Real queue worker and provider; handcrafted responses over HTTP MockTransport"
+}

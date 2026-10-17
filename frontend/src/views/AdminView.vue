@@ -4,6 +4,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ApiError, apiFetch } from '../api/client'
 import type { components } from '../api/schema'
+import AdminLlmSettings from '../components/AdminLlmSettings.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 import StatusBadge from '../components/ui/StatusBadge.vue'
 import { useAuthStore } from '../stores/auth'
@@ -220,7 +221,11 @@ function date(value: string) {
 
 <template>
   <section class="admin-page">
-    <PageHeader title="User access" description="Inspect registered accounts and manage access." />
+    <PageHeader
+      title="Administration"
+      description="Manage user access and text generation providers."
+    />
+    <h2>User access</h2>
     <form class="admin-search" @submit.prevent="submitSearch">
       <label for="admin-email">Search email</label>
       <input id="admin-email" v-model="search" class="mc-input" type="search" maxlength="320" />
@@ -340,6 +345,7 @@ function date(value: string) {
     >
       Load more
     </button>
+    <AdminLlmSettings v-if="auth.isAdmin && !denied" @access-lost="accessLost" />
   </section>
 </template>
 

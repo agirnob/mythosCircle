@@ -11,6 +11,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import type { components } from '../api/schema'
 import EntityCard from '../components/ui/EntityCard.vue'
+import BuildActivity from '../components/BuildActivity.vue'
 import EntityGrid from '../components/ui/EntityGrid.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import ErrorState from '../components/ui/ErrorState.vue'
@@ -218,6 +219,12 @@ function worldExportUrl(format: 'markdown' | 'html'): string {
           {{ activeJobs.length }} generating
         </StatusBadge>
       </p>
+
+      <BuildActivity
+        v-if="campaigns.current?.is_generic || jobs.buildInJobs(campaignId).length > 0"
+        :campaign-id="campaignId"
+        @settled="world.requestRefetch(campaignId)"
+      />
 
       <div class="mc-overview-layout" :class="{ 'mc-overview-layout-directory': isDirectory }">
         <div class="mc-overview-main">

@@ -5,14 +5,13 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { apiFetch, ApiError } from '../api/client'
 import type { components } from '../api/schema'
 import CharacterSheetEditor from '../components/CharacterSheetEditor.vue'
+import BuildActivity from '../components/BuildActivity.vue'
 import { useAuthStore } from '../stores/auth'
 import { useCampaignsStore } from '../stores/campaigns'
 import { useJobsStore } from '../stores/jobs'
 import { connectJobSocket } from '../ws'
 import { sessionGeneration } from '../api/session'
 import type { WsMessage } from '../ws'
-
-type Job = components['schemas']['JobResponse']
 
 const route = useRoute()
 const router = useRouter()
@@ -57,6 +56,10 @@ async function loadCampaign(id: string) {
     loadError.value = err instanceof ApiError ? err.message : 'Could not load the world.'
     return
   }
+  if (campaigns.current?.id === id) {
+    draftMode.value = campaigns.current.is_generic === true
+    if (draftMode.value && !draftTheme.value) draftTheme.value = campaigns.current.theme
+  }
   disconnectSocket?.()
   disconnectSocket = connectJobSocket(
     id,
@@ -78,7 +81,7 @@ async function loadCampaign(id: string) {
 }
 
 onMounted(async () => {
-  await campaigns.list()
+  await Promise.all([campaigns.list(), fetchThemes()])
   if (socketGeneration !== sessionGeneration()) return
   if (!draftTheme.value && campaigns.themes.length > 0) {
     draftTheme.value = campaigns.themes[0]!
@@ -86,6 +89,11 @@ onMounted(async () => {
   if (pickedCampaignId.value) {
     await loadCampaign(pickedCampaignId.value)
     return
+  }
+  const generic = campaigns.campaigns.find((campaign) => campaign.is_generic)
+  if (generic) {
+    pickedCampaignId.value = generic.id
+    await loadCampaign(generic.id)
   }
   picking.value = true
 })
@@ -102,7 +110,6 @@ onUnmounted(() => {
   disconnectSocket?.()
 })
 
-const recentJobs = computed(() => jobs.buildInJobs(campaignId.value).slice(0, 10))
 const inFlight = computed(() => jobs.buildInInFlight(campaignId.value))
 const isDraft = computed(() => draftMode.value)
 
@@ -115,7 +122,6 @@ async function fetchThemes() {
     // the theme dropdown falls back to an empty list; the gate re-checks
   }
 }
-void fetchThemes()
 
 async function bindToGeneric(): Promise<string | null> {
   /** Create-or-get the account's Generic library and bind this forge to
@@ -167,21 +173,6 @@ async function submit() {
   }
 }
 
-function stateLabel(job: Job): string {
-  return job.state === 'queued' ? `Queued (position ${job.queue_position ?? '…'})` : job.state
-}
-
-function jobError(job: Job): string | null {
-  return job.state === 'failed' ? (job.error ?? 'The build failed.') : null
-}
-
-function resultLine(job: Job): string | null {
-  if (job.state !== 'succeeded' || !job.result) return null
-  const merge = (job.result as { merge?: Record<string, { merged?: unknown[] }> }).merge
-  const wave1 = merge?.wave1
-  const count = Array.isArray(wave1?.merged) ? wave1!.merged!.length : 0
-  return count > 0 ? `built (merged with ${count} existing)` : 'built'
-}
 </script>
 
 <template>
@@ -189,7 +180,7 @@ function resultLine(job: Job): string | null {
     <h1>Character forge</h1>
     <p class="muted">
       Nudge a character into being. Fill what you know — those fields are yours and commit
-      verbatim; leave a field blank and the local model writes it. Nothing you write is ever
+      verbatim; leave a field blank and the selected model writes it. Nothing you write is ever
       changed. Build into a world you pick below, or generate into your Generic library without
       touching any world.
     </p>
@@ -251,6 +242,7 @@ function resultLine(job: Job): string | null {
     <p v-else-if="campaigns.loading && !campaigns.current" class="muted">Loading…</p>
 
     <template v-if="!loadError">
+      <BuildActivity v-if="campaignId" :campaign-id="campaignId" />
       <form class="card" @submit.prevent="submit">
         <CharacterSheetEditor ref="editorRef" :campaign-id="campaignId" />
 
@@ -266,30 +258,13 @@ function resultLine(job: Job): string | null {
             characters never influence the generation.
           </template>
           <template v-else>
-            The build runs once: your fields commit verbatim, the blanks are written by the local
+            The build runs once: your fields commit verbatim, the blanks are written by the selected
             model, and missing relation targets are created in the same wave. Characters never
             merge — every build is a fresh, distinct person even with a duplicate name.
           </template>
         </p>
       </form>
 
-      <div v-if="recentJobs.length > 0" class="card job">
-        <h2>Recent builds</h2>
-        <div v-for="job in recentJobs" :key="job.id" class="job-row">
-          <dl>
-            <dt>State</dt>
-            <dd>{{ stateLabel(job) }}</dd>
-            <template v-if="resultLine(job)">
-              <dt>Result</dt>
-              <dd>{{ resultLine(job) }}</dd>
-            </template>
-            <template v-else-if="jobError(job)">
-              <dt>Error</dt>
-              <dd class="error mono">{{ jobError(job) }}</dd>
-            </template>
-          </dl>
-        </div>
-      </div>
     </template>
   </section>
 </template>
@@ -343,20 +318,6 @@ textarea {
 }
 .muted.small {
   font-size: 0.85rem;
-}
-.job dl {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.25rem 1rem;
-  margin: 0;
-}
-.job dt {
-  color: #9aa0a6;
-}
-.job-row + .job-row {
-  border-top: 1px solid #2c3038;
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
 }
 .link {
   background: none;

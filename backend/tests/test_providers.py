@@ -15,6 +15,31 @@ from app.providers.llm import ProviderError, chat_completion
 DEFAULT = LLMSettings()
 
 
+@pytest.mark.parametrize("provider", ["local", "gemini"])
+def test_repair_sampling_omits_unsupported_gemini_seed(provider: str) -> None:
+    from app.pipeline.build_in import _repair_sampling
+
+    settings = _repair_sampling(LLMSettings(provider=provider))
+    assert settings.seed is not None  # the repair preset, not an admin override
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["temperature"] == 0.0
+        if provider == "gemini":
+            assert "seed" not in body
+            assert body["reasoning_effort"] == "low"
+        else:
+            assert body["seed"] == settings.seed
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    assert (
+        chat_completion(
+            "repair the record", settings=settings, transport=httpx.MockTransport(handler)
+        )
+        == "ok"
+    )
+
+
 def test_chat_completion_returns_assistant_text() -> None:
     """A healthy OpenAI-shaped response yields the assistant content."""
 

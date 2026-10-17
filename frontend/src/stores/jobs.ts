@@ -176,6 +176,13 @@ export const useJobsStore = defineStore('jobs', {
       },
   },
   actions: {
+    async cancel(jobId: string) {
+      const job = await apiFetch<Job>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
+        method: 'POST',
+      })
+      this.upsert(job)
+      return job
+    },
     /**
      * Monotonic merge (review round 2): WS frames and REST snapshots can
      * arrive out of order, so a row only moves forward. A stale snapshot

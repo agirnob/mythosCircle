@@ -36,7 +36,6 @@ from app.core.settings import (
     configured_image_backend,
     configured_media_dir,
     configured_video_backend,
-    llm_settings,
 )
 from app.core.settings import (
     comfyui_image_settings as resolve_comfyui_image_settings,
@@ -51,6 +50,7 @@ from app.core.settings import (
     video_settings as resolve_video_settings,
 )
 from app.pipeline.budget import BudgetExceededError, CallBudget
+from app.pipeline.llm_routing import resolve_job_settings
 from app.providers.comfyui import ComfyUIImageGeneration, comfyui_image_generation
 from app.providers.comfyui_video import (
     ComfyUIVideoGeneration,
@@ -125,7 +125,6 @@ def run_next_job(
     when ``"openai"`` (the default).
     """
     try:
-        settings = settings or llm_settings()
         job = claim_next_job()
     except Exception:  # noqa: BLE001 - a claim/settings failure must not kill the loop
         logger.exception("worker claim failed")
@@ -133,6 +132,11 @@ def run_next_job(
     if job is None:
         return None
     try:
+        settings = settings or (
+            resolve_job_settings()
+            if job.kind in {"text", "build_in", "generate", "regenerate", "video_prompt"}
+            else LLMSettings()
+        )
         # The per-job LLM call journal (owner note 7): every provider
         # attempt inside this run transcribes to <journal-dir>/<job-id>.
         # Cost: one mkdir + prune per job; failures are swallowed.

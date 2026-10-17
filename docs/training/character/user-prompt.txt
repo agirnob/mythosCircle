@@ -1,0 +1,255 @@
+You are digesting a TTRPG world-build-in submission into the world graph.
+Respond with exactly one JSON object — nothing else.
+
+CAMPAIGN SEED
+title: Generic (High Fantasy)
+description: A classic world of kingdoms, wilds, and old magic — quest-givers, rival houses, and ruins hiding older powers.
+theme: High Fantasy
+custom lore: Magic is real but rarely trusted; oaths bind, debts outlive people, and every road owes a toll to somebody.
+
+SUBMITTED SECTIONS
+places (0):
+factions (0):
+key_figures (1):
+- Ahmet the Davulcu
+  DM-AUTHORED SEED (GROUND TRUTH — copy every authored field below
+  VERBATIM into the entity/record; never paraphrase, re-type, or drop one):
+    role (PINNED): NPC
+    record: {"level_cr": "level 5", "stat_block": {"identity": {"role": "NPC", "race": "Human", "level": 5, "class": "Fighter", "alignment": "LG"}}}
+
+TASK
+Create the core subgraph: entities for the notable key figures, places, and
+factions in the submitted sections, connected by typed directed edges
+(characters for key figures, places for places, factions for factions).
+Edges are optional: emit only links between entities actually in this wave.
+A single character can stand alone with an empty edges array ([]).
+Never reference or invent another entity just to give an entity an edge.
+Edges must connect two different entities — no self-loops.
+
+PER-KIND RECORD CONTRACT
+Characters use the full character record and stat-block contract already supplied below.
+Places and factions are different kinds and MUST NOT receive character stat blocks.
+
+PLACE RECORD: data carries the generated/authored sections `description`, `inhabitants`,
+and `whats_hidden`. The entity text is the short description projection. Keep the
+entity kind `place` and preserve any DM-authored values verbatim.
+
+FACTION RECORD: data carries the generated/authored sections `description`, `doctrine`,
+and `assets`. The entity text is the short description projection. Keep the entity kind
+`faction` and preserve any DM-authored values verbatim.
+
+Relations are typed edges in the outer `edges` array and are wired by the pipeline when
+the DM declares them. Do not invent a character stat block for a place or faction.
+GENERATION DIAL
+Each structured seed may carry its own dial: nothing, draft, simple, important, or
+pillar. The dial applies to that entity only and must be copied into data.dial.
+Every place and faction keeps its complete section set at every dial level; the dial
+changes elaboration only. `nothing` is concise essentials, `draft` is a short usable
+paragraph per section, `simple` is grounded detail, `important` is deep named detail,
+and `pillar` is dense setting-defining detail. A DM-authored non-blank field is ground
+truth at every dial and must not be paraphrased or replaced. Generated fields must meet
+the backend's dial-specific minimum detail floor: nothing 1+ word, draft 8+ words,
+simple 16+ words, important 28+ words, pillar 45+ words.
+PINNED SEED CONTROLS
+If a seed gives an archetype, copy it into data.archetype. If it gives a dial, copy it
+into data.dial. These are per-entity controls, not build-wide settings.
+
+STAT BLOCKS
+STAT BLOCK RULES (characters only; factions and places never carry one)
+A character's data.stat_block is a JSON object with the field set:
+{"identity": {...}, "attributes": {...}, "combat": {...}, "skills": [...],
+ "actions": [...], "traits": [...], "spells": [...]}
+"power" is stamped by the server after every pass (audited DPR vs band)
+— never write it; anything you put there is discarded.
+identity (required): role, race, and per role:
+- role in ['BBEG', 'Monster', 'NPC'].
+- NPC and BBEG carry level: an integer in [1, 20]; never cr.
+- Monster carries cr: an integer in [0, 30] or one of ['1/2', '1/4', '1/8']; never level.
+- race (required): for NPC/BBEG one of the SRD races; for Monster a
+non-blank type string. NPC/BBEG races: ['Dragonborn', 'Dwarf', 'Elf', 'Gnome', 'Half-Elf', 'Half-Orc', 'Halfling', 'Human', 'Tiefling'].
+- class (optional): one of ['Barbarian', 'Bard', 'Cleric', 'Druid', 'Fighter', 'Monk', 'Paladin', 'Ranger', 'Rogue', 'Sorcerer', 'Warlock', 'Wizard'].
+- alignment (optional): one of ['CE', 'CG', 'CN', 'LE', 'LG', 'LN', 'N', 'NE', 'NG', 'unaligned'].
+attributes (required): six ability scores, each an integer in
+[1, 30]: str, dex, con, int, wis, cha.
+combat (required): ac (a positive integer) and hp (a positive integer).
+CHALLENGE SCALING (stats must match the declared level/CR, never be
+flat: a tougher declaration means tougher combat numbers and scores):
+- NPC and BBEG blocks carry AUTHENTIC class-grade numbers, and class grade
+  SCALES WITH LEVEL — a level-5 fighter deals roughly 8-15 damage per round,
+  a level-10 martial ~25-40, a level-20 martial or BBEG ~50-80 through its
+  routine (a multiattack of two-three solid hits plus riders). A full caster
+  deals roughly half a martial's but controls the field. The DMG monster
+  table is NOT their grade and the validator does NOT band-enforce them: an
+  NPC/BBEG block below the monster table commits as written, stamped
+  under-powered for DM visibility — never repaired, never inflated toward
+  the band (class-grade at level 20 is still below the monster table —
+  that is expected and correct).
+- Monster blocks scale with CR on the DMG monster table and ARE
+  band-enforced (build-in, generate, and stat_block re-rolls):
+  damage/round ~2-3 at CR 1/8, ~6-8 at CR 1/2, ~33-38 at CR 5, ~87-92 at
+  CR 14, ~111-116 at CR 18, ~141-158 at CR 21, 303+ at CR 30; hp ~7-35 at
+  CR 1/8, ~50-70 at CR 1/2, ~131-145 at CR 5, ~266-280 at CR 14, ~326-340
+  at CR 18, ~376-400 at CR 21, 566+ at CR 30. Unlisted CRs interpolate
+  between the listed rows. A Multiattack routine deals its count times the
+  strongest other attack (the routine itself is excluded, an unnamed count
+  means 2, and 0 with no other attack). Damage counts with the validator's
+  adjustments: save-for-half at 0.75x, area effects at 2 targets,
+  limited-use (recharge/per-day) at 1/3. A Monster's hp below half the
+  band low fails (frail); high hp never fails.
+- ac and ability scores rise with challenge: a Monster follows the DMG
+  table (26-30 in a CR-15+ creature's best abilities — NOT the 20 that
+  caps a player character); an NPC/BBEG stays in authentic character
+  range. Guidance only — the validator enforces DPR/HP for Monsters,
+  never ac or scores.
+- the action list deepens with challenge: a level-10+/CR-10+ creature has
+  THREE TO FIVE entries — a named Multiattack routine plus the distinct
+  attacks it uses, and at least one signature action with a mechanical rider
+  (push, prone, frighten, restrain, a debuff, an area effect). Vary damage
+  types and effects instead of repeating one swing at different sizes; give
+  each attack a distinct name and role in the routine. Below level 10 / CR 10
+  give TWO OR THREE. One lone attack is a shallow block, not a shortcut.
+skills (optional): entries with an SRD skill name and integer bonus: ['Acrobatics', 'Animal Handling', 'Arcana', 'Athletics', 'Deception', 'History', 'Insight', 'Intimidation', 'Investigation', 'Medicine', 'Nature', 'Perception', 'Performance', 'Persuasion', 'Religion', 'Sleight of Hand', 'Stealth', 'Survival'].
+actions and traits (optional): entries with a name and a description string.
+BBEG sheets: fill boss.lair_actions and boss.legendary_actions — lair actions
+define the arena, and legendary actions are credited as one full extra attack
+per round by the auditor. Traits are free creativity: reactions, auras,
+recharges, mythic triggers — a villain should read like one.
+a damaging ACTION also carries a structured damage list — one entry per
+damage type, kept in step with the description (which still states the
+numbers for the DM):
+  {"name": "Oathblade", "to_hit": 18,
+   "description": "Melee Weapon Attack: +18 to hit, reach 5 ft., one target.
+     Hit: 19 (2d6 + 12) slashing damage plus 16.5 (3d10) radiant damage.",
+   "damage": [{"dice": "2d6", "count": 2, "sides": 6, "bonus": 12,
+               "average": 19, "type": "slashing"},
+              {"dice": "3d10", "count": 3, "sides": 10, "bonus": 0,
+               "average": 16.5, "type": "radiant"}]}
+  The damage list is the machine-readable copy the auditor, the character
+  sheet and the export read; a Multiattack routine carries NO damage list
+  (its text states the count only). Never write damage in a key of its own.
+OPTIONAL EXTRA MECHANICS (include what applies, omit the rest — a wrong
+number is worse than an absent one):
+- combat.hit_dice: a dice expression string, e.g. "24d10 + 192".
+- saves: integer save bonus per ability score, e.g. {"con": 15, "wis": 18}.
+- features: a list of feature NAMES, e.g. ["Divine Smite", "Aura of
+  Protection"] — names only, never objects (that is what traits are for).
+- initiative and passive_perception: integers.
+- proficiency_bonus: an integer (2 early, 6 by level 17).
+- spellcasting: {"dc": 21, "attack_bonus": 13, "slots": [4, 3, 3, 3, 1]}.
+- resources: integer pools, e.g. {"lay_on_hands": 85, "channel_divinity": 2}.
+spells (optional): never for role Monster (a monster's magic is actions
+or traits); otherwise only with an identity.class and no repeats — every
+spell name must appear on that class's line of the SRD SPELLS BY CLASS
+reference below.
+
+SRD SPELLS BY CLASS:
+- Barbarian: (none listed)
+- Bard: Animal Friendship; Animal Messenger; Bane; Bestow Curse; Blindness/Deafness; Charm Person; Clairvoyance; Cloud of Daggers; Comprehend Languages; Confusion; Crown of Madness; Cure Wounds; Dancing Lights; Detect Magic; Dimension Door; Disguise Self; Dispel Magic; Dominate Person; Dream; Enhance Ability; Enthrall; Etherealness; Eyebite; Fear; Feather Fall; Feeblemind; Foresight; Friends; Geas; Glyph of Warding; Greater Invisibility; Greater Restoration; Hallucinatory Terrain; Healing Word; Heat Metal; Heroism; Hold Monster; Hold Person; Hypnotic Pattern; Identify; Invisibility; Knock; Legend Lore; Lesser Restoration; Light; Longstrider; Mage Hand; Major Image; Mass Cure Wounds; Mass Suggestion; Mending; Message; Minor Illusion; Mordenkainen's Sword; Planar Binding; Polymorph; Power Word Kill; Power Word Stun; Prestidigitation; Raise Dead; Regenerate; Resurrection; Scrying; See Invisibility; Shatter; Silence; Sleep; Speak with Animals; Speak with Dead; Stinking Cloud; Suggestion; Symbol; Teleport; Teleportation Circle; Thunderwave; Tongues; True Seeing; True Strike; Unseen Servant; Vicious Mockery; Zone of Truth
+- Cleric: Aid; Animate Dead; Antimagic Field; Astral Projection; Bane; Banishment; Beacon of Hope; Bestow Curse; Bless; Blindness/Deafness; Clairvoyance; Command; Contagion; Continual Flame; Control Weather; Create Food and Water; Cure Wounds; Daylight; Death Ward; Detect Evil and Good; Detect Magic; Dispel Magic; Divine Word; Earthquake; Enhance Ability; Etherealness; Fire Storm; Gate; Geas; Glyph of Warding; Greater Restoration; Guidance; Guiding Bolt; Harm; Heal; Healing Word; Heroes' Feast; Hold Person; Inflict Wounds; Insect Plague; Legend Lore; Lesser Restoration; Light; Magic Circle; Mass Cure Wounds; Mass Heal; Mass Healing Word; Mending; Planar Binding; Plane Shift; Prayer of Healing; Protection from Energy; Protection from Evil and Good; Protection from Poison; Raise Dead; Regenerate; Resistance; Resurrection; Revivify; Sacred Flame; Sanctuary; Scrying; Shield of Faith; Silence; Spare the Dying; Speak with Dead; Spirit Guardians; Spiritual Weapon; Stone Shape; Symbol; Thaumaturgy; Tongues; True Resurrection; True Seeing; Warding Bond; Word of Recall; Zone of Truth
+- Druid: Animal Friendship; Animal Messenger; Antipathy/Sympathy; Blight; Call Lightning; Charm Person; Confusion; Conjure Elemental; Conjure Minor Elementals; Contagion; Control Weather; Create Food and Water; Cure Wounds; Darkvision; Daylight; Detect Magic; Dispel Magic; Divination; Dominate Beast; Earthquake; Enhance Ability; Entangle; Faerie Fire; Feeblemind; Fire Storm; Flame Blade; Flaming Sphere; Fog Cloud; Foresight; Geas; Goodberry; Greater Restoration; Guidance; Gust of Wind; Hallucinatory Terrain; Heal; Healing Word; Heat Metal; Heroes' Feast; Hold Person; Ice Storm; Insect Plague; Jump; Lesser Restoration; Longstrider; Mass Cure Wounds; Mending; Moonbeam; Pass without Trace; Planar Binding; Plane Shift; Poison Spray; Polymorph; Produce Flame; Protection from Energy; Protection from Poison; Regenerate; Resistance; Scrying; Shapechange; Shillelagh; Sleet Storm; Speak with Animals; Stone Shape; Stoneskin; Sunbeam; Sunburst; Thunderwave; True Resurrection; Wall of Fire; Wall of Stone; Water Breathing; Wind Walk; Wind Wall
+- Fighter: (none listed)
+- Monk: (none listed)
+- Paladin: Aid; Banishment; Bless; Branding Smite; Command; Compelled Duel; Create Food and Water; Cure Wounds; Daylight; Death Ward; Detect Evil and Good; Detect Magic; Dispel Magic; Divine Favor; Find Steed; Geas; Heroism; Lesser Restoration; Magic Circle; Magic Weapon; Protection from Evil and Good; Protection from Poison; Raise Dead; Revivify; Searing Smite; Shield of Faith; Thunderous Smite; Wrathful Smite; Zone of Truth
+- Ranger: Animal Friendship; Animal Messenger; Cure Wounds; Darkvision; Daylight; Detect Magic; Ensnaring Strike; Fog Cloud; Goodberry; Hail of Thorns; Hunter's Mark; Jump; Lesser Restoration; Longstrider; Pass without Trace; Protection from Energy; Protection from Poison; Silence; Speak with Animals; Stoneskin; Water Breathing; Wind Wall
+- Rogue: (none listed)
+- Sorcerer: Acid Splash; Alter Self; Banishment; Blight; Blindness/Deafness; Blink; Blur; Burning Hands; Chain Lightning; Charm Person; Chill Touch; Circle of Death; Clairvoyance; Cloud of Daggers; Cloudkill; Color Spray; Comprehend Languages; Cone of Cold; Confusion; Counterspell; Crown of Madness; Dancing Lights; Darkness; Darkvision; Daylight; Delayed Blast Fireball; Detect Magic; Dimension Door; Disguise Self; Disintegrate; Dispel Magic; Dominate Beast; Dominate Person; Earthquake; Enhance Ability; Etherealness; Expeditious Retreat; Eyebite; False Life; Fear; Feather Fall; Finger of Death; Fire Bolt; Fire Storm; Fireball; Fly; Fog Cloud; Friends; Gaseous Form; Gate; Globe of Invulnerability; Greater Invisibility; Gust of Wind; Haste; Hold Monster; Hold Person; Hypnotic Pattern; Ice Storm; Incendiary Cloud; Insect Plague; Invisibility; Jump; Knock; Levitate; Light; Lightning Bolt; Mage Armor; Mage Hand; Magic Missile; Major Image; Mass Suggestion; Mending; Message; Meteor Swarm; Minor Illusion; Mirror Image; Misty Step; Otiluke's Freezing Sphere; Plane Shift; Poison Spray; Polymorph; Power Word Kill; Power Word Stun; Prestidigitation; Prismatic Spray; Protection from Energy; Ray of Frost; Scorching Ray; See Invisibility; Shatter; Shield; Sleep; Sleet Storm; Slow; Spider Climb; Stinking Cloud; Stoneskin; Suggestion; Sunbeam; Sunburst; Teleport; Teleportation Circle; Thunderwave; Time Stop; Tongues; True Seeing; True Strike; Wall of Fire; Wall of Stone; Water Breathing; Web; Wish; Witch Bolt
+- Warlock: Armor of Agathys; Arms of Hadar; Astral Projection; Banishment; Blight; Charm Person; Chill Touch; Circle of Death; Cloud of Daggers; Comprehend Languages; Contact Other Plane; Counterspell; Crown of Madness; Darkness; Dimension Door; Dispel Magic; Dream; Eldritch Blast; Enthrall; Etherealness; Expeditious Retreat; Eyebite; Fear; Feeblemind; Finger of Death; Flesh to Stone; Fly; Foresight; Friends; Gaseous Form; Hallucinatory Terrain; Hellish Rebuke; Hex; Hold Monster; Hold Person; Hunger of Hadar; Hypnotic Pattern; Imprisonment; Invisibility; Mage Hand; Magic Circle; Major Image; Mass Suggestion; Minor Illusion; Mirror Image; Misty Step; Plane Shift; Poison Spray; Power Word Kill; Power Word Stun; Prestidigitation; Protection from Evil and Good; Ray of Enfeeblement; Scrying; Shatter; Spider Climb; Suggestion; Tongues; True Seeing; True Strike; Unseen Servant; Vampiric Touch; Witch Bolt
+- Wizard: Acid Splash; Alter Self; Animate Dead; Antimagic Field; Antipathy/Sympathy; Arcane Lock; Astral Projection; Banishment; Bestow Curse; Blight; Blindness/Deafness; Blink; Blur; Burning Hands; Chain Lightning; Charm Person; Chill Touch; Circle of Death; Clairvoyance; Clone; Cloud of Daggers; Cloudkill; Color Spray; Comprehend Languages; Cone of Cold; Confusion; Conjure Elemental; Conjure Minor Elementals; Contact Other Plane; Continual Flame; Control Weather; Counterspell; Crown of Madness; Dancing Lights; Darkness; Darkvision; Delayed Blast Fireball; Detect Magic; Dimension Door; Disguise Self; Disintegrate; Dispel Magic; Dominate Person; Dream; Etherealness; Evard's Black Tentacles; Expeditious Retreat; Eyebite; False Life; Fear; Feather Fall; Feeblemind; Finger of Death; Fire Bolt; Fire Shield; Fireball; Flaming Sphere; Flesh to Stone; Fly; Fog Cloud; Foresight; Friends; Gaseous Form; Gate; Geas; Globe of Invulnerability; Glyph of Warding; Greater Invisibility; Gust of Wind; Hallucinatory Terrain; Haste; Hold Monster; Hold Person; Hypnotic Pattern; Ice Storm; Identify; Imprisonment; Incendiary Cloud; Invisibility; Jump; Knock; Legend Lore; Levitate; Light; Lightning Bolt; Longstrider; Mage Armor; Mage Hand; Magic Circle; Magic Missile; Magic Weapon; Major Image; Mass Suggestion; Mending; Message; Meteor Swarm; Minor Illusion; Mirror Image; Misty Step; Mordenkainen's Sword; Otiluke's Freezing Sphere; Phantasmal Killer; Planar Binding; Plane Shift; Poison Spray; Polymorph; Power Word Kill; Power Word Stun; Prestidigitation; Prismatic Spray; Prismatic Wall; Protection from Energy; Protection from Evil and Good; Ray of Enfeeblement; Ray of Frost; Scorching Ray; Scrying; See Invisibility; Shapechange; Shatter; Shield; Sleep; Sleet Storm; Slow; Spider Climb; Stinking Cloud; Stone Shape; Stoneskin; Suggestion; Sunbeam; Sunburst; Symbol; Telepathy; Teleport; Teleportation Circle; Thunderwave; Time Stop; Tongues; True Seeing; True Strike; Unseen Servant; Vampiric Touch; Wall of Fire; Wall of Force; Wall of Stone; Water Breathing; Web; Weird; Wish; Witch Bolt
+
+CHARACTER RECORDS (AR24)
+Every character's data is ONE FLAT JSON object — every named field
+a non-blank string at the TOP LEVEL of data (never grouped under
+'identity'/'lore' subsections), except stat_block and the two
+section objects shown below:
+  {"name": "<matching the entity name exactly>",
+   "role": "NPC|BBEG|Monster",
+   "level_cr": display text only ("level <n>" for NPC/BBEG, "CR <n>"
+     for Monster — lowercase 'level', uppercase 'CR' exactly; the
+     stat_block.identity numerics are authoritative and the export
+     derives level/CR from them),
+   "race_type": "...", "class_profession": "...", "alignment": "...",
+   "personality": "...",
+   "secret": "a specific concealed fact",
+   "rumor": "a concrete in-world claim",
+   "party_hook": "a concrete way the party engages the figure",
+   "appearance": "painter-grade prose: face, body, clothing, scars, marks",
+   "background": "...", "goals": "...", "relationships": "...", "voice_style": "...", "catchphrases": "...",
+   "stat_block": {...per the STAT BLOCK RULES above; its
+     identity.role matches the record role...},
+   "world_integration": {"reputation": "...", "factions": "...", "current_location": "...", "reaction_matrix": "...", "on_defeat": "..."},
+world_integration.reaction_matrix is ONE non-blank string (never a
+JSON object/mapping): enumerate each reacting committed entity or
+faction as 'C<index>: <reaction>' inside that single string.
+   "boss": {"lair_actions": "...", "legendary_actions": "...", "immunities": "...", "vulnerabilities": "..."}
+  }
+boss is CONDITIONAL: required when role is BBEG or Monster (write
+"None." in a field that does not apply), and omitted entirely for
+NPC — never an empty boss object.
+Factions and places carry none of this.
+
+OUTPUT CONTRACT
+Respond with one JSON object: {"entities": [...], "edges": [...]}.
+A character keeps its whole record INSIDE the data object — never beside it:
+{"ref": "E2", "kind": "character", "name": "Sanberi", "text": "optional narrative",
+  "data": {"role": "NPC", "level_cr": "level 18", "race_type": "Human",
+           "class_profession": "Paladin", "alignment": "LG", "personality": "...",
+           "secret": "...", "rumor": "...", "party_hook": "...", "appearance": "...",
+           "background": "...", "goals": "...", "relationships": "...",
+           "voice_style": "...", "catchphrases": "...",
+           "world_integration": {"reputation": "...", "factions": "...",
+                                 "current_location": "...", "reaction_matrix": "...",
+                                 "on_defeat": "..."},
+           "stat_block": {the STAT BLOCK RULES above}}}
+role, level_cr, race_type, class_profession, alignment, and stat_block are keys
+of data — never keys of the entity itself. An entity carrying them at the top
+level loses them: the record is read from data and nowhere else.
+A place record: {"ref": "E0", "kind": "place", "name": "City of Gallorb",
+  "text": "short description", "data": {"description": "...",
+  "inhabitants": "...", "whats_hidden": "...", "archetype": "City",
+  "dial": "important"}}.
+Refs are positional and canonical: the first entity in the list is E0, the
+second E1, and so on (never E01, E007).
+Each edge: {"src": "<ref>", "dst": "<ref>", "type": "<vocabulary member>",
+  "counter": <integer, default 1>}.
+Edge src/dst must be refs of entities in this wave. Names must be non-blank.
+Once this wave commits, later waves reference these entities as C<index> in
+the context list they receive.
+
+EDGE VOCABULARY (closed set — never invent a type)
+- ally_of: any -> any
+- bases_at: character|faction -> place — X's home, post, or haunt — where X is found at tale-time
+- controls: character|faction|place -> faction|place — X rules or holds Y — people, groups, and places rule; the controlled side is a place or an organization
+- debt: any -> any
+- employs: character|faction|place -> character|faction — X employs, commands, or retains Y — a city may employ its watch-captain; places are never employees
+- enemy_of: any -> any
+- grudge: any -> any
+- hails_from: character|faction -> place — X's origin or home district — where X comes from, not where X is now
+- kin_of: any -> any
+- located_in: any -> place — X is physically inside Y — a place's floor, walls, or waters
+- loyalty: character|faction -> character|faction — a place holds and receives no loyalty
+- member_of: character|faction -> character|faction — membership is hierarchical: Y CONTAINS X; a place is never a member and never a host; ONE direction only — never both A member_of B and B member_of A
+- part_of: faction|place -> faction|place — X is a constituent part of Y — districts of a city, cults in a temple network; people are never part of a place (use located_in); ONE direction only
+- protects: character|faction -> any — X guards, shelters, or answers for Y
+- relationship: any -> any — LAST RESORT — prefer the specific type that fits
+- rival_of: any -> any
+- worships: character|faction -> character|faction — X serves or reveres Y — faith, cult, devotion; a place is never a worshipper or worshipped
+- an edge connects two DIFFERENT entities — never a self-edge
+
+COUNTER SEMANTICS (one integer per edge)
+- ally_of: intensity
+- bases_at: neutral
+- controls: intensity
+- debt: amount
+- employs: neutral
+- enemy_of: intensity
+- grudge: score
+- hails_from: neutral
+- kin_of: neutral
+- located_in: neutral
+- loyalty: score
+- member_of: neutral
+- part_of: neutral
+- protects: intensity
+- relationship: neutral
+- rival_of: neutral
+- worships: score

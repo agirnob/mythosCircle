@@ -13,11 +13,13 @@ literal.
 
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import httpx
 
 from app.core.journal import record
+from app.core.llm_routing import OPENROUTER_GEMMA_FREE, additional_attempt
 from app.core.settings import LLMSettings
 
 #: A provider call: one user prompt in, assistant text out. ``...``
@@ -77,7 +79,7 @@ class _CallOutcome:
     server actually returned even on a failed attempt, so a truncated
     fragment or an HTTP error page is checkable, not swallowed."""
 
-    __slots__ = ("content", "finish_reason", "error", "status_code", "usage")
+    __slots__ = ("content", "finish_reason", "error", "status_code", "usage", "model")
 
     def __init__(
         self,
@@ -86,12 +88,14 @@ class _CallOutcome:
         error: str | None,
         status_code: int | None,
         usage: dict[str, Any] | None,
+        model: str | None = None,
     ) -> None:
         self.content = content
         self.finish_reason = finish_reason
         self.error = error
         self.status_code = status_code
         self.usage = usage
+        self.model = model
 
 
 def _complete(
@@ -126,12 +130,29 @@ def _complete(
             {"role": "user", "content": user_prompt},
         ],
     }
-    if settings.enable_thinking is not None:
+    if settings.provider == "openrouter":
+        # OpenRouter tries these in order on rate limits, downtime and other
+        # upstream errors. Gemma's free endpoint cannot emit over 32,768 tokens.
+        fallbacks = [
+            model
+            for model in settings.fallback_models
+            if model != OPENROUTER_GEMMA_FREE or settings.max_tokens <= 32768
+        ]
+        if fallbacks:
+            body["models"] = fallbacks
+        # Fastest provider under a small hard price ceiling ($/million tokens).
+        body["provider"] = {
+            "sort": "throughput",
+            "max_price": {"prompt": 0.15, "completion": 0.30},
+        }
+    if settings.provider == "local" and settings.enable_thinking is not None:
         # A reasoning model with thinking on will spend its whole budget
         # reasoning and never emit content (measured 2026-09-10: 8000 tokens,
         # 26,580 chars, zero content). Sent only when configured — ``None``
         # keeps the body free of a field some backends reject outright.
         body["chat_template_kwargs"] = {"enable_thinking": settings.enable_thinking}
+    if settings.provider == "gemini" and settings.reasoning_effort is not None:
+        body["reasoning_effort"] = settings.reasoning_effort
     if settings.temperature is not None:
         # Sampling controls (improvement plan G) ride the body ONLY when
         # configured — ``None`` omits the field so the provider's own
@@ -141,7 +162,10 @@ def _complete(
         body["temperature"] = settings.temperature
     if settings.top_p is not None:
         body["top_p"] = settings.top_p
-    if settings.seed is not None:
+    # Google's OpenAI-compatible endpoint rejects the seed parameter with
+    # HTTP 400. Repair passes add a seed even when the admin leaves it
+    # blank, so omit it at the provider boundary (including fallback).
+    if settings.seed is not None and settings.provider != "gemini":
         body["seed"] = settings.seed
     if settings.response_format is not None:
         # Opt-in per-call schema (spec: JSON-schema generation) — carried
@@ -167,6 +191,7 @@ def _complete(
         # JSONDecodeError escaping the provider's contract.
         return _CallOutcome(None, None, "http", response.status_code, None)
     usage = payload.get("usage") if isinstance(payload, dict) else None
+    actual_model = payload.get("model") if isinstance(payload.get("model"), str) else None
     finish_reason = choice.get("finish_reason")
     if finish_reason == "length":
         # The ceiling was reached: whatever came back is a fragment. Say so
@@ -178,13 +203,14 @@ def _complete(
             "truncated",
             response.status_code,
             usage,
+            actual_model,
         )
     if not isinstance(content, str) or not content.strip():
         # A healthy 200 with blank content — a reasoning model that
         # burned its whole budget in thinking and never answered. Its
         # own error kind, never a misleading HTTP/connection label.
-        return _CallOutcome(None, finish_reason, "empty", response.status_code, usage)
-    return _CallOutcome(content, finish_reason, None, None, usage)
+        return _CallOutcome(None, finish_reason, "empty", response.status_code, usage, actual_model)
+    return _CallOutcome(content, finish_reason, None, None, usage, actual_model)
 
 
 def chat_completion(
@@ -214,11 +240,17 @@ def chat_completion(
     one record per physical call, written where the prompt, response,
     finish reason, and usage all exist.
     """
+    if settings.provider == "gemini" and settings.reasoning_effort is None:
+        settings = replace(settings, reasoning_effort="low")
     started = time.monotonic()
     outcome = _complete(user_prompt, settings=settings, transport=transport)
     record(
         prompt=user_prompt,
-        settings=settings,
+        settings=(
+            replace(settings, model=outcome.model)
+            if settings.provider == "openrouter" and outcome.model
+            else settings
+        ),
         response=outcome.content,
         finish_reason=outcome.finish_reason,
         error=outcome.error,
@@ -226,6 +258,15 @@ def chat_completion(
         duration_ms=int((time.monotonic() - started) * 1000),
     )
     if outcome.error is not None:
+        transient = outcome.error in {"connection", "timeout"} or (
+            outcome.error == "http"
+            and (outcome.status_code == 429 or (outcome.status_code or 0) >= 500)
+        )
+        if transient and settings.routing is not None and settings.routing.backup is not None:
+            backup = settings.routing.fallback_settings(settings)
+            return additional_attempt(
+                lambda: chat_completion(user_prompt, settings=backup, transport=transport)
+            )
         raise ProviderError(outcome.error, status_code=outcome.status_code)
     assert outcome.content is not None
     return outcome.content

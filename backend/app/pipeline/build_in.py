@@ -48,6 +48,7 @@ import contextlib
 import dataclasses
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from types import MappingProxyType
@@ -1085,6 +1086,14 @@ def _backfill_authored(
         if seed is None or seed.get("mandate"):
             out.append(entity)
             continue
+        expected_kind = {"places": "place", "factions": "faction", "key_figures": "character"}.get(
+            _section
+        )
+        if expected_kind and entity.kind != expected_kind:
+            raise JobPayloadError(
+                f"wave 1: entity E{position} must be {expected_kind!r} for the authored "
+                f"{_section} entry, got {entity.kind!r}"
+            )
         data = dict(entity.data)
         name = entity.name
         text = entity.text
@@ -3459,6 +3468,7 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         )
         roster = [*roster, *_mandated_roster_rows(mandated)]
     chunks = _wave1_chunks(roster)
+    ref_dropped_1: list[dict[str, Any]] = []
     # Wave 1: the named sections -> a committed core (edgeless allowed).
     if not _job_still_running(job):
         return
@@ -3496,9 +3506,31 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         for index, (row, kind) in enumerate(zip(raw_entities_1, kinds_1, strict=True)):
             name = row.get("name", "") if isinstance(row, dict) else ""
             entity_roster_1.append((f"E{index}", name if isinstance(name, str) else "", kind))
+        # Wave-1 wiring is best-effort. Small models sometimes name an
+        # extra entity in an edge without emitting that entity (notably
+        # E1 in a single-character Forge build). Drop only those dangling
+        # canonical refs; malformed refs, counters and types stay strict.
+        emitted_refs_1 = {entry[0] for entry in entity_roster_1}
+        raw_edges_1: list[Any] = []
+        for index, row in enumerate(parsed_1.get("edges") or []):
+            missing = []
+            if isinstance(row, dict):
+                for side in ("src", "dst"):
+                    ref = row.get(side)
+                    if (
+                        isinstance(ref, str)
+                        and re.fullmatch(r"E(?:0|[1-9][0-9]*)", ref)
+                        and ref not in emitted_refs_1
+                    ):
+                        missing.append(ref)
+            if missing:
+                ref_dropped_1.append({**row, "index": index, "why": "missing wave-1 entity"})
+                logger.info("wave 1: dropping edge %d with missing refs %s", index, missing)
+            else:
+                raw_edges_1.append(row)
         cleaned_1, kind_dropped_1 = _clean_edge_kinds(
             wave=1,
-            raw_edges=list(parsed_1.get("edges") or []),
+            raw_edges=raw_edges_1,
             entity_roster=entity_roster_1,
             budget=budget,
             provider=provider,
@@ -3698,6 +3730,8 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
         _wave_result(1, revision_1.id, outcome_1.roster, outcome_1.edges)
     ]
     merge_reports: dict[str, Any] = {"wave1": outcome_1.report}
+    if ref_dropped_1:
+        merge_reports["wave1"]["edge_ref_dropped"] = ref_dropped_1
     if kind_dropped_1:
         merge_reports["wave1"]["edge_kind_dropped"] = kind_dropped_1
     # Cancel-race poll: a cancel that landed during wave 1's call/commit
@@ -3873,7 +3907,9 @@ def build_wave1_prompt(
         "Create the core subgraph: entities for the notable key figures, places, and",
         "factions in the submitted sections, connected by typed directed edges",
         "(characters for key figures, places for places, factions for factions).",
-        "Every entity must appear in at least one edge within this subgraph — no orphans.",
+        "Edges are optional: emit only links between entities actually in this wave.",
+        "A single character can stand alone with an empty edges array ([]).",
+        "Never reference or invent another entity just to give an entity an edge.",
         "Edges must connect two different entities — no self-loops.",
         "",
         prompt_contract("build_in", "kind_contract"),
@@ -4487,8 +4523,12 @@ def build_wave_schema(
                             "type": "object",
                             "required": ["src", "dst", "type", "reason"],
                             "properties": {
-                                "src": {"type": "string"},
-                                "dst": {"type": "string"},
+                                "src": {"enum": list(refs)}
+                                if refs is not None
+                                else {"type": "string"},
+                                "dst": {"enum": list(refs)}
+                                if refs is not None
+                                else {"type": "string"},
                                 "type": {"enum": sorted(EDGE_TYPES)},
                                 "counter": {"type": "integer"},
                                 # AD-32: every edge carries its saved why;
