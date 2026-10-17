@@ -154,6 +154,36 @@ def test_generic_gate_accepts_a_clean_payload(world: str) -> None:
     assert job.kind == "build_in"
 
 
+def test_generic_gate_accepts_concept_and_background_only_inputs(world: str) -> None:
+    generic = ensure_generic_campaign(_owner_id(), "Grimdark")
+    concept_job = enqueue_job(
+        generic.id,
+        "build_in",
+        {
+            "key_figures": [{"name": "", "role": "NPC"}],
+            "theme": "Grimdark",
+            "concept": "A disgraced healer",
+        },
+    )
+    background = "A long authored story, including its exact punctuation.  "
+    background_job = enqueue_job(
+        generic.id,
+        "build_in",
+        {
+            "key_figures": [{"name": "", "role": "NPC", "record": {"background": background}}],
+            "theme": "Grimdark",
+        },
+    )
+    assert concept_job.kind == background_job.kind == "build_in"
+    for payload in (
+        {"key_figures": [{"name": "", "role": "NPC"}], "theme": "Grimdark"},
+        {"key_figures": [{"name": "", "role": "NPC"}], "theme": "Grimdark", "concept": "  "},
+        {"key_figures": [{"name": "", "role": "NPC"}], "theme": "Grimdark", "concept": "x" * 2001},
+    ):
+        with pytest.raises(InvalidJobInputError):
+            enqueue_job(generic.id, "build_in", payload)
+
+
 # ---------------------------------------------------------------------------
 # Context isolation: the wave-1 prompt sees the THEME, never the library
 # ---------------------------------------------------------------------------

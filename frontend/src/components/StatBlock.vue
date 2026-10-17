@@ -79,9 +79,17 @@ const skills = computed(() => entries('skills'))
 const actions = computed(() => entries('actions'))
 const traits = computed(() => entries('traits'))
 
-const spells = computed<string[]>(() => {
+interface SpellEntry { name: string; description?: string }
+const spells = computed<SpellEntry[]>(() => {
   const raw = isObject(props.block) ? props.block['spells'] : null
-  return Array.isArray(raw) ? raw.filter((spell): spell is string => typeof spell === 'string') : []
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((spell) => {
+    if (typeof spell === 'string') return spell.trim() ? [{ name: spell }] : []
+    if (isObject(spell) && typeof spell.name === 'string' && spell.name.trim()) {
+      return [{ name: spell.name, ...(typeof spell.description === 'string' ? { description: spell.description } : {}) }]
+    }
+    return []
+  })
 })
 
 /** "Monster" blocks carry cr instead of level. */
@@ -382,7 +390,9 @@ const skillLine = (skill: NamedEntry) =>
     </dl>
     <dl v-if="spells.length > 0">
       <dt>Spells</dt>
-      <dd class="mono">{{ spells.join(', ') }}</dd>
+      <dd v-for="(spell, index) in spells" :key="`${index}-${spell.name}`">
+        <strong>{{ spell.name }}</strong><template v-if="spell.description"> — {{ spell.description }}</template>
+      </dd>
     </dl>
   </section>
 </template>

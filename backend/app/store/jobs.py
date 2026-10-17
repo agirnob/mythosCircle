@@ -590,7 +590,7 @@ def _validate_generic_build_payload(payload: dict[str, Any], campaign: models.Ca
     from app.core.config import THEME_DEFAULT_SEEDS  # noqa: PLC0415 - config leaf
     from app.store.direct import seed_entry_violations  # noqa: PLC0415 - import cycle
 
-    unknown = set(payload) - {"key_figures", "theme"}
+    unknown = set(payload) - {"key_figures", "theme", "concept"}
     if unknown:
         raise InvalidJobInputError(
             "generic build payload carries world-shaping section(s) "
@@ -618,6 +618,7 @@ def _validate_generic_build_payload(payload: dict[str, Any], campaign: models.Ca
                 "stores characters only; wire relations when you move the character "
                 "into a canon world"
             )
+    _validate_forge_concept(payload)
     theme = payload.get("theme")
     if not isinstance(theme, str) or theme.strip() not in THEME_DEFAULT_SEEDS:
         raise InvalidJobInputError(
@@ -643,6 +644,7 @@ def _validate_build_in_payload(payload: dict[str, Any]) -> None:
     """
     if not isinstance(payload, dict):
         raise InvalidJobInputError("build_in payload must be a JSON object")
+    concept = _validate_forge_concept(payload)
     any_content = False
     from app.store.direct import seed_entry_violations  # noqa: PLC0415 - import cycle
 
@@ -692,8 +694,49 @@ def _validate_build_in_payload(payload: dict[str, Any]) -> None:
         raise InvalidJobInputError(f"build_in notes exceeds {BUILD_IN_MAX_NOTE_LENGTH} chars")
     if notes.strip():
         any_content = True
+    figures = payload.get("key_figures", [])
+    unnamed = [
+        figure
+        for figure in figures
+        if isinstance(figure, dict) and not str(figure.get("name") or "").strip()
+    ]
+    for index, figure in enumerate(unnamed):
+        record = figure.get("record") if isinstance(figure.get("record"), dict) else {}
+        background = record.get("background")
+        has_background = isinstance(background, str) and bool(background.strip())
+        if not concept and not has_background:
+            raise InvalidJobInputError(
+                f"build_in key_figures entry {index} needs a name, concept, or authored Background"
+            )
+    if unnamed and len(figures) != 1:
+        raise InvalidJobInputError(
+            "an unnamed build-in character must be the only key_figures entry"
+        )
+    background_only = any(
+        isinstance(figure, dict)
+        and isinstance(figure.get("record"), dict)
+        and isinstance(figure["record"].get("background"), str)
+        and figure["record"]["background"].strip()
+        for figure in figures
+    )
+    if not any_content and not concept and not background_only:
+        raise InvalidJobInputError("build_in requires a name, concept, or authored Background")
     if not any_content:
         raise InvalidJobInputError("build_in requires at least one non-blank section entry")
+
+
+def _validate_forge_concept(payload: dict[str, Any]) -> str:
+    """Validate the optional Quick concept shared by world and Generic builds."""
+    if "concept" not in payload:
+        return ""
+    concept = payload["concept"]
+    if not isinstance(concept, str):
+        raise InvalidJobInputError("build_in concept must be a string")
+    if not concept.strip():
+        raise InvalidJobInputError("build_in concept must not be blank")
+    if len(concept) > BUILD_IN_MAX_NOTE_LENGTH:
+        raise InvalidJobInputError(f"build_in concept exceeds {BUILD_IN_MAX_NOTE_LENGTH} chars")
+    return concept
 
 
 def _seed_entry_name(entry: str | dict[str, Any]) -> str:
@@ -881,9 +924,12 @@ def _validate_image_payload(payload: dict[str, Any], session: Session, campaign_
         options = portrait_options(payload, entity_kind=entity.kind)
     except ValueError as exc:
         raise InvalidJobInputError(str(exc)) from exc
-    if entity_artwork_prompt(
-        entity.kind, entity.name, entity.data or {}, text=entity.text, **options
-    ) is None:
+    if (
+        entity_artwork_prompt(
+            entity.kind, entity.name, entity.data or {}, text=entity.text, **options
+        )
+        is None
+    ):
         raise InvalidJobInputError(
             f"{entity.kind.title()} artwork needs a non-blank description"
             if entity.kind in {"place", "faction"}

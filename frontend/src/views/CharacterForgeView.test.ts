@@ -144,11 +144,15 @@ function labeled(wrapper: VueWrapper, label: string) {
 }
 
 async function fillName(wrapper: VueWrapper, value = 'Vesper') {
+  const detailed = wrapper.findAll('button').find((button) => button.text() === 'Detailed builder')
+  if (detailed) await detailed.trigger('click')
   await labeled(wrapper, 'Name').get('input').setValue(value)
 }
 
 async function toggleSubsection(wrapper: VueWrapper, label: string) {
-  const button = wrapper.findAll('button').find((b) => b.text().endsWith(label))
+  const mechanics = wrapper.findAll('button').find((b) => b.text() === 'Mechanics')
+  if (mechanics) await mechanics.trigger('click')
+  const button = wrapper.findAll('button').find((b) => b.text().startsWith(label))
   if (!button) throw new Error(`no subsection toggle ${label}`)
   await button.trigger('click')
 }
@@ -163,10 +167,110 @@ describe('CharacterForgeView (nudge contract)', () => {
     mockApi()
   })
 
+  it('defaults to Quick and shares concept and authored Background across modes', async () => {
+    const wrapper = await mountView()
+    expect(wrapper.get('[role="tab"][aria-selected="true"]').text()).toBe('Quick generate')
+    const concept = 'A retired dragon hunter who secretly funds the creatures she pursued.'
+    const background = 'Nera learned to mend wounds from the same dragon she once hunted.  '
+    await wrapper.get('textarea[placeholder*="retired dragon hunter"]').setValue(concept)
+    await wrapper.get('input[placeholder="Generated if left blank"]').setValue('Nera Vane')
+    await clickButton(wrapper, 'Detailed builder')
+    await labeled(wrapper, 'Background').get('textarea').setValue(background)
+    await clickButton(wrapper, 'Quick generate')
+    expect((wrapper.get('textarea[placeholder*="retired dragon hunter"]').element as HTMLTextAreaElement).value).toBe(concept)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(buildInBodies()[0]!.payload).toMatchObject({ concept, key_figures: [{ name: 'Nera Vane', record: { background } }] })
+  })
+
+  it('keeps ordered spell names and descriptions when the subsection is collapsed', async () => {
+    const wrapper = await mountView()
+    await fillName(wrapper)
+    await toggleSubsection(wrapper, 'Spells')
+    await clickButton(wrapper, 'Add spell')
+    await clickButton(wrapper, 'Add spell')
+    const names = wrapper.findAll('input[aria-label="Spell name"]')
+    const descriptions = wrapper.findAll('input[aria-label="Spell description"]')
+    await names[0]!.setValue('Fireball')
+    await descriptions[0]!.setValue('A bead of fire bursts in the air.')
+    await names[1]!.setValue('Shield')
+    await wrapper.findAll('button').find((button) => button.text().startsWith('Spells'))!.trigger('click')
+    expect(wrapper.findAll('input[aria-label="Spell name"]')).toHaveLength(0)
+    await wrapper.findAll('button').find((button) => button.text().startsWith('Spells'))!.trigger('click')
+    expect(wrapper.findAll('input[aria-label="Spell name"]')).toHaveLength(2)
+    expect((wrapper.findAll('input[aria-label="Spell name"]')[0]!.element as HTMLInputElement).value).toBe('Fireball')
+    await wrapper.findAll('button').find((button) => button.text().startsWith('Spells'))!.trigger('click')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const figure = (buildInBodies()[0]!.payload as { key_figures: Array<Record<string, unknown>> }).key_figures[0]
+    const record = figure.record as Record<string, unknown>
+    expect((record.stat_block as Record<string, unknown>).spells).toEqual([
+      { name: 'Fireball', description: 'A bead of fire bursts in the air.' },
+      { name: 'Shield' },
+    ])
+  })
+
+  it('serializes Monster challenge rating as CR rather than level', async () => {
+    const wrapper = await mountView()
+    await fillName(wrapper)
+    await labeled(wrapper, 'Role').get('select').setValue('Monster')
+    await labeled(wrapper, 'Challenge rating').get('input').setValue('3')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const figure = (buildInBodies()[0]!.payload as { key_figures: Array<Record<string, unknown>> }).key_figures[0]
+    const record = figure.record as Record<string, unknown>
+    expect(figure).toMatchObject({ role: 'Monster', record: { level_cr: 'CR 3', stat_block: { identity: { cr: '3' } } } })
+    expect((record.stat_block as Record<string, unknown>).identity).not.toHaveProperty('level')
+  })
+
+  it('summarizes authored optional fields, mechanics and connections alongside generated sections', async () => {
+    const wrapper = await mountView()
+    await fillName(wrapper)
+    await toggleSubsection(wrapper, 'Character')
+    const detailButton = wrapper.findAll('button').find((button) => button.text().startsWith('Personality'))!
+    await detailButton.trigger('click')
+    await wrapper.get('textarea[aria-label="Personality"]').setValue('Keeps promises')
+    await toggleSubsection(wrapper, 'Mechanics')
+    await toggleSubsection(wrapper, 'Spells')
+    await clickButton(wrapper, 'Add spell')
+    await wrapper.get('input[aria-label="Spell name"]').setValue('Shield')
+    await toggleSubsection(wrapper, 'Connections')
+    await labeled(wrapper, 'Reputation').get('textarea').setValue('Trusted by dockworkers')
+    await clickButton(wrapper, 'Add relation')
+    await wrapper.get('.relation-block').findAll('select')[2]!.setValue('E1')
+
+    const summary = wrapper.get('[aria-label="Character input summary"]').text()
+    expect(summary).toContain('Personality: Keeps promises')
+    expect(summary).toContain('Spell: Shield')
+    expect(summary).toContain('Reputation: Trusted by dockworkers')
+    expect(summary).toContain('Relation: located in → Greymarch')
+    expect(summary).toContain('Relations')
+    expect(summary).toContain('Background')
+    expect(summary).toContain('Skills')
+  })
+
+  it('hides collapsed optional details and retains their authored value', async () => {
+    const wrapper = await mountView()
+    await fillName(wrapper)
+    await clickButton(wrapper, 'Character')
+
+    const toggle = () => wrapper.findAll('button').find((button) => button.text().startsWith('Personality'))!
+    await toggle().trigger('click')
+    const personality = wrapper.get('textarea[aria-label="Personality"]')
+    await personality.setValue('Keeps every promise.')
+    await toggle().trigger('click')
+
+    expect((personality.element as HTMLTextAreaElement).style.display).toBe('none')
+    await toggle().trigger('click')
+    expect((personality.element as HTMLTextAreaElement).style.display).not.toBe('none')
+    expect((personality.element as HTMLTextAreaElement).value).toBe('Keeps every promise.')
+  })
+
   it('submits a hybrid build with ONLY the filled fields', async () => {
     const wrapper = await mountView()
     await fillName(wrapper, 'Vesper Quick')
-    await labeled(wrapper, 'Personality').get('textarea').setValue('Glass and silver.')
+    await wrapper.get('textarea[aria-label="Personality"]').setValue('Glass and silver.')
 
     await wrapper.find('form').trigger('submit')
     await flushPromises()
@@ -189,21 +293,21 @@ describe('CharacterForgeView (nudge contract)', () => {
     const wrapper = await mountView()
     await fillName(wrapper)
     await toggleSubsection(wrapper, 'Actions')
-    await wrapper.findAll('button').find((b) => b.text() === '+ add')!.trigger('click')
+    await wrapper.findAll('button').find((b) => b.text() === 'Add action')!.trigger('click')
 
     // Identity has no toggle — the dropdowns ARE the authoring; filling
     // one derives both the record display field and the stat-block slot
-    await labeled(wrapper, 'Race (SRD)').get('select').setValue('Tiefling')
+    await labeled(wrapper, 'Species').get('select').setValue('Tiefling')
     const actionName = wrapper.findAll('input[placeholder="Longsword"]')[0]!
     await actionName.setValue('Acid Flask')
     await wrapper
-      .findAll('input[placeholder="Melee Weapon Attack: +5 to hit…"]')[0]!
+      .findAll('input[placeholder="Describe the action"]')[0]!
       .setValue('Ranged Spell Attack: +6 to hit.')
-    const dice = wrapper.findAll('input[placeholder="dice"]')[0]!
+    const dice = wrapper.findAll('input[placeholder="Dice"]')[0]!
     await dice.setValue('2')
-    const sides = wrapper.findAll('input[placeholder="sides"]')[0]!
+    const sides = wrapper.findAll('input[placeholder="Sides"]')[0]!
     await sides.setValue('6')
-    const mod = wrapper.findAll('input[placeholder="mod"]')[0]!
+    const mod = wrapper.findAll('input[placeholder="Modifier"]')[0]!
     await mod.setValue('3')
 
     await wrapper.find('form').trigger('submit')
@@ -226,13 +330,13 @@ describe('CharacterForgeView (nudge contract)', () => {
   it('sends an existing target as target_id and a new name as target_name', async () => {
     const wrapper = await mountView()
     await fillName(wrapper)
-    await wrapper.findAll('button').find((b) => b.text() === '+ relation')!.trigger('click')
+    await wrapper.findAll('button').find((b) => b.text() === 'Add relation')!.trigger('click')
     let row = wrapper.find('.relation-block')
     let selects = row.findAll('select')
     await selects[1].setValue('existing')
     await selects[2].setValue('E1')
 
-    await wrapper.findAll('button').find((b) => b.text() === '+ relation')!.trigger('click')
+    await wrapper.findAll('button').find((b) => b.text() === 'Add relation')!.trigger('click')
     row = wrapper.findAll('.relation-block')[1]!
     selects = row.findAll('select')
     await selects[1].setValue('new')
@@ -386,6 +490,15 @@ function deferred<T>() {
 }
 
 async function clickButton(wrapper: VueWrapper, text: string) {
+  if (text === 'Add relation') {
+    if (!wrapper.findAll('button').some((button) => button.text() === 'Detailed builder')) {
+      throw new Error('Detailed builder tab missing')
+    }
+    const detailed = wrapper.findAll('button').find((button) => button.text() === 'Detailed builder')!
+    await detailed.trigger('click')
+    const connections = wrapper.findAll('button').find((button) => button.text() === 'Connections')
+    if (connections) await connections.trigger('click')
+  }
   const button = wrapper.findAll('button').find((entry) => entry.text() === text)
   if (!button) throw new Error(`No button: ${text}`)
   await button.trigger('click')
@@ -447,7 +560,7 @@ function destinationApi() {
 
 async function authorDraft(wrapper: VueWrapper) {
   await fillName(wrapper, 'Preserved Vesper')
-  await labeled(wrapper, 'Personality').get('textarea').setValue('Keeps promises')
+  await wrapper.get('textarea[aria-label="Personality"]').setValue('Keeps promises')
   await toggleSubsection(wrapper, 'Combat')
   await labeled(wrapper, 'HP').get('input').setValue(37)
 }
@@ -501,7 +614,7 @@ describe('CharacterForgeView destination recovery', () => {
     await authorDraft(wrapper)
     const editor = wrapper.findComponent(CharacterSheetEditor).vm.$
     await clickButton(wrapper, CAMPAIGN.title)
-    await clickButton(wrapper, '+ relation')
+    await clickButton(wrapper, 'Add relation')
     await wrapper.get('.relation-block').findAll('select')[2]!.setValue('E1')
     await clickButton(wrapper, 'Change destination')
     await clickButton(wrapper, 'Use Generic library')
@@ -534,7 +647,7 @@ describe('CharacterForgeView destination recovery', () => {
     expect(wrapper.text()).not.toContain('Recent builds')
     await wrapper.get('form').trigger('submit')
     expect(buildInBodies()).toHaveLength(0)
-    await labeled(wrapper, 'Secret').get('textarea').setValue('Edited during failure')
+    await wrapper.get('textarea[aria-label="Secret"]').setValue('Edited during failure')
     state[failure] = false
     await clickButton(wrapper, 'Retry destination')
     expectDraft(wrapper, editor)
@@ -683,7 +796,7 @@ describe('CharacterForgeView destination recovery', () => {
     const wrapper = await mountView()
     await fillName(wrapper)
     await clickButton(wrapper, CAMPAIGN.title)
-    await clickButton(wrapper, '+ relation')
+    await clickButton(wrapper, 'Add relation')
     await wrapper.get('.relation-block').findAll('select')[2]!.setValue('E1')
     await clickButton(wrapper, 'Change destination')
     await clickButton(wrapper, SECOND_WORLD.title)
@@ -704,12 +817,12 @@ describe('CharacterForgeView destination recovery', () => {
     const state = destinationApi()
     const wrapper = await mountView()
     await clickButton(wrapper, CAMPAIGN.title)
-    await clickButton(wrapper, '+ relation')
+    await clickButton(wrapper, 'Add relation')
     expect(wrapper.get('.relation-block').text()).toContain('Greymarch')
     state.entityError = true
     await clickButton(wrapper, 'Change destination')
     await clickButton(wrapper, SECOND_WORLD.title)
-    await clickButton(wrapper, '+ relation')
+    await clickButton(wrapper, 'Add relation')
     expect(wrapper.get('.relation-block').findAll('select')[2]!.findAll('option')).toHaveLength(1)
   })
 
@@ -730,11 +843,11 @@ describe('CharacterForgeView destination recovery', () => {
     const wrapper = await mountView()
     await fillName(wrapper)
     await clickButton(wrapper, CAMPAIGN.title)
-    await clickButton(wrapper, '+ relation')
+    await clickButton(wrapper, 'Add relation')
     await wrapper.get('.relation-block').findAll('select')[2]!.setValue('E1')
     await clickButton(wrapper, 'Change destination')
     await clickButton(wrapper, SECOND_WORLD.title)
-    await clickButton(wrapper, '+ relation')
+    await clickButton(wrapper, 'Add relation')
     expect(wrapper.get('.relation-block').text()).toContain('Silver Harbour')
     expect(wrapper.get('.relation-block').text()).not.toContain('Greymarch')
     state.delayedEntities = deferred()

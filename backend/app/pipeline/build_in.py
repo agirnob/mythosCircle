@@ -947,6 +947,90 @@ def _expand_requested_names(
     return expanded
 
 
+def _name_forge_character(
+    payload: dict[str, Any],
+    campaign: Any,
+    world_before: Sequence[models.Entity],
+    budget: CallBudget,
+    provider: Callable[..., str],
+    settings: LLMSettings,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Resolve one concept/Background-only Forge seed before graph writes."""
+    figures = payload.get("key_figures") or []
+    if len(figures) != 1 or not isinstance(figures[0], dict):
+        return payload
+    figure = figures[0]
+    if isinstance(figure.get("name"), str) and figure["name"].strip():
+        return payload
+    record = figure.get("record") if isinstance(figure.get("record"), dict) else {}
+    background = record.get("background") if isinstance(record.get("background"), str) else ""
+    concept = payload.get("concept") if isinstance(payload.get("concept"), str) else ""
+    if not concept.strip() and not background.strip():
+        raise JobPayloadError("build_in character needs a name, concept, or authored Background")
+    used = {normalize_entity_name(entity.name) for entity in world_before}
+    prompt = "\n".join(
+        [
+            "Name one TTRPG character from the supplied authored guidance. Return only JSON.",
+            f"Theme: {campaign.theme}",
+            f"Character role: {figure.get('role') or 'NPC'}",
+            f"Character concept: {concept.strip() or '(not supplied)'}",
+            f"Authored Background (naming context only; do not rewrite it): {background}",
+            "Create one concise, distinctive character name. Do not use campaign inhabitants,",
+            "lore, or relations.",
+            "Do not use an existing world name:",
+            ", ".join(sorted(used)),
+            'Return {"name": "..."}.',
+        ]
+    )
+    schema = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "forge_character_name",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 200}},
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    naming_settings = dataclasses.replace(
+        settings, response_format=schema, max_tokens=min(settings.max_tokens, 512)
+    )
+    for attempt in range(2):
+        if is_cancelled is not None and is_cancelled():
+            return payload
+        parsed = call_wave(
+            budget,
+            provider,
+            naming_settings,
+            prompt,
+            label="forge_character_name" if attempt == 0 else "forge_character_name_retry",
+            parse=_parse_requested_names,
+            retry_note='Return only {"name": "..."}.',
+            ceiling=settings.max_tokens,
+        )
+        name = parsed.get("name")
+        if (
+            isinstance(name, str)
+            and 0 < len(name.strip()) <= 200
+            and normalize_entity_name(name) not in used
+        ):
+            named = dict(figure)
+            named["name"] = name.strip()
+            return {**payload, "key_figures": [named]}
+        if attempt == 1:
+            raise JobPayloadError(
+                "Could not create a unique character name. Try again or add a name."
+            )
+        prompt += (
+            "\nThe previous name was blank, too long, or already used. Return a new concise name."
+        )
+    return payload
+
+
 def _wave1_chunks(
     roster: Sequence[tuple[str, str, dict[str, Any] | None]],
 ) -> list[list[tuple[int, str, str, dict[str, Any] | None]]]:
@@ -1314,8 +1398,8 @@ def _merge_authored_stat_block(
       authored entry force-updates the generated entry with the same
       normalized name (authored bytes win), an unmatched authored entry
       is appended, generated extras stay.
-    - spells (strings): union — generated spells kept, authored spells
-      appended when not already present (case-insensitive).
+    - spells (strings or named objects): merge by name, preserving generated
+      order and letting authored descriptions replace generated entries.
 
     An authored dice-STRING damage slot is converted to its canonical
     parts form in the merged block: the block the gates see must be
@@ -1371,11 +1455,30 @@ def _merge_authored_stat_block(
             raw_spells = block.get(key)
             generated_list = list(raw_spells) if isinstance(raw_spells, list) else []
             authored_list = value if isinstance(value, list) else []
-            present = {str(spell).strip().lower() for spell in generated_list}
+
+            def _spell_name(spell: Any) -> str:
+                raw_name = spell.get("name") if isinstance(spell, dict) else spell
+                return raw_name.strip().lower() if isinstance(raw_name, str) else ""
+
+            by_name = {
+                _spell_name(spell): index
+                for index, spell in enumerate(generated_list)
+                if _spell_name(spell)
+            }
             for spell in authored_list:
-                if isinstance(spell, str) and spell.strip().lower() not in present:
-                    generated_list.append(spell)
-                    present.add(spell.strip().lower())
+                name = _spell_name(spell)
+                if not name:
+                    continue
+                match = by_name.get(name)
+                if match is None:
+                    generated_list.append(copy.deepcopy(spell))
+                    by_name[name] = len(generated_list) - 1
+                elif isinstance(spell, dict):
+                    existing = generated_list[match]
+                    if isinstance(existing, dict):
+                        existing.update(copy.deepcopy(spell))
+                    else:
+                        generated_list[match] = copy.deepcopy(spell)
             block[key] = generated_list
         else:
             block[key] = copy.deepcopy(value)
@@ -2830,6 +2933,7 @@ def _run_wave1_chunks(
             chunk_index=index,
             chunk_total=total,
             mandate_block=mandate_block,
+            concept=str(job.payload.get("concept", "") or ""),
         )
         parsed = call_wave(
             budget,
@@ -2990,7 +3094,7 @@ def _connect_count_generated_entities(
         "Every edge needs a concrete non-blank reason explaining the connection.",
         "Use only listed refs and these legal kind pairings:",
         *edge_guidance_lines(),
-        "Return exactly one JSON object: {\"edges\": [{\"src\": \"E0\",",
+        'Return exactly one JSON object: {"edges": [{"src": "E0",',
         '"dst": "C0", "type": "rival_of", "counter": 1, "reason": "..."}]}.',
         "Counter semantics:",
         *(f"- {kind}: {edge_counter_semantic(kind)}" for kind in sorted(EDGE_TYPES)),
@@ -3010,18 +3114,19 @@ def _connect_count_generated_entities(
             return result
         if attempt:
             linked = "\n".join(
-                f"- {edge.src} --{edge.type}--> {edge.dst}: {edge.reason}"
-                for edge in result
+                f"- {edge.src} --{edge.type}--> {edge.dst}: {edge.reason}" for edge in result
             )
             prompt += (
                 "\nThe previous edges left these new entities unconnected: "
                 + ", ".join(sorted(row.name for row in entities if row.id in missing))
                 + (
                     ". Add a connection to the existing world too."
-                    if not has_existing_link else "."
+                    if not has_existing_link
+                    else "."
                 )
                 + " Return only additional edges; do not repeat earlier edges."
-                + "\nALREADY ACCEPTED EDGES:\n" + linked
+                + "\nALREADY ACCEPTED EDGES:\n"
+                + linked
             )
         wiring_settings = dataclasses.replace(
             settings,
@@ -3043,7 +3148,8 @@ def _connect_count_generated_entities(
             logger.warning("count-generated wiring attempt %d failed: %s", attempt + 1, exc)
             continue
         usable = [
-            row for row in raw
+            row
+            for row in raw
             if _edge_row_usable(row, valid_refs) and edge_reason_ok(row.get("reason"))
         ]
         # Invalid kind pairings are discarded here and listed as missing on
@@ -3051,12 +3157,9 @@ def _connect_count_generated_entities(
         kinds = {ref: kind for ref, _name, kind in roster}
         kinds.update({f"C{i}": row.kind for i, row in enumerate(context)})
         usable = [
-            row for row in usable
-            if edge_kind_ok(row["type"], kinds[row["src"]], kinds[row["dst"]])
+            row for row in usable if edge_kind_ok(row["type"], kinds[row["src"]], kinds[row["dst"]])
         ]
-        resolved, _ = _resolve_edges(
-            1, usable, [row.id or "" for row in entities], context=context
-        )
+        resolved, _ = _resolve_edges(1, usable, [row.id or "" for row in entities], context=context)
         existing_keys = {(edge.src, edge.dst, edge.type) for edge in result}
         for edge in resolved:
             key = (edge.src, edge.dst, edge.type)
@@ -3442,6 +3545,17 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # because the DM-demanded endpoints are load-bearing.
     if not _job_still_running(job):
         return
+    payload = _name_forge_character(
+        payload,
+        wave1_seed,
+        world_before,
+        budget,
+        provider,
+        settings,
+        is_cancelled=lambda: not _job_still_running(job),
+    )
+    if not _job_still_running(job):
+        return
     original_payload = payload
     payload = _expand_requested_names(payload, wave1_seed, world_before, budget, provider, settings)
     generated_rows = (
@@ -3702,13 +3816,27 @@ def run_build_in(job: models.Job, provider: Callable[..., str], settings: LLMSet
     # Fill/drop reasons before testing connectivity: a dropped blank edge
     # cannot count as a path into the world.
     edges_1 = _fill_blank_reasons(
-        job, budget, provider, settings, 1, edges_1, entities_1,
+        job,
+        budget,
+        provider,
+        settings,
+        1,
+        edges_1,
+        entities_1,
         context=_context_refs(world_before),
     )
     if generated_rows:
         edges_1 = _connect_count_generated_entities(
-            job, budget, provider, settings, wave1_seed, entities_1, edges_1,
-            generated_rows, [] if seed.is_generic else world_before, ceiling=ceiling,
+            job,
+            budget,
+            provider,
+            settings,
+            wave1_seed,
+            entities_1,
+            edges_1,
+            generated_rows,
+            [] if seed.is_generic else world_before,
+            ceiling=ceiling,
         )
         if not _job_still_running(job):
             return
@@ -3863,6 +3991,8 @@ def build_wave1_prompt(
         ]
     notes = payload.get("notes", "")
     notes = notes.strip() if isinstance(notes, str) else ""
+    concept = payload.get("concept", "")
+    concept = concept.strip() if isinstance(concept, str) else ""
     lines = [
         "You are digesting a TTRPG world-build-in submission into the world graph.",
         "Respond with exactly one JSON object — nothing else.",
@@ -3875,6 +4005,11 @@ def build_wave1_prompt(
         "",
         "SUBMITTED SECTIONS",
         *sections,
+        *(
+            ("", "CHARACTER CONCEPT (generation guidance only; never save as Background):", concept)
+            if concept
+            else ()
+        ),
         *(
             (
                 "",
@@ -4022,6 +4157,7 @@ def build_wave1_chunk_prompt(
     chunk_index: int,
     chunk_total: int,
     mandate_block: Sequence[str] = (),
+    concept: str = "",
 ) -> str:
     """One wave-1 chunk's prompt (M1): the shared rules text plus ONLY this
     chunk's roster slice, every entry named with its GLOBAL E-ref.
@@ -4050,6 +4186,16 @@ def build_wave1_chunk_prompt(
         f"is E{start}, the last is E{end}; the other parts' entities are generated",
         "separately and are NOT visible here):",
         *_chunk_roster_lines(chunk),
+        *(
+            (
+                "",
+                "CHARACTER CONCEPT (generation guidance only; never save as Background):",
+                concept.strip(),
+            )
+            if concept.strip()
+            and any(section == "key_figures" for _position, section, _entry, _seed in chunk)
+            else ()
+        ),
         *(
             (
                 "",
@@ -5041,9 +5187,7 @@ def _resolve_edges(
 # ---------------------------------------------------------------------------
 
 
-def build_reason_fill_schema(
-    count: int, *, indexes: Sequence[int] | None = None
-) -> dict[str, Any]:
+def build_reason_fill_schema(count: int, *, indexes: Sequence[int] | None = None) -> dict[str, Any]:
     """The single-field reply schema for the fill-blank reason repair
     (AD-33: the saved JSON returns with ONLY the missing field asked
     for, grammar-enforced where backends allow). ``index`` is a closed

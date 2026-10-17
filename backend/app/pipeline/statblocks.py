@@ -97,7 +97,8 @@ def stat_block_rules_text(spells_reference: bool = True) -> str:
             "STAT BLOCK RULES (characters only; factions and places never carry one)",
             "A character's data.stat_block is a JSON object with the field set:",
             '{"identity": {...}, "attributes": {...}, "combat": {...}, "skills": [...],',
-            ' "actions": [...], "traits": [...], "spells": [...]}',
+            ' "actions": [...], "traits": [...], "spells": [spell name or {"name": "...",',
+            ' "description": "..."}]}',
             '"power" is stamped by the server after every pass (audited DPR vs band)',
             "— never write it; anything you put there is discarded.",
             "identity (required): role, race, and per role:",
@@ -178,8 +179,9 @@ def stat_block_rules_text(spells_reference: bool = True) -> str:
             "- proficiency_bonus: an integer (2 early, 6 by level 17).",
             '- spellcasting: {"dc": 21, "attack_bonus": 13, "slots": [4, 3, 3, 3, 1]}.',
             '- resources: integer pools, e.g. {"lay_on_hands": 85, "channel_divinity": 2}.',
-            "spells (optional): never for role Monster (a monster's magic is actions",
-            "or traits); otherwise only with an identity.class and no repeats — every",
+            "spells (optional): each item may be a legacy name string or an object with",
+            "a required name and optional description. Never for role Monster; that role's",
+            "magic is actions or traits. Otherwise, only with identity.class and no repeats.",
             *(
                 [
                     "spell name must appear on that class's line of the SRD SPELLS BY CLASS",
@@ -615,7 +617,23 @@ def build_stat_repair_schema() -> dict[str, Any]:
             "skills": {"type": "array", "items": skill_item},
             "actions": {"type": "array", "items": action_item},
             "traits": {"type": "array", "items": named_item},
-            "spells": {"type": "array", "items": {"type": "string"}},
+            "spells": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                                "name": {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    ]
+                },
+            },
             "saves": {
                 "type": "object",
                 "properties": {
