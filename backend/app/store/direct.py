@@ -409,9 +409,31 @@ def stat_block_subset_violations(block: Any, where: str = "stat_block") -> list[
             violations.append(f"{where}.spells must be a list")
         else:
             for index, spell in enumerate(spells):
-                violation = _non_blank_str_violation(spell, f"{where}.spells[{index}]")
-                if violation:
-                    violations.append(violation)
+                spell_where = f"{where}.spells[{index}]"
+                if isinstance(spell, str):
+                    violation = _non_blank_str_violation(spell, spell_where)
+                    if violation:
+                        violations.append(violation)
+                    elif len(spell.strip()) > 200:
+                        violations.append(f"{spell_where} exceeds 200 chars")
+                elif isinstance(spell, dict):
+                    unknown_keys = set(spell) - {"name", "description"}
+                    if unknown_keys:
+                        violations.append(
+                            f"{spell_where} has unknown key(s): {sorted(unknown_keys)}"
+                        )
+                    for field, limit in (("name", 200), ("description", 2000)):
+                        if field in spell:
+                            value = spell[field]
+                            violation = _non_blank_str_violation(value, f"{spell_where}.{field}")
+                            if violation:
+                                violations.append(violation)
+                            elif len(value.strip()) > limit:
+                                violations.append(f"{spell_where}.{field} exceeds {limit} chars")
+                    if "name" not in spell:
+                        violations.append(f"{spell_where}.name must be a non-blank string")
+                else:
+                    violations.append(f"{spell_where} must be a string or an object")
 
     return violations
 
@@ -556,7 +578,10 @@ def seed_entry_violations(entry: Any, section: str) -> list[str]:
     if unknown:
         violations.append(f"{where} has unknown key(s): {sorted(unknown)}")
     name = entry.get("name")
-    if not isinstance(name, str) or not name.strip():
+    if section == "key_figures" and (name is None or name == ""):
+        # Forge can omit a name when concept or authored Background supplies naming context.
+        pass
+    elif not isinstance(name, str) or not name.strip():
         violations.append(f"{where}.name must be a non-blank string")
     elif len(name.strip()) > 2000:
         violations.append(f"{where}.name exceeds 2000 chars")
@@ -597,9 +622,7 @@ def seed_entry_violations(entry: Any, section: str) -> list[str]:
             }:
                 kind = "place" if section == "places" else "faction"
                 allowed = sorted(name for row_kind, name, _dial in ARCHETYPES if row_kind == kind)
-                violations.append(
-                    f"{where}.archetype must be one of {allowed} for {kind} entries"
-                )
+                violations.append(f"{where}.archetype must be one of {allowed} for {kind} entries")
     relations = entry.get("relations")
     if relations is not None:
         if not isinstance(relations, list):

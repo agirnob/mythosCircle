@@ -631,19 +631,30 @@ def _check_spells(value: Any, klass: str | None, role: str | None, errors: list[
         return
     seen: set[str] = set()
     for spell in value:
-        if not isinstance(spell, str) or not spell.strip():
+        name = spell.get("name") if isinstance(spell, dict) else spell
+        if isinstance(spell, dict):
+            if set(spell) - {"name", "description"}:
+                errors.append("spell entries may contain only name and description")
+            description = spell.get("description")
+            if description is not None and (
+                not isinstance(description, str)
+                or not description.strip()
+                or len(description) > 2000
+            ):
+                errors.append("spell descriptions must be non-blank strings up to 2000 chars")
+        if not isinstance(name, str) or not name.strip() or len(name) > 200:
             errors.append("spell names must be non-blank strings")
             continue
-        folded = spell.strip().lower()
+        folded = name.strip().lower()
         if folded in seen:
-            errors.append(f"spell {spell!r} duplicated")
+            errors.append(f"spell {name!r} duplicated")
         seen.add(folded)
         canonical = _SPELL_INDEX.get(folded)
         if canonical is None:
-            errors.append(f"spell {spell!r} is not in the local SRD reference")
+            errors.append(f"spell {name!r} is not in the local SRD reference")
             continue
         if klass not in SPELLS[canonical]:
-            errors.append(f"spell {spell!r} is not on the {klass} spell list")
+            errors.append(f"spell {name!r} is not on the {klass} spell list")
 
 
 def stat_block_role(block: Any) -> str | None:

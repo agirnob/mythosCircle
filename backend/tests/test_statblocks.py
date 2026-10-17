@@ -250,6 +250,14 @@ def test_duplicate_spells_rejected() -> None:
     assert any("duplicated" in e for e in errors)
 
 
+def test_structured_spell_name_and_description_are_validated() -> None:
+    wizard = {**VALID, "identity": {**VALID["identity"], "class": "Wizard"}}
+    authored = {**wizard, "spells": [{"name": "Fireball", "description": "A burst of flame."}]}
+    assert validate_stat_block(authored) == []
+    invalid = {**wizard, "spells": [{"name": "Cure Wounds", "description": "Healing light."}]}
+    assert any("not on the Wizard spell list" in error for error in validate_stat_block(invalid))
+
+
 def test_class_whitespace_folding_matches_other_vocabularies() -> None:
     """Casing and padding are presentation, not validity — class folds with
     .strip() like role/race/alignment/skills/spells."""
