@@ -10,3 +10,7 @@
 - [ ] Character editing sometimes fails — investigate save failures and preserve edits for retry (open, high)
   Source: User report in Codex, 2026-10-17.
   Verified: conflict retries keep a stale base revision; role changes omit required boss additions/removal; the world profile editor loses new boss field values. Backend validation tests pass (2 targeted tests). Fix separately from Forge.
+- [x] Redesign Forge with Quick generate as default and a Detailed builder sharing the same draft (implemented; verified 2026-10-17)
+  Source: User request in Codex, 2026-10-17; inspiration: https://char-gen.com/character-generator
+  Scope: persistent destination, optional identity and concept in Quick, Background-first Detailed builder, clearer Mechanics and spell descriptions, live authored/generated summary, and separate build history.
+  Preview: https://p.superdesign.dev/draft/043058c8-074c-4f93-afb2-15f980728109

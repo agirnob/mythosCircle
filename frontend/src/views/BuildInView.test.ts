@@ -46,6 +46,7 @@ vi.mock('../api/client', () => ({
 
 import { ApiError } from '../api/client'
 import BuildInView from './BuildInView.vue'
+import CharacterSheetEditor from '../components/CharacterSheetEditor.vue'
 import { useAuthStore } from '../stores/auth'
 
 const CAMPAIGN = {
@@ -155,6 +156,25 @@ describe('BuildInView seed form', () => {
     const body = JSON.parse(request![1].body as string)
     expect(body.payload.generate_counts).toEqual({ places: 20, factions: 0, key_figures: 0 })
     expect(body.payload.places).toEqual([])
+  })
+
+  it('uses the Detailed editor by default for authored Build-In figures', async () => {
+    mockApi({ created: job() })
+    const wrapper = await mountView()
+    await wrapper.findAll('button').find((button) => button.text() === '+ authored figure')!.trigger('click')
+    const editor = wrapper.findComponent(CharacterSheetEditor)
+    expect(editor.exists()).toBe(true)
+    expect(editor.find('[aria-label="Forge mode"]').exists()).toBe(false)
+    expect(editor.find('[aria-label="Detailed builder sections"]').exists()).toBe(true)
+    expect(editor.find('textarea[placeholder*="retired dragon hunter"]').exists()).toBe(false)
+    await editor.get('input[placeholder="May be named from your Background"]').setValue('Ilyra')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const request = apiFetchMock.mock.calls.find(([path, init]) => path === '/api/jobs' && init?.method === 'POST')
+    const body = JSON.parse(request![1].body as string)
+    expect(body.payload.key_figures).toMatchObject([{ name: 'Ilyra', role: 'NPC' }])
+    expect(body.payload.key_figures[0]).not.toHaveProperty('concept')
   })
 
   it('shows queue, running progress, and a completed count beside the build button', async () => {

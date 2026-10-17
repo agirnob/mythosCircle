@@ -210,7 +210,7 @@ async function submit() {
       disposed || socketGeneration !== sessionGeneration()) return
   error.value = null
   if (!editorRef.value?.hasContent) {
-    error.value = 'Give the character a name first.'
+    error.value = 'Add a name, character concept, or authored Background.'
     return
   }
   if (isDraft.value && !draftTheme.value) {
@@ -226,10 +226,11 @@ async function submit() {
     if (!destinationReady.value || inFlight.value || disposed || socketGeneration !== sessionGeneration()) return
     const figure = editorRef.value.buildFigure()
     if (isDraft.value) delete figure.relations
+    const concept = editorRef.value.concept.trim()
     const payload = isDraft.value
       ? // the Generic gate: characters only — no world-shaping sections
-        { key_figures: [figure], theme: draftTheme.value }
-      : { places: [], factions: [], key_figures: [figure], notes: '' }
+        { key_figures: [figure], theme: draftTheme.value, ...(concept ? { concept } : {}) }
+      : { places: [], factions: [], key_figures: [figure], notes: '', ...(concept ? { concept } : {}) }
     await jobs.submitBuildIn(campaignId.value, payload)
   } catch (err) {
     error.value =
@@ -314,7 +315,7 @@ async function submit() {
 
     <BuildActivity v-if="destinationReady && campaignId" :key="campaignId" :campaign-id="campaignId" />
     <form class="card" @submit.prevent="submit">
-      <CharacterSheetEditor ref="editorRef" :campaign-id="isDraft ? '' : campaignId" />
+      <CharacterSheetEditor ref="editorRef" :campaign-id="isDraft ? '' : campaignId" forge-workspace />
 
       <p v-if="error" class="error">{{ error }}</p>
 

@@ -66,7 +66,7 @@ export interface StatBlock {
   skills?: SkillEntry[];
   actions?: ActionEntry[];
   traits?: { name: string; description: string }[];
-  spells?: string[];
+  spells?: Array<string | { name: string; description?: string }>;
 }
 
 export interface WorldIntegration {

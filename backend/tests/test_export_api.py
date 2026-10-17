@@ -1121,7 +1121,7 @@ _SERA_DATA: dict[str, Any] = {
         ],
         "traits": [{"name": "Keen Mind", "description": "Always knows north."}],
         "actions": [{"name": "Fire Bolt", "description": "Ranged spell attack, 2d10 fire."}],
-        "spells": ["Fireball", "Mage Hand"],
+        "spells": [{"name": "Fireball", "description": "A bead of flame blooms."}, "Mage Hand"],
     },
 }
 
@@ -1216,7 +1216,7 @@ def test_owlbear_npc_happy(client: Any) -> None:
     ]
     assert _fk("Z038") not in metadata  # no boss section, no legendary slot
     assert metadata[_fk("Z039")] == [
-        {"id": f"{sera_id[-8:]}-0", "name": "Fireball", "description": ""},
+        {"id": f"{sera_id[-8:]}-0", "name": "Fireball", "description": "A bead of flame blooms."},
         {"id": f"{sera_id[-8:]}-1", "name": "Mage Hand", "description": ""},
     ]
     assert metadata[_fk("Z040")] == [
@@ -1331,6 +1331,7 @@ def test_fg_npc_happy(client: Any) -> None:
     spells_elem = npc.find("spells")
     assert spells_elem is not None
     assert [e.findtext("name") for e in spells_elem] == ["Fireball", "Mage Hand"]
+    assert spells_elem[0].findtext("description") == "A bead of flame blooms."
     # The record's notes carry the AR24 lore, not a stat-block copy
     # (owner ruling 2026-09-14: the sheet already shows the stats).
     text_elem = npc.find("text")
@@ -2086,7 +2087,9 @@ def test_maptool_caster_spells_and_bbeg_challenge(client: Any) -> None:
     )
     notes = sera_root.findtext("notes")
     assert notes is not None
-    assert notes.endswith("<b>Spells</b><br><b>Fireball.</b><br><b>Mage Hand.</b>")
+    assert notes.endswith(
+        "<b>Spells</b><br><b>Fireball.</b> A bead of flame blooms.<br><b>Mage Hand.</b>"
+    )
     assert "CR 5" in notes  # Sera is a level-5 NPC
 
     bbeg_id, anchor_id = new_id(), new_id()
@@ -2722,7 +2725,7 @@ def test_owlbear_bare_skill_names_and_stripped_spells(client: Any) -> None:
                         ],
                         "traits": [],
                         "actions": [],
-                        "spells": ["  Fireball  "],
+                        "spells": [{"name": "  Fireball  ", "description": "A compact flame."}],
                     },
                 },
             ),
@@ -2737,7 +2740,7 @@ def test_owlbear_bare_skill_names_and_stripped_spells(client: Any) -> None:
     metadata = _owlbear(client, campaign_id, odd_id).json()
     assert metadata[_fk("Z014")] == "Perception +2, History, Arcana"
     assert metadata[_fk("Z039")] == [
-        {"id": f"{odd_id[-8:]}-0", "name": "Fireball", "description": ""}
+        {"id": f"{odd_id[-8:]}-0", "name": "Fireball", "description": "A compact flame."}
     ]
 
 
@@ -2826,7 +2829,7 @@ def test_portrait_url_origin_from_config_file(
 _NEW_STAT_GROUPS: dict[str, dict[str, Any]] = {
     "hit_dice": {
         "commit": {"combat": {"ac": 20, "hp": 140, "hit_dice": "24d10 + 192", "speed": "30 ft."}},
-        "markup": '<strong>Hit Dice</strong> 24d10 + 192',
+        "markup": "<strong>Hit Dice</strong> 24d10 + 192",
     },
     "saves": {
         # Committed wis-first: the sheet renders the canonical score order.
@@ -2936,9 +2939,17 @@ def test_entity_html_new_sections_follow_the_spec_order(client: Any) -> None:
     panel = _panel(sheet)
     assert re.findall(r"<h4>(.*?)</h4>", panel) == ["Features", "Resources", "Spellcasting"]
     labels = [
-        "Armor Class", "Hit Points", "Hit Dice", "Initiative", "<th>STR",
-        "Saving Throws", "Passive Perception", "Proficiency Bonus", "<h4>Features",
-        "<h4>Resources", "<h4>Spellcasting",
+        "Armor Class",
+        "Hit Points",
+        "Hit Dice",
+        "Initiative",
+        "<th>STR",
+        "Saving Throws",
+        "Passive Perception",
+        "Proficiency Bonus",
+        "<h4>Features",
+        "<h4>Resources",
+        "<h4>Spellcasting",
     ]
     positions = [panel.index(label) for label in labels]
     assert positions == sorted(positions)
@@ -3094,9 +3105,7 @@ def test_incoming_export_arrow_preserves_direction(client: TestClient, format: s
     )
     assert response.status_code == 200
     expected = (
-        "Vex --debt(50)--> The Guild"
-        if format == "markdown"
-        else "Vex --debt(50)--&gt; The Guild"
+        "Vex --debt(50)--> The Guild" if format == "markdown" else "Vex --debt(50)--&gt; The Guild"
     )
     assert expected in response.text
     if format == "html":

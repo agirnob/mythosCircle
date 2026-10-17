@@ -64,6 +64,8 @@ export interface BuildInPayload {
   /** Additional model-invented entities, on top of any named anchors. */
   generate_counts?: Partial<Record<'places' | 'factions' | 'key_figures', number>>
   notes?: string
+  /** Quick Forge guidance, never authored character Background. */
+  concept?: string
   /** Generic-library builds only: the theme whose default seed the runner
    * substitutes for the library's own (never generation context). */
   theme?: string

@@ -1547,11 +1547,18 @@ def render_entity_owlbear(export: WorldExport, entity_id: str) -> dict[str, Any]
         metadata[_forge_key("Z038")] = legendary
     spells = block.get("spells")
     if isinstance(spells, list):
-        spell_entries = [
-            {"id": f"{entity_id[-8:]}-{index}", "name": name.strip(), "description": ""}
-            for index, name in enumerate(spells)
-            if isinstance(name, str) and name.strip()
-        ]
+        spell_entries = []
+        for index, spell in enumerate(spells):
+            name = spell.get("name") if isinstance(spell, dict) else spell
+            description = spell.get("description", "") if isinstance(spell, dict) else ""
+            if isinstance(name, str) and name.strip():
+                spell_entries.append(
+                    {
+                        "id": f"{entity_id[-8:]}-{index}",
+                        "name": name.strip(),
+                        "description": description if isinstance(description, str) else "",
+                    }
+                )
         if spell_entries:
             metadata[_forge_key("Z039")] = spell_entries
     equipment = _forge_entries(entity_id, data.get("equipment"))
@@ -1856,14 +1863,25 @@ def render_entity_fg(export: WorldExport, entity_id: str) -> str:
     # Spells: name-only entries (slots are not tracked — omitted).
     spells = block.get("spells")
     if isinstance(spells, list):
-        names = [s for s in spells if isinstance(s, str) and s.strip()]
-        if names:
+        entries = []
+        for spell in spells:
+            name = spell.get("name") if isinstance(spell, dict) else spell
+            description = spell.get("description") if isinstance(spell, dict) else None
+            if isinstance(name, str) and name.strip():
+                entries.append(
+                    (name.strip(), description.strip() if isinstance(description, str) else None)
+                )
+        if entries:
             group = ET.SubElement(npc, "spells")
-            for index, name in enumerate(names, start=1):
+            for index, (name, description) in enumerate(entries, start=1):
                 entry = ET.SubElement(group, f"id-{index:05d}")
                 name_el = ET.SubElement(entry, "name")
                 name_el.set("type", "string")
                 name_el.text = name.strip()
+                if description:
+                    description_el = ET.SubElement(entry, "description")
+                    description_el.set("type", "string")
+                    description_el.text = description
 
     # The record's notes: the AR24 lore sections (owner ruling
     # 2026-09-14 — the sheet already shows the stats, so the text slot
@@ -2231,10 +2249,20 @@ def _rptok_notes_html(block: dict[str, Any], data: dict[str, Any]) -> str:
     # Actions; non-blank spell names only, skipped entirely when empty.
     spells = block.get("spells")
     if isinstance(spells, list):
-        spell_names = [name.strip() for name in spells if isinstance(name, str) and name.strip()]
-        if spell_names:
+        spell_entries = []
+        for spell in spells:
+            name = spell.get("name") if isinstance(spell, dict) else spell
+            description = spell.get("description") if isinstance(spell, dict) else None
+            if isinstance(name, str) and name.strip():
+                spell_entries.append(
+                    (name.strip(), description.strip() if isinstance(description, str) else None)
+                )
+        if spell_entries:
             lines.append("<b>Spells</b>")
-            lines.extend(f"<b>{name}.</b>" for name in spell_names)
+            lines.extend(
+                f"<b>{_esc(name)}.</b>{f' {_esc(description)}' if description else ''}"
+                for name, description in spell_entries
+            )
 
     return "<br>".join(lines)
 

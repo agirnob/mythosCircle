@@ -201,30 +201,20 @@ function resultLine(job: Job): string | null {
     <p v-if="refreshError" role="alert">
       {{ refreshError }} <button type="button" @click="refresh">Refresh status</button>
     </p>
-    <div class="card job">
-      <h2>Recent builds</h2>
-      <p v-if="recentJobs.length === 0" class="muted">No builds yet.</p>
-      <div v-for="job in recentJobs" :key="job.id" class="job-row">
-        <dl>
-          <dt>Character</dt>
-          <dd>{{ characterNames(job) }}</dd>
-          <dt>State</dt>
-          <dd>
-            {{
-              job.state === 'queued' ? `Queued (position ${job.queue_position ?? '…'})` : job.state
-            }}
-          </dd>
-          <template v-if="resultLine(job)"
-            ><dt>Result</dt>
-            <dd>{{ resultLine(job) }}</dd></template
-          >
-          <template v-else-if="job.state === 'failed'"
-            ><dt>Error</dt>
-            <dd class="error">{{ job.error ?? 'The build failed.' }}</dd></template
-          >
-        </dl>
+    <details class="history">
+      <summary>History · Recent builds ({{ recentJobs.length }})</summary>
+      <div class="card job">
+        <p v-if="recentJobs.length === 0" class="muted">No builds yet.</p>
+        <div v-for="job in recentJobs" :key="job.id" class="job-row">
+          <dl>
+            <dt>Character</dt><dd>{{ characterNames(job) }}</dd>
+            <dt>State</dt><dd>{{ job.state === 'queued' ? `Queued (position ${job.queue_position ?? '…'})` : job.state }}</dd>
+            <template v-if="resultLine(job)"><dt>Result</dt><dd>{{ resultLine(job) }}</dd></template>
+            <template v-else-if="job.state === 'failed'"><dt>Error</dt><dd class="error">{{ job.error ?? 'The build failed.' }}</dd></template>
+          </dl>
+        </div>
       </div>
-    </div>
+    </details>
   </section>
 </template>
 
@@ -232,6 +222,7 @@ function resultLine(job: Job): string | null {
 .build-activity {
   margin-block: 1rem;
 }
+.history summary { color: var(--mc-text-secondary); cursor: pointer; padding: 10px 0; }
 .generation-heading {
   display: flex;
   align-items: start;

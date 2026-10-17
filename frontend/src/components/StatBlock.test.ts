@@ -35,6 +35,19 @@ describe('StatBlock', () => {
     expect(wrapper.text()).not.toContain('Level')
   })
 
+  it('renders descriptions for structured spells and keeps legacy spell names', () => {
+    const wrapper = mount(StatBlock, {
+      props: {
+        block: {
+          ...block,
+          spells: [{ name: 'Fire Bolt', description: 'A mote streaks from the caster.' }, 'Shield'],
+        },
+      },
+    })
+    expect(wrapper.text()).toContain('Fire Bolt — A mote streaks from the caster.')
+    expect(wrapper.text()).toContain('Shield')
+  })
+
   it('tolerates junk: a non-object block renders nothing', () => {
     const wrapper = mount(StatBlock, { props: { block: 'junk' } })
     expect(wrapper.text()).toBe('')

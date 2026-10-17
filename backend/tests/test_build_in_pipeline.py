@@ -28,6 +28,7 @@ from app.pipeline.build_in import (
     REPAIR_TEMPERATURE,
     WAVE2_MAX_EDGES,
     WAVE2_MAX_ENTITIES,
+    _backfill_authored,
     _build_record_repair_prompt,
     _build_wiring_prompt,
     _canonicalize_edges,
@@ -37,6 +38,8 @@ from app.pipeline.build_in import (
     _expand_requested_names,
     _filter_wiring_edges,
     _log_stat_repair_scope_breaches,
+    _merge_authored_stat_block,
+    _name_forge_character,
     _normalize_edge_directions,
     _OrphanRetryError,
     _validate_subgraph,
@@ -44,6 +47,7 @@ from app.pipeline.build_in import (
     _wave1_roster,
     _wiring_profile,
     build_anchor_repair_schema,
+    build_wave1_chunk_prompt,
     build_wave1_prompt,
     build_wave2_prompt,
     build_wave_schema,
@@ -369,10 +373,19 @@ def test_requested_place_count_invents_and_builds_exact_roster(world: str) -> No
         if "Invent names" in prompt:
             return json.dumps({"names": ["The Glass Quay", "Moonwake Pier"]})
         if "Connect these newly generated" in prompt:
-            return json.dumps({"edges": [
-                {"src": "E0", "dst": "E1", "type": "rival_of", "counter": 1,
-                 "reason": "The two ports compete for the same merchant fleet."}
-            ]})
+            return json.dumps(
+                {
+                    "edges": [
+                        {
+                            "src": "E0",
+                            "dst": "E1",
+                            "type": "rival_of",
+                            "counter": 1,
+                            "reason": "The two ports compete for the same merchant fleet.",
+                        }
+                    ]
+                }
+            )
         return json.dumps(
             {
                 "entities": [
@@ -408,10 +421,19 @@ def test_requested_names_retry_duplicate_before_world_write(world: str) -> None:
                 "edges": [],
             }
         ),
-        json.dumps({"edges": [
-            {"src": "E0", "dst": "E1", "type": "rival_of", "counter": 1,
-             "reason": "The two ports compete for the same merchant fleet."}
-        ]}),
+        json.dumps(
+            {
+                "edges": [
+                    {
+                        "src": "E0",
+                        "dst": "E1",
+                        "type": "rival_of",
+                        "counter": 1,
+                        "reason": "The two ports compete for the same merchant fleet.",
+                    }
+                ]
+            }
+        ),
     ]
 
     assert (
@@ -438,19 +460,36 @@ def test_count_generated_places_connect_to_old_world(world: str) -> None:
             return json.dumps({"names": ["Glass Quay", "Moonwake Pier"]})
         if "Connect these newly generated" in prompt:
             assert "C0 'Old Harbor'" in prompt
-            assert settings.response_format == build_anchor_repair_schema(
-                ["E0", "E1"], ["C0"]
+            assert settings.response_format == build_anchor_repair_schema(["E0", "E1"], ["C0"])
+            return json.dumps(
+                {
+                    "edges": [
+                        {
+                            "src": "E0",
+                            "dst": "E1",
+                            "type": "rival_of",
+                            "counter": 1,
+                            "reason": "The two ports compete for the same merchant fleet.",
+                        },
+                        {
+                            "src": "E1",
+                            "dst": "C0",
+                            "type": "ally_of",
+                            "counter": 2,
+                            "reason": "Moonwake's ships exchange cargo with Old Harbor.",
+                        },
+                    ]
+                }
             )
-            return json.dumps({"edges": [
-                {"src": "E0", "dst": "E1", "type": "rival_of", "counter": 1,
-                 "reason": "The two ports compete for the same merchant fleet."},
-                {"src": "E1", "dst": "C0", "type": "ally_of", "counter": 2,
-                 "reason": "Moonwake's ships exchange cargo with Old Harbor."},
-            ]})
-        return json.dumps({"entities": [
-            {"ref": "E0", "kind": "place", "name": "Glass Quay"},
-            {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
-        ], "edges": []})
+        return json.dumps(
+            {
+                "entities": [
+                    {"ref": "E0", "kind": "place", "name": "Glass Quay"},
+                    {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
+                ],
+                "edges": [],
+            }
+        )
 
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
     job, _ = job_status(job_id)
@@ -469,10 +508,15 @@ def test_count_generated_places_fail_before_commit_when_unconnected(world: str) 
             return json.dumps({"names": ["Glass Quay", "Moonwake Pier"]})
         if "Connect these newly generated" in prompt:
             return '{"edges": []}'
-        return json.dumps({"entities": [
-            {"ref": "E0", "kind": "place", "name": "Glass Quay"},
-            {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
-        ], "edges": []})
+        return json.dumps(
+            {
+                "entities": [
+                    {"ref": "E0", "kind": "place", "name": "Glass Quay"},
+                    {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
+                ],
+                "edges": [],
+            }
+        )
 
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
     job, _ = job_status(job_id)
@@ -493,21 +537,51 @@ def test_count_generated_places_retry_disconnected_cluster(world: str) -> None:
         if "Connect these newly generated" in prompt:
             wiring_calls += 1
             if wiring_calls == 1:
-                return json.dumps({"edges": [
-                    {"src": "E0", "dst": "E1", "type": "relationship", "counter": 1,
-                     "reason": "The two ports share a shipping lane."},
-                    {"src": "E2", "dst": "E3", "type": "relationship", "counter": 1,
-                     "reason": "The fen drains the moor after heavy rains."},
-                ]})
+                return json.dumps(
+                    {
+                        "edges": [
+                            {
+                                "src": "E0",
+                                "dst": "E1",
+                                "type": "relationship",
+                                "counter": 1,
+                                "reason": "The two ports share a shipping lane.",
+                            },
+                            {
+                                "src": "E2",
+                                "dst": "E3",
+                                "type": "relationship",
+                                "counter": 1,
+                                "reason": "The fen drains the moor after heavy rains.",
+                            },
+                        ]
+                    }
+                )
             assert "ALREADY ACCEPTED EDGES" in prompt
-            return json.dumps({"edges": [
-                {"src": "E1", "dst": "E2", "type": "relationship", "counter": 1,
-                 "reason": "Moorland traders ship through Moonwake Pier."},
-            ]})
-        return json.dumps({"entities": [
-            {"ref": f"E{i}", "kind": "place", "name": name}
-            for i, name in enumerate(["Glass Quay", "Moonwake Pier", "Ash Moor", "Silver Fen"])
-        ], "edges": []})
+            return json.dumps(
+                {
+                    "edges": [
+                        {
+                            "src": "E1",
+                            "dst": "E2",
+                            "type": "relationship",
+                            "counter": 1,
+                            "reason": "Moorland traders ship through Moonwake Pier.",
+                        },
+                    ]
+                }
+            )
+        return json.dumps(
+            {
+                "entities": [
+                    {"ref": f"E{i}", "kind": "place", "name": name}
+                    for i, name in enumerate(
+                        ["Glass Quay", "Moonwake Pier", "Ash Moor", "Silver Fen"]
+                    )
+                ],
+                "edges": [],
+            }
+        )
 
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
     job, _ = job_status(job_id)
@@ -565,6 +639,140 @@ def test_twenty_requested_places_are_twenty_invented_names(world: str) -> None:
     assert expanded["places"] == names
     assert len(prompts) == 1
     assert "numbered placeholders" in prompts[0]
+
+
+def test_concept_or_background_names_before_writes_and_background_survives_backfill(
+    world: str,
+) -> None:
+    story = "  Born beneath the copper bells, Nera never lies.  "
+    job_id = _enqueue(
+        world,
+        key_figures=[{"name": "", "role": "NPC", "record": {"background": story}}],
+        concept="A healer protecting a former enemy",
+    )
+    job, _position = job_status(job_id)
+    prompts: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        prompts.append(prompt)
+        return json.dumps({"name": "Nera Vane"})
+
+    payload = _name_forge_character(
+        job.payload,
+        SimpleNamespace(theme="High Fantasy"),
+        [],
+        CallBudget(job),
+        provider,
+        SETTINGS,
+    )
+    seed = payload["key_figures"][0]
+    assert seed["name"] == "Nera Vane"
+    assert seed["record"]["background"] == story
+    assert "A healer protecting a former enemy" in prompts[0]
+    assert "Nera never lies" in prompts[0]
+    assert "Build-In World" not in prompts[0]
+    entity = models.EntityInput(kind="character", name="Nera Vane", data={"background": "repaired"})
+    restored = _backfill_authored([entity], [("key_figures", "Nera Vane", seed)])[0]
+    assert restored.data["background"] == story
+
+
+def test_name_generation_failure_retries_twice_without_partial_commit(world: str) -> None:
+    job_id = _enqueue(
+        world,
+        key_figures=[{"name": "", "role": "NPC"}],
+        concept="A quiet cartographer",
+    )
+    calls = 0
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        nonlocal calls
+        calls += 1
+        return json.dumps({"name": ""})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert calls == 2
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+        assert world_entities(session, world) == []
+
+
+def test_cancellation_during_name_generation_prevents_character_commit(world: str) -> None:
+    job_id = _enqueue(
+        world,
+        key_figures=[{"name": "", "role": "NPC"}],
+        concept="A quiet cartographer",
+    )
+    calls = 0
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        nonlocal calls
+        calls += 1
+        cancel_job(job_id)
+        return json.dumps({"name": "Nera Vane"})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "cancelled"
+    assert calls == 1
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+        assert world_entities(session, world) == []
+
+
+def test_cancellation_after_invalid_name_prevents_retry_and_commit(world: str) -> None:
+    job_id = _enqueue(
+        world,
+        key_figures=[{"name": "", "role": "NPC"}],
+        concept="A quiet cartographer",
+    )
+    calls = 0
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        nonlocal calls
+        calls += 1
+        cancel_job(job_id)
+        return json.dumps({"name": ""})
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job_id
+    job, _position = job_status(job_id)
+    assert job.state == "cancelled"
+    assert calls == 1
+    with session_scope() as session:
+        assert revision_chain(session, world) == []
+        assert world_entities(session, world) == []
+
+
+def test_concept_reaches_single_and_chunked_wave_one_prompts() -> None:
+    seed = SimpleNamespace(
+        title="Coast",
+        description="Salt air",
+        theme="High Fantasy",
+        custom_lore="Old lighthouse",
+    )
+    concept = "A quiet cartographer who maps forgotten roads."
+    entry = {"name": "Nera", "role": "NPC"}
+    payload = {
+        "places": [],
+        "factions": [],
+        "key_figures": [entry],
+        "concept": concept,
+        "notes": "",
+    }
+
+    single = build_wave1_prompt(seed, payload)
+    chunked = build_wave1_chunk_prompt(
+        seed,
+        "",
+        [(0, "key_figures", "Nera", entry)],
+        chunk_index=0,
+        chunk_total=1,
+        concept=concept,
+    )
+    for prompt in (single, chunked):
+        assert concept in prompt
+        assert "generation guidance only; never save as Background" in prompt
 
 
 def test_two_waves_commit_core_first_then_notes(world: str) -> None:
@@ -1288,6 +1496,18 @@ def _seed_campaign(*, id_suffix: str, created_at: str) -> models.Campaign:
         custom_lore="the old gods stir",
         created_at=created_at,
     )
+
+
+def test_authored_spell_description_wins_merge_by_name() -> None:
+    merged = _merge_authored_stat_block(
+        {"spells": [{"name": "Fireball", "description": "Authored wording."}, "Shield"]},
+        {"spells": ["Fireball", {"name": "Magic Missile", "description": "Generated."}]},
+    )
+    assert merged["spells"] == [
+        {"name": "Fireball", "description": "Authored wording."},
+        {"name": "Magic Missile", "description": "Generated."},
+        "Shield",
+    ]
 
 
 def test_build_wave1_prompt_deterministic() -> None:
@@ -5328,14 +5548,30 @@ def test_count_connectivity_checked_after_blank_edge_drops(
             return '{"reasons": []}'
         if "Connect these newly generated" in prompt:
             wiring_calls += 1
-            return json.dumps({"edges": [{
-                "src": "E0", "dst": "E1", "type": "rival_of", "counter": 1,
-                "reason": "The ports compete for the same merchant fleet.",
-            }] if repair_succeeds else []})
-        return json.dumps({"entities": [
-            {"ref": "E0", "kind": "place", "name": "Glass Quay"},
-            {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
-        ], "edges": [{"src": "E0", "dst": "E1", "type": "rival_of", "reason": ""}]})
+            return json.dumps(
+                {
+                    "edges": [
+                        {
+                            "src": "E0",
+                            "dst": "E1",
+                            "type": "rival_of",
+                            "counter": 1,
+                            "reason": "The ports compete for the same merchant fleet.",
+                        }
+                    ]
+                    if repair_succeeds
+                    else []
+                }
+            )
+        return json.dumps(
+            {
+                "entities": [
+                    {"ref": "E0", "kind": "place", "name": "Glass Quay"},
+                    {"ref": "E1", "kind": "place", "name": "Moonwake Pier"},
+                ],
+                "edges": [{"src": "E0", "dst": "E1", "type": "rival_of", "reason": ""}],
+            }
+        )
 
     job_id = _enqueue(world, generate_counts={"places": 2})
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
@@ -5357,7 +5593,9 @@ def test_role_pin_validated_before_saving_role_specific_mechanics(
         initial["identity"]["cr"] = 1
         initial["identity"].pop("level")
     record = _character_record(
-        "Mira", role=pinned_role, level_cr="CR 1" if pinned_role == "Monster" else "level 5",
+        "Mira",
+        role=pinned_role,
+        level_cr="CR 1" if pinned_role == "Monster" else "level 5",
         stat_block=initial,
     )
     if pinned_role == "Monster":
@@ -5375,9 +5613,19 @@ def test_role_pin_validated_before_saving_role_specific_mechanics(
             # Even a repair's wrong role is folded before the gate judges it.
             fixed["identity"]["role"] = "NPC" if pinned_role == "Monster" else "Monster"
             return json.dumps({"stat_blocks": [{"ref": "E0", "stat_block": fixed}]})
-        return json.dumps({"entities": [{
-            "ref": "E0", "kind": "character", "name": "Mira", "data": record,
-        }], "edges": []})
+        return json.dumps(
+            {
+                "entities": [
+                    {
+                        "ref": "E0",
+                        "kind": "character",
+                        "name": "Mira",
+                        "data": record,
+                    }
+                ],
+                "edges": [],
+            }
+        )
 
     job_id = _enqueue(world, key_figures=[{"name": "Mira", "role": pinned_role}])
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
