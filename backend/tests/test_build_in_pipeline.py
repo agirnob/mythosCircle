@@ -4084,7 +4084,8 @@ def test_chunked_wave1_generates_merges_and_wires(world: str) -> None:
     assert calls[2][1].response_format == build_anchor_repair_schema(
         sorted(f"E{i}" for i in range(20)), []
     )
-    assert calls[0][1].max_tokens == 900 * 16 + 4096  # TOKENS_PER_ENTITY x pin
+    assert calls[0][1].max_tokens == 65536  # the 16-entity chunk reaches the ceiling
+    assert calls[1][1].max_tokens == 5000 * 4 + 4096  # the second chunk stays below it
     assert calls[2][1].max_tokens == 16384  # EDGES_CALL_MAX_TOKENS
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
@@ -4201,7 +4202,7 @@ def test_truncated_wave_call_retries_with_doubled_window(world: str) -> None:
 
     job_id = _enqueue(world, places=["Greymarch"])
     assert run_next_job(provider=provider, settings=SETTINGS) == job_id
-    first = 900 * 1 + 4096  # the roster-of-1 sized window
+    first = 9096  # 5000 tokens for the roster-of-1 plus 4096 headroom
     assert windows == [first, min(first * 2, SETTINGS.max_tokens)]
     job, _position = job_status(job_id)
     assert job.state == "succeeded"
