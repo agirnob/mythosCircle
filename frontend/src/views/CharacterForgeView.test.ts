@@ -15,6 +15,8 @@ const { pushMock, apiFetchMock, socketCalls, routeParams } = vi.hoisted(() => ({
   socketCalls: [] as Array<{
     campaignId: string
     onMessage: (message: unknown) => void
+    disconnect: ReturnType<typeof vi.fn>
+    options: { onReconnect: () => void; onAuthFailure: () => void }
   }>,
 }))
 
@@ -25,9 +27,10 @@ vi.mock('vue-router', () => ({
 }))
 
 vi.mock('../ws', () => ({
-  connectJobSocket: vi.fn((campaignId: string, onMessage: (message: unknown) => void) => {
-    socketCalls.push({ campaignId, onMessage })
-    return () => {}
+  connectJobSocket: vi.fn((campaignId: string, onMessage: (message: unknown) => void, options: { onReconnect: () => void; onAuthFailure: () => void }) => {
+    const disconnect = vi.fn()
+    socketCalls.push({ campaignId, onMessage, disconnect, options })
+    return disconnect
   }),
 }))
 
@@ -48,6 +51,7 @@ vi.mock('../api/client', () => ({
 
 import { ApiError } from '../api/client'
 import CharacterForgeView from './CharacterForgeView.vue'
+import CharacterSheetEditor from '../components/CharacterSheetEditor.vue'
 import { useJobsStore } from '../stores/jobs'
 
 enableAutoUnmount(afterEach)
@@ -370,5 +374,384 @@ describe('CharacterForgeView (nudge contract)', () => {
     apiFetchMock.mockClear()
     await vi.advanceTimersByTimeAsync(5000)
     expect(apiFetchMock).not.toHaveBeenCalled()
+  })
+})
+
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
+async function clickButton(wrapper: VueWrapper, text: string) {
+  const button = wrapper.findAll('button').find((entry) => entry.text() === text)
+  if (!button) throw new Error(`No button: ${text}`)
+  await button.trigger('click')
+  await flushPromises()
+}
+
+const SECOND_WORLD = { ...CAMPAIGN, id: 'C2', title: 'The Silver Coast' }
+const GENERIC = { ...CAMPAIGN, id: 'G1', title: 'Generic', is_generic: true }
+
+function destinationApi() {
+  const state = {
+    metadataError: false,
+    historyError: false,
+    genericError: false,
+    entityError: false,
+    delayedThemes: null as ReturnType<typeof deferred<{ themes: string[] }>> | null,
+    active: false,
+    delayedMetadata: null as ReturnType<typeof deferred<typeof CAMPAIGN>> | null,
+    delayedHistory: null as ReturnType<typeof deferred<{ jobs: Job[]; next_cursor: null }>> | null,
+    delayedEntities: null as ReturnType<typeof deferred<typeof WORLD>> | null,
+  }
+  apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+    if (path === '/api/campaigns') return { campaigns: [CAMPAIGN, SECOND_WORLD] }
+    if (path === '/api/campaigns/themes' && state.delayedThemes) return state.delayedThemes.promise
+    if (path === '/api/campaigns/themes') return { themes: ['High Fantasy', 'Grimdark'] }
+    if (path === '/api/campaigns/generic') {
+      if (state.genericError) throw new ApiError(503, 'unavailable', 'Library unavailable')
+      return GENERIC
+    }
+    if (path === '/api/campaigns/C1') {
+      if (state.delayedMetadata) return state.delayedMetadata.promise
+      if (state.metadataError) throw new ApiError(503, 'unavailable', 'World unavailable')
+      return CAMPAIGN
+    }
+    if (path === '/api/campaigns/C2') return SECOND_WORLD
+    if (path === '/api/campaigns/G1') return GENERIC
+    if (path === '/api/campaigns/C1/export') {
+      if (state.delayedEntities) return state.delayedEntities.promise
+      return WORLD
+    }
+    if (path.endsWith('/export') && state.entityError) throw new ApiError(503, 'unavailable', 'Entities unavailable')
+    if (path.endsWith('/export')) return { ...WORLD, entities: [{ ...WORLD.entities[0], id: 'E3', name: 'Silver Harbour' }] }
+    if (path.startsWith('/api/jobs?')) {
+      if (path.includes('C1') || path.includes('G1')) {
+        if (state.delayedHistory) return state.delayedHistory.promise
+        if (state.historyError) throw new ApiError(503, 'unavailable', 'History unavailable')
+        if (state.active) return { jobs: [job({ campaign_id: path.includes('G1') ? 'G1' : 'C1' })], next_cursor: null }
+      }
+      return { jobs: [], next_cursor: null }
+    }
+    if (path === '/api/jobs' && init?.method === 'POST') {
+      const body = JSON.parse(init.body as string)
+      return job({ id: 'J-new', campaign_id: body.campaign_id, payload: body.payload })
+    }
+    throw new Error(`Unexpected destination request ${path}`)
+  })
+  return state
+}
+
+async function authorDraft(wrapper: VueWrapper) {
+  await fillName(wrapper, 'Preserved Vesper')
+  await labeled(wrapper, 'Personality').get('textarea').setValue('Keeps promises')
+  await toggleSubsection(wrapper, 'Combat')
+  await labeled(wrapper, 'HP').get('input').setValue(37)
+}
+
+function expectDraft(wrapper: VueWrapper, editor: unknown) {
+  expect(wrapper.findComponent(CharacterSheetEditor).vm.$).toBe(editor)
+  expect(labeled(wrapper, 'Name').get('input').element.value).toBe('Preserved Vesper')
+  expect(labeled(wrapper, 'HP').get('input').element.value).toBe('37')
+}
+
+function expectAuthoredPayload(campaignId: string) {
+  expect(buildInBodies().at(-1)).toMatchObject({
+    campaign_id: campaignId,
+    payload: { key_figures: [{ name: 'Preserved Vesper', record: { personality: 'Keeps promises', stat_block: { combat: { hp: 37 } } } }] },
+  })
+}
+
+describe('CharacterForgeView destination recovery', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    socketCalls.length = 0
+    delete routeParams.id
+  })
+
+  it('keeps the selected world named above history and switches worlds with the same editor', async () => {
+    destinationApi()
+    const wrapper = await mountView()
+    const editor = wrapper.findComponent(CharacterSheetEditor).vm.$
+    await authorDraft(wrapper)
+    await clickButton(wrapper, CAMPAIGN.title)
+    const destination = wrapper.get('.destination-control')
+    expect(destination.text()).toContain(CAMPAIGN.title)
+    expect(wrapper.html().indexOf('destination-control')).toBeLessThan(wrapper.html().indexOf('Recent builds'))
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, SECOND_WORLD.title)
+    expect(destination.text()).toContain(SECOND_WORLD.title)
+    expectDraft(wrapper, editor)
+    expect(socketCalls[0]!.disconnect).toHaveBeenCalledOnce()
+    expect(socketCalls.at(-1)!.campaignId).toBe('C2')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expectAuthoredPayload('C2')
+    wrapper.unmount()
+    expect(socketCalls.at(-1)!.disconnect).toHaveBeenCalledOnce()
+  })
+
+  it('returns to Generic with a visible theme and omits preserved world relations', async () => {
+    destinationApi()
+    const wrapper = await mountView()
+    await authorDraft(wrapper)
+    const editor = wrapper.findComponent(CharacterSheetEditor).vm.$
+    await clickButton(wrapper, CAMPAIGN.title)
+    await clickButton(wrapper, '+ relation')
+    await wrapper.get('.relation-block').findAll('select')[2]!.setValue('E1')
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, 'Use Generic library')
+    expect(wrapper.get('.destination-control').text()).toContain('Generic library')
+    await labeled(wrapper, 'Theme').get('select').setValue('Grimdark')
+    expectDraft(wrapper, editor)
+    expect(wrapper.find('.relation-block').exists()).toBe(false)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expectAuthoredPayload('G1')
+    const payload = buildInBodies()[0]!.payload as { theme: string; key_figures: unknown[] }
+    expect(payload.theme).toBe('Grimdark')
+    expect(payload).not.toHaveProperty('places')
+    expect(payload.key_figures[0]).not.toHaveProperty('relations')
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, CAMPAIGN.title)
+    expect(wrapper.get('.relation-block').findAll('select')[2]!.element.value).toBe('E1')
+  })
+
+  it.each(['metadataError', 'historyError'] as const)('preserves authoring after %s and retries before submitting', async (failure) => {
+    const state = destinationApi()
+    const wrapper = await mountView()
+    await authorDraft(wrapper)
+    const editor = wrapper.findComponent(CharacterSheetEditor).vm.$
+    state[failure] = true
+    await clickButton(wrapper, CAMPAIGN.title)
+    expectDraft(wrapper, editor)
+    expect(wrapper.get('[role="alert"]').text()).toContain('unavailable')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toContain('Recent builds')
+    await wrapper.get('form').trigger('submit')
+    expect(buildInBodies()).toHaveLength(0)
+    await labeled(wrapper, 'Secret').get('textarea').setValue('Edited during failure')
+    state[failure] = false
+    await clickButton(wrapper, 'Retry destination')
+    expectDraft(wrapper, editor)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expectAuthoredPayload('C1')
+    expect(buildInBodies()[0]).toMatchObject({ payload: { key_figures: [{ record: { secret: 'Edited during failure' } }] } })
+  })
+
+  it('keeps the pinned editor usable during a metadata failure and allows another destination', async () => {
+    routeParams.id = 'C1'
+    const state = destinationApi()
+    state.metadataError = true
+    const wrapper = await mountView()
+    await authorDraft(wrapper)
+    const editor = wrapper.findComponent(CharacterSheetEditor).vm.$
+    expect(wrapper.get('[role="alert"]').text()).toContain('World unavailable')
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, SECOND_WORLD.title)
+    expectDraft(wrapper, editor)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expectAuthoredPayload('C2')
+  })
+
+  it.each(['genericError', 'historyError'] as const)('does not enqueue when Generic binding encounters %s', async (failure) => {
+    const state = destinationApi()
+    state[failure] = true
+    const wrapper = await mountView()
+    await authorDraft(wrapper)
+    const editor = wrapper.findComponent(CharacterSheetEditor).vm.$
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expectDraft(wrapper, editor)
+    expect(buildInBodies()).toHaveLength(0)
+    expect(wrapper.get('[role="alert"]').text()).toContain('unavailable')
+    state[failure] = false
+    await clickButton(wrapper, 'Retry destination')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expectAuthoredPayload('G1')
+  })
+
+  it('waits for history on retry and enforces the recovered active-build gate', async () => {
+    const state = destinationApi()
+    const wrapper = await mountView()
+    await authorDraft(wrapper)
+    state.historyError = true
+    await clickButton(wrapper, CAMPAIGN.title)
+    state.historyError = false
+    state.delayedHistory = deferred()
+    await clickButton(wrapper, 'Retry destination')
+    await wrapper.get('form').trigger('submit')
+    expect(buildInBodies()).toHaveLength(0)
+    state.delayedHistory.resolve({ jobs: [job({ state: 'running' })], next_cursor: null })
+    await flushPromises()
+    expect(wrapper.get('button[type="submit"]').text()).toBe('Building…')
+    await wrapper.get('form').trigger('submit')
+    expect(buildInBodies()).toHaveLength(0)
+  })
+
+  it.each(['resolve', 'reject'] as const)('ignores obsolete metadata that later %ss', async (completion) => {
+    const state = destinationApi()
+    state.delayedMetadata = deferred()
+    const wrapper = await mountView()
+    await authorDraft(wrapper)
+    await clickButton(wrapper, CAMPAIGN.title)
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, SECOND_WORLD.title)
+    if (completion === 'resolve') state.delayedMetadata.resolve(CAMPAIGN)
+    else state.delayedMetadata.reject(new ApiError(503, 'unavailable', 'Obsolete failure'))
+    await flushPromises()
+    expect(wrapper.get('.destination-control').text()).toContain(SECOND_WORLD.title)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(socketCalls.map((call) => call.campaignId)).toEqual(['C2'])
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expectAuthoredPayload('C2')
+  })
+
+  it('initializes a deferred theme after an early world selection and return to Generic', async () => {
+    const state = destinationApi()
+    state.delayedThemes = deferred()
+    const wrapper = await mountView()
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, CAMPAIGN.title)
+    state.delayedThemes.resolve({ themes: ['Grimdark'] })
+    await flushPromises()
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, 'Use Generic library')
+    expect(labeled(wrapper, 'Theme').get('select').element.value).toBe('Grimdark')
+    await fillName(wrapper)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(buildInBodies()[0]).toMatchObject({ campaign_id: 'G1', payload: { theme: 'Grimdark' } })
+  })
+
+  it('handles current socket progress and ignores obsolete messages, reconnects, and auth failures', async () => {
+    destinationApi()
+    const wrapper = await mountView()
+    await clickButton(wrapper, CAMPAIGN.title)
+    const obsolete = socketCalls.at(-1)!
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, SECOND_WORLD.title)
+    const current = socketCalls.at(-1)!
+    const jobs = useJobsStore()
+    jobs.upsert(job({ id: 'J-current', campaign_id: 'C2', state: 'running', progress: 0.1 }))
+    jobs.upsert(job({ id: 'J-old', campaign_id: 'C1', state: 'running', progress: 0.1 }))
+    await flushPromises()
+    current.onMessage({ type: 'job_progress', job_id: 'J-current', state: 'running', progress: 0.4 })
+    await flushPromises()
+    expect(wrapper.get('progress').attributes('value')).toBe('40')
+    apiFetchMock.mockClear()
+    obsolete.onMessage({ type: 'job_progress', job_id: 'J-old', state: 'running', progress: 0.8 })
+    obsolete.options.onReconnect()
+    obsolete.options.onAuthFailure()
+    await flushPromises()
+    expect(jobs.byId['J-old']!.progress).toBe(0.1)
+    expect(wrapper.get('progress').attributes('value')).toBe('40')
+    expect(apiFetchMock).not.toHaveBeenCalled()
+    expect(pushMock).not.toHaveBeenCalled()
+    current.options.onReconnect()
+    await flushPromises()
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/jobs?campaign_id=C2')
+  })
+
+  it.each([CAMPAIGN.title, 'Use Generic library'])('returns picker focus after choosing %s', async (choice) => {
+    destinationApi()
+    const wrapper = mount(CharacterForgeView, { attachTo: document.body })
+    await flushPromises()
+    const disclosure = wrapper.findAll('button').find((button) => button.text() === 'Change destination')!
+    expect(disclosure.attributes('aria-controls')).toBe('forge-destination-picker')
+    expect(disclosure.attributes('aria-expanded')).toBe('true')
+    const choiceButton = wrapper.findAll('button').find((button) => button.text() === choice)!
+    choiceButton.element.focus()
+    expect(document.activeElement).toBe(choiceButton.element)
+    await choiceButton.trigger('click')
+    await flushPromises()
+    expect(document.activeElement).toBe(disclosure.element)
+    expect(disclosure.attributes('aria-expanded')).toBe('false')
+  })
+
+  it('shows the preserved selected target explicitly when a retry export fails', async () => {
+    const state = destinationApi()
+    const wrapper = await mountView()
+    await fillName(wrapper)
+    await clickButton(wrapper, CAMPAIGN.title)
+    await clickButton(wrapper, '+ relation')
+    await wrapper.get('.relation-block').findAll('select')[2]!.setValue('E1')
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, SECOND_WORLD.title)
+    state.delayedEntities = deferred()
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, CAMPAIGN.title)
+    state.delayedEntities.reject(new ApiError(503, 'unavailable', 'Export unavailable'))
+    await flushPromises()
+    const target = wrapper.get('.relation-block').findAll('select')[2]!
+    expect(target.element.value).toBe('E1')
+    expect(target.get('option[value="E1"]').text()).toContain('Selected target unavailable (E1)')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(buildInBodies()[0]).toMatchObject({ payload: { key_figures: [{ relations: [{ target_id: 'E1' }] }] } })
+  })
+
+  it('leaves relation options empty when the next world export fails', async () => {
+    const state = destinationApi()
+    const wrapper = await mountView()
+    await clickButton(wrapper, CAMPAIGN.title)
+    await clickButton(wrapper, '+ relation')
+    expect(wrapper.get('.relation-block').text()).toContain('Greymarch')
+    state.entityError = true
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, SECOND_WORLD.title)
+    await clickButton(wrapper, '+ relation')
+    expect(wrapper.get('.relation-block').findAll('select')[2]!.findAll('option')).toHaveLength(1)
+  })
+
+  it('does not connect late destination loads after the editor unmounts', async () => {
+    const state = destinationApi()
+    state.delayedMetadata = deferred()
+    const wrapper = await mountView()
+    await clickButton(wrapper, CAMPAIGN.title)
+    wrapper.unmount()
+    state.delayedMetadata.resolve(CAMPAIGN)
+    await flushPromises()
+    expect(socketCalls).toHaveLength(0)
+    expect(buildInBodies()).toHaveLength(0)
+  })
+
+  it('clears relation options on a switch, ignores late exports, and restores original drafts', async () => {
+    const state = destinationApi()
+    const wrapper = await mountView()
+    await fillName(wrapper)
+    await clickButton(wrapper, CAMPAIGN.title)
+    await clickButton(wrapper, '+ relation')
+    await wrapper.get('.relation-block').findAll('select')[2]!.setValue('E1')
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, SECOND_WORLD.title)
+    await clickButton(wrapper, '+ relation')
+    expect(wrapper.get('.relation-block').text()).toContain('Silver Harbour')
+    expect(wrapper.get('.relation-block').text()).not.toContain('Greymarch')
+    state.delayedEntities = deferred()
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, CAMPAIGN.title)
+    expect(wrapper.get('.relation-block').text()).not.toContain('Silver Harbour')
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, SECOND_WORLD.title)
+    state.delayedEntities.resolve(WORLD)
+    await flushPromises()
+    expect(wrapper.get('.relation-block').text()).not.toContain('Greymarch')
+    state.delayedEntities = null
+    await clickButton(wrapper, 'Change destination')
+    await clickButton(wrapper, CAMPAIGN.title)
+    expect(wrapper.get('.relation-block').findAll('select')[2]!.element.value).toBe('E1')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(buildInBodies()[0]).toMatchObject({ campaign_id: 'C1', payload: { key_figures: [{ relations: [{ type: 'located_in', target_id: 'E1' }] }] } })
   })
 })
