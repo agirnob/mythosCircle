@@ -324,6 +324,27 @@ def test_openrouter_skips_gemma_when_call_needs_over_32768_tokens(
     )
 
 
+@pytest.mark.parametrize("enable_thinking", [None, False, True])
+def test_openrouter_reasoning_requires_explicit_thinking(enable_thinking: bool | None) -> None:
+    settings = LLMSettings(
+        endpoint=OPENROUTER_ENDPOINT,
+        model="nvidia/nemotron-3.5-super-vl:free",
+        provider="openrouter",
+        enable_thinking=enable_thinking,
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["reasoning"] == {"enabled": enable_thinking is True}
+        assert "chat_template_kwargs" not in body
+        assert "reasoning_effort" not in body
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    assert (
+        chat_completion("prompt", settings=settings, transport=httpx.MockTransport(respond)) == "OK"
+    )
+
+
 @pytest.mark.parametrize("kind", ["image", "video", "add_character", "text"])
 def test_missing_saved_gemini_key_only_blocks_text(
     kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -394,6 +415,7 @@ def test_saved_routing_authentication_and_payload_in_both_directions(
         requests.append(request)
         body = json.loads(request.content)
         is_gemini = request.url.host == "generativelanguage.googleapis.com"
+        assert "reasoning" not in body
         expected_key = "distinct-gemini-sentinel" if is_gemini else "distinct-local-sentinel"
         assert request.headers["authorization"] == f"Bearer {expected_key}"
         assert body["response_format"] == schema
