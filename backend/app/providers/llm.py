@@ -131,6 +131,9 @@ def _complete(
         ],
     }
     if settings.provider == "openrouter":
+        # Reserve the completion window for the answer unless the operator
+        # explicitly enables thinking, using OpenRouter's reasoning control.
+        body["reasoning"] = {"enabled": settings.enable_thinking is True}
         # OpenRouter tries these in order on rate limits, downtime and other
         # upstream errors. Gemma's free endpoint cannot emit over 32,768 tokens.
         fallbacks = [
@@ -169,8 +172,8 @@ def _complete(
         body["seed"] = settings.seed
     if settings.response_format is not None:
         # Opt-in per-call schema (spec: JSON-schema generation) — carried
-        # verbatim. Absent by default so default-settings bodies stay
-        # byte-identical ({model, max_tokens, messages} + thinking only).
+        # verbatim. Absent by default; provider-specific routing and
+        # thinking controls above still apply independently.
         body["response_format"] = settings.response_format
     with client:
         try:
@@ -222,12 +225,12 @@ def chat_completion(
     """Call the configured endpoint and return the assistant's text.
 
     POSTs ``{model, max_tokens, messages:[{system}, {user}]}`` to
-    ``{endpoint}/chat/completions``, plus ``chat_template_kwargs`` when a
-    reasoning mode is configured, ``temperature``/``top_p``/``seed`` when
+    ``{endpoint}/chat/completions``, plus ``chat_template_kwargs`` when local
+    thinking is configured or ``reasoning.enabled`` for OpenRouter (off
+    unless explicitly enabled), ``temperature``/``top_p``/``seed`` when
     the matching sampling control is configured (improvement plan G —
     each tri-state, omitted when ``None``), and ``response_format`` when
-    ``settings.response_format`` carries a per-call schema (all absent by
-    default, so default-settings bodies stay byte-identical). Bare ``httpx``
+    ``settings.response_format`` carries a per-call schema. Bare ``httpx``
     transport failures
     (DNS, refused, timeout) -> ``ProviderError("connection")``; non-2xx
     -> ``ProviderError("http", status_code=...)``; an answer cut off at

@@ -223,12 +223,11 @@ _DIAL_MIN_WORDS: dict[str, int] = {
     "important": 28,
     "pillar": 45,
 }
-#: Per-call generation-window sizing (B): the measured per-entity output at
-#: rung 50 (Qwen3.8 ~530 tokens/entity, gemma ~390) with ~70% headroom,
-#: times the pinned count, plus edge-list headroom — capped at the
-#: operator's settings.max_tokens (never unbounded, config.py). A
-#: truncation retry doubles the window inside the same cap (C).
-TOKENS_PER_ENTITY = 900
+#: Per-call generation-window sizing (B): allow room for larger valid
+#: entity records from the selected model, plus edge-list headroom —
+#: capped at the operator's settings.max_tokens (never unbounded,
+#: config.py). A truncation retry doubles the window inside the same cap (C).
+TOKENS_PER_ENTITY = 5000
 WAVE_CALL_TOKEN_HEADROOM = 4096
 WAVE_CALL_MIN_TOKENS = 2048
 #: Fixed window for the edges-only calls (wiring pass, anchor repair): the
@@ -801,9 +800,8 @@ def _repair_sampling(settings: LLMSettings, *, attempt: int = 1) -> LLMSettings:
 def _wave_max_tokens(entity_count: int, ceiling: int) -> int:
     """The per-call generation window for a pinned-count wave call (B):
     ``TOKENS_PER_ENTITY`` x count + edge headroom, inside the operator's
-    ceiling. Sized from the recorded corpora so a legitimate roster never
-    truncates, while a runaway generation hits the wall in minutes instead
-    of burning the full ceiling."""
+    ceiling. The larger per-entity allowance accommodates detailed rosters;
+    generation and its truncation retry remain bounded by the ceiling."""
     wanted = TOKENS_PER_ENTITY * entity_count + WAVE_CALL_TOKEN_HEADROOM
     return max(WAVE_CALL_MIN_TOKENS, min(ceiling, wanted))
 
