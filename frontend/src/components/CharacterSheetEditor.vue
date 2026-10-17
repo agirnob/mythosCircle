@@ -4,7 +4,7 @@
 // key figures. Everything the DM fills commits verbatim; blanks are the
 // generator's job. The relation block renders only when a campaign is
 // bound (a draft in the Generic library stores characters alone).
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 
 import { apiFetch } from '../api/client'
 import type { AuthoredFigureSeed, AuthoredRelationSeed } from '../stores/jobs'
@@ -206,7 +206,10 @@ interface RelationDraft {
   counter: string
 }
 
-const relationDrafts = ref<RelationDraft[]>([])
+// Keep relations attached to their authored world rather than retargeting
+// existing IDs or names when the destination changes.
+const relationsByCampaign = ref<Record<string, RelationDraft[]>>({})
+const relationDrafts = computed(() => relationsByCampaign.value[props.campaignId] ?? [])
 
 interface EntityRef {
   id: string
@@ -219,35 +222,31 @@ interface ExportShape {
 
 const worldEntities = ref<EntityRef[]>([])
 
-async function loadWorldEntities() {
-  if (!props.campaignId) return
-  try {
-    const response = await apiFetch<ExportShape>(
-      `/api/campaigns/${encodeURIComponent(props.campaignId)}/export`,
-    )
-    worldEntities.value = response.entities.map((entity: EntityRef) => ({
-      id: entity.id,
-      name: entity.name,
-      kind: entity.kind,
-    }))
-  } catch {
-    // The relation picker degrades to free-entry targets when the world
-    // cannot be read; the build re-checks target existence either way.
-  }
-}
-
+let entityGeneration = 0
 watch(
   () => props.campaignId,
-  () => {
-    void loadWorldEntities()
+  async (campaignId) => {
+    const generation = ++entityGeneration
+    worldEntities.value = []
+    if (!campaignId) return
+    try {
+      const response = await apiFetch<ExportShape>(
+        `/api/campaigns/${encodeURIComponent(campaignId)}/export`,
+      )
+      if (generation !== entityGeneration || props.campaignId !== campaignId) return
+      worldEntities.value = response.entities.map(({ id, name, kind }) => ({ id, name, kind }))
+    } catch {
+      // Never retain another world's options after a failed load.
+      // Authored relation drafts remain available when returning here.
+    }
   },
+  { immediate: true, flush: 'sync' },
 )
-onMounted(() => {
-  void loadWorldEntities()
-})
+onUnmounted(() => { ++entityGeneration })
 
 function addRelation() {
-  relationDrafts.value.push({ type: 'located_in', mode: 'existing', target_id: '', target_name: '', counter: '' })
+  const drafts = relationsByCampaign.value[props.campaignId] ??= []
+  drafts.push({ type: 'located_in', mode: 'existing', target_id: '', target_name: '', counter: '' })
 }
 
 // --- Seed composition ---------------------------------------------------------
@@ -603,6 +602,7 @@ defineExpose({ buildFigure, hasContent })
       <p class="muted small">
         Wire the sheet to an entity already in the world, or name a NEW one — the build creates
         it (the relation's type decides what: located in → a place, member of → faction…).
+        Relations stay with this world when you change destination.
       </p>
       <div v-for="(relation, i) in relationDrafts" :key="`r${i}`" class="relation-block">
         <div class="row four">
@@ -617,6 +617,13 @@ defineExpose({ buildFigure, hasContent })
           </select>
           <select v-if="relation.mode === 'existing'" v-model="relation.target_id">
             <option value="" disabled>pick a committed entity…</option>
+            <option
+              v-if="relation.target_id && !worldEntities.some((entity) => entity.id === relation.target_id)"
+              :value="relation.target_id"
+              disabled
+            >
+              Selected target unavailable ({{ relation.target_id }}) — reload or choose another target
+            </option>
             <option v-for="entity in worldEntities" :key="entity.id" :value="entity.id">
               {{ entity.name }} ({{ entity.kind }})
             </option>
