@@ -800,6 +800,9 @@ def test_wave_envelope_schema_pins_wire_literals() -> None:
     assert entities["properties"]["data"] == {"type": "object"}
     chunk = build_wave_schema(2, refs=["E24", "E25"])["json_schema"]["schema"]["properties"]
     assert chunk["entities"]["items"]["properties"]["ref"] == {"enum": ["E24", "E25"]}
+    for side in ("src", "dst"):
+        assert chunk["edges"]["items"]["properties"][side] == {"enum": ["E24", "E25"]}
+        assert edges["properties"][side] == {"type": "string"}  # wave 2 also uses context refs
     capped = build_wave_schema(max_entities=24, max_edges=256)["json_schema"]["schema"]
     assert capped["properties"]["entities"]["maxItems"] == 24
     assert "minItems" not in capped["properties"]["entities"]
@@ -1121,6 +1124,68 @@ def test_bad_vocab_fails_naming_type_zero_commits(world: str) -> None:
 # invent is not worth a lost build; the DM prunes. Wave-2 anchor tests live
 # under WAVE-2 ANCHOR REPAIR below.)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("side", ["src", "dst"])
+def test_forge_single_character_drops_missing_entity_edges(world: str, side: str) -> None:
+    output = _wave1_output()
+    character = output["entities"][1]
+    character["ref"] = "E0"
+    output["entities"] = [character]
+    edge = {"src": "E0", "dst": "E0", "type": "ally_of", "reason": "invented companion"}
+    edge[side] = "E1"
+    output["edges"] = [edge]
+    calls: list[str] = []
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        calls.append(prompt)
+        return json.dumps(output)
+
+    job_id = _enqueue(world, key_figures=["Mira Vane"])
+    run_next_job(provider=provider, settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    assert len(calls) == 1
+    assert "A single character can stand alone with an empty edges array ([])." in calls[0]
+    assert "no orphans" not in calls[0]
+    assert job.result is not None
+    assert job.result["entity_count"] == 1
+    assert job.result["edge_count"] == 0
+    assert job.result["merge"]["wave1"]["edge_ref_dropped"] == [
+        {**edge, "index": 0, "why": "missing wave-1 entity"}
+    ]
+    with session_scope() as session:
+        assert [entity.name for entity in world_entities(session, world)] == ["Mira Vane"]
+        assert world_edges(session, world) == []
+
+
+def test_wave1_keeps_valid_edges_alongside_missing_entity_edge(world: str) -> None:
+    output = _wave1_output()
+    output["edges"].append(
+        {"src": "E1", "dst": "E2", "type": "ally_of", "reason": "invented companion"}
+    )
+    job_id = _enqueue(world, key_figures=["Mira Vane"])
+    run_next_job(provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "succeeded", job.error
+    assert job.result is not None and job.result["edge_count"] == 2
+    with session_scope() as session:
+        assert len(world_edges(session, world)) == 2
+
+
+def test_forge_rejects_place_substituted_for_authored_character(world: str) -> None:
+    output = {
+        "entities": [{"ref": "E0", "kind": "place", "name": "The Wilds"}],
+        "edges": [{"src": "E1", "dst": "E0", "type": "hails_from", "reason": "invented character"}],
+    }
+    job_id = _enqueue(world, key_figures=[{"name": "Mira Vane", "role": "NPC"}])
+    run_next_job(provider=lambda prompt, settings: json.dumps(output), settings=SETTINGS)
+    job, _position = job_status(job_id)
+    assert job.state == "failed"
+    assert "must be 'character'" in (job.error or "")
+    with session_scope() as session:
+        assert world_entities(session, world) == []
+        assert revision_chain(session, world) == []
 
 
 def test_wave1_edgeless_entities_validate() -> None:

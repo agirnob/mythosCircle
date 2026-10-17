@@ -6,8 +6,11 @@ these helpers read it first and apply env overrides on top.
 """
 
 import os
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from app.core.llm_routing import LLMRouting
 
 from app.core import config as config_mod
 from app.core.config import (
@@ -87,7 +90,10 @@ class LLMSettings:
 
     endpoint: str = DEFAULT_LLM_ENDPOINT
     model: str = DEFAULT_LLM_MODEL
-    api_key: str | None = None
+    api_key: str | None = field(default=None, repr=False)
+    provider: Literal["local", "gemini", "openrouter"] = "local"
+    fallback_models: tuple[str, ...] = ()
+    routing: "LLMRouting | None" = field(default=None, repr=False, compare=False)
     timeout: float = DEFAULT_LLM_TIMEOUT
     #: Hard ceiling on one completion (never unbounded — see config.py).
     max_tokens: int = DEFAULT_LLM_MAX_TOKENS
@@ -108,6 +114,7 @@ class LLMSettings:
     #: JSON-schema generation). Code-built per path only — ``llm_settings()``
     #: never fills it, and there is no config-file/env plumbing for it.
     response_format: dict[str, Any] | None = None
+    reasoning_effort: str | None = None
 
 
 def llm_settings() -> LLMSettings:

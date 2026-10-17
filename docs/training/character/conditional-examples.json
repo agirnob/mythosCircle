@@ -1,0 +1,247 @@
+{
+  "BBEG": {
+    "entities": [
+      {
+        "ref": "E0",
+        "kind": "character",
+        "name": "Ahmet the Davulcu",
+        "text": "A veteran village drummer who carries a hidden map inside his davul.",
+        "data": {
+          "name": "Ahmet the Davulcu",
+          "role": "BBEG",
+          "level_cr": "level 5",
+          "race_type": "Human",
+          "class_profession": "Wizard",
+          "alignment": "LG",
+          "personality": "Warm and patient with travelers, fiercely protective of his village.",
+          "secret": "His drum contains a coded map to a forgotten royal vault.",
+          "rumor": "Villagers say his drumbeat can frighten spirits away.",
+          "party_hook": "He asks the party to escort him to a ruined watchtower before the next full moon.",
+          "appearance": "A broad-shouldered man with a braided beard, a red sash, and a weathered davul.",
+          "background": "A former soldier who became a traveling festival drummer after the border wars.",
+          "goals": "Protect his village and discover who hid the map inside his drum.",
+          "relationships": "He supports the village healer and distrusts the tax collector.",
+          "voice_style": "Deep and rhythmic, with a storyteller's careful pauses.",
+          "catchphrases": "Every heart knows the beat. Keep yours steady.",
+          "world_integration": {
+            "reputation": "A reliable veteran and a welcome guest at village festivals.",
+            "factions": "Independent; formerly served in the border militia.",
+            "current_location": "The village square, rehearsing for the harvest festival.",
+            "reaction_matrix": "Welcomes respectful strangers, questions armed trespassers, and defends threatened villagers.",
+            "on_defeat": "Surrenders to protect bystanders and offers information in exchange for their safety."
+          },
+          "stat_block": {
+            "identity": {
+              "role": "BBEG",
+              "race": "Human",
+              "level": 5,
+              "class": "Wizard",
+              "alignment": "LG"
+            },
+            "attributes": {
+              "str": 14,
+              "dex": 12,
+              "con": 14,
+              "int": 10,
+              "wis": 10,
+              "cha": 8
+            },
+            "combat": {
+              "ac": 16,
+              "hp": 42,
+              "hit_dice": "5d10+10"
+            },
+            "skills": [
+              {
+                "name": "Athletics",
+                "bonus": 5
+              },
+              {
+                "name": "Performance",
+                "bonus": 2
+              }
+            ],
+            "actions": [
+              {
+                "name": "Drumstick Strike",
+                "to_hit": 5,
+                "description": "Melee Weapon Attack: +5 to hit, reach 5 ft., one target. Hit: 5.5 (1d6 + 2) bludgeoning damage.",
+                "damage": [
+                  {
+                    "dice": "1d6",
+                    "count": 1,
+                    "sides": 6,
+                    "bonus": 2,
+                    "average": 5.5,
+                    "type": "bludgeoning"
+                  }
+                ]
+              },
+              {
+                "name": "Rallying Rhythm",
+                "description": "One ally within 30 feet who can hear the drum gains advantage on its next saving throw against being frightened before the start of Ahmet's next turn."
+              }
+            ],
+            "traits": [
+              {
+                "name": "Steady Rhythm",
+                "description": "He uses measured drumbeats to coordinate his allies and keep frightened villagers calm."
+              }
+            ],
+            "spells": [
+              "Magic Missile",
+              "Shield",
+              "Fireball"
+            ],
+            "saves": {
+              "str": 5,
+              "con": 5
+            },
+            "features": [
+              "Second Wind",
+              "Action Surge"
+            ],
+            "initiative": 1,
+            "passive_perception": 10,
+            "proficiency_bonus": 3,
+            "resources": {
+              "second_wind": 1,
+              "action_surge": 1
+            },
+            "spellcasting": {
+              "dc": 13,
+              "attack_bonus": 5,
+              "slots": [
+                4,
+                3,
+                2
+              ]
+            }
+          },
+          "boss": {
+            "lair_actions": "On initiative 20, dust fills the ruined hall; sight beyond 20 feet is obscured until the next round.",
+            "legendary_actions": "Once after another creature's turn, move up to half speed without provoking opportunity attacks.",
+            "immunities": "None.",
+            "vulnerabilities": "None."
+          }
+        }
+      }
+    ],
+    "edges": []
+  },
+  "Monster": {
+    "entities": [
+      {
+        "ref": "E0",
+        "kind": "character",
+        "name": "Ahmet the Davulcu",
+        "text": "A veteran village drummer who carries a hidden map inside his davul.",
+        "data": {
+          "name": "Ahmet the Davulcu",
+          "role": "Monster",
+          "level_cr": "CR 1",
+          "race_type": "Construct",
+          "class_profession": "Guardian",
+          "alignment": "LG",
+          "personality": "Warm and patient with travelers, fiercely protective of his village.",
+          "secret": "His drum contains a coded map to a forgotten royal vault.",
+          "rumor": "Villagers say his drumbeat can frighten spirits away.",
+          "party_hook": "He asks the party to escort him to a ruined watchtower before the next full moon.",
+          "appearance": "A broad-shouldered man with a braided beard, a red sash, and a weathered davul.",
+          "background": "A former soldier who became a traveling festival drummer after the border wars.",
+          "goals": "Protect his village and discover who hid the map inside his drum.",
+          "relationships": "He supports the village healer and distrusts the tax collector.",
+          "voice_style": "Deep and rhythmic, with a storyteller's careful pauses.",
+          "catchphrases": "Every heart knows the beat. Keep yours steady.",
+          "world_integration": {
+            "reputation": "A reliable veteran and a welcome guest at village festivals.",
+            "factions": "Independent; formerly served in the border militia.",
+            "current_location": "The village square, rehearsing for the harvest festival.",
+            "reaction_matrix": "Welcomes respectful strangers, questions armed trespassers, and defends threatened villagers.",
+            "on_defeat": "Surrenders to protect bystanders and offers information in exchange for their safety."
+          },
+          "stat_block": {
+            "identity": {
+              "role": "Monster",
+              "race": "Construct",
+              "cr": 1,
+              "alignment": "LG"
+            },
+            "attributes": {
+              "str": 14,
+              "dex": 12,
+              "con": 14,
+              "int": 10,
+              "wis": 10,
+              "cha": 8
+            },
+            "combat": {
+              "ac": 16,
+              "hp": 60,
+              "hit_dice": "5d10+10"
+            },
+            "skills": [
+              {
+                "name": "Athletics",
+                "bonus": 5
+              },
+              {
+                "name": "Performance",
+                "bonus": 2
+              }
+            ],
+            "actions": [
+              {
+                "name": "Drumstick Strike",
+                "to_hit": 5,
+                "description": "Melee Weapon Attack: +5 to hit, reach 5 ft., one target. Hit: 10 (2d6 + 3) bludgeoning damage.",
+                "damage": [
+                  {
+                    "dice": "2d6",
+                    "count": 2,
+                    "sides": 6,
+                    "bonus": 3,
+                    "average": 10,
+                    "type": "bludgeoning"
+                  }
+                ]
+              },
+              {
+                "name": "Rallying Rhythm",
+                "description": "One ally within 30 feet who can hear the drum gains advantage on its next saving throw against being frightened before the start of Ahmet's next turn."
+              }
+            ],
+            "traits": [
+              {
+                "name": "Steady Rhythm",
+                "description": "He uses measured drumbeats to coordinate his allies and keep frightened villagers calm."
+              }
+            ],
+            "saves": {
+              "str": 5,
+              "con": 5
+            },
+            "features": [
+              "Second Wind",
+              "Action Surge"
+            ],
+            "initiative": 1,
+            "passive_perception": 10,
+            "proficiency_bonus": 3,
+            "resources": {
+              "second_wind": 1,
+              "action_surge": 1
+            }
+          },
+          "boss": {
+            "lair_actions": "On initiative 20, dust fills the ruined hall; sight beyond 20 feet is obscured until the next round.",
+            "legendary_actions": "Once after another creature's turn, move up to half speed without provoking opportunity attacks.",
+            "immunities": "None.",
+            "vulnerabilities": "None."
+          }
+        }
+      }
+    ],
+    "edges": []
+  }
+}

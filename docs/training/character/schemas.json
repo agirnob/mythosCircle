@@ -1,0 +1,395 @@
+{
+  "wave1_response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "build_wave",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "required": [
+          "entities",
+          "edges"
+        ],
+        "properties": {
+          "entities": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "ref",
+                "kind",
+                "name"
+              ],
+              "properties": {
+                "ref": {
+                  "enum": [
+                    "E0"
+                  ]
+                },
+                "kind": {
+                  "enum": [
+                    "character",
+                    "faction",
+                    "place"
+                  ]
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "text": {
+                  "type": "string"
+                },
+                "data": {
+                  "type": "object"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "src",
+                "dst",
+                "type",
+                "reason"
+              ],
+              "properties": {
+                "src": {
+                  "enum": [
+                    "E0"
+                  ]
+                },
+                "dst": {
+                  "enum": [
+                    "E0"
+                  ]
+                },
+                "type": {
+                  "enum": [
+                    "ally_of",
+                    "bases_at",
+                    "controls",
+                    "debt",
+                    "employs",
+                    "enemy_of",
+                    "grudge",
+                    "hails_from",
+                    "kin_of",
+                    "located_in",
+                    "loyalty",
+                    "member_of",
+                    "part_of",
+                    "protects",
+                    "relationship",
+                    "rival_of",
+                    "worships"
+                  ]
+                },
+                "counter": {
+                  "type": "integer"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "stat_repair_response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "stat_repair",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "required": [
+          "stat_blocks"
+        ],
+        "properties": {
+          "stat_blocks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "ref",
+                "stat_block"
+              ],
+              "properties": {
+                "ref": {
+                  "type": "string"
+                },
+                "stat_block": {
+                  "type": "object",
+                  "required": [
+                    "identity",
+                    "attributes",
+                    "combat"
+                  ],
+                  "properties": {
+                    "identity": {
+                      "type": "object",
+                      "required": [
+                        "role",
+                        "race"
+                      ],
+                      "properties": {
+                        "role": {
+                          "type": "string"
+                        },
+                        "level": {
+                          "type": "integer"
+                        },
+                        "cr": {
+                          "type": [
+                            "integer",
+                            "string"
+                          ]
+                        },
+                        "race": {
+                          "type": "string"
+                        },
+                        "class": {
+                          "type": "string"
+                        },
+                        "alignment": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "attributes": {
+                      "type": "object",
+                      "required": [
+                        "str",
+                        "dex",
+                        "con",
+                        "int",
+                        "wis",
+                        "cha"
+                      ],
+                      "properties": {
+                        "str": {
+                          "type": "integer"
+                        },
+                        "dex": {
+                          "type": "integer"
+                        },
+                        "con": {
+                          "type": "integer"
+                        },
+                        "int": {
+                          "type": "integer"
+                        },
+                        "wis": {
+                          "type": "integer"
+                        },
+                        "cha": {
+                          "type": "integer"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "combat": {
+                      "type": "object",
+                      "required": [
+                        "ac",
+                        "hp"
+                      ],
+                      "properties": {
+                        "ac": {
+                          "type": "integer"
+                        },
+                        "hp": {
+                          "type": "integer"
+                        },
+                        "hit_dice": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "skills": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "bonus"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "bonus": {
+                            "type": "integer"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "description"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "to_hit": {
+                            "type": "integer"
+                          },
+                          "damage": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "dice",
+                                "count",
+                                "sides",
+                                "bonus",
+                                "average",
+                                "type"
+                              ],
+                              "properties": {
+                                "dice": {
+                                  "type": "string"
+                                },
+                                "count": {
+                                  "type": "integer"
+                                },
+                                "sides": {
+                                  "type": "integer"
+                                },
+                                "bonus": {
+                                  "type": "integer"
+                                },
+                                "average": {
+                                  "type": "number"
+                                },
+                                "type": {
+                                  "type": "string"
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "traits": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "description"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "spells": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "saves": {
+                      "type": "object",
+                      "properties": {
+                        "str": {
+                          "type": "integer"
+                        },
+                        "dex": {
+                          "type": "integer"
+                        },
+                        "con": {
+                          "type": "integer"
+                        },
+                        "int": {
+                          "type": "integer"
+                        },
+                        "wis": {
+                          "type": "integer"
+                        },
+                        "cha": {
+                          "type": "integer"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "initiative": {
+                      "type": "integer"
+                    },
+                    "passive_perception": {
+                      "type": "integer"
+                    },
+                    "proficiency_bonus": {
+                      "type": "integer"
+                    },
+                    "spellcasting": {
+                      "type": "object",
+                      "properties": {
+                        "dc": {
+                          "type": "integer"
+                        },
+                        "attack_bonus": {
+                          "type": "integer"
+                        },
+                        "slots": {
+                          "type": "array",
+                          "items": {
+                            "type": "integer"
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "resources": {
+                      "type": "object"
+                    },
+                    "features": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

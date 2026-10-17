@@ -125,6 +125,41 @@ export interface paths {
         patch: operations["set_status_api_admin_users__account_id__patch"];
         trace?: never;
     };
+    "/api/admin/llm-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Llm Settings */
+        get: operations["get_llm_settings_api_admin_llm_settings_get"];
+        /** Put Llm Settings */
+        put: operations["put_llm_settings_api_admin_llm_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm-settings/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Llm Settings */
+        post: operations["test_llm_settings_api_admin_llm_settings_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns": {
         parameters: {
             query?: never;
@@ -1505,6 +1540,79 @@ export interface components {
             /** Archetypes */
             archetypes: components["schemas"]["ArchetypeExport"][];
         };
+        /** LLMProfile */
+        LLMProfile: {
+            /** Endpoint */
+            endpoint: string;
+            /** Model */
+            model: string;
+            /** Timeout */
+            timeout: number;
+            /** Max Tokens */
+            max_tokens: number;
+            /** Enable Thinking */
+            enable_thinking?: boolean | null;
+            /** Temperature */
+            temperature?: number | null;
+            /** Top P */
+            top_p?: number | null;
+            /** Seed */
+            seed?: number | null;
+            /** Fallback Models */
+            fallback_models?: string[];
+        };
+        /** LLMRoutingConfig */
+        LLMRoutingConfig: {
+            /**
+             * Primary
+             * @default local
+             * @enum {string}
+             */
+            primary: "local" | "gemini" | "openrouter";
+            /** Backup */
+            backup?: ("local" | "gemini" | "openrouter") | null;
+            local: components["schemas"]["LLMProfile"];
+            gemini: components["schemas"]["LLMProfile"];
+            openrouter?: components["schemas"]["LLMProfile"];
+        };
+        /** LLMSettingsView */
+        LLMSettingsView: {
+            /**
+             * Primary
+             * @default local
+             * @enum {string}
+             */
+            primary: "local" | "gemini" | "openrouter";
+            /** Backup */
+            backup?: ("local" | "gemini" | "openrouter") | null;
+            local: components["schemas"]["LLMProfile"];
+            gemini: components["schemas"]["LLMProfile"];
+            openrouter: components["schemas"]["LLMProfile"];
+            /** Saved */
+            saved: boolean;
+            /** Local Key Configured */
+            local_key_configured: boolean;
+            /** Gemini Key Configured */
+            gemini_key_configured: boolean;
+            /** Openrouter Key Configured */
+            openrouter_key_configured: boolean;
+        };
+        /** LLMTestRequest */
+        LLMTestRequest: {
+            /**
+             * Provider
+             * @enum {string}
+             */
+            provider: "local" | "gemini" | "openrouter";
+            profile: components["schemas"]["LLMProfile"];
+        };
+        /** LLMTestResult */
+        LLMTestResult: {
+            /** Success */
+            success: boolean;
+            /** Message */
+            message: string;
+        };
         /** LoginRequest */
         LoginRequest: {
             /**
@@ -1906,6 +2014,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminUser"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_llm_settings_api_admin_llm_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMSettingsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_llm_settings_api_admin_llm_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LLMRoutingConfig"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMSettingsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_llm_settings_api_admin_llm_settings_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LLMTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMTestResult"];
                 };
             };
             /** @description Validation Error */

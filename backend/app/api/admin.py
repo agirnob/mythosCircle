@@ -1,6 +1,6 @@
 """Server-authorized, private user access management."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -10,8 +10,17 @@ from starlette.concurrency import run_in_threadpool
 from app.api.auth import get_current_account
 from app.api.common import store_error_as_http
 from app.api.ws import hub
+from app.core.llm_routing import (
+    LLMRoutingConfig,
+    LLMSettingsView,
+    LLMTestRequest,
+    LLMTestResult,
+    resolve_profile,
+)
 from app.core.pagination import InvalidCursorError, decode_cursor, encode_cursor
+from app.providers.llm import ProviderError, chat_completion
 from app.store import admin as store_admin
+from app.store import llm_settings as store_llm_settings
 from app.store import models
 
 router = APIRouter()
@@ -102,3 +111,62 @@ async def set_status(
         if payload.disabled:
             await hub.invalidate_account(account_id)
         return AdminUser(**asdict(user))
+
+
+@router.get("/api/admin/llm-settings")
+def get_llm_settings(
+    response: Response,
+    current: Annotated[models.Account, Depends(get_admin_account)],
+) -> LLMSettingsView:
+    response.headers["Cache-Control"] = "no-store"
+    return store_llm_settings.view()
+
+
+@router.put("/api/admin/llm-settings")
+def put_llm_settings(
+    payload: LLMRoutingConfig,
+    response: Response,
+    current: Annotated[models.Account, Depends(get_admin_account)],
+) -> LLMSettingsView:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return store_llm_settings.save(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/admin/llm-settings/test")
+def test_llm_settings(
+    payload: LLMTestRequest,
+    response: Response,
+    current: Annotated[models.Account, Depends(get_admin_account)],
+) -> LLMTestResult:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        settings = resolve_profile(payload.provider, payload.profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        chat_completion(
+            "Reply with OK.",
+            settings=replace(
+                settings,
+                # Hosted providers can take over a minute even for a short
+                # probe. Preserve smaller operator limits and bound the wait.
+                timeout=min(settings.timeout, 15 if payload.provider == "local" else 120),
+                max_tokens=2048,
+                reasoning_effort="low" if payload.provider == "gemini" else None,
+            ),
+        )
+    except ProviderError as exc:
+        if exc.kind in {"truncated", "empty"}:
+            return LLMTestResult(
+                success=False,
+                message=(
+                    "Provider reached and authenticated, but the test completion was "
+                    "empty or exceeded its output limit. Check model reasoning/output "
+                    "settings before using it for generation."
+                ),
+            )
+        return LLMTestResult(success=False, message=f"Connection test failed: {exc}.")
+    return LLMTestResult(success=True, message="Connection test succeeded.")

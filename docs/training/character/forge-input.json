@@ -1,0 +1,21 @@
+{
+  "theme": "High Fantasy",
+  "key_figures": [
+    {
+      "name": "Ahmet the Davulcu",
+      "role": "NPC",
+      "record": {
+        "level_cr": "level 5",
+        "stat_block": {
+          "identity": {
+            "role": "NPC",
+            "race": "Human",
+            "level": 5,
+            "class": "Fighter",
+            "alignment": "LG"
+          }
+        }
+      }
+    }
+  ]
+}

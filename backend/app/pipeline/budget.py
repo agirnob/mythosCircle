@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.core.journal import label_context
+from app.core.llm_routing import additional_attempt_context
 from app.store import models
 
 
@@ -78,7 +79,10 @@ class CallBudget:
             self._used += 1
         started = time.monotonic()
         try:
-            with label_context(label):
+            with (
+                label_context(label),
+                additional_attempt_context(lambda call: self.call(call, label=f"{label}_backup")),
+            ):
                 return provider_call()
         finally:
             elapsed = time.monotonic() - started
