@@ -1,0 +1,84 @@
+{
+  "captured_at": "2026-10-18",
+  "source_commit": "570d1d149bb548381cb2ba26c063465b96d064dc",
+  "source_state": "working tree, not a clean commit snapshot",
+  "data": "read-only synthetic fixture API; no private campaign or database writes",
+  "screens": [
+    {
+      "name": "forge",
+      "route": "/campaigns/01JUX000000000000000000002/forge",
+      "desktop": {
+        "viewport": [
+          1440,
+          1000
+        ],
+        "file": "forge-current-desktop.png"
+      },
+      "mobile": {
+        "viewport": [
+          390,
+          844
+        ],
+        "file": "forge-current-mobile.png"
+      }
+    },
+    {
+      "name": "world",
+      "route": "/campaigns/01JUX000000000000000000002/world",
+      "desktop": {
+        "viewport": [
+          1440,
+          1000
+        ],
+        "file": "world-current-desktop.png"
+      },
+      "mobile": {
+        "viewport": [
+          390,
+          844
+        ],
+        "file": "world-current-mobile.png"
+      }
+    },
+    {
+      "name": "overview",
+      "route": "/campaigns/01JUX000000000000000000002/overview",
+      "desktop": {
+        "viewport": [
+          1440,
+          1000
+        ],
+        "file": "overview-current-desktop.png"
+      },
+      "mobile": {
+        "viewport": [
+          390,
+          844
+        ],
+        "file": "overview-current-mobile.png"
+      }
+    }
+  ],
+  "source_sha256": {
+    "frontend/src/styles/tokens.css": "0b3866ae013189b5197df408b53b3a4a579a626d066d2a7bc18477d3486aed54",
+    "frontend/src/App.vue": "129625ad9ff89947b1a7b113a56819d023d4ca4af84953a49d234666e791bd9f",
+    "frontend/src/components/shell/AppShell.vue": "e91a4fdb609dbf3f4baf799a026f8d833ea0eed77842d105ff4075365d232c60",
+    "frontend/src/views/NewWorldView.vue": "676c96e48246d126f6747e611a1dbaabe612c695e524715c2cf6d36230ff1b2d",
+    "frontend/src/views/CharacterForgeView.vue": "e43cca2c855bccd9b3ee0543564f62f485240091037b15bb4cb007ef4fdcfe2d",
+    "frontend/src/components/CharacterSheetEditor.vue": "bcb8866330fd053137d43f7491a4c5b817c792c2b28cf3b0e0515b25a71af86c"
+  },
+  "limits": [
+    "Real authentication and backend behavior not verified",
+    "No production campaign data",
+    "No claim of full keyboard/contrast/state coverage"
+  ],
+  "forge_reference": {
+    "draft_id": "043058c8-074c-4f93-afb2-15f980728109",
+    "version": 7,
+    "file": "forge-superdesign-v7.html",
+    "checked": [
+      "Name/concept preserved Quick to Detailed to Quick",
+      "390px viewport no horizontal document overflow"
+    ]
+  }
+}

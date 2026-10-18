@@ -1,0 +1,320 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Add Character — mythosCircle</title><script src="https://cdn.tailwindcss.com"></script><style>/**
+ * Design tokens — mythosCircle frontend rebuild (§9).
+ *
+ * Single source of truth for color, type, and spacing. Components consume
+ * these variables; no hardcoded palette values outside this file.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Atmospheric navy foundation with a violet creative accent. */
+  --mc-app-bg: #080d16;
+  --mc-app-bg-raised: #0b1320;
+  --mc-surface: #0e1724;
+  --mc-surface-raised: #131e2e;
+  --mc-surface-hover: #17253a;
+  --mc-input: #0a1421;
+  --mc-border: #24344a;
+  --mc-border-bright: #334966;
+  --mc-glow-violet: rgba(125, 92, 255, 0.24);
+  --mc-glow-cyan: rgba(53, 190, 205, 0.18);
+
+  /* Text (§9) */
+  --mc-text-primary: #eef1fb;
+  --mc-text-secondary: #b2bdd0;
+  --mc-text-muted: #74839a;
+  --mc-text-faint: #52627a;
+
+  /* Semantic accents: creation, canon, importance, danger. */
+  --mc-interactive: #8b6cff;
+  --mc-interactive-bright: #a994ff;
+  --mc-canonical: #5ed0c1;
+  --mc-proposal: #c09cff;
+  --mc-warning: #e7b866;
+  --mc-danger: #ed777d;
+  --mc-success: #75d39e;
+
+  /* Type scale (§10) */
+  --mc-page-title-size: clamp(2rem, 4vw, 3rem);
+  --mc-section-title-size: 1.125rem;
+  --mc-entity-name-size: 1rem;
+  --mc-meta-size: 0.72rem;
+  --mc-body-size: 0.95rem;
+  --mc-display-font: Georgia, 'Times New Roman', serif;
+  --mc-body-font: 'Avenir Next', 'Segoe UI', sans-serif;
+
+  /* Shape + spacing */
+  --mc-radius: 12px;
+  --mc-radius-sm: 7px;
+  --mc-gap: 1rem;
+  --mc-gap-sm: 0.5rem;
+  --mc-shell-width: 1440px;
+  --mc-sidebar-width: 236px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: var(--mc-app-bg);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: var(--mc-body-font);
+  background:
+    radial-gradient(circle at 85% -10%, rgba(117, 83, 255, 0.13), transparent 34rem),
+    radial-gradient(circle at 10% 40%, rgba(40, 160, 190, 0.06), transparent 28rem),
+    var(--mc-app-bg);
+  color: var(--mc-text-primary);
+  line-height: 1.5;
+}
+
+:focus-visible {
+  outline: 2px solid var(--mc-interactive-bright);
+  outline-offset: 3px;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button,
+input,
+textarea,
+select {
+  color-scheme: dark;
+}
+
+::selection {
+  background: rgba(139, 108, 255, 0.4);
+  color: var(--mc-text-primary);
+}
+
+.mc-display-title {
+  font-family: var(--mc-display-font);
+  letter-spacing: -0.025em;
+}
+
+.mc-skip-link {
+  position: fixed;
+  z-index: 20;
+  top: 0.75rem;
+  left: 0.75rem;
+  transform: translateY(-160%);
+  padding: 0.65rem 0.9rem;
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-interactive);
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform 160ms ease;
+}
+
+.mc-skip-link:focus {
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+.mc-shell {
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+  max-width: none;
+  margin: 0 auto;
+  background: linear-gradient(90deg, rgba(13, 23, 36, 0.92), transparent 45%);
+}
+.mc-sidebar {
+  width: var(--mc-sidebar-width);
+  flex: none;
+  border-right: 1px solid var(--mc-border);
+  padding: 1.5rem 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  background: rgba(10, 18, 30, 0.8);
+  backdrop-filter: blur(18px);
+}
+.mc-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--mc-text-primary);
+  text-decoration: none;
+  letter-spacing: 0.01em;
+}
+.mc-brand > span:last-child {
+  font-family: var(--mc-display-font);
+  font-size: 1.25rem;
+}
+.mc-brand > span:last-child span {
+  color: var(--mc-interactive-bright);
+}
+.mc-brand-mark {
+  display: grid;
+  width: 1.9rem;
+  height: 1.9rem;
+  place-items: center;
+  border: 1px solid rgba(169, 148, 255, 0.7);
+  border-radius: 8px;
+  background: linear-gradient(145deg, rgba(139, 108, 255, 0.35), rgba(33, 188, 205, 0.16));
+  color: var(--mc-interactive-bright);
+  box-shadow: 0 0 24px var(--mc-glow-violet);
+}
+.mc-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.mc-nav-title {
+  margin: 0 0 0.25rem;
+  font-size: var(--mc-meta-size);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mc-text-muted);
+}
+.mc-nav-link {
+  color: var(--mc-text-secondary);
+  text-decoration: none;
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--mc-radius-sm);
+}
+.mc-nav-link:hover {
+  color: var(--mc-text-primary);
+  background: var(--mc-surface-hover);
+}
+.mc-nav-link.router-link-active {
+  color: var(--mc-text-primary);
+  background: linear-gradient(90deg, rgba(139, 108, 255, 0.25), rgba(139, 108, 255, 0.06));
+  box-shadow: inset 2px 0 0 var(--mc-interactive);
+}
+.mc-account {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.mc-account-email {
+  font-size: 0.85rem;
+  color: var(--mc-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mc-btn-ghost {
+  background: transparent;
+  border: 1px solid var(--mc-border);
+  color: var(--mc-text-secondary);
+  border-radius: var(--mc-radius-sm);
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+}
+.mc-btn-ghost:hover {
+  color: var(--mc-text-primary);
+  border-color: var(--mc-border-bright);
+  background: var(--mc-surface-raised);
+}
+.mc-main {
+  flex: 1;
+  min-width: 0;
+  padding: clamp(1.25rem, 3vw, 2.5rem);
+  overflow: hidden;
+}
+@media (max-width: 800px) {
+  .mc-shell {
+    flex-direction: column;
+    background: none;
+  }
+  .mc-sidebar {
+    width: auto;
+    display: block;
+    padding: 1rem;
+    border-right: none;
+    border-bottom: 1px solid var(--mc-border);
+    backdrop-filter: none;
+  }
+  .mc-brand {
+    margin-bottom: 1rem;
+  }
+  .mc-nav-group {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+  }
+  .mc-nav-title {
+    width: 100%;
+    margin-bottom: 0;
+  }
+  .mc-nav-link {
+    padding: 0.38rem 0.55rem;
+  }
+  .mc-account {
+    margin-top: 1rem;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+  }
+  .mc-account .mc-btn-ghost {
+    width: auto;
+  }
+  .mc-main {
+    padding: 1.25rem 1rem 2rem;
+  }
+}
+
+[hidden]{display:none!important}button,a,input,select,textarea{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}
+a{color:var(--mc-interactive-bright)}button,input,select,textarea{border-radius:var(--mc-radius-sm)}input,select,textarea{width:100%;min-width:0;background:var(--mc-input);color:var(--mc-text-primary);border:1px solid var(--mc-text-muted);padding:.7rem .8rem}textarea{resize:vertical;line-height:1.65}
+label{display:grid;gap:.45rem;color:var(--mc-text-primary);font-size:.93rem}label small,.muted{color:var(--mc-text-secondary)}small{font-size:.83rem}.eyebrow{text-transform:uppercase;letter-spacing:.13em;color:var(--mc-interactive-bright);font-size:.76rem;font-weight:650;margin:0 0 .7rem}
+h1,h2,h3,p{margin-top:0}h1{font-family:var(--mc-display-font);font-size:var(--mc-page-title-size);letter-spacing:-.025em;line-height:1.08;margin-bottom:.7rem}h2{font-size:1.2rem}h3{font-size:1rem}.display{font-family:var(--mc-display-font)}.header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;padding-bottom:1.6rem;margin-bottom:2rem;border-bottom:1px solid var(--mc-border)}.header p:last-child{margin-bottom:0;color:var(--mc-text-secondary)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;min-height:44px;padding:.65rem 1rem;border:1px solid transparent;background:linear-gradient(135deg,var(--mc-interactive-bright),var(--mc-interactive));color:var(--mc-app-bg);font-weight:650;text-decoration:none;white-space:normal}.secondary{background:var(--mc-surface-raised);border-color:var(--mc-border-bright);color:var(--mc-text-primary)}.quiet{background:transparent;border-color:transparent;color:var(--mc-text-secondary)}.danger{color:var(--mc-danger);background:transparent;border-color:var(--mc-danger)}.row{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap}.between{justify-content:space-between}.panel{border:1px solid var(--mc-border);border-radius:12px;background:var(--mc-surface);padding:1.4rem}.badge{display:inline-flex;border:1px solid var(--mc-border-bright);border-radius:20px;padding:.2rem .6rem;font-size:.76rem;color:var(--mc-text-secondary)}.badge.purple{color:var(--mc-proposal);background:rgba(139,108,255,.09)}.small-heading{font-size:.8rem;text-transform:uppercase;letter-spacing:.07em;color:var(--mc-text-secondary)}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.2rem}.span2{grid-column:1/-1}.status{margin:1rem 0;padding:.8rem 1rem;border-left:3px solid var(--mc-interactive-bright);background:var(--mc-surface-raised);color:var(--mc-text-secondary)}.status:empty{display:none}.search{max-width:26rem;margin-bottom:1.6rem}.mc-nav-link.active{color:var(--mc-text-primary);background:linear-gradient(90deg,rgba(139,108,255,.25),rgba(139,108,255,.06));box-shadow:inset 2px 0 0 var(--mc-interactive)}
+.world-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:1.25rem}.world-card{display:flex;flex-direction:column;gap:1rem;min-height:275px;background:linear-gradient(145deg,var(--mc-surface-raised),var(--mc-surface));position:relative;overflow:hidden}.world-card:before{content:'';position:absolute;width:180px;height:180px;border:1px solid rgba(169,148,255,.1);border-radius:50%;right:-80px;top:-90px;pointer-events:none}.world-card h2{font-family:var(--mc-display-font);font-size:1.7rem;margin-bottom:.6rem}.world-card p{color:var(--mc-text-secondary);line-height:1.6}.world-card footer{margin-top:auto;border-top:1px solid var(--mc-border);padding-top:1rem}.world-card .theme{font-size:.74rem;text-transform:uppercase;letter-spacing:.1em;color:var(--mc-interactive-bright)}.collection-note{margin-top:2rem;padding:1.2rem 0;border-top:1px solid var(--mc-border);color:var(--mc-text-secondary)}
+.creation-layout{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:1.5rem}.writing{padding:1.5rem 1.7rem}.writing-heading{font-family:var(--mc-display-font);font-size:1.8rem;margin:0 0 .7rem}.chapter-nav{display:flex;gap:.4rem;flex-wrap:wrap;padding:1rem 0;border-top:1px solid var(--mc-border);border-bottom:1px solid var(--mc-border);margin:1.5rem 0}.chapter-nav button{min-height:44px;background:transparent;border:1px solid transparent;color:var(--mc-text-secondary);padding:.5rem .75rem}.chapter-nav button[aria-pressed=true]{background:var(--mc-surface-hover);border-color:var(--mc-interactive-bright);color:var(--mc-text-primary)}.chapter-nav button.filled:after{content:' •';color:var(--mc-canonical)}.lore-text{min-height:330px;font-size:1rem}.prompt-note{border-left:2px solid var(--mc-border-bright);padding-left:.8rem;color:var(--mc-text-secondary);line-height:1.6;margin:1rem 0 1.4rem}.lore-preview{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;background:var(--mc-app-bg-raised);padding:1rem;border-radius:7px;max-height:360px;overflow:auto}.creation-side{align-self:start;position:sticky;top:1.5rem}.creation-side ol{padding-left:1.2rem;color:var(--mc-text-secondary);line-height:1.9}.creation-actions{margin-top:1.5rem;justify-content:flex-end}
+.editor-layout{display:grid;grid-template-columns:190px minmax(0,1fr) 260px;gap:1.2rem;align-items:start}.section-nav{display:grid;gap:.3rem}.section-nav button{display:flex;justify-content:space-between;gap:.6rem;text-align:left;border:1px solid transparent;min-height:48px;background:transparent;color:var(--mc-text-secondary);padding:.7rem .8rem}.section-nav button[aria-current=true]{background:var(--mc-surface-hover);border-color:var(--mc-interactive-bright);color:var(--mc-text-primary)}.section-nav small{white-space:nowrap;color:var(--mc-text-secondary)}.editor-content{min-width:0}.editor-content h2{font-family:var(--mc-display-font);font-size:1.8rem}.editor-content>p{color:var(--mc-text-secondary)}.batch button{width:100%;text-align:left;justify-content:flex-start;margin-bottom:.5rem}.batch button[aria-pressed=true]{border-color:var(--mc-interactive-bright)}.batch{position:sticky;top:1.5rem}.batch .summary{line-height:1.65;overflow-wrap:anywhere}.batch .summary strong{font-family:var(--mc-display-font);font-size:1.3rem}.story-detail{border-top:1px solid var(--mc-border);padding:1rem 0}.story-detail summary{cursor:pointer;font-weight:600;min-height:32px}.story-detail label{margin-top:.8rem}.attribute-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}.attribute-grid label{text-align:center}.attribute-grid input{text-align:center}.edit-row{border-top:1px solid var(--mc-border);padding:1rem 0}.edit-row .fields{gap:.7rem}.row-list{margin-bottom:1rem}.review-group{padding:1rem 0;border-top:1px solid var(--mc-border)}.review-group pre{white-space:pre-wrap;font:inherit;color:var(--mc-text-secondary);overflow-wrap:anywhere}.error{color:var(--mc-danger)}
+dialog{background:var(--mc-surface-raised);color:var(--mc-text-primary);border:1px solid var(--mc-border-bright);border-radius:12px;padding:1.5rem;width:min(480px,calc(100vw - 2rem))}dialog::backdrop{background:rgba(0,0,0,.7)}dialog form{display:grid;gap:1rem}dialog p{color:var(--mc-text-secondary)}.empty{padding:3rem 1rem;text-align:center;border:1px dashed var(--mc-border-bright);border-radius:12px;color:var(--mc-text-secondary)}
+@media(max-width:1180px){.editor-layout{grid-template-columns:165px minmax(0,1fr)}.batch{grid-column:1/-1;position:static}.batch-items{display:flex;gap:.5rem;flex-wrap:wrap}.batch-items button{width:auto}.creation-layout{grid-template-columns:minmax(0,1fr) 250px}}
+@media(max-width:800px){.creation-layout,.editor-layout{grid-template-columns:1fr}.creation-side{position:static}.section-nav{display:flex;flex-wrap:wrap;margin-bottom:1rem}.section-nav button{flex:1 1 140px}.batch{grid-column:auto}.header{flex-direction:column}.fields{grid-template-columns:1fr}.span2{grid-column:auto}.writing{padding:1.1rem}.lore-text{min-height:310px}.world-grid{grid-template-columns:1fr}.attribute-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.btn{max-width:100%}.creation-actions .btn{flex:1}.row{min-width:0}.panel{padding:1.1rem}}
+#prototype-root .mc-main h1{font-family:var(--mc-display-font);font-size:clamp(2rem,4vw,3rem);font-weight:700;letter-spacing:-.025em;line-height:1.08;margin:0 0 .7rem}#prototype-root .mc-main input:not([type=checkbox]),#prototype-root .mc-main select,#prototype-root .mc-main textarea{padding:.7rem .8rem;min-height:44px;border:1px solid var(--mc-text-muted);border-radius:7px;background:var(--mc-input);color:var(--mc-text-primary);font:inherit;width:100%;min-width:0}#prototype-root .mc-main textarea{line-height:1.65;resize:vertical}#prototype-root .mc-main .btn{border-radius:7px}#prototype-root .mc-main .attribute-grid input{text-align:center}</style></head><body><div id="prototype-root"><div class="mc-shell"><a id="skip-content" href="#main-content" class="mc-skip-link">Skip to content</a><aside class="mc-sidebar" aria-label="Workspace"><a id="brand-home" href="#your-worlds" class="mc-brand"><span class="mc-brand-mark" aria-hidden="true">✦</span><span>mythos<span>Circle</span></span></a><nav class="mc-nav-group" aria-label="Workspace navigation"><p class="mc-nav-title">Greymarch</p><a id="nav-0" href="#your-worlds" class="mc-nav-link ">Your Worlds</a><a id="nav-1" href="https://p.superdesign.dev/draft/8f36f0b8-c14f-4edb-9aff-d21497256b77" class="mc-nav-link ">Library</a><a id="nav-2" href="#forge" class="mc-nav-link ">Forge</a><a id="nav-3" href="#overview" class="mc-nav-link ">Overview</a><a id="nav-4" href="#tonight" class="mc-nav-link ">Tonight</a><a id="nav-5" href="#world" class="mc-nav-link ">World</a><a id="nav-6" href="#ask" class="mc-nav-link ">Ask the World</a><a id="nav-7" href="#add-character" class="mc-nav-link active">Add character</a><a id="nav-8" href="https://p.superdesign.dev/draft/dff4ef13-a3af-4d0c-bb98-f6ab8352c26b" class="mc-nav-link ">Guided Build</a><a id="nav-9" href="#graph" class="mc-nav-link ">Graph</a></nav><div class="mc-account"><span class="mc-account-email">design-preview@example.test</span><button type="button" class="mc-btn-ghost" onclick="notice('Design preview only; no account action.')">Log out</button></div></aside><main class="mc-main" id="main-content" tabindex="-1">
+<header class="header"><div><p class="eyebrow">Greymarch / Authored creation</p><h1>Add character</h1><p>Bring someone you already know into the world. Every word and number is yours.</p></div><span class="badge purple">Fully authored · No AI generation</span></header>
+<div class="row between" style="margin-bottom:1.5rem"><p class="muted" style="margin:0">Destination: <strong style="color:var(--mc-text-primary)">Greymarch</strong></p><button class="btn secondary" id="add-character-batch">+ Add another character</button></div>
+<div class="editor-layout"><nav id="character-sections" class="section-nav" aria-label="Character sections"></nav><section class="panel editor-content" id="character-editor"></section><aside class="panel batch" aria-label="Characters in this batch"><p class="eyebrow">Your cast</p><div id="batch-items" class="batch-items"></div><div class="summary" id="character-summary"></div></aside></div>
+<dialog id="remove-character-dialog" aria-labelledby="remove-character-title"><form method="dialog"><h2 id="remove-character-title">Remove this draft?</h2><p id="remove-character-description"></p><div class="row"><button class="btn secondary" value="cancel">Keep character</button><button type="button" class="btn danger" id="confirm-remove-character">Remove draft</button></div></form></dialog>
+<div id="notice" class="status" role="status" aria-live="polite"></div></main><script>
+const $=id=>document.getElementById(id);const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function notice(text){$('notice').textContent=text;}
+
+const sections=['Identity','Story','Mechanics','Connections','Review'];const storyFields=['Background','Personality','Appearance','Goals','Secret','Rumor','Party hook','Relationships','Voice style','Catchphrases'];const worldFields=['Reputation','Factions','Current location','Reaction matrix','On defeat'];const bossFields=['Lair actions','Legendary actions','Immunities','Vulnerabilities'];
+const races=['Dragonborn','Dwarf','Elf','Gnome','Half-Elf','Half-Orc','Halfling','Human','Tiefling','Other'];const classes=['None','Barbarian','Bard','Cleric','Druid','Fighter','Monk','Paladin','Ranger','Rogue','Sorcerer','Warlock','Wizard','Other'];const alignments=['LG','NG','CG','LN','N','CN','LE','NE','CE','unaligned'];
+let seq=1,selected='sheet-1',section='Identity';const sheets=[makeSheet(selected)];let pendingRemove=null;
+function makeSheet(id){return{id,fields:{Role:'NPC','Class / profession':'None'},skills:[],actions:[],traits:[],spells:[],relations:[]};}const current=()=>sheets.find(s=>s.id===selected);
+function options(values,value,blank=true){return(blank?'<option value="">Choose…</option>':'')+values.map(x=>`<option value="${esc(x)}" ${value===x?'selected':''}>${esc(x)}</option>`).join('');}
+function field(name,kind='text',opts=null){const value=current().fields[name]??'';return `<label>${esc(name)}${kind==='textarea'?`<textarea data-field="${esc(name)}" rows="${name==='Background'?8:3}" required>${esc(value)}</textarea>`:kind==='select'?`<select data-field="${esc(name)}" required>${options(opts,value,name!=='Class / profession')}</select>`:`<input data-field="${esc(name)}" type="${kind}" value="${esc(value)}" ${kind==='number'?'min="0"':''} required>`}</label>`;}
+function requiredFor(s,group){if(group==='Identity')return['Name','Role','Race / type',s.fields['Race / type']==='Other'?'Custom race':null,s.fields.Role==='Monster'?'CR':'Level','Alignment',s.fields['Class / profession']==='Other'?'Custom profession':null].filter(Boolean);if(group==='Story')return storyFields;if(group==='Mechanics')return ['STR','DEX','CON','INT','WIS','CHA','Armor class','Hit points','Hit dice',...(['BBEG','Monster'].includes(s.fields.Role)?bossFields:[])];if(group==='Connections')return worldFields;return[];}
+function missingFor(s,group){return requiredFor(s,group).filter(k=>!String(s.fields[k]??'').trim());}function allMissing(s){return sections.slice(0,4).flatMap(g=>missingFor(s,g).map(name=>({group:g,name})));}
+function updateChrome(){$('character-sections').innerHTML=sections.map(g=>{const missing=missingFor(current(),g).length;return `<button data-section="${g}" aria-current="${section===g}"><span>${g}</span><small>${g==='Review'?allMissing(current()).length+' left':missing?missing+' left':'✓'}</small></button>`}).join('');$('batch-items').innerHTML=sheets.map((s,i)=>`<button class="btn secondary" data-sheet="${s.id}" aria-pressed="${s.id===selected}">${esc(s.fields.Name||'Character '+(i+1))}</button>`).join('');const s=current();$('character-summary').innerHTML=`<p class="small-heading" style="margin-top:1rem">You supplied</p><p><strong>${esc(s.fields.Name||'Unnamed character')}</strong><br>${esc(s.fields.Role)} · ${esc(s.fields['Race / type']||'Race not entered')}</p><p class="muted">${allMissing(s).length} required fields remain.<br>Authored text is never generated.</p>${sheets.length>1?'<button class="btn danger" id="remove-character">Remove this draft</button>':''}`;}
+function rowFields(group,r,i){const defs=group==='skills'?['Name','Bonus','Description']:group==='actions'?['Name','To hit','Description']:group==='traits'?['Name','Description']:['Spell name'];return `<div class="edit-row"><div class="fields">${defs.map(n=>`<label>${n}<input data-row-group="${group}" data-row-index="${i}" data-row-field="${n}" value="${esc(r[n]||'')}"></label>`).join('')}</div>${group==='actions'?`<div class="row-list">${(r.damages||[]).map((d,j)=>`<div class="fields" style="margin-top:.8rem">${['Dice count','Die sides','Bonus','Damage type'].map(k=>`<label>${k}<input data-damage-row="${i}" data-damage-index="${j}" data-damage-field="${k}" value="${esc(d[k]||'')}"></label>`).join('')}<button class="btn quiet" data-remove-damage="${i}:${j}">Remove damage</button></div>`).join('')}<button class="btn secondary" data-add-damage="${i}">+ Add damage</button></div>`:''}<button class="btn quiet" data-remove-row="${group}:${i}">Remove ${group==='spells'?'spell':group.slice(0,-1)} ${i+1}</button></div>`;}
+function render(){const s=current();let html='<h2 id="editor-section-title" tabindex="-1">'+section+'</h2>';if(section==='Identity'){html+='<p>Who is this person, and what is their place in the story?</p><div class="fields">'+field('Name')+field('Role','select',['NPC','BBEG','Monster'])+field('Race / type','select',races)+(s.fields['Race / type']==='Other'?field('Custom race'):'')+field(s.fields.Role==='Monster'?'CR':'Level',s.fields.Role==='Monster'?'text':'number')+field('Class / profession','select',classes)+(s.fields['Class / profession']==='Other'?field('Custom profession'):'')+field('Alignment','select',alignments)+'</div>';}else if(section==='Story'){html+='<p>Write the character as you know them. The full authored sheet needs every story field.</p>'+field('Background','textarea')+storyFields.filter(n=>n!=='Background').map(n=>`<details class="story-detail"><summary>${n} <small class="muted">${s.fields[n]?'· Written':'· Required'}</small></summary>${field(n,'textarea')}</details>`).join('');}else if(section==='Mechanics'){html+='<p>Enter your numbers and abilities. Blank values are not filled by a model.</p><h3>Attributes</h3><div class="attribute-grid">'+['STR','DEX','CON','INT','WIS','CHA'].map(n=>field(n,'number')).join('')+'</div><h3 style="margin-top:1.5rem">Combat</h3><div class="fields">'+field('Armor class','number')+field('Hit points','number')+field('Hit dice')+'</div>';for(const g of ['skills','actions','traits','spells']){html+=`<section style="margin-top:1.5rem"><div class="row between"><h3>${g[0].toUpperCase()+g.slice(1)}</h3><button class="btn secondary" data-add-row="${g}">+ Add ${g==='spells'?'spell':g.slice(0,-1)}</button></div>${s[g].map((r,i)=>rowFields(g,r,i)).join('')||'<p class="muted">No entries yet.</p>'}</section>`;}if(['BBEG','Monster'].includes(s.fields.Role))html+='<h3 style="margin-top:1.5rem">Boss details</h3><div class="fields">'+bossFields.map(n=>field(n,'textarea')).join('')+'</div>';}else if(section==='Connections'){html+='<p>Place this character in Greymarch. Written world context remains part of the authored sheet.</p><div class="fields">'+worldFields.map(n=>field(n,'textarea')).join('')+'</div><div class="row between" style="margin-top:1.5rem"><h3>Declared relations</h3><button class="btn secondary" id="add-relation">+ Add relation</button></div>';html+=s.relations.map((r,i)=>`<div class="edit-row fields"><label>Relationship<select data-relation="${i}" data-relation-field="type">${options(['relationship','debt','grudge','loyalty','member_of','located_in','rival_of','kin_of','ally_of','enemy_of','bases_at','controls','employs','worships','hails_from','protects'],r.type)}</select></label><label>Target<select data-relation="${i}" data-relation-field="target">${options(['Harbor — existing place','The Ledger — existing faction','Ash Circle — existing faction',...sheets.filter(x=>x.id!==s.id).map(x=>(x.fields.Name||'Unnamed character')+' — this batch')],r.target)}</select></label><button class="btn quiet" data-remove-relation="${i}">Remove relation</button></div>`).join('')||'<p class="muted">No declared relations. They are optional.</p>';}else{html+='<p>Review the authored characters before submission. This prototype checks completeness; final validation remains part of implementation.</p>';for(const draft of sheets){const missing=allMissing(draft);html+=`<section class="review-group"><h3>${esc(draft.fields.Name||'Unnamed character')}</h3><p class="muted">${esc(draft.fields.Role)} · ${esc(draft.fields['Race / type']||'Race not entered')} · ${missing.length} required fields left</p>${missing.length?`<div class="row">${missing.map(m=>`<button class="btn secondary" data-missing-sheet="${draft.id}" data-missing-section="${m.group}">${esc(m.name)}</button>`).join('')}</div>`:`<pre>${esc(draft.fields.Background)}</pre>`}</section>`;}html+=`<button class="btn" id="submit-characters" ${sheets.some(x=>allMissing(x).length)?'disabled':''}>Submit ${sheets.length===1?'character':sheets.length+' characters'}</button><p class="muted" style="margin-top:.8rem">Authored submission · No AI generation</p>`;}html+='<div class="row between" style="margin-top:1.6rem;border-top:1px solid var(--mc-border);padding-top:1rem">'+(section!=='Identity'?'<button class="btn secondary" data-section="'+sections[sections.indexOf(section)-1]+'">← Previous</button>':'<span></span>')+(section!=='Review'?'<button class="btn" data-section="'+sections[sections.indexOf(section)+1]+'">Continue →</button>':'')+'</div>';$('character-editor').innerHTML=html;updateChrome();}
+document.addEventListener('input',e=>{const el=e.target,s=current();if(el.dataset.field){s.fields[el.dataset.field]=el.value;updateChrome();}if(el.dataset.rowGroup){s[el.dataset.rowGroup][+el.dataset.rowIndex][el.dataset.rowField]=el.value;}if(el.dataset.damageRow){s.actions[+el.dataset.damageRow].damages[+el.dataset.damageIndex][el.dataset.damageField]=el.value;}if(el.dataset.relation){s.relations[+el.dataset.relation][el.dataset.relationField]=el.value;}});
+document.addEventListener('change',e=>{if(['Role','Race / type','Class / profession'].includes(e.target.dataset.field))render();});
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const s=current();if(b.dataset.section){section=b.dataset.section;render();$('editor-section-title').focus();}if(b.dataset.sheet){selected=b.dataset.sheet;render();$('editor-section-title').focus();}if(b.dataset.addRow){s[b.dataset.addRow].push(b.dataset.addRow==='actions'?{damages:[]}:{});render();}if(b.dataset.removeRow){const[g,i]=b.dataset.removeRow.split(':');s[g].splice(+i,1);render();}if(b.dataset.addDamage){s.actions[+b.dataset.addDamage].damages.push({});render();}if(b.dataset.removeDamage){const[i,j]=b.dataset.removeDamage.split(':');s.actions[+i].damages.splice(+j,1);render();}if(b.id==='add-relation'){s.relations.push({type:'relationship',target:''});render();}if(b.dataset.removeRelation){s.relations.splice(+b.dataset.removeRelation,1);render();}if(b.dataset.missingSheet){selected=b.dataset.missingSheet;section=b.dataset.missingSection;render();}if(b.id==='remove-character'){pendingRemove=s;$('remove-character-description').textContent='Remove '+(s.fields.Name||'this unnamed character')+' from the current batch? Its unsaved writing will be removed.';$('remove-character-dialog').showModal();}if(b.id==='submit-characters')notice('Preview only: the authored batch is complete enough for review. No characters have been saved.');});
+$('add-character-batch').onclick=()=>{selected='sheet-'+(++seq);sheets.push(makeSheet(selected));section='Identity';render();};$('confirm-remove-character').onclick=()=>{sheets.splice(sheets.indexOf(pendingRemove),1);selected=sheets[0].id;$('remove-character-dialog').close();render();notice('Removed this local draft only.');};render();
+</script></div></div></body></html>

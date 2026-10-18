@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "frozenOn": "2026-10-18",
+  "applicationCodeChanged": false,
+  "backendImplementationRequired": true,
+  "sourceWorkspace": "_bmad-output/planning-artifacts/ux-designs/ux-mythosCircle-2026-09-23",
+  "designs": [
+    {
+      "key": "worlds",
+      "route": "/",
+      "title": "Your Worlds \u2014 campaigns and lore",
+      "draftId": "9c0054be-871e-40fb-aa92-f214cbd68149",
+      "version": 2,
+      "role": "design-proposal",
+      "source": "mockups/worlds-proposal.html",
+      "sha256": "0e3bccc10d08f6c35e3c3f3f43a2391652a7432da965782e7d9b4ed1f1fa1f8b",
+      "extractedCode": "code/worlds",
+      "externalScripts": [
+        "https://cdn.tailwindcss.com"
+      ]
+    },
+    {
+      "key": "add-character",
+      "route": "/campaigns/:id/add-character",
+      "title": "Add Character \u2014 authored workspace",
+      "draftId": "1c84dc2e-d2f4-4d1b-b502-8fe341113163",
+      "version": 2,
+      "role": "design-proposal",
+      "source": "mockups/add-character-proposal.html",
+      "sha256": "ebf6d3f3ab06cadc3e7b09bc876a49cb9d06179f3d1c0e4e5e4132ea0a60f7b8",
+      "extractedCode": "code/add-character",
+      "externalScripts": [
+        "https://cdn.tailwindcss.com"
+      ]
+    },
+    {
+      "key": "guided-build",
+      "route": "/campaigns/:id/build-in",
+      "title": "World workspace \u2014 direct nested planning",
+      "draftId": "dff4ef13-a3af-4d0c-bb98-f6ab8352c26b",
+      "version": 6,
+      "role": "accepted-direction",
+      "source": "mockups/guided-build-proposal.html",
+      "sha256": "f94cb27918295f02a49ee1fccaf8c45322ee19cc166fb1b440e350207dfb4a9d",
+      "extractedCode": "code/guided-build",
+      "externalScripts": [
+        "https://cdn.tailwindcss.com",
+        "https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"
+      ]
+    },
+    {
+      "key": "library",
+      "route": "/library",
+      "title": "Library \u2014 private characters",
+      "draftId": "8f36f0b8-c14f-4edb-9aff-d21497256b77",
+      "version": 2,
+      "role": "design-proposal",
+      "source": "mockups/library-proposal.html",
+      "sha256": "baee0202a15f338f429ff62c821b20ce7137178687f47861ef77ba868b2e93e8",
+      "extractedCode": "code/library",
+      "externalScripts": [
+        "https://cdn.tailwindcss.com",
+        "https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"
+      ]
+    },
+    {
+      "key": "forge-reference",
+      "route": "/forge",
+      "title": "mythosCircle \u2014 Character Forge Refined",
+      "draftId": "043058c8-074c-4f93-afb2-15f980728109",
+      "version": 7,
+      "role": "style-reference-only",
+      "source": "mockups/forge-superdesign-v7.html",
+      "sha256": "2bf878d1e25c784d123afb4679a191895fb0354a2b46606180df033e56148cf9",
+      "extractedCode": "code/forge-reference",
+      "externalScripts": [
+        "https://cdn.tailwindcss.com"
+      ]
+    },
+    {
+      "key": "world-reference",
+      "route": "/campaigns/:id/world",
+      "title": "World directory \u2014 faithful current-layout baseline",
+      "draftId": "ad5c99be-2b33-43de-97cd-31bd42580414",
+      "version": 1,
+      "role": "style-reference-only",
+      "source": "mockups/world-superdesign-baseline.html",
+      "sha256": "eefce12963a61dde5e7f61f584cb0a7fd3cc778e256fc8aaa088fe3d9ca7a354",
+      "extractedCode": "code/world-reference",
+      "externalScripts": [
+        "https://cdn.tailwindcss.com",
+        "https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"
+      ]
+    },
+    {
+      "key": "overview-reference",
+      "route": "/campaigns/:id/overview",
+      "title": "Overview \u2014 faithful current-layout baseline",
+      "draftId": "38e0cef3-32a3-4cdf-823f-91f7bfcc2877",
+      "version": 3,
+      "role": "style-reference-only",
+      "source": "mockups/overview-superdesign-baseline.html",
+      "sha256": "2eb4b3afb3a0df2d1d578ed085b8f0b611ea565e3613eafbb60e4fd9b5aa5b6d",
+      "extractedCode": "code/overview-reference",
+      "externalScripts": [
+        "https://cdn.tailwindcss.com"
+      ]
+    }
+  ],
+  "sourceApplicationRevision": "0f03ed5e814d6e2d91c838de89ad25e09975ec38",
+  "archiveBaseRevision": "d62be12f689374ca0636371cdd1f2bb58e38ebad"
+}
