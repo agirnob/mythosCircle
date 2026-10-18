@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en" style="color-scheme: dark; background: #080d16;">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guided Build - mythosCircle</title>
+  <meta name="view-transition" content="same-origin">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
+  <style>
+    :root {
+      --mc-app-bg: #080d16;
+      --mc-app-bg-raised: #0b1320;
+      --mc-surface: #0e1724;
+      --mc-surface-raised: #131e2e;
+      --mc-surface-hover: #17253a;
+      --mc-input: #0a1421;
+      --mc-border: #24344a;
+      --mc-border-bright: #334966;
+      --mc-glow-violet: rgba(125, 92, 255, 0.24);
+      --mc-glow-cyan: rgba(53, 190, 205, 0.18);
+      --mc-text-primary: #eef1fb;
+      --mc-text-secondary: #b2bdd0;
+      --mc-text-muted: #74839a;
+      --mc-interactive: #8b6cff;
+      --mc-interactive-bright: #a994ff;
+      --mc-canonical: #5ed0c1;
+      --mc-proposal: #c09cff;
+      --mc-warning: #e7b866;
+      --mc-danger: #ed777d;
+      --mc-success: #75d39e;
+      --mc-display-font: Georgia, 'Times New Roman', serif;
+      --mc-body-font: 'Avenir Next', 'Segoe UI', sans-serif;
+      --mc-radius: 12px;
+      --mc-radius-sm: 7px;
+      --mc-sidebar-width: 236px;
+    }
+    
+    /* View Transitions */
+    html { background-color: var(--mc-app-bg); }
+    @view-transition { navigation: auto; }
+    ::view-transition { background-color: var(--mc-app-bg); }
+    
+    ::view-transition-old(sidebar),
+    ::view-transition-new(sidebar) {
+        animation: none;
+        mix-blend-mode: normal;
+    }
+    
+    ::view-transition-old(main-content) {
+        animation: 0.25s ease-out both fade-out;
+    }
+    ::view-transition-new(main-content) {
+        animation: 0.25s ease-in 0.1s both fade-in;
+    }
+    
+    @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+    @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+    
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+        animation: none;
+        mix-blend-mode: normal;
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      font-family: var(--mc-body-font);
+      background: radial-gradient(circle at 85% -10%, rgba(117, 83, 255, 0.13), transparent 34rem), 
+                  radial-gradient(circle at 10% 40%, rgba(40, 160, 190, 0.06), transparent 28rem), 
+                  var(--mc-app-bg);
+      color: var(--mc-text-primary);
+      line-height: 1.5;
+    }
+
+    .mc-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      white-space: nowrap;
+      padding: 0.55rem 0.9rem;
+      border-radius: var(--mc-radius-sm);
+      background: linear-gradient(135deg, var(--mc-interactive-bright), var(--mc-interactive));
+      color: var(--mc-app-bg);
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid transparent;
+      cursor: pointer;
+      box-shadow: 0 8px 22px var(--mc-glow-violet);
+      transition: filter 150ms ease, transform 150ms ease;
+    }
+    .mc-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+    .mc-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; filter: none; }
+    
+    .mc-btn-secondary {
+      background: rgba(19, 30, 46, 0.72);
+      border-color: var(--mc-border);
+      color: var(--mc-text-secondary);
+      font-weight: 500;
+      box-shadow: none;
+    }
+    .mc-btn-secondary:hover:not(:disabled) {
+      color: var(--mc-text-primary);
+      border-color: var(--mc-border-bright);
+      background: var(--mc-surface-raised);
+    }
+    
+    .mc-btn-ghost {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--mc-text-secondary);
+      border-radius: var(--mc-radius-sm);
+      padding: 0.4rem 0.6rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 150ms ease;
+    }
+    .mc-btn-ghost:hover {
+      color: var(--mc-text-primary);
+      background: var(--mc-surface-raised);
+    }
+
+    .mc-input, .mc-textarea {
+      width: 100%;
+      background: var(--mc-input);
+      border: 1px solid var(--mc-border);
+      border-radius: var(--mc-radius-sm);
+      color: var(--mc-text-primary);
+      padding: 0.6rem 0.75rem;
+      transition: border-color 150ms ease, box-shadow 150ms ease;
+      font-family: inherit;
+    }
+    .mc-input:focus, .mc-textarea:focus {
+      border-color: var(--mc-interactive);
+      box-shadow: 0 0 0 3px var(--mc-glow-violet);
+      outline: none;
+    }
+
+    .mc-shell {
+      display: flex;
+      min-height: 100vh;
+      width: 100%;
+      background: linear-gradient(90deg, rgba(13, 23, 36, 0.92), transparent 45%);
+    }
+    
+    .mc-sidebar {
+      width: var(--mc-sidebar-width);
+      flex: none;
+      border-right: 1px solid var(--mc-border);
+      padding: 1.5rem 1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      background: rgba(10, 18, 30, 0.8);
+      backdrop-filter: blur(18px);
+    }
+    
+    .mc-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: var(--mc-text-primary);
+      text-decoration: none;
+      letter-spacing: 0.01em;
+    }
+    .mc-brand > span:last-child { font-family: var(--mc-display-font); font-size: 1.25rem; }
+    .mc-brand > span:last-child span { color: var(--mc-interactive-bright); }
+    .mc-brand-mark {
+      display: grid;
+      width: 1.9rem;
+      height: 1.9rem;
+      place-items: center;
+      border: 1px solid rgba(169, 148, 255, 0.7);
+      border-radius: 8px;
+      background: linear-gradient(145deg, rgba(139, 108, 255, 0.35), rgba(33, 188, 205, 0.16));
+      color: var(--mc-interactive-bright);
+      box-shadow: 0 0 24px var(--mc-glow-violet);
+    }
+    
+    .mc-nav-group { display: flex; flex-direction: column; gap: 0.25rem; }
+    .mc-nav-title {
+      margin: 0 0 0.25rem;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--mc-text-muted);
+    }
+    .mc-nav-link {
+      color: var(--mc-text-secondary);
+      text-decoration: none;
+      padding: 0.35rem 0.5rem;
+      border-radius: var(--mc-radius-sm);
+      transition: all 150ms ease;
+    }
+    .mc-nav-link:hover {
+      color: var(--mc-text-primary);
+      background: var(--mc-surface-hover);
+    }
+    .mc-nav-link.router-link-active {
+      color: var(--mc-text-primary);
+      background: linear-gradient(90deg, rgba(139, 108, 255, 0.25), rgba(139, 108, 255, 0.06));
+      box-shadow: inset 2px 0 0 var(--mc-interactive);
+    }
+    
+    .mc-account { margin-top: auto; display: flex; flex-direction: column; gap: 0.5rem; }
+    .mc-account-email { font-size: 0.85rem; color: var(--mc-text-muted); overflow: hidden; text-overflow: ellipsis; }
+
+    .mc-main {
+      flex: 1;
+      min-width: 0;
+      padding: clamp(1.25rem, 3vw, 2.5rem);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .mc-eyebrow {
+      margin: 0 0 0.5rem;
+      color: var(--mc-interactive-bright);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .mc-page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--mc-border);
+      flex-shrink: 0;
+    }
+    .mc-page-title { margin: 0; font-size: clamp(1.75rem, 3vw, 2.5rem); font-family: var(--mc-display-font); font-weight: 700; line-height: 1.1; }
+    .mc-page-description { margin: 0.5rem 0 0; color: var(--mc-text-secondary); font-size: 0.95rem; }
+
+    .mc-workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 1.5rem;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .mc-editor-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      overflow-y: auto;
+      padding-right: 0.5rem;
+      /* Scrollbar styling */
+      scrollbar-width: thin;
+      scrollbar-color: var(--mc-border) transparent;
+    }
+    .mc-editor-panel::-webkit-scrollbar {
+      width: 6px;
+    }
+    .mc-editor-panel::-webkit-scrollbar-thumb {
+      background-color: var(--mc-border);
+      border-radius: 3px;
+    }
+
+    .mc-graph-panel {
+      background: var(--mc-surface-raised);
+      border: 1px solid var(--mc-border);
+      border-radius: var(--mc-radius);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .mc-graph-header {
+      padding: 1rem;
+      border-bottom: 1px solid var(--mc-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--mc-surface);
+    }
+    .mc-graph-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--mc-text-secondary);
+      margin: 0;
+    }
+    .mc-graph-body {
+      flex: 1;
+      padding: 1rem;
+      overflow-y: auto;
+      position: relative;
+    }
+
+    /* AI Planner Widget */
+    .mc-ai-planner {
+      background: linear-gradient(160deg, rgba(26, 31, 53, 0.9), rgba(13, 17, 31, 0.95));
+      border: 1px solid rgba(139, 108, 255, 0.3);
+      border-radius: var(--mc-radius);
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      position: relative;
+      overflow: hidden;
+    }
+    .mc-ai-planner::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--mc-interactive), transparent);
+      opacity: 0.5;
+    }
+    .mc-ai-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+    .mc-ai-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--mc-proposal);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0;
+    }
+    .mc-ai-badge {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      background: rgba(192, 156, 255, 0.15);
+      color: var(--mc-proposal);
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      border: 1px solid rgba(192, 156, 255, 0.3);
+    }
+    .mc-ai-proposal {
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--mc-border);
+      border-radius: var(--mc-radius-sm);
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    .mc-ai-diff-add {
+      color: var(--mc-success);
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
+    .mc-ai-diff-add::before {
+      content: '+';
+      font-weight: bold;
+    }
+    .mc-ai-actions {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: flex-end;
+    }
+
+    /* Nested Card Editor */
+    .mc-node {
+      background: var(--mc-surface);
+      border: 1px solid var(--mc-border);
+      border-radius: var(--mc-radius-sm);
+      margin-bottom: 0.75rem;
+      transition: border-color 150ms ease, box-shadow 150ms ease;
+    }
+    .mc-node:focus-within, .mc-node.is-selected {
+      border-color: var(--mc-interactive);
+      box-shadow: 0 0 0 1px var(--mc-interactive), 0 4px 12px rgba(0,0,0,0.2);
+    }
+    .mc-node-header {
+      padding: 0.75rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      cursor: pointer;
+    }
+    .mc-node-icon {
+      color: var(--mc-text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .mc-node-input {
+      background: transparent;
+      border: none;
+      color: var(--mc-text-primary);
+      font-size: 1rem;
+      font-weight: 600;
+      font-family: inherit;
+      flex: 1;
+      padding: 0.25rem;
+      border-radius: 4px;
+    }
+    .mc-node-input:focus {
+      outline: none;
+      background: rgba(255,255,255,0.05);
+    }
+    .mc-node-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.75rem;
+    }
+    .mc-node-kind {
+      color: var(--mc-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      background: var(--mc-surface-raised);
+      border: 1px solid var(--mc-border);
+    }
+    .mc-node-status-new {
+      color: var(--mc-canonical);
+      background: rgba(94, 208, 193, 0.1);
+      border: 1px solid rgba(94, 208, 193, 0.3);
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+    }
+    .mc-node-status-existing {
+      color: var(--mc-text-muted);
+      background: rgba(255,255,255,0.05);
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+    }
+    .mc-node-actions {
+      opacity: 0;
+      transition: opacity 150ms ease;
+      display: flex;
+      gap: 0.25rem;
+    }
+    .mc-node:hover .mc-node-actions, .mc-node:focus-within .mc-node-actions {
+      opacity: 1;
+    }
+    .mc-action-btn {
+      background: transparent;
+      border: none;
+      color: var(--mc-text-muted);
+      padding: 0.25rem;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .mc-action-btn:hover {
+      background: var(--mc-surface-raised);
+      color: var(--mc-text-primary);
+    }
+    
+    .mc-node-children {
+      padding: 0 1rem 1rem 2.5rem;
+      border-top: 1px solid var(--mc-border);
+      background: rgba(0,0,0,0.1);
+      margin-top: -1px;
+    }
+    .mc-node-children-list {
+      margin-top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .mc-add-child-bar {
+      margin-top: 1rem;
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    /* Graph Visualization Mockup */
+    .mc-graph-node {
+      position: absolute;
+      background: var(--mc-surface);
+      border: 1px solid var(--mc-border);
+      border-radius: 20px;
+      padding: 0.4rem 0.75rem;
+      font-size: 0.8rem;
+      color: var(--mc-text-primary);
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      z-index: 2;
+      cursor: pointer;
+      transition: all 150ms ease;
+      white-space: nowrap;
+    }
+    .mc-graph-node:hover, .mc-graph-node.is-selected {
+      border-color: var(--mc-interactive);
+      background: var(--mc-surface-raised);
+      z-index: 3;
+    }
+    .mc-graph-node.kind-place { border-left: 3px solid #5ed0c1; }
+    .mc-graph-node.kind-char { border-left: 3px solid #8b6cff; }
+    .mc-graph-node.kind-faction { border-left: 3px solid #ed777d; }
+    
+    .mc-graph-edge {
+      position: absolute;
+      background: var(--mc-border-bright);
+      height: 1px;
+      transform-origin: 0 50%;
+      z-index: 1;
+      opacity: 0.6;
+    }
+    .mc-graph-edge-label {
+      position: absolute;
+      background: var(--mc-surface-raised);
+      font-size: 0.65rem;
+      color: var(--mc-text-muted);
+      padding: 0.1rem 0.3rem;
+      border-radius: 4px;
+      border: 1px solid var(--mc-border);
+      z-index: 2;
+      transform: translate(-50%, -50%);
+    }
+
+    /* Submit Bar */
+    .mc-submit-bar {
+      margin-top: auto;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--mc-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .mc-submit-info {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .mc-submit-title {
+      font-weight: 600;
+      font-size: 0.95rem;
+      margin: 0;
+    }
+    .mc-submit-meta {
+      font-size: 0.8rem;
+      color: var(--mc-text-secondary);
+      margin: 0;
+    }
+    .mc-submit-actions {
+      display: flex;
+      gap: 0.75rem;
+    }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .mc-workspace {
+        grid-template-columns: 1fr;
+        overflow-y: auto;
+      }
+      .mc-editor-panel {
+        overflow-y: visible;
+      }
+      .mc-graph-panel {
+        display: none; /* Hide on smaller screens, rely on toggle if implemented */
+      }
+      .mc-main {
+        height: auto;
+        overflow: visible;
+      }
+    }
+
+    @media (max-width: 800px) {
+      .mc-shell {
+        flex-direction: column;
+        background: none;
+      }
+      .mc-sidebar {
+        width: auto;
+        display: block;
+        padding: 1rem;
+        border-right: none;
+        border-bottom: 1px solid var(--mc-border);
+        backdrop-filter: none;
+      }
+      .mc-nav-group {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.25rem;
+        margin-top: 0.5rem;
+      }
+      .mc-nav-title {
+        width: 100%;
+        margin-bottom: 0;
+      }
+      .mc-account {
+        margin-top: 1rem;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+      }
+    }
+  
+[hidden]{display:none!important}.mc-main{height:auto!important;overflow:visible!important;min-width:0}.mc-workspace{overflow:visible!important;align-items:start;grid-template-columns:minmax(0,1fr) 360px!important}.mc-editor-panel{overflow:visible!important;padding-right:0}.mc-graph-panel{display:flex!important;position:sticky;top:1rem}.mc-node-header{flex-wrap:wrap;gap:.65rem}.mc-node-input{min-width:100px;width:160px;flex:1;color:var(--mc-text-primary);background:var(--mc-input);border:1px solid var(--mc-text-muted);border-radius:7px;padding:.5rem}.node-tools{display:flex;gap:.35rem;flex-wrap:wrap}.node-tools button{min-height:36px;padding:.3rem .5rem;background:var(--mc-surface-hover);border:1px solid var(--mc-border-bright);border-radius:7px;color:var(--mc-text-primary);font-size:.8rem}.node-detail{margin:.5rem 1rem 1rem;display:grid;gap:.6rem}.node-detail label{display:grid;gap:.3rem;font-size:.85rem;color:var(--mc-text-secondary)}.node-detail select,.node-detail textarea{width:100%;min-width:0;background:var(--mc-input);border:1px solid var(--mc-text-muted);color:var(--mc-text-primary);border-radius:7px;padding:.5rem}.mc-node-children{padding-left:1rem;margin-left:1rem;border-left:1px solid var(--mc-border-bright)}.graph-vertex{cursor:pointer}.graph-vertex:focus-visible{outline:none}.graph-vertex:focus-visible rect{stroke:var(--mc-interactive-bright);stroke-width:3}.mc-submit-bar{position:static!important;flex-wrap:wrap;gap:1rem;margin-top:1.5rem}.mc-ai-badge{color:var(--mc-text-secondary)}.mc-input,.mc-textarea{border-color:var(--mc-text-muted)}#plan-feedback:empty{display:none}.relation-line{font-size:.85rem;color:var(--mc-text-secondary);margin:.5rem 0}.proposal-box{padding:1rem;border:1px solid var(--mc-proposal);border-radius:7px;color:var(--mc-text-primary)}.proposal-box p{margin:.3rem 0 1rem}.mc-node-status-new{font-size:.7rem}button{color:inherit}:focus-visible{outline:2px solid var(--mc-interactive-bright);outline-offset:3px}@media(max-width:1100px){.mc-workspace{grid-template-columns:1fr!important}.mc-graph-panel{position:static}.mc-node-meta{margin-left:0}.mc-submit-bar button{max-width:100%}}@media(max-width:560px){.mc-node-children{padding-left:.5rem;margin-left:.4rem}.mc-node-header{padding:.8rem}.node-tools{width:100%}.mc-node-input{width:100%}.mc-submit-bar .mc-btn{width:100%}}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+.seed-panel{padding:1.2rem;background:var(--mc-surface);border:1px solid var(--mc-border);border-radius:12px;margin:1.2rem 0}.seed-panel h2,.seed-panel h3{margin:0 0 .5rem}.seed-panel p,.seed-hint{color:var(--mc-text-secondary);font-size:.9rem}.seed-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}.seed-group{min-width:0;padding:1rem;background:var(--mc-app-bg-raised);border-radius:8px}.seed-group label,.seed-fields label{display:grid;gap:.4rem;margin:.65rem 0;color:var(--mc-text-secondary);font-size:.9rem}.seed-group input,.seed-group select,.seed-group textarea,.seed-fields input,.seed-fields select,.seed-fields textarea{width:100%;box-sizing:border-box;background:var(--mc-input);color:var(--mc-text-primary);border:1px solid var(--mc-text-muted);border-radius:7px;padding:.65rem;font:inherit}.seed-actions{display:flex;flex-wrap:wrap;gap:.5rem;margin:.7rem 0}.seed-actions button{min-height:44px}.seed-fields{padding:.5rem 0}.seed-two{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.seed-panel summary,.node-detail summary{cursor:pointer;min-height:44px;align-content:center}.seed-panel pre{white-space:pre-wrap;overflow-wrap:anywhere}.seed-badge{font-size:.75rem;color:var(--mc-canonical)}.node-tools button{min-height:44px}.mc-node-input{box-sizing:border-box}.mc-main{max-width:none}.seed-group details textarea{min-height:110px}@media(max-width:1250px){.seed-grid{grid-template-columns:1fr}.seed-two{grid-template-columns:1fr}}@media(max-width:560px){.mc-main{padding:1rem!important}.seed-panel{padding:1rem}.node-detail{margin:.5rem}.seed-actions .mc-btn{white-space:normal}}
+
+*{box-sizing:border-box}[hidden]{display:none!important}.mc-main{padding:2rem 2.5rem!important;flex:1;min-width:0}.phase-nav{display:flex;gap:.5rem;padding:.4rem;border:1px solid var(--mc-border);border-radius:10px;width:fit-content;margin:1.4rem 0}.phase-nav button{border:0;border-radius:7px;padding:.7rem 1rem;background:transparent;color:var(--mc-text-secondary);min-height:44px;font:inherit;cursor:pointer}.phase-nav button[aria-selected=true]{background:var(--mc-surface-hover);color:var(--mc-text-primary);box-shadow:inset 0 -2px var(--mc-interactive)}.hint{color:var(--mc-text-secondary);font-size:.9rem}.prototype-note{font-size:.8rem;color:var(--mc-text-secondary);margin:.6rem 0 1.6rem}.build-layout{display:grid;grid-template-columns:minmax(0,760px) 260px;gap:2rem;align-items:start}.form-panel{padding:1.4rem;background:var(--mc-surface);border:1px solid var(--mc-border);border-radius:12px;margin-bottom:1rem}.form-panel h2{font-family:var(--mc-display-font);font-size:1.4rem;margin:0 0 .4rem}.form-panel h3{margin:.3rem 0}.form-head{display:flex;gap:1rem;align-items:center;justify-content:space-between}.count-field{width:155px;flex-shrink:0}.field{display:grid;gap:.4rem;margin:.8rem 0;font-size:.9rem;color:var(--mc-text-secondary)}input,textarea,select{font:inherit;color:var(--mc-text-primary);background:var(--mc-input);border:1px solid var(--mc-text-muted);border-radius:7px;padding:.65rem;max-width:100%;min-width:0}input,textarea{width:100%}textarea{resize:vertical}button{font:inherit;cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}.seed-row{display:flex;gap:.6rem;align-items:center;margin:.6rem 0}.seed-row input{flex:1}.row-btn{background:transparent;color:var(--mc-text-secondary);border:1px solid var(--mc-border-bright);border-radius:7px;padding:.5rem .65rem;min-height:44px}.row-actions{display:flex;flex-wrap:wrap;gap:.5rem;margin:.8rem 0}.form-panel summary{cursor:pointer;min-height:44px;align-content:center}.seed-details{padding:.7rem 1rem;border:1px solid var(--mc-border);border-radius:8px;margin:.6rem 0}.seed-details .seed-fields{padding:0}.seed-fields label{display:grid;gap:.4rem;margin:.7rem 0}.side-note{padding:1.2rem;border-left:2px solid var(--mc-interactive);position:sticky;top:1rem}.side-note h2{font-family:var(--mc-display-font);font-size:1.35rem}.side-note p{color:var(--mc-text-secondary);font-size:.9rem}.world-layout{display:grid;grid-template-columns:200px minmax(0,1fr) 300px;gap:1rem;align-items:start}.world-outline,.world-focus,.expand-panel{min-width:0;background:var(--mc-surface);border:1px solid var(--mc-border);border-radius:12px;padding:1.1rem}.world-outline h2,.expand-panel h2{font-size:1rem;margin:0 0 .7rem}.world-outline{position:sticky;top:1rem}.outline-list{list-style:none;padding:0;margin:0}.outline-list .outline-list{padding-left:.65rem;margin-left:.3rem;border-left:1px solid var(--mc-border)}.outline-btn{background:transparent;text-align:left;width:100%;border:0;border-radius:6px;padding:.55rem .4rem;min-height:44px;color:var(--mc-text-secondary);overflow-wrap:anywhere;font-size:.9rem}.outline-btn[aria-current=true]{background:rgba(139,108,255,.14);color:var(--mc-text-primary)}.kind-dot{color:var(--mc-canonical);margin-right:.35rem}.world-focus h2{font-family:var(--mc-display-font);font-size:2rem;margin:.4rem 0}.crumbs{font-size:.85rem;color:var(--mc-text-secondary);margin:0 0 .7rem}.existing-badge,.planned-badge{display:inline-block;font-size:.72rem;border-radius:5px;padding:.2rem .45rem;border:1px solid #5ed0c1;color:#5ed0c1;white-space:nowrap}.planned-badge{border-style:dashed;border-color:#c09cff;color:#c09cff}.entity-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem}.entity-tile{padding:.9rem;border:1px solid var(--mc-border-bright);border-radius:9px;min-width:0;display:grid;gap:.5rem;align-content:start;background:var(--mc-app-bg-raised)}.entity-tile.planned{border-style:dashed;border-color:var(--mc-proposal);background:rgba(139,108,255,.05)}.entity-tile h4{margin:0;font-size:1rem}.entity-tile p{font-size:.85rem;margin:0;color:var(--mc-text-secondary)}.entity-tile button{width:100%;text-align:left}.section-title{font-size:1rem;margin:1.4rem 0 .7rem}.expand-panel{position:sticky;top:1rem}.allocation{display:grid;grid-template-columns:1fr 75px;align-items:center;gap:.6rem;margin:.6rem 0;font-size:.9rem}.allocation input{min-height:44px}.expand-panel textarea{font-size:.85rem}.expand-panel .mc-btn{width:100%;white-space:normal;margin:.35rem 0}.scope-name{font-family:var(--mc-display-font);font-size:1.5rem;margin:.4rem 0}.proposal-review{padding:.8rem;border:1px solid var(--mc-proposal);border-radius:8px;margin:1rem 0}.proposal-review ul{padding-left:1.1rem;color:var(--mc-text-secondary);font-size:.85rem}.world-toolbar{display:flex;justify-content:space-between;gap:1rem;align-items:center;margin:1.2rem 0;flex-wrap:wrap}.plan-review{border-top:1px solid var(--mc-border);margin-top:1rem;padding-top:.8rem}.plan-review p{font-size:.85rem;color:var(--mc-text-secondary)}.graph-surface{margin-top:1rem;padding:1rem;border:1px solid var(--mc-border);border-radius:10px;background:var(--mc-app-bg-raised)}.world-empty{text-align:center;padding:4rem 1rem;background:var(--mc-surface);border:1px solid var(--mc-border);border-radius:12px}.world-empty h2{font-family:var(--mc-display-font);font-size:2rem}.state-live{padding:.7rem 0;color:var(--mc-canonical);font-size:.9rem}.state-live:empty{display:none}.world-summary{font-size:.85rem;color:var(--mc-text-secondary)}.scope-context{padding:.8rem;border-left:2px solid var(--mc-canonical);background:var(--mc-app-bg-raised);font-size:.85rem;color:var(--mc-text-secondary)}.planned-edit{display:grid;gap:.5rem}.planned-edit label{font-size:.8rem;color:var(--mc-text-secondary);display:grid;gap:.3rem}.planned-edit input,.planned-edit select{width:100%;font-size:.85rem}.world-focus p{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}.graph-key{display:flex;gap:1rem;font-size:.8rem;color:var(--mc-text-secondary);margin:.5rem 0}.mc-btn-secondary,.row-btn{border-color:var(--mc-text-muted)}:focus-visible{outline:2px solid var(--mc-interactive-bright);outline-offset:3px}@media(min-width:1650px){.world-layout{grid-template-columns:220px minmax(0,1fr) 340px}}@media(max-width:1250px){.world-layout{grid-template-columns:180px minmax(0,1fr)}.expand-panel{grid-column:2;position:static}.build-layout{grid-template-columns:1fr}.side-note{position:static}}@media(max-width:800px){.mc-main{padding:1.2rem!important}.world-layout{grid-template-columns:1fr}.world-outline,.expand-panel{grid-column:auto;position:static}.world-outline>details>summary{min-height:44px;cursor:pointer}.entity-grid{grid-template-columns:1fr}.phase-nav{width:100%}.phase-nav button{flex:1;padding:.7rem .5rem;font-size:.9rem}.form-head{align-items:start;flex-direction:column}.count-field{width:100%}.form-panel{padding:1rem}.seed-row{flex-wrap:wrap}.seed-row input{min-width:140px}.world-focus h2{font-size:1.7rem}}
+#world-graph-content{overflow-x:auto;max-width:100%}#world-graph-content svg{min-width:660px}g[role="button"]{cursor:pointer}g[role="button"]:focus-visible rect{stroke:#a994ff;stroke-width:3}.mc-main input,.mc-main select,.mc-main textarea{padding:.65rem;min-height:44px;border:1px solid #74839a;border-radius:7px;font:inherit;background:#0a1421;color:#eef1fb}.existing-badge,.planned-badge{width:fit-content}.world-toolbar h2{font-size:1.5rem}.mc-main .seed-details .seed-fields input,.mc-main .seed-details .seed-fields textarea,.mc-main .seed-details .seed-fields select{width:100%}
+.planning-toolbar{display:flex;gap:.5rem;flex-wrap:wrap;margin:1rem 0}.planning-toolbar .row-btn{background:var(--mc-surface-hover);color:var(--mc-text-primary)}.plan-branch{border:1px dashed var(--mc-proposal);border-radius:9px;background:rgba(139,108,255,.04);margin:.65rem 0;min-width:0}.plan-row{padding:.75rem;display:flex;gap:.55rem;align-items:center;flex-wrap:wrap}.plan-row input{flex:1;width:130px;min-width:100px;font-size:.95rem}.plan-row .planned-badge{font-size:.7rem}.placement-line{margin:0 .8rem .5rem;color:var(--mc-text-secondary);font-size:.8rem}.plan-branch>details{padding:0 .8rem .7rem}.plan-branch>details>summary{min-height:44px;cursor:pointer;align-content:center;font-size:.85rem;color:var(--mc-text-secondary)}.plan-nested{margin:0 .7rem .7rem;padding-left:.7rem;border-left:1px solid var(--mc-proposal)}.plan-nested:empty{display:none}.plan-child-tools{padding:0 .8rem .65rem;display:flex;flex-wrap:wrap;gap:.4rem}.plan-child-tools .row-btn{font-size:.8rem;padding:.4rem .5rem}.plan-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:.7rem}.plan-edit-grid label{font-size:.85rem;color:var(--mc-text-secondary);display:grid;gap:.4rem}.plan-edit-grid label:last-child{grid-column:1/-1}.plan-edit-grid select,.plan-edit-grid textarea{width:100%}.plan-edit-grid .row-btn{width:fit-content}.world-toolbar .plan-submit{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}.plan-summary-bar{border:1px solid var(--mc-border);background:var(--mc-surface);padding:.7rem 1rem;border-radius:9px;margin:0 0 1rem}.plan-summary-bar p{margin:.2rem 0}.outline-btn.is-planned{color:var(--mc-proposal)}.world-focus .entity-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.plan-group-heading{display:flex;gap:.7rem;align-items:center;margin:1.2rem 0 .5rem;flex-wrap:wrap}.plan-group-heading h3{font-size:1rem;margin:0}.plan-group-heading button{font-size:.8rem}.plan-tools summary{min-height:44px;cursor:pointer;align-content:center}.plan-tools{border-top:1px solid var(--mc-border);padding-top:.6rem;margin-top:.6rem}.plan-help{padding:.85rem;border-left:2px solid var(--mc-proposal);color:var(--mc-text-secondary);font-size:.9rem;margin:1rem 0}.plan-guidance{margin-top:.5rem}.plan-tool-actions{display:flex;gap:.5rem;flex-wrap:wrap}.plan-tool-actions button{min-height:44px}.expand-panel .plan-review{display:none}.expand-panel h2{font-family:var(--mc-display-font);font-size:1.25rem}.plan-row .row-btn{min-width:44px}.undo-plan{font-size:.85rem}@media(max-width:800px){.world-focus .entity-grid{grid-template-columns:1fr}.plan-edit-grid{grid-template-columns:1fr}.plan-row input{width:100%;flex-basis:100%}.plan-nested{padding-left:.4rem;margin-left:.4rem}.plan-row{padding:.7rem}.world-toolbar .plan-submit{width:100%}.world-toolbar .plan-submit>.mc-btn{flex:1;white-space:normal}.planning-toolbar .row-btn{flex:1;font-size:.85rem}.plan-submit .mc-btn{font-size:.85rem}.expand-panel{margin-top:.5rem}}
+</style>
+</head>
+<body><div id="prototype-root">
+  <div class="mc-shell">
+    <aside aria-label="Campaign workspace" class="mc-sidebar" style="view-transition-name: sidebar">
+      <a href="https://p.superdesign.dev/draft/38e0cef3-32a3-4cdf-823f-91f7bfcc2877" class="mc-brand" id="preview-link-1">
+        <span aria-hidden="true" class="mc-brand-mark">✦</span>
+        <span>mythos<span>Circle</span></span>
+      </a>
+      <nav class="mc-nav-group">
+        <p class="mc-nav-title">Campaign</p>
+        <a href="https://p.superdesign.dev/draft/38e0cef3-32a3-4cdf-823f-91f7bfcc2877" class="mc-nav-link" id="preview-link-2">Overview</a>
+        <a href="#tonight" class="mc-nav-link" id="preview-link-3">Tonight</a>
+        <a href="#world" class="mc-nav-link" id="preview-link-4">World</a>
+      </nav>
+      <nav class="mc-nav-group">
+        <p class="mc-nav-title">Create</p>
+        <a href="#ask" class="mc-nav-link" id="preview-link-5">Ask the World</a>
+        <a href="#add-character" class="mc-nav-link" id="preview-link-6">Add character</a>
+        <a href="https://p.superdesign.dev/draft/dff4ef13-a3af-4d0c-bb98-f6ab8352c26b" class="mc-nav-link router-link-active" id="preview-link-7">Guided Build</a>
+      </nav>
+      <nav class="mc-nav-group">
+        <p class="mc-nav-title">Tools</p>
+        <a href="#graph" class="mc-nav-link" id="preview-link-8">Graph</a>
+      </nav>
+      <nav class="mc-nav-group" style="margin-top: 1rem;">
+        <p class="mc-nav-title">Global</p>
+        <a href="#your-worlds" class="mc-nav-link" id="preview-link-9">Your Worlds</a>
+        <a href="https://p.superdesign.dev/draft/8f36f0b8-c14f-4edb-9aff-d21497256b77" class="mc-nav-link" id="preview-link-10">Library</a>
+      </nav>
+      <div class="mc-account">
+        <span class="mc-account-email">design-preview@example.test</span>
+        <button type="button" class="mc-btn-ghost">Log out</button>
+      </div>
+    </aside>
+
+    <main id="main-content" class="mc-main" tabindex="-1"><p class="mc-eyebrow">Greymarch / Create &amp; develop</p><header><h1 class="mc-page-title">Build a world. Keep it growing.</h1><p class="mc-page-description">Start with a foundation, then develop the places and people that matter to your story.</p></header>
+<div class="phase-nav" role="tablist" aria-label="Worldbuilding sections"><button id="tab-build" role="tab" aria-selected="true" aria-controls="build-section" tabindex="0">01 · Guided Build</button><button id="tab-world" role="tab" aria-selected="false" aria-controls="world-section" tabindex="-1">02 · World workspace</button></div><p class="prototype-note">Interactive design preview · generation and AI suggestions use local sample content. Nothing is saved to your campaign.</p><p id="flow-status" class="state-live" role="status" aria-live="polite"></p>
+<section id="build-section" role="tabpanel" aria-labelledby="tab-build"><div class="build-layout"><div><section class="form-panel"><p class="mc-eyebrow">Start simple</p><h2>Your first foundation</h2><p class="hint">Give the model a few anchors, or let it invent them. You can shape individual entries as much as you like.</p><details><summary>World seed · Greymarch · dark fantasy</summary><p class="hint">A river city at the edge of a fading kingdom.</p><h3>Saved custom lore</h3><pre>The river remembers every oath. No bridge may be built without the ferrymen’s consent.</pre></details></section><div id="foundation-inputs"></div><section class="form-panel"><h2>Build notes</h2><p class="hint">Rumors, history, tone, connections—anything the first build should take into account.</p><label class="field">Free-form notes<textarea id="foundation-notes" rows="5" maxlength="2000" placeholder="The harbor is preparing for a winter festival…"></textarea></label><p class="hint"><span id="foundation-note-count">0</span> / 2,000 · Notes guide this build; saved world lore remains intact.</p></section><section class="form-panel"><h2>Ready to bring it to life?</h2><p id="foundation-summary" class="hint"></p><button id="generate-foundation" class="mc-btn">Generate foundation · demo</button><p id="foundation-complete" class="hint" hidden>Your first build is complete. Continue in the World workspace to plan additions.</p></section></div><aside class="side-note"><h2>What happens next?</h2><p>Generate the first places, factions and characters.</p><p>Then open the World workspace to see what exists, choose a place, and expand it.</p><p>The workspace stays useful as your world grows.</p><button id="sample-world" class="mc-btn mc-btn-secondary" style="white-space:normal">Explore a sample world</button><p class="prototype-note">A shortcut for reviewing the second section.</p></aside></div></section>
+<section id="world-section" role="tabpanel" aria-labelledby="tab-world" hidden><div id="world-empty" class="world-empty"><p class="mc-eyebrow">A place for your growing world</p><h2>Start with a foundation</h2><p class="hint">Once content exists, explore it here and plan the next additions.</p><div class="row-actions" style="justify-content:center"><button class="mc-btn" id="empty-build">Go to Guided Build</button><button class="mc-btn mc-btn-secondary" id="empty-sample">Explore sample world</button></div></div><div id="world-ready" hidden><div class="world-toolbar"><div><h2 style="margin:0;font-family:var(--mc-display-font)">Your world, as it stands</h2><p class="world-summary" id="world-count"></p></div><div class="plan-submit"><button id="undo-plan-removal" class="row-btn undo-plan" hidden>Undo removal</button><button id="generate-expansion" class="mc-btn" disabled>Generate planned additions · demo</button><button id="toggle-world-graph" class="mc-btn mc-btn-secondary" aria-expanded="false" aria-controls="world-graph">Show graph</button></div></div><section class="plan-summary-bar" aria-label="Generation scope"><p id="expansion-summary" class="hint"></p><p class="prototype-note">Only planned additions are generated. Existing entries supply context and stay in place.</p></section><div class="world-layout"><aside class="world-outline" aria-label="World outline"><details open><summary><strong>Explore the world</strong></summary><div id="world-outline"></div></details></aside><article class="world-focus" id="world-focus" aria-label="Selected world entry"></article><aside class="expand-panel" aria-labelledby="expand-heading"><p class="mc-eyebrow">Optional planning tools</p><h2 id="expand-heading">Working under</h2><p id="expansion-scope" class="scope-name"></p><p id="expansion-context" class="scope-context"></p><div id="expansion-controls"><details class="plan-tools"><summary><strong>Ask AI for ideas</strong></summary><label class="field">What belongs here?<textarea id="expansion-prompt" rows="3">A lively dockside district with a smuggling faction and people caught between rival loyalties.</textarea></label><button id="suggest-expansion" class="mc-btn">Suggest structure · demo</button><p id="ai-scope-counts" class="hint">Requesting 3 places, 1 faction and 4 characters.</p><button class="row-btn" id="adjust-expansion-scope">Adjust counts and names</button><p class="prototype-note">Suggestions are reviewed before they join the plan.</p></details><details class="plan-tools" id="bulk-expansion-tools"><summary><strong>Add several at once</strong></summary><p class="hint">Additional entries in this location</p><label class="allocation">Places<input id="expand-place" type="number" min="0" max="100" value="3"></label><label class="allocation">Factions<input id="expand-faction" type="number" min="0" max="100" value="1"></label><label class="allocation">Characters<input id="expand-character" type="number" min="0" max="100" value="4"></label><details><summary style="min-height:44px;cursor:pointer">Have names in mind?</summary><p class="hint">One per line. Named entries are additional to the counts above.</p><label class="field">Named places<textarea id="expand-names-place" rows="2" placeholder="The Salt Lantern"></textarea></label><label class="field">Named factions<textarea id="expand-names-faction" rows="2"></textarea></label><label class="field">Named characters<textarea id="expand-names-character" rows="2"></textarea></label></details><button id="manual-expansion" class="mc-btn mc-btn-secondary">Add to plan manually</button><p class="prototype-note">Counts add editable rows beneath the selected place. Names can stay blank for the model to choose.</p></details><p class="plan-help">Use the + Place, + Faction and + Character buttons on a location to add one entry exactly where it belongs.</p></div><div id="expansion-proposal" hidden></div></aside></div><section id="world-graph" class="graph-surface" hidden aria-label="World and planned additions graph"><h3 style="margin:0">Connections around this entry</h3><div class="graph-key"><span>● Existing content</span><span>◇ Planned addition</span></div><div id="world-graph-content"></div><div id="world-graph-relations"></div></section></div></section></main></div>
+<script>
+const $=id=>document.getElementById(id),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const kinds=['place','faction','character'],labels={place:'Key places',faction:'Factions',character:'Key figures'},storyFields=['background','personality','secret','rumor','party_hook','appearance','goals','relationships','voice_style','catchphrases'];
+const sample=[{id:'n1',kind:'place',name:'Arlea',parent:null,description:'A river city held together by old promises and uneasy trade.'},{id:'n2',kind:'place',name:'Harbor',parent:'n1',description:'Tide-worn quays, crowded ferries and warehouses that never quite close.'},{id:'n3',kind:'place',name:'Market',parent:'n1',description:'Beneath colored awnings, merchants trade goods and carefully chosen rumors.'},{id:'n4',kind:'place',name:'Old Temple',parent:'n1',description:'An abandoned sanctuary whose bells still ring on moonless nights.'},{id:'n5',kind:'character',name:'Lysa',parent:'n2',description:'The harbor master knows every cargo—and which questions to leave unasked.'},{id:'n6',kind:'character',name:'Merek',parent:'n2',description:'A ferryman bound to the river’s oldest oath.'},{id:'n7',kind:'character',name:'Nera',parent:'n3',description:'A merchant who bargains in favors as readily as silver.',faction:'n10'},{id:'n8',kind:'character',name:'Oren',parent:'n4',description:'The temple caretaker keeps a light burning for someone who never returns.'},{id:'n9',kind:'faction',name:'Ash Circle',parent:'n4',description:'Keepers of forbidden rites and inconvenient memories.'},{id:'n10',kind:'faction',name:'Brass League',parent:'n1',description:'A trade league with a hand in every bargain.'}];
+const openPlanDetails=new Set();let removedPlan=null;
+let seq=20,world=[],planned=[],selected='n1',phase='build',proposal=null,revision=0,foundationDone=false;
+const seeds=sample.map(n=>({...n,mode:'named',record:{},raw:{},relations:[]})),counts={place:0,faction:0,character:0},node=id=>[...seeds,...world,...planned].find(n=>n.id===id);
+const say=t=>$('flow-status').textContent=t;
+function setPhase(next){phase=next;for(const k of ['build','world']){$('tab-'+k).setAttribute('aria-selected',k===next);$('tab-'+k).tabIndex=k===next?0:-1;$(k+'-section').hidden=k!==next;}if(next==='world')renderWorld();window.scrollTo(0,0);}
+function seedRow(n){return `<div class="seed-row"><input data-name="${n.id}" value="${esc(n.name)}" aria-label="Name of ${esc(n.name||n.kind)}" placeholder="Name this ${n.kind}"><button class="row-btn" data-seed-remove="${n.id}" aria-label="Remove ${esc(n.name||n.kind)}">Remove</button></div>${n.mode!=='named'?`<details class="seed-details" open><summary>${n.mode==='authored'?'Authored figure':'Shaped '+n.kind} details</summary><div class="seed-fields">${extraFields(n)}</div></details>`:''}`;}
+function renderFoundation(){ $('foundation-inputs').innerHTML=kinds.map(k=>`<section class="form-panel"><div class="form-head"><div><h2>${labels[k]}</h2><p class="hint">Add anchors, shape an entry, or let the model invent names.</p></div><label class="field count-field">Generate additional<input type="number" data-count="${k}" min="0" max="100" value="${counts[k]}" aria-label="Additional ${labels[k]}"></label></div>${seeds.filter(n=>n.kind===k).map(seedRow).join('')}<div class="row-actions"><button class="row-btn" data-seed-add="${k}" data-mode="named">+ Named ${k==='character'?'figure':k}</button><button class="row-btn" data-seed-add="${k}" data-mode="${k==='character'?'authored':'shaped'}">+ ${k==='character'?'Authored figure':'Shaped '+k}</button></div><details><summary>Paste a list instead</summary><label class="field">One name per line<textarea id="seed-list-${k}" rows="3"></textarea></label><button class="row-btn" data-seed-paste="${k}">Add names</button></details></section>`).join('');updateFoundation();}
+function updateFoundation(){const blank=seeds.some(n=>!n.name.trim()),over=kinds.some(k=>seeds.filter(n=>n.kind===k).length+counts[k]>100),invalid=seeds.some(n=>n.invalidJson||(n.relations||[]).some(r=>!r.type.trim()||!r.target_name.trim()));$('foundation-summary').textContent=blank?'Name your entries before continuing.':over?'Keep each group to 100 entries or fewer, including additional generated entries.':invalid?'Complete relation targets and correct invalid mechanics fields.':kinds.map(k=>`${labels[k]}: ${seeds.filter(n=>n.kind===k).length} entered + ${counts[k]} additional`).join(' · ');$('generate-foundation').disabled=foundationDone||blank||over||invalid||seeds.length+Object.values(counts).reduce((a,b)=>a+b,0)===0;$('foundation-complete').hidden=!foundationDone;}
+function newSeed(k,mode,name=''){const n={id:'s'+(++seq),kind:k,name,mode,record:{},raw:{},relations:[],parent:null,role:'NPC'};seeds.push(n);return n;}
+function loadSample(){if(!world.length)world=structuredClone(sample);selected='n2';foundationDone=true;updateFoundation();setPhase('world');say('Sample world loaded for this preview. Select a place to plan its next additions.');}
+function generateFoundation(){if($('generate-foundation').disabled)return;world=seeds.map(n=>({...structuredClone(n),description:n.description||n.record?.background||`A newly established ${n.kind} in Greymarch.`}));for(const k of kinds)for(let i=0;i<counts[k];i++)world.push({id:'w'+(++seq),kind:k,name:`${k==='character'?'Traveler':k==='place'?'Waystation':'Fellowship'} ${i+1}`,parent:world.find(n=>n.kind==='place')?.id||null,description:'Sample generated content for the design preview.'});const ids=new Set(world.map(n=>n.id));world.forEach(n=>{if(!ids.has(n.parent))n.parent=null;});foundationDone=true;selected=world.find(n=>n.kind==='place'&&/harbor/i.test(n.name))?.id||world[0]?.id;updateFoundation();setPhase('world');say('Foundation generated in this local preview. The workspace now shows the resulting world.');}
+const entry=id=>world.find(n=>n.id===id)||planned.find(n=>n.id===id);
+function descendants(id,ancestor){let n=entry(id),seen=new Set;while(n?.parent&&!seen.has(n.id)){if(n.parent===ancestor)return true;seen.add(n.id);n=entry(n.parent);}return false;}
+function outline(n){const draft=planned.some(x=>x.id===n.id),children=[...world,...planned].filter(x=>x.parent===n.id);return `<li><button class="outline-btn ${draft?'is-planned':''}" data-world-select="${n.id}" aria-current="${selected===n.id}"><span class="kind-dot">${draft?'◇':n.kind==='place'?'⌖':'•'}</span>${esc(n.name||'Model-named '+n.kind)}${draft?' · planned':''}</button>${children.length?`<ul class="outline-list">${children.map(outline).join('')}</ul>`:''}</li>`;}
+function existingTile(n){return `<article class="entity-tile"><span class="existing-badge">Existing ${n.kind}</span><h4>${esc(n.name)}</h4><p>${esc(n.description)}</p><button class="row-btn" data-world-select="${n.id}">Open ${esc(n.name)}</button></article>`;}
+function addTools(id){return `<div class="planning-toolbar" aria-label="Add under ${esc(entry(id)?.name||'this place')}">${kinds.map(k=>`<button class="row-btn" data-quick-add="${k}" data-add-under="${id}">+ ${k==='character'?'Character':k==='place'?'Place':'Faction'}</button>`).join('')}</div>`;}
+function plannedTile(n){const children=planned.filter(x=>x.parent===n.id);return `<article class="plan-branch" id="plan-entry-${n.id}" data-plan-entry="${n.id}"><div class="plan-row"><span class="planned-badge">Planned ${n.kind}</span><input data-planned-name="${n.id}" value="${esc(n.name)}" aria-label="Planned ${n.kind} name" placeholder="Let the model choose a name"><button class="row-btn" data-planned-remove="${n.id}" aria-label="Remove planned ${esc(n.name||n.kind)}">Remove</button></div><p class="placement-line" id="placement-${n.id}">${n.kind==='place'?'Located in':'Based at'} <strong>${esc(entry(n.parent)?.name||'Unnamed planned place')}</strong>${n.faction?' · member of '+esc(entry(n.faction)?.name||'Unnamed planned faction'):''}</p>${n.kind==='place'?`<div class="plan-child-tools">${kinds.map(k=>`<button class="row-btn" data-quick-add="${k}" data-add-under="${n.id}">+ ${k==='character'?'Character':k==='place'?'Place':'Faction'}</button>`).join('')}</div>`:''}<details data-plan-details="${n.id}" ${openPlanDetails.has(n.id)?'open':''}><summary>Move, connect &amp; guide</summary><div class="plan-edit-grid"><label>Move to a place<select data-planned-parent="${n.id}">${[...world,...planned].filter(x=>x.kind==='place'&&x.id!==n.id&&!descendants(x.id,n.id)).map(x=>`<option value="${x.id}" ${x.id===n.parent?'selected':''}>${esc(x.name||'Unnamed planned place')}${planned.includes(x)?' · planned':''}</option>`).join('')}</select></label>${n.kind==='character'?`<label>Member of faction<select data-planned-faction="${n.id}"><option value="">No faction selected</option>${[...world,...planned].filter(x=>x.kind==='faction').map(x=>`<option value="${x.id}" ${x.id===n.faction?'selected':''}>${esc(x.name||'Unnamed planned faction')}</option>`).join('')}</select></label>`:''}<label class="plan-guidance">Guidance<textarea data-planned-guidance="${n.id}" rows="2">${esc(n.guidance||'')}</textarea></label></div></details><div class="plan-nested">${children.map(plannedTile).join('')}</div></article>`;}
+function planGroups(scope){const roots=planned.filter(x=>!planned.some(p=>p.id===x.parent)&&(x.parent===scope||descendants(x.parent,scope)));const parents=[...new Set(roots.map(x=>x.parent))];return parents.map(id=>`<div class="plan-group-heading"><h3>${id===scope?'Planned here':'Planned under '+esc(entry(id)?.name)}</h3>${id!==scope?`<button class="row-btn" data-world-select="${id}">Open place</button>`:''}</div>${roots.filter(x=>x.parent===id).map(plannedTile).join('')}`).join('');}
+function selectWorld(id){if(!entry(id))return;selected=id;renderWorld();}
+function renderWorld(){ $('world-empty').hidden=world.length>0;$('world-ready').hidden=!world.length;if(!world.length)return;const n=entry(selected)||world[0];selected=n.id;const draft=planned.some(x=>x.id===n.id);$('world-count').textContent=`${world.length} existing entries · ${planned.length} planned additions`;$('world-outline').innerHTML='<ul class="outline-list">'+world.filter(x=>!x.parent).map(outline).join('')+'</ul>';const parent=entry(n.parent),children=world.filter(x=>x.parent===n.id),inside=planned.filter(x=>x.id===n.id||descendants(x.id,n.id)),outside=planned.filter(x=>!inside.includes(x)&&!planned.some(p=>p.id===x.parent));$('world-focus').innerHTML=`<p class="crumbs">Greymarch${parent?' / '+esc(parent.name):''} / ${esc(n.name||'Unnamed planned '+n.kind)}</p><span class="${draft?'planned':'existing'}-badge">${draft?'Planned':'Existing'} ${esc(n.kind)}</span><h2>${esc(n.name||'A new '+n.kind)}</h2>${draft?'<p class="hint">This entry is still in your plan. Its content will be created when you generate planned additions.</p>':`<p class="hint">${esc(n.description)}</p>`}${n.kind==='place'&&!draft?addTools(n.id):''}${n.faction?`<p class="hint">Member of ${esc(entry(n.faction)?.name)}</p>`:''}${kinds.map(k=>{const group=children.filter(x=>x.kind===k);return group.length?`<h3 class="section-title">${labels[k]} here · ${group.length}</h3><div class="entity-grid">${group.map(existingTile).join('')}</div>`:''}).join('')}${draft?plannedTile(n):planGroups(n.id)}${!inside.length&&n.kind==='place'?'<p class="plan-help">Add the next piece of this place using the buttons above. Build a place first, then add its people and factions underneath it.</p>':''}${outside.length?`<details style="margin-top:1rem"><summary style="min-height:44px;cursor:pointer">Plans elsewhere · ${planned.length-inside.length} entries</summary>${outside.map(plannedTile).join('')}</details>`:''}`;$('expansion-scope').textContent=n.name||'Unnamed planned '+n.kind;$('expansion-context').textContent=n.kind==='place'?`${draft?'Planning inside':'Using context from'} ${n.name||'this planned place'}. New entries are added beneath it.`:'Select a place to add entries there. Use “Move, connect & guide” to arrange a planned figure.';$('expansion-controls').hidden=n.kind!=='place';$('expansion-proposal').hidden=!proposal;if(proposal)renderProposal();$('undo-plan-removal').hidden=!removedPlan;updateExpansion();renderGraph();}
+function collision(){const norm=s=>s.trim().toLocaleLowerCase().replace(/\s+/g,' ');return planned.find(n=>n.kind!=='character'&&n.name.trim()&&[...world,...planned].some(x=>x.id!==n.id&&x.kind===n.kind&&norm(x.name)===norm(n.name)));}
+function updateExpansion(){const match=collision(),over=kinds.some(k=>planned.filter(n=>n.kind===k).length>100),invalid=planned.some(n=>!entry(n.parent)),blank=planned.some(n=>!n.auto&&!n.name.trim());$('expansion-summary').textContent=planned.length?kinds.map(k=>`${planned.filter(n=>n.kind===k).length} ${k==='character'?(planned.filter(n=>n.kind===k).length===1?'character':'characters'):k+(planned.filter(n=>n.kind===k).length===1?'':'s')}`).join(' · ')+'. Names and placement remain editable.':'Nothing planned yet. Choose a place and describe an addition.';if(match)$('expansion-summary').textContent='A place or faction with the name '+match.name+' already exists in this world or plan. Rename the addition or use the existing entry as its target.';if(over)$('expansion-summary').textContent='Keep each planned kind to 100 entries or fewer.';$('generate-expansion').disabled=!planned.length||invalid||blank||Boolean(match)||over;if(proposal&&proposal.revision!==revision){$('expansion-proposal').innerHTML='<div class="proposal-review"><strong>Your plan changed.</strong><p class="hint">Request a fresh suggestion. Your edits are preserved.</p><button class="row-btn" id="discard-expansion">Discard suggestion</button></div>';}}
+function renderGraph(){const center=entry(selected),all=[center,...world.filter(n=>n.parent===selected),...planned],unique=[...new Map(all.map(n=>[n.id,n])).values()];const pos={};unique.forEach((n,i)=>pos[n.id]={x:15+(i%3)*210,y:20+Math.floor(i/3)*85});let html=`<svg viewBox="0 0 660 ${Math.max(120,Math.ceil(unique.length/3)*85+30)}" width="100%" aria-label="Selected entry and planned relationship graph" role="group">`;for(const n of unique){for(const target of [n.parent,n.faction].filter(Boolean)){const a=pos[n.id],b=pos[target];if(b)html+=`<line x1="${a.x+95}" y1="${a.y+20}" x2="${b.x+95}" y2="${b.y+20}" stroke="#74839a" ${planned.includes(n)?'stroke-dasharray="5 4"':''}/>`;}}html+=unique.map(n=>{const p=pos[n.id],draft=planned.includes(n);return `<g role="button" tabindex="0" data-graph-select="${n.id}" aria-label="${draft?'Find planned':'Open existing'} ${esc(n.name||n.kind)}"><rect x="${p.x}" y="${p.y}" width="190" height="48" rx="7" fill="#0e1724" stroke="${draft?'#c09cff':'#5ed0c1'}" ${draft?'stroke-dasharray="5 4"':''}/><text x="${p.x+10}" y="${p.y+20}" fill="#eef1fb" font-size="13">${esc((n.name||'Model-named '+n.kind).slice(0,23))}</text><text x="${p.x+10}" y="${p.y+36}" fill="#b2bdd0" font-size="10">${draft?'Planned':'Existing'} ${n.kind}</text></g>`}).join('');$('world-graph-content').innerHTML=html+'</svg>';$('world-graph-relations').innerHTML=unique.filter(n=>n.parent||n.faction).map(n=>`<p class="hint">${esc(n.name||'Model-named '+n.kind)} → ${n.kind==='place'?'located in':'based at'} ${esc(entry(n.parent)?.name||'world')}${n.faction?' · member of '+esc(entry(n.faction)?.name||'unnamed faction'):''}</p>`).join('');}
+function makeAdditions(suggested){const scope=entry(selected);if(!scope||scope.kind!=='place'){say('Select an existing or planned place first.');return [];}const pools={place:['The Salt Lantern','Lowwater Quay','Ropewalk Yard'],faction:['The Night Tide'],character:['Edda','Rook','Sable','Tomas']},result=[];for(const k of kinds){const names=$('expand-names-'+k).value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean),count=Math.min(100,Math.max(0,Math.floor(Number($('expand-'+k).value)||0)));if(count+names.length>100){say('Keep each requested group to 100 or fewer. Your inputs remain intact.');return [];}for(let i=0;i<names.length+count;i++){const named=i<names.length;result.push({id:'p'+(++seq),kind:k,parent:scope.id,name:named?names[i]:suggested?(pools[k][i-names.length]||`${k} ${i+1}`):'',auto:!named&&!suggested,guidance:$('expansion-prompt').value,description:''});}}return result;}
+function renderProposal(){if(!proposal)return;$('expansion-proposal').hidden=false;$('expansion-proposal').innerHTML=`<div class="proposal-review"><span class="planned-badge">Sample structural suggestion</span><p class="hint">Add these under ${esc(entry(proposal.scope)?.name)}:</p><ul>${proposal.nodes.map(n=>`<li>${esc(n.name||'Model-named '+n.kind)} · ${n.kind}</li>`).join('')}</ul><button class="mc-btn" id="apply-expansion">Add to plan</button><button class="row-btn" id="discard-expansion">Discard suggestion</button></div>`;updateExpansion();}
+function generateExpansion(){if($('generate-expansion').disabled)return;const additions=planned.map((n,i)=>({...n,name:n.name.trim()||`${n.kind==='character'?'New arrival':n.kind==='place'?'New landmark':'New fellowship'} ${i+1}`,description:n.guidance||`Sample generated ${n.kind} based at ${entry(n.parent)?.name||'this location'}.`}));world.push(...additions);planned=[];proposal=null;removedPlan=null;openPlanDetails.clear();revision++;renderWorld();say(`Generated ${additions.length} additions in this local preview. They now appear as existing entries; the plan is empty and ready for your next expansion.`);}
+function extraFields(n){let html=`<label>Entry depth<select data-field="mode" data-id="${n.id}">${(n.kind==='character'?['named','authored']:['named','shaped']).map(m=>`<option ${m===(n.mode||'named')?'selected':''}>${m}</option>`).join('')}</select></label>`;
+if(n.mode==='shaped')html+=`<p class="seed-hint">Guide the model with a shape. Archetype and dial choices here are illustrative; implementation uses the live registry.</p><label>Description<textarea data-field="description" data-id="${n.id}">${esc(n.description||'')}</textarea></label><label>Archetype<input data-field="archetype" data-id="${n.id}" value="${esc(n.archetype||'')}" placeholder="Choose a supported ${n.kind} archetype"></label><label>Dial<input data-field="dial" data-id="${n.id}" value="${esc(n.dial||'')}" placeholder="Choose a supported dial level"></label>`;
+if(n.mode==='authored')html+=`<p class="seed-hint">Your filled fields are facts and remain verbatim. The model fills blanks. This uses the shared character editor in the application; the concept demonstrates its field groups.</p><label>Role<select data-field="role" data-id="${n.id}">${['NPC','BBEG','Monster'].map(r=>`<option ${r===n.role?'selected':''}>${r}</option>`).join('')}</select></label><details><summary>Identity &amp; story</summary>${['race_type','class_profession','alignment','level_cr',...storyFields].map(f=>`<label>${f.replaceAll('_',' ')}<textarea rows="2" data-record="${f}" data-id="${n.id}">${esc(n.record?.[f]||'')}</textarea></label>`).join('')}</details><details><summary>Mechanics &amp; world integration</summary><p class="seed-hint">Prototype data editor. Implementation retains the existing structured stat, skill, action, trait, spell, boss and integration controls.</p>${['stat_block','boss','world_integration'].map(f=>`<label>${f.replaceAll('_',' ')} (JSON object)<textarea rows="4" data-json="${f}" data-id="${n.id}">${esc(n.raw?.[f]||'')}</textarea></label>`).join('')}</details>`;
+return html+`<label>Generation guidance (optional)<textarea data-guidance="${n.id}" rows="2">${esc(n.guidance||'')}</textarea></label><details><summary>Explicit relations · ${(n.relations||[]).length}</summary>${(n.relations||[]).map((r,i)=>`<div class="seed-two"><label>Relation type<input data-rel="type" data-id="${n.id}" data-index="${i}" value="${esc(r.type)}" placeholder="e.g. located_in"></label><label>Target name (creates target if missing)<input data-rel="target_name" data-id="${n.id}" data-index="${i}" value="${esc(r.target_name)}"></label></div><button data-remove-rel="${n.id}" data-index="${i}">Remove relation</button>`).join('')}<button class="mc-btn mc-btn-secondary" data-add-rel="${n.id}">+ Relation</button><p class="seed-hint">Named mandates are separate from draft links. Production also retains existing-entity and draft-key target choices with supported relation validation.</p></details>`;}
+
+document.addEventListener('toggle',e=>{const d=e.target;if(d.dataset?.planDetails&&d.isConnected){if(d.open)openPlanDetails.add(d.dataset.planDetails);else openPlanDetails.delete(d.dataset.planDetails);}},true);
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.id==='adjust-expansion-scope'){$('bulk-expansion-tools').open=true;$('expand-place').focus();return;}if(b.dataset.quickAdd){const parent=entry(b.dataset.addUnder);if(!parent||parent.kind!=='place')return;const n={id:'p'+(++seq),kind:b.dataset.quickAdd,parent:parent.id,name:'',auto:true,guidance:'',description:''};planned.push(n);revision++;renderWorld();const el=document.querySelector('[data-planned-name="'+n.id+'"]');el?.scrollIntoView({block:'nearest'});el?.focus();say('Added a planned '+n.kind+' under '+(parent.name||'this planned place')+'. Name it or let the model choose.');return;}if(b.id==='undo-plan-removal'&&removedPlan){planned.splice(Math.min(removedPlan.index,planned.length),0,removedPlan.node);removedPlan=null;revision++;renderWorld();say('Removal undone. Your plan is restored.');return;}if(b.id==='tab-build'||b.id==='empty-build')setPhase('build');if(b.id==='tab-world')setPhase('world');if(['sample-world','empty-sample'].includes(b.id))loadSample();if(b.id==='generate-foundation')generateFoundation();if(b.dataset.seedAdd){const n=newSeed(b.dataset.seedAdd,b.dataset.mode);renderFoundation();document.querySelector('[data-name="'+n.id+'"]').focus();}if(b.dataset.seedRemove){seeds.splice(seeds.findIndex(n=>n.id===b.dataset.seedRemove),1);renderFoundation();}if(b.dataset.seedPaste){const k=b.dataset.seedPaste,names=$('seed-list-'+k).value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);if(seeds.filter(n=>n.kind===k).length+counts[k]+names.length>100){say('This list exceeds the group limit. Your pasted text is kept.');return;}names.forEach(name=>newSeed(k,'named',name));renderFoundation();}if(b.dataset.addRel){const n=node(b.dataset.addRel);n.relations.push({type:'',target_name:''});renderFoundation();}if(b.dataset.removeRel){node(b.dataset.removeRel).relations.splice(Number(b.dataset.index),1);renderFoundation();}if(b.dataset.worldSelect)selectWorld(b.dataset.worldSelect);if(b.id==='suggest-expansion'){const additions=makeAdditions(true);if(!additions.length){say('Add counts or names to request an expansion.');return;}proposal={scope:selected,revision,nodes:additions};renderProposal();say('Sample suggestion ready. The world and your planned additions are unchanged.');}if(b.id==='manual-expansion'){const additions=makeAdditions(false);if(!additions.length){say('Add counts or names first.');return;}planned.push(...additions);revision++;renderWorld();say('Added editable entries to your plan. Existing world content is unchanged.');}if(b.id==='apply-expansion'){if(!proposal||proposal.revision!==revision||!entry(proposal.scope)){say('This suggestion needs refreshing before it can be applied.');return;}planned.push(...proposal.nodes);proposal=null;revision++;renderWorld();say('Structure added to your plan. Generate planned additions is a separate action.');}if(b.id==='discard-expansion'){proposal=null;renderWorld();say('Suggestion discarded; the world and your existing plan are preserved.');}if(b.dataset.plannedRemove){const id=b.dataset.plannedRemove;if(planned.some(n=>n.parent===id||n.faction===id)){say('Reassign planned children or faction links before removing this entry.');return;}removedPlan={node:structuredClone(entry(id)),index:planned.findIndex(n=>n.id===id)};planned=planned.filter(n=>n.id!==id);revision++;renderWorld();say('Removed this planned entry. Undo is available.');}if(b.id==='generate-expansion')generateExpansion();if(b.id==='toggle-world-graph'){const show=$('world-graph').hidden;$('world-graph').hidden=!show;b.setAttribute('aria-expanded',show);b.textContent=show?'Hide graph':'Show graph';}});
+document.addEventListener('input',e=>{const t=e.target,n=node(t.dataset.id);if(t.id.startsWith('expand-'))$('ai-scope-counts').textContent='Requesting '+$('expand-place').value+' places, '+$('expand-faction').value+' factions and '+$('expand-character').value+' characters, plus any supplied names.';if(t.dataset.name){node(t.dataset.name).name=t.value;updateFoundation();}if(t.dataset.count){counts[t.dataset.count]=Math.min(100,Math.max(0,Math.floor(Number(t.value)||0)));t.value=counts[t.dataset.count];updateFoundation();}if(t.id==='foundation-notes')$('foundation-note-count').textContent=t.value.length;if(n&&t.dataset.field&&t.dataset.field!=='mode'){n[t.dataset.field]=t.value;updateFoundation();}if(n&&t.dataset.record){n.record[t.dataset.record]=t.value;updateFoundation();}if(n&&t.dataset.json){n.raw[t.dataset.json]=t.value;try{const v=t.value.trim()?JSON.parse(t.value):{};if(!v||typeof v!=='object'||Array.isArray(v))throw Error();n.record[t.dataset.json]=v;t.setAttribute('aria-invalid','false');}catch{t.setAttribute('aria-invalid','true');}n.invalidJson=[...document.querySelectorAll('[data-json][data-id="'+n.id+'"]')].some(x=>x.getAttribute('aria-invalid')==='true');updateFoundation();}if(n&&t.dataset.rel){n.relations[Number(t.dataset.index)][t.dataset.rel]=t.value;updateFoundation();}if(t.dataset.guidance)node(t.dataset.guidance).guidance=t.value;if(t.dataset.plannedName){const n=entry(t.dataset.plannedName);n.name=t.value;n.auto=!t.value.trim();revision++;document.querySelectorAll('[data-planned-parent],[data-planned-faction]').forEach(select=>{[...select.options].filter(o=>o.value===n.id).forEach(o=>o.textContent=(n.name||'Unnamed planned '+n.kind)+' · planned');});document.querySelectorAll('[id^="placement-"]').forEach(el=>{const item=entry(el.id.slice(10));if(item)el.innerHTML=(item.kind==='place'?'Located in':'Based at')+' <strong>'+esc(entry(item.parent)?.name||'Unnamed planned place')+'</strong>'+(item.faction?' · member of '+esc(entry(item.faction)?.name||'Unnamed planned faction'):'');});$('world-outline').innerHTML='<ul class="outline-list">'+world.filter(x=>!x.parent).map(outline).join('')+'</ul>';renderGraph();updateExpansion();}if(t.dataset.plannedGuidance){entry(t.dataset.plannedGuidance).guidance=t.value;revision++;updateExpansion();}});
+document.addEventListener('change',e=>{const t=e.target;if(t.dataset.field==='mode'){node(t.dataset.id).mode=t.value;renderFoundation();}if(t.dataset.plannedParent){const n=entry(t.dataset.plannedParent);if(t.value===n.id||descendants(t.value,n.id)){say('That placement would create a containment cycle.');renderWorld();return;}n.parent=t.value;revision++;renderWorld();}if(t.dataset.plannedFaction){entry(t.dataset.plannedFaction).faction=t.value||null;revision++;renderWorld();}});
+function activateGraph(id){if(world.some(n=>n.id===id))selectWorld(id);else{const n=entry(id);selected=world.some(x=>x.id===n.parent)?n.parent:selected;renderWorld();const input=document.querySelector('[data-planned-name="'+id+'"]');input?.closest('details')?.setAttribute('open','');input?.scrollIntoView({block:'center'});input?.focus();}}
+document.addEventListener('click',e=>{const el=e.target.closest('[data-graph-select]');if(el)activateGraph(el.dataset.graphSelect);});
+document.addEventListener('keydown',e=>{const el=e.target.closest('[data-graph-select]');if(el&&(e.key==='Enter'||e.key===' ')){e.preventDefault();activateGraph(el.dataset.graphSelect);}if(e.target.matches('[role="tab"]')&&['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const next=e.key==='Home'?'build':e.key==='End'?'world':phase==='build'?'world':'build';setPhase(next);$('tab-'+next).focus();}});
+renderFoundation();setPhase('build');
+</script></div></body></html>

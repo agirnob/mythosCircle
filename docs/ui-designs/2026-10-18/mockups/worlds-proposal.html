@@ -1,0 +1,329 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Your Worlds — mythosCircle</title><script src="https://cdn.tailwindcss.com"></script><style>/**
+ * Design tokens — mythosCircle frontend rebuild (§9).
+ *
+ * Single source of truth for color, type, and spacing. Components consume
+ * these variables; no hardcoded palette values outside this file.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Atmospheric navy foundation with a violet creative accent. */
+  --mc-app-bg: #080d16;
+  --mc-app-bg-raised: #0b1320;
+  --mc-surface: #0e1724;
+  --mc-surface-raised: #131e2e;
+  --mc-surface-hover: #17253a;
+  --mc-input: #0a1421;
+  --mc-border: #24344a;
+  --mc-border-bright: #334966;
+  --mc-glow-violet: rgba(125, 92, 255, 0.24);
+  --mc-glow-cyan: rgba(53, 190, 205, 0.18);
+
+  /* Text (§9) */
+  --mc-text-primary: #eef1fb;
+  --mc-text-secondary: #b2bdd0;
+  --mc-text-muted: #74839a;
+  --mc-text-faint: #52627a;
+
+  /* Semantic accents: creation, canon, importance, danger. */
+  --mc-interactive: #8b6cff;
+  --mc-interactive-bright: #a994ff;
+  --mc-canonical: #5ed0c1;
+  --mc-proposal: #c09cff;
+  --mc-warning: #e7b866;
+  --mc-danger: #ed777d;
+  --mc-success: #75d39e;
+
+  /* Type scale (§10) */
+  --mc-page-title-size: clamp(2rem, 4vw, 3rem);
+  --mc-section-title-size: 1.125rem;
+  --mc-entity-name-size: 1rem;
+  --mc-meta-size: 0.72rem;
+  --mc-body-size: 0.95rem;
+  --mc-display-font: Georgia, 'Times New Roman', serif;
+  --mc-body-font: 'Avenir Next', 'Segoe UI', sans-serif;
+
+  /* Shape + spacing */
+  --mc-radius: 12px;
+  --mc-radius-sm: 7px;
+  --mc-gap: 1rem;
+  --mc-gap-sm: 0.5rem;
+  --mc-shell-width: 1440px;
+  --mc-sidebar-width: 236px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: var(--mc-app-bg);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: var(--mc-body-font);
+  background:
+    radial-gradient(circle at 85% -10%, rgba(117, 83, 255, 0.13), transparent 34rem),
+    radial-gradient(circle at 10% 40%, rgba(40, 160, 190, 0.06), transparent 28rem),
+    var(--mc-app-bg);
+  color: var(--mc-text-primary);
+  line-height: 1.5;
+}
+
+:focus-visible {
+  outline: 2px solid var(--mc-interactive-bright);
+  outline-offset: 3px;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button,
+input,
+textarea,
+select {
+  color-scheme: dark;
+}
+
+::selection {
+  background: rgba(139, 108, 255, 0.4);
+  color: var(--mc-text-primary);
+}
+
+.mc-display-title {
+  font-family: var(--mc-display-font);
+  letter-spacing: -0.025em;
+}
+
+.mc-skip-link {
+  position: fixed;
+  z-index: 20;
+  top: 0.75rem;
+  left: 0.75rem;
+  transform: translateY(-160%);
+  padding: 0.65rem 0.9rem;
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-interactive);
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform 160ms ease;
+}
+
+.mc-skip-link:focus {
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+.mc-shell {
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+  max-width: none;
+  margin: 0 auto;
+  background: linear-gradient(90deg, rgba(13, 23, 36, 0.92), transparent 45%);
+}
+.mc-sidebar {
+  width: var(--mc-sidebar-width);
+  flex: none;
+  border-right: 1px solid var(--mc-border);
+  padding: 1.5rem 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  background: rgba(10, 18, 30, 0.8);
+  backdrop-filter: blur(18px);
+}
+.mc-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--mc-text-primary);
+  text-decoration: none;
+  letter-spacing: 0.01em;
+}
+.mc-brand > span:last-child {
+  font-family: var(--mc-display-font);
+  font-size: 1.25rem;
+}
+.mc-brand > span:last-child span {
+  color: var(--mc-interactive-bright);
+}
+.mc-brand-mark {
+  display: grid;
+  width: 1.9rem;
+  height: 1.9rem;
+  place-items: center;
+  border: 1px solid rgba(169, 148, 255, 0.7);
+  border-radius: 8px;
+  background: linear-gradient(145deg, rgba(139, 108, 255, 0.35), rgba(33, 188, 205, 0.16));
+  color: var(--mc-interactive-bright);
+  box-shadow: 0 0 24px var(--mc-glow-violet);
+}
+.mc-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.mc-nav-title {
+  margin: 0 0 0.25rem;
+  font-size: var(--mc-meta-size);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mc-text-muted);
+}
+.mc-nav-link {
+  color: var(--mc-text-secondary);
+  text-decoration: none;
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--mc-radius-sm);
+}
+.mc-nav-link:hover {
+  color: var(--mc-text-primary);
+  background: var(--mc-surface-hover);
+}
+.mc-nav-link.router-link-active {
+  color: var(--mc-text-primary);
+  background: linear-gradient(90deg, rgba(139, 108, 255, 0.25), rgba(139, 108, 255, 0.06));
+  box-shadow: inset 2px 0 0 var(--mc-interactive);
+}
+.mc-account {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.mc-account-email {
+  font-size: 0.85rem;
+  color: var(--mc-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mc-btn-ghost {
+  background: transparent;
+  border: 1px solid var(--mc-border);
+  color: var(--mc-text-secondary);
+  border-radius: var(--mc-radius-sm);
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+}
+.mc-btn-ghost:hover {
+  color: var(--mc-text-primary);
+  border-color: var(--mc-border-bright);
+  background: var(--mc-surface-raised);
+}
+.mc-main {
+  flex: 1;
+  min-width: 0;
+  padding: clamp(1.25rem, 3vw, 2.5rem);
+  overflow: hidden;
+}
+@media (max-width: 800px) {
+  .mc-shell {
+    flex-direction: column;
+    background: none;
+  }
+  .mc-sidebar {
+    width: auto;
+    display: block;
+    padding: 1rem;
+    border-right: none;
+    border-bottom: 1px solid var(--mc-border);
+    backdrop-filter: none;
+  }
+  .mc-brand {
+    margin-bottom: 1rem;
+  }
+  .mc-nav-group {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+  }
+  .mc-nav-title {
+    width: 100%;
+    margin-bottom: 0;
+  }
+  .mc-nav-link {
+    padding: 0.38rem 0.55rem;
+  }
+  .mc-account {
+    margin-top: 1rem;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+  }
+  .mc-account .mc-btn-ghost {
+    width: auto;
+  }
+  .mc-main {
+    padding: 1.25rem 1rem 2rem;
+  }
+}
+
+[hidden]{display:none!important}button,a,input,select,textarea{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}
+a{color:var(--mc-interactive-bright)}button,input,select,textarea{border-radius:var(--mc-radius-sm)}input,select,textarea{width:100%;min-width:0;background:var(--mc-input);color:var(--mc-text-primary);border:1px solid var(--mc-text-muted);padding:.7rem .8rem}textarea{resize:vertical;line-height:1.65}
+label{display:grid;gap:.45rem;color:var(--mc-text-primary);font-size:.93rem}label small,.muted{color:var(--mc-text-secondary)}small{font-size:.83rem}.eyebrow{text-transform:uppercase;letter-spacing:.13em;color:var(--mc-interactive-bright);font-size:.76rem;font-weight:650;margin:0 0 .7rem}
+h1,h2,h3,p{margin-top:0}h1{font-family:var(--mc-display-font);font-size:var(--mc-page-title-size);letter-spacing:-.025em;line-height:1.08;margin-bottom:.7rem}h2{font-size:1.2rem}h3{font-size:1rem}.display{font-family:var(--mc-display-font)}.header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;padding-bottom:1.6rem;margin-bottom:2rem;border-bottom:1px solid var(--mc-border)}.header p:last-child{margin-bottom:0;color:var(--mc-text-secondary)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;min-height:44px;padding:.65rem 1rem;border:1px solid transparent;background:linear-gradient(135deg,var(--mc-interactive-bright),var(--mc-interactive));color:var(--mc-app-bg);font-weight:650;text-decoration:none;white-space:normal}.secondary{background:var(--mc-surface-raised);border-color:var(--mc-border-bright);color:var(--mc-text-primary)}.quiet{background:transparent;border-color:transparent;color:var(--mc-text-secondary)}.danger{color:var(--mc-danger);background:transparent;border-color:var(--mc-danger)}.row{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap}.between{justify-content:space-between}.panel{border:1px solid var(--mc-border);border-radius:12px;background:var(--mc-surface);padding:1.4rem}.badge{display:inline-flex;border:1px solid var(--mc-border-bright);border-radius:20px;padding:.2rem .6rem;font-size:.76rem;color:var(--mc-text-secondary)}.badge.purple{color:var(--mc-proposal);background:rgba(139,108,255,.09)}.small-heading{font-size:.8rem;text-transform:uppercase;letter-spacing:.07em;color:var(--mc-text-secondary)}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.2rem}.span2{grid-column:1/-1}.status{margin:1rem 0;padding:.8rem 1rem;border-left:3px solid var(--mc-interactive-bright);background:var(--mc-surface-raised);color:var(--mc-text-secondary)}.status:empty{display:none}.search{max-width:26rem;margin-bottom:1.6rem}.mc-nav-link.active{color:var(--mc-text-primary);background:linear-gradient(90deg,rgba(139,108,255,.25),rgba(139,108,255,.06));box-shadow:inset 2px 0 0 var(--mc-interactive)}
+.world-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:1.25rem}.world-card{display:flex;flex-direction:column;gap:1rem;min-height:275px;background:linear-gradient(145deg,var(--mc-surface-raised),var(--mc-surface));position:relative;overflow:hidden}.world-card:before{content:'';position:absolute;width:180px;height:180px;border:1px solid rgba(169,148,255,.1);border-radius:50%;right:-80px;top:-90px;pointer-events:none}.world-card h2{font-family:var(--mc-display-font);font-size:1.7rem;margin-bottom:.6rem}.world-card p{color:var(--mc-text-secondary);line-height:1.6}.world-card footer{margin-top:auto;border-top:1px solid var(--mc-border);padding-top:1rem}.world-card .theme{font-size:.74rem;text-transform:uppercase;letter-spacing:.1em;color:var(--mc-interactive-bright)}.collection-note{margin-top:2rem;padding:1.2rem 0;border-top:1px solid var(--mc-border);color:var(--mc-text-secondary)}
+.creation-layout{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:1.5rem}.writing{padding:1.5rem 1.7rem}.writing-heading{font-family:var(--mc-display-font);font-size:1.8rem;margin:0 0 .7rem}.chapter-nav{display:flex;gap:.4rem;flex-wrap:wrap;padding:1rem 0;border-top:1px solid var(--mc-border);border-bottom:1px solid var(--mc-border);margin:1.5rem 0}.chapter-nav button{min-height:44px;background:transparent;border:1px solid transparent;color:var(--mc-text-secondary);padding:.5rem .75rem}.chapter-nav button[aria-pressed=true]{background:var(--mc-surface-hover);border-color:var(--mc-interactive-bright);color:var(--mc-text-primary)}.chapter-nav button.filled:after{content:' •';color:var(--mc-canonical)}.lore-text{min-height:330px;font-size:1rem}.prompt-note{border-left:2px solid var(--mc-border-bright);padding-left:.8rem;color:var(--mc-text-secondary);line-height:1.6;margin:1rem 0 1.4rem}.lore-preview{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;background:var(--mc-app-bg-raised);padding:1rem;border-radius:7px;max-height:360px;overflow:auto}.creation-side{align-self:start;position:sticky;top:1.5rem}.creation-side ol{padding-left:1.2rem;color:var(--mc-text-secondary);line-height:1.9}.creation-actions{margin-top:1.5rem;justify-content:flex-end}
+.editor-layout{display:grid;grid-template-columns:190px minmax(0,1fr) 260px;gap:1.2rem;align-items:start}.section-nav{display:grid;gap:.3rem}.section-nav button{display:flex;justify-content:space-between;gap:.6rem;text-align:left;border:1px solid transparent;min-height:48px;background:transparent;color:var(--mc-text-secondary);padding:.7rem .8rem}.section-nav button[aria-current=true]{background:var(--mc-surface-hover);border-color:var(--mc-interactive-bright);color:var(--mc-text-primary)}.section-nav small{white-space:nowrap;color:var(--mc-text-secondary)}.editor-content{min-width:0}.editor-content h2{font-family:var(--mc-display-font);font-size:1.8rem}.editor-content>p{color:var(--mc-text-secondary)}.batch button{width:100%;text-align:left;justify-content:flex-start;margin-bottom:.5rem}.batch button[aria-pressed=true]{border-color:var(--mc-interactive-bright)}.batch{position:sticky;top:1.5rem}.batch .summary{line-height:1.65;overflow-wrap:anywhere}.batch .summary strong{font-family:var(--mc-display-font);font-size:1.3rem}.story-detail{border-top:1px solid var(--mc-border);padding:1rem 0}.story-detail summary{cursor:pointer;font-weight:600;min-height:32px}.story-detail label{margin-top:.8rem}.attribute-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}.attribute-grid label{text-align:center}.attribute-grid input{text-align:center}.edit-row{border-top:1px solid var(--mc-border);padding:1rem 0}.edit-row .fields{gap:.7rem}.row-list{margin-bottom:1rem}.review-group{padding:1rem 0;border-top:1px solid var(--mc-border)}.review-group pre{white-space:pre-wrap;font:inherit;color:var(--mc-text-secondary);overflow-wrap:anywhere}.error{color:var(--mc-danger)}
+dialog{background:var(--mc-surface-raised);color:var(--mc-text-primary);border:1px solid var(--mc-border-bright);border-radius:12px;padding:1.5rem;width:min(480px,calc(100vw - 2rem))}dialog::backdrop{background:rgba(0,0,0,.7)}dialog form{display:grid;gap:1rem}dialog p{color:var(--mc-text-secondary)}.empty{padding:3rem 1rem;text-align:center;border:1px dashed var(--mc-border-bright);border-radius:12px;color:var(--mc-text-secondary)}
+@media(max-width:1180px){.editor-layout{grid-template-columns:165px minmax(0,1fr)}.batch{grid-column:1/-1;position:static}.batch-items{display:flex;gap:.5rem;flex-wrap:wrap}.batch-items button{width:auto}.creation-layout{grid-template-columns:minmax(0,1fr) 250px}}
+@media(max-width:800px){.creation-layout,.editor-layout{grid-template-columns:1fr}.creation-side{position:static}.section-nav{display:flex;flex-wrap:wrap;margin-bottom:1rem}.section-nav button{flex:1 1 140px}.batch{grid-column:auto}.header{flex-direction:column}.fields{grid-template-columns:1fr}.span2{grid-column:auto}.writing{padding:1.1rem}.lore-text{min-height:310px}.world-grid{grid-template-columns:1fr}.attribute-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.btn{max-width:100%}.creation-actions .btn{flex:1}.row{min-width:0}.panel{padding:1.1rem}}
+#prototype-root .mc-main h1{font-family:var(--mc-display-font);font-size:clamp(2rem,4vw,3rem);font-weight:700;letter-spacing:-.025em;line-height:1.08;margin:0 0 .7rem}#prototype-root .mc-main input:not([type=checkbox]),#prototype-root .mc-main select,#prototype-root .mc-main textarea{padding:.7rem .8rem;min-height:44px;border:1px solid var(--mc-text-muted);border-radius:7px;background:var(--mc-input);color:var(--mc-text-primary);font:inherit;width:100%;min-width:0}#prototype-root .mc-main textarea{line-height:1.65;resize:vertical}#prototype-root .mc-main .btn{border-radius:7px}#prototype-root .mc-main .attribute-grid input{text-align:center}</style></head><body><div id="prototype-root"><div class="mc-shell"><a id="skip-content" href="#main-content" class="mc-skip-link">Skip to content</a><aside class="mc-sidebar" aria-label="Workspace"><a id="brand-home" href="#your-worlds" class="mc-brand"><span class="mc-brand-mark" aria-hidden="true">✦</span><span>mythos<span>Circle</span></span></a><nav class="mc-nav-group" aria-label="Workspace navigation"><p class="mc-nav-title">Workspace</p><a id="nav-0" href="#your-worlds" class="mc-nav-link active">Your Worlds</a><a id="nav-1" href="https://p.superdesign.dev/draft/8f36f0b8-c14f-4edb-9aff-d21497256b77" class="mc-nav-link ">Library</a><a id="nav-2" href="#forge" class="mc-nav-link ">Forge</a></nav><div class="mc-account"><span class="mc-account-email">design-preview@example.test</span><button type="button" class="mc-btn-ghost" onclick="notice('Design preview only; no account action.')">Log out</button></div></aside><main class="mc-main" id="main-content" tabindex="-1">
+<section id="world-list"><header class="header"><div><p class="eyebrow">Your next story is waiting</p><h1>Your worlds</h1><p>Return to a campaign, or give a new world its beginning.</p></div><button class="btn" id="new-world">+ New world</button></header>
+<div class="row between"><h2>Continue a world</h2><span id="world-count" class="muted"></span></div><label class="search">Find a world<input id="world-search" type="search" placeholder="Search names, themes or descriptions"></label><div id="world-cards" class="world-grid"></div>
+<div class="collection-note row between"><div><strong>Your character Library</strong><p style="margin:.4rem 0 0">Characters waiting for a campaign live in a separate, private collection.</p></div><a id="open-library" class="btn secondary" href="https://p.superdesign.dev/draft/8f36f0b8-c14f-4edb-9aff-d21497256b77">Open Library →</a></div></section>
+<section id="world-create" hidden><header class="header"><div><p class="eyebrow">A new story</p><h1>Begin with a world.</h1><p>A name, an idea, and room for everything that comes next.</p></div><button class="btn secondary" id="back-worlds">← Your worlds</button></header>
+<div class="creation-layout"><div><section class="panel"><div class="fields"><label>World name<input id="world-name" required placeholder="The Shattered Coast"></label><label>Theme<select id="world-theme"><option value="fantasy">Fantasy</option></select></label><label class="span2">The short pitch<small>A sentence to recognize this world by.</small><textarea id="world-pitch" rows="2" placeholder="Old kingdoms, new debts, and a sea that remembers."></textarea></label></div></section>
+<section class="panel writing" style="margin-top:1.5rem"><p class="eyebrow">The world behind the name</p><h2 class="writing-heading">Make a little room for your lore.</h2><p class="muted">Start with one idea or bring pages of your own. These chapters are invitations, not requirements.</p><nav id="chapters" class="chapter-nav" aria-label="Lore chapters"></nav><div class="row between"><h3 id="chapter-title"></h3><span class="badge">Optional</span></div><p class="prompt-note" id="chapter-prompt"></p><label><span id="chapter-label">Your writing</span><textarea id="lore-writing" class="lore-text" placeholder="Begin wherever the story comes to you…"></textarea></label><div class="row between" style="margin-top:1rem"><small id="lore-count" class="muted"></small><button class="btn quiet" id="preview-lore" aria-expanded="false">Read all lore together</button></div><pre id="lore-preview" class="lore-preview" hidden></pre></section></div>
+<aside class="panel creation-side" aria-label="Creation guidance"><p class="eyebrow">A starting point</p><h2 class="display" style="font-size:1.5rem">You don't need the whole world yet.</h2><p class="muted">Write the pieces you already know. Leave room for the rest.</p><ol><li>Name your world.</li><li>Choose its theme.</li><li>Add as much lore as you like.</li></ol><p class="muted">You'll shape its places, factions and characters in Guided Build.</p><div class="badge">Your words stay yours</div></aside></div>
+<div class="row creation-actions"><button class="btn secondary" id="cancel-world">Back to collection</button><button class="btn" id="create-world">Create world →</button></div></section>
+<dialog id="delete-world-dialog" aria-labelledby="delete-world-title"><form method="dialog"><h2 id="delete-world-title">Delete world</h2><p>Delete <strong id="delete-world-name"></strong> and everything in it? This cannot be undone.</p><label>Type the world name to confirm<input id="delete-world-confirm" autocomplete="off"></label><div class="row"><button class="btn secondary" value="cancel">Cancel</button><button type="button" class="btn danger" id="confirm-delete-world" disabled>Delete world</button></div></form></dialog>
+<div id="notice" class="status" role="status" aria-live="polite"></div></main><script>
+const $=id=>document.getElementById(id);const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function notice(text){$('notice').textContent=text;}
+
+const worlds=[{id:'greymarch',name:'Greymarch',theme:'Fantasy',description:'A coastal world of rival houses and hidden debts.'},{id:'coast',name:'The Shattered Coast',theme:'Fantasy',description:'Island kingdoms rebuild around a sea that remembers every broken promise.'},{id:'emberfall',name:'Emberfall',theme:'Fantasy',description:'A quiet valley at the edge of a sleeping mountain.'}];
+let deleting=null;const chapters=['Free writing','Premise','Places','History','People & factions','Magic & beliefs','Tone & boundaries'];
+const prompts=['Paste your existing lore, or write freely. Nothing here is automatically rewritten.','What makes this world worth exploring? One sentence is enough to begin.','A familiar crossroads, a distant city, a place no one returns from…','Which old event still shapes ordinary lives?','Who holds power, and who wants things to change?','What do people believe? What can magic change, and what can it never change?','What should an adventure here feel like? What belongs outside your story?'];
+const writing=Object.fromEntries(chapters.map(x=>[x,'']));let chapter=chapters[0];
+function renderWorlds(){const term=$('world-search').value.toLowerCase();const visible=worlds.filter(w=>(w.name+' '+w.theme+' '+w.description).toLowerCase().includes(term));$('world-count').textContent=worlds.length+' campaigns';$('world-cards').innerHTML=visible.length?visible.map(w=>`<article class="panel world-card"><span class="theme">${esc(w.theme)}</span><div><h2>${esc(w.name)}</h2><p>${esc(w.description)}</p></div><footer><div class="row between"><button class="btn" data-continue="${w.id}">Continue →</button><button class="btn quiet" data-delete="${w.id}">Delete</button></div><button class="btn quiet" data-build="${w.id}" style="padding-left:0;margin-top:.5rem">Guided Build ↗</button></footer></article>`).join(''):`<div class="empty">${term?'No worlds match your search. Try another name.':'Your first world starts with an idea. Choose New world to begin.'}</div>`;}
+function openCreation(){ $('world-list').hidden=true;$('world-create').hidden=false;$('world-name').focus();notice('');}
+function closeCreation(){$('world-create').hidden=true;$('world-list').hidden=false;$('new-world').focus();notice('Your writing is retained in this preview while it is open. No world has been created.');}
+function combinedLore(){return chapters.map((c,i)=>writing[c]?((i?'## '+c+'\n\n':'')+writing[c]):'').filter(Boolean).join('\n\n');}
+function renderChapters(){ $('chapters').innerHTML=chapters.map(c=>`<button type="button" data-chapter="${esc(c)}" aria-pressed="${chapter===c}" class="${writing[c]?'filled':''}">${esc(c)}</button>`).join('');$('chapter-title').textContent=chapter;$('chapter-prompt').textContent=prompts[chapters.indexOf(chapter)];$('chapter-label').textContent=chapter==='Free writing'?'Your lore':chapter+' — your writing';$('lore-writing').value=writing[chapter];updateLore();}
+function updateLore(){$('lore-count').textContent=combinedLore().length+' characters across '+chapters.filter(c=>writing[c]).length+' written chapters';$('lore-preview').textContent=combinedLore()||'Your lore will appear here as you write.';}
+$('chapters').onclick=e=>{const b=e.target.closest('[data-chapter]');if(b){chapter=b.dataset.chapter;renderChapters();$('lore-writing').focus();}};
+$('lore-writing').oninput=e=>{writing[chapter]=e.target.value;updateLore();document.querySelectorAll('[data-chapter]').forEach(b=>b.classList.toggle('filled',Boolean(writing[b.dataset.chapter])));};
+$('preview-lore').onclick=()=>{const open=$('lore-preview').hidden;$('lore-preview').hidden=!open;$('preview-lore').setAttribute('aria-expanded',open);updateLore();};
+$('new-world').onclick=openCreation;$('back-worlds').onclick=closeCreation;$('cancel-world').onclick=closeCreation;$('world-search').oninput=renderWorlds;
+$('create-world').onclick=()=>{if(!$('world-name').reportValidity())return;notice('Preview: '+$('world-name').value+' is ready to create, with '+combinedLore().length+' characters of authored lore. No world has been saved.');};
+$('world-cards').onclick=e=>{const c=e.target.closest('[data-continue]'),b=e.target.closest('[data-build]'),d=e.target.closest('[data-delete]');if(c)notice('Preview: Continue opens '+worlds.find(w=>w.id===c.dataset.continue).name+' in Overview.');if(b)notice('Preview: Guided Build opens for '+worlds.find(w=>w.id===b.dataset.build).name+'.');if(d){deleting=worlds.find(w=>w.id===d.dataset.delete);$('delete-world-name').textContent=deleting.name;$('delete-world-confirm').value='';$('confirm-delete-world').disabled=true;$('delete-world-dialog').showModal();}};
+$('delete-world-confirm').oninput=e=>$('confirm-delete-world').disabled=e.target.value!==deleting?.name;
+$('confirm-delete-world').onclick=()=>{if($('delete-world-confirm').value!==deleting?.name)return;const name=deleting.name;worlds.splice(worlds.indexOf(deleting),1);$('delete-world-dialog').close();renderWorlds();$('world-search').focus();notice('Preview only: removed '+name+' from this sample collection. No stored world was deleted.');};
+renderWorlds();renderChapters();
+</script></div></div></body></html>

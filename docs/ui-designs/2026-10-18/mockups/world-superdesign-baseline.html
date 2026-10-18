@@ -1,0 +1,452 @@
+<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>World | mythosCircle</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --mc-app-bg: #080d16;
+      --mc-app-bg-raised: #0b1320;
+      --mc-surface: #0e1724;
+      --mc-surface-raised: #131e2e;
+      --mc-surface-hover: #17253a;
+      --mc-input: #0a1421;
+      --mc-border: #24344a;
+      --mc-border-bright: #334966;
+      --mc-glow-violet: rgba(125, 92, 255, 0.24);
+      --mc-glow-cyan: rgba(53, 190, 205, 0.18);
+      --mc-text-primary: #eef1fb;
+      --mc-text-secondary: #b2bdd0;
+      --mc-text-muted: #74839a;
+      --mc-text-faint: #52627a;
+      --mc-interactive: #8b6cff;
+      --mc-interactive-bright: #a994ff;
+      --mc-canonical: #5ed0c1;
+      --mc-proposal: #c09cff;
+      --mc-warning: #e7b866;
+      --mc-danger: #ed777d;
+      --mc-success: #75d39e;
+      --mc-page-title-size: clamp(2rem, 4vw, 3rem);
+      --mc-section-title-size: 1.125rem;
+      --mc-entity-name-size: 1rem;
+      --mc-meta-size: 0.72rem;
+      --mc-body-size: 0.95rem;
+      --mc-display-font: Georgia, 'Times New Roman', serif;
+      --mc-body-font: 'Avenir Next', 'Segoe UI', sans-serif;
+      --mc-radius: 12px;
+      --mc-radius-sm: 7px;
+      --mc-gap: 1rem;
+      --mc-gap-sm: 0.5rem;
+      --mc-shell-width: 1440px;
+      --mc-sidebar-width: 236px;
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 320px; background: var(--mc-app-bg); }
+    body {
+      margin: 0;
+      min-width: 320px;
+      font-family: var(--mc-body-font);
+      background:
+        radial-gradient(circle at 85% -10%, rgba(117, 83, 255, 0.13), transparent 34rem),
+        radial-gradient(circle at 10% 40%, rgba(40, 160, 190, 0.06), transparent 28rem),
+        var(--mc-app-bg);
+      color: var(--mc-text-primary);
+      line-height: 1.5;
+    }
+    :focus-visible {
+      outline: 2px solid var(--mc-interactive-bright);
+      outline-offset: 3px;
+    }
+    button, input, textarea, select { font: inherit; color-scheme: dark; }
+    ::selection { background: rgba(139, 108, 255, 0.4); color: var(--mc-text-primary); }
+    .mc-display-title { font-family: var(--mc-display-font); letter-spacing: -0.025em; }
+    .mc-skip-link {
+      position: fixed; z-index: 20; top: 0.75rem; left: 0.75rem; transform: translateY(-160%);
+      padding: 0.65rem 0.9rem; border-radius: var(--mc-radius-sm); background: var(--mc-interactive);
+      color: #fff; font-weight: 700; text-decoration: none; transition: transform 160ms ease;
+    }
+    .mc-skip-link:focus { transform: translateY(0); }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+    }
+
+    /* AppShell */
+    .mc-shell {
+      display: flex; min-height: 100vh; width: 100%; max-width: none; margin: 0 auto;
+      background: linear-gradient(90deg, rgba(13, 23, 36, 0.92), transparent 45%);
+    }
+    .mc-sidebar {
+      width: var(--mc-sidebar-width); flex: none; border-right: 1px solid var(--mc-border);
+      padding: 1.5rem 1rem 1.25rem; display: flex; flex-direction: column; gap: 1.25rem;
+      background: rgba(10, 18, 30, 0.8); backdrop-filter: blur(18px);
+    }
+    .mc-brand {
+      display: flex; align-items: center; gap: 0.55rem; font-weight: 700; font-size: 1.1rem;
+      color: var(--mc-text-primary); text-decoration: none; letter-spacing: 0.01em;
+    }
+    .mc-brand > span:last-child { font-family: var(--mc-display-font); font-size: 1.25rem; }
+    .mc-brand > span:last-child span { color: var(--mc-interactive-bright); }
+    .mc-brand-mark {
+      display: grid; width: 1.9rem; height: 1.9rem; place-items: center;
+      border: 1px solid rgba(169, 148, 255, 0.7); border-radius: 8px;
+      background: linear-gradient(145deg, rgba(139, 108, 255, 0.35), rgba(33, 188, 205, 0.16));
+      color: var(--mc-interactive-bright); box-shadow: 0 0 24px var(--mc-glow-violet);
+    }
+    .mc-nav-group { display: flex; flex-direction: column; gap: 0.25rem; }
+    .mc-nav-title {
+      margin: 0 0 0.25rem; font-size: var(--mc-meta-size); letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--mc-text-muted);
+    }
+    .mc-nav-link {
+      color: var(--mc-text-secondary); text-decoration: none; padding: 0.35rem 0.5rem;
+      border-radius: var(--mc-radius-sm);
+    }
+    .mc-nav-link:hover { color: var(--mc-text-primary); background: var(--mc-surface-hover); }
+    .mc-nav-link.router-link-active {
+      color: var(--mc-text-primary);
+      background: linear-gradient(90deg, rgba(139, 108, 255, 0.25), rgba(139, 108, 255, 0.06));
+      box-shadow: inset 2px 0 0 var(--mc-interactive);
+    }
+    .mc-account { margin-top: auto; display: flex; flex-direction: column; gap: 0.5rem; }
+    .mc-account-email { font-size: 0.85rem; color: var(--mc-text-muted); overflow: hidden; text-overflow: ellipsis; }
+    .mc-btn-ghost {
+      background: transparent; border: 1px solid var(--mc-border); color: var(--mc-text-secondary);
+      border-radius: var(--mc-radius-sm); padding: 0.4rem 0.6rem; cursor: pointer;
+    }
+    .mc-btn-ghost:hover { color: var(--mc-text-primary); border-color: var(--mc-border-bright); background: var(--mc-surface-raised); }
+    .mc-main { flex: 1; min-width: 0; padding: clamp(1.25rem, 3vw, 2.5rem); overflow: hidden; }
+
+    /* Utilities */
+    .mc-btn {
+      display: inline-block; white-space: nowrap; padding: 0.55rem 0.9rem;
+      border-radius: var(--mc-radius-sm);
+      background: linear-gradient(135deg, var(--mc-interactive-bright), var(--mc-interactive));
+      color: #fff; font-weight: 600; text-decoration: none; border: 1px solid transparent;
+      cursor: pointer; box-shadow: 0 8px 22px var(--mc-glow-violet);
+    }
+    .mc-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+    .mc-btn-secondary {
+      background: rgba(19, 30, 46, 0.72); border-color: var(--mc-border);
+      color: var(--mc-text-secondary); font-weight: 500; box-shadow: none;
+    }
+    .mc-btn-secondary:hover { color: var(--mc-text-primary); border-color: var(--mc-border-bright); }
+    .mc-link { color: var(--mc-interactive-bright); text-decoration: none; }
+    .mc-link:hover { color: #fff; }
+    .mc-muted { color: var(--mc-text-muted); }
+
+    /* World Layout */
+    .mc-overview-counts { display: flex; flex-wrap: wrap; gap: var(--mc-gap-sm); margin: 0 0 1.75rem; }
+    .mc-world-overview > section { margin-top: 2.25rem; }
+    .mc-world-overview .mc-eyebrow {
+      margin: 0 0 0.5rem; color: var(--mc-interactive-bright); font-size: var(--mc-meta-size);
+      font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase;
+    }
+    .mc-overview-layout { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(300px, 0.8fr); align-items: start; gap: 1.5rem; }
+    .mc-overview-layout-directory { grid-template-columns: minmax(0, 1fr); }
+    .mc-overview-main { min-width: 0; }
+    .mc-directory-search { display: grid; gap: 0.4rem; margin-bottom: 1.75rem; color: var(--mc-text-secondary); }
+    .mc-directory-search input {
+      width: 100%; min-width: 0; padding: 0.7rem 0.8rem; border: 1px solid var(--mc-border-bright);
+      border-radius: var(--mc-radius-sm); background: var(--mc-input); color: var(--mc-text-primary);
+    }
+    .mc-world-directory .mc-overview-main > section + section { margin-top: 2.5rem; }
+
+    /* Components */
+    .mc-page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--mc-gap); margin-bottom: 2rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--mc-border); }
+    .mc-page-title { margin: 0; font-size: var(--mc-page-title-size); font-weight: 700; line-height: 1.05; }
+    .mc-page-description { margin: 0.5rem 0 0; color: var(--mc-text-secondary); font-size: var(--mc-body-size); }
+    .mc-page-actions { display: flex; flex-wrap: wrap; gap: var(--mc-gap-sm); flex: none; }
+
+    .mc-badge { display: inline-block; font-size: var(--mc-meta-size); letter-spacing: 0.06em; text-transform: uppercase; padding: 0.2rem 0.5rem; border-radius: 999px; border: 1px solid var(--mc-border); color: var(--mc-text-secondary); background: rgba(14, 23, 36, 0.72); }
+    .mc-badge-canon { border-color: var(--mc-canonical); color: var(--mc-canonical); background: rgba(94, 208, 193, 0.08); }
+    .mc-badge-neutral { border-color: var(--mc-border); color: var(--mc-text-muted); }
+
+    .mc-section-header { display: flex; justify-content: space-between; align-items: baseline; gap: var(--mc-gap); margin: 1.5rem 0 0.75rem; padding-bottom: 0.45rem; border-bottom: 1px solid rgba(36, 52, 74, 0.72); }
+    .mc-section-title { margin: 0; font-size: var(--mc-section-title-size); font-weight: 600; letter-spacing: 0.01em; }
+    .mc-section-meta { margin: 0.25rem 0 0; font-size: var(--mc-meta-size); letter-spacing: 0.06em; text-transform: uppercase; color: var(--mc-text-muted); }
+    .mc-section-actions { display: flex; gap: var(--mc-gap-sm); }
+
+    .mc-entity-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--mc-gap); }
+
+    .mc-entity-card {
+      position: relative; background: linear-gradient(160deg, rgba(19, 30, 46, 0.96), rgba(10, 18, 30, 0.96));
+      border: 1px solid var(--mc-border); border-radius: var(--mc-radius); overflow: hidden;
+      display: flex; flex-direction: column; box-shadow: 0 16px 30px rgba(0, 0, 0, 0.14);
+      transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+    }
+    .mc-entity-card:hover { border-color: var(--mc-border-bright); transform: translateY(-2px); box-shadow: 0 18px 36px rgba(0, 0, 0, 0.25), 0 0 28px rgba(139, 108, 255, 0.08); }
+    .mc-entity-portrait-fallback {
+      width: 100%; aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
+      color: var(--mc-interactive-bright);
+      background: radial-gradient(circle at 50% 50%, rgba(139, 108, 255, 0.25), transparent 32%), linear-gradient(145deg, #17253a, #0b1320);
+      font-family: var(--mc-display-font); font-size: 3rem;
+    }
+    .mc-entity-body { padding: 0.9rem 1rem 1rem; display: flex; flex-direction: column; gap: 0.35rem; }
+    .mc-entity-name { margin: 0; font-size: var(--mc-entity-name-size); font-weight: 650; }
+    .mc-entity-meta { margin: 0; font-size: var(--mc-meta-size); letter-spacing: 0.06em; text-transform: uppercase; color: var(--mc-text-muted); }
+    .mc-entity-description {
+      margin: 0.25rem 0 0; font-size: var(--mc-body-size); color: var(--mc-text-secondary);
+      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .mc-entity-relations { margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--mc-text-muted); }
+    .mc-entity-footer { margin-top: 0.6rem; display: flex; justify-content: space-between; align-items: center; gap: var(--mc-gap-sm); }
+
+    @media (max-width: 800px) {
+      .mc-shell { flex-direction: column; background: none; }
+      .mc-sidebar { width: auto; display: block; padding: 1rem; border-right: none; border-bottom: 1px solid var(--mc-border); backdrop-filter: none; }
+      .mc-brand { margin-bottom: 1rem; }
+      .mc-nav-group { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin-top: 0.5rem; }
+      .mc-nav-title { width: 100%; margin-bottom: 0; }
+      .mc-nav-link { padding: 0.38rem 0.55rem; }
+      .mc-account { margin-top: 1rem; display: grid; grid-template-columns: 1fr auto; align-items: center; }
+      .mc-account .mc-btn-ghost { width: auto; }
+      .mc-main { padding: 1.25rem 1rem 2rem; }
+    }
+    @media (max-width: 620px) {
+      .mc-page-header { flex-direction: column; }
+      .mc-page-actions { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="mc-shell" data-sd-id="1">
+    <a href="#main-content" class="mc-skip-link" data-sd-id="2">Skip to content</a>
+    <aside class="mc-sidebar" aria-label="Campaign workspace" data-sd-id="3">
+      <a href="#" class="mc-brand" data-sd-id="4">
+        <span class="mc-brand-mark" aria-hidden="true" data-sd-id="5">✦</span>
+        <span data-sd-id="6">mythos<span data-sd-id="7">Circle</span></span>
+      </a>
+      <nav class="mc-nav-group" aria-label="Campaign" data-sd-id="8">
+        <p class="mc-nav-title" data-sd-id="9">Campaign</p>
+        <a href="#" class="mc-nav-link" data-sd-id="10">Overview</a>
+        <a href="#" class="mc-nav-link" data-sd-id="11">Tonight</a>
+        <a href="#" class="mc-nav-link router-link-active" data-sd-id="12">World</a>
+      </nav>
+      <nav class="mc-nav-group" aria-label="Create" data-sd-id="13">
+        <p class="mc-nav-title" data-sd-id="14">Create</p>
+        <a href="#" class="mc-nav-link" data-sd-id="15">Ask the World</a>
+        <a href="#" class="mc-nav-link" data-sd-id="16">Add character</a>
+        <a href="#" class="mc-nav-link" data-sd-id="17">Guided Build</a>
+      </nav>
+      <nav class="mc-nav-group" aria-label="Tools" data-sd-id="18">
+        <p class="mc-nav-title" data-sd-id="19">Tools</p>
+        <a href="#" class="mc-nav-link" data-sd-id="20">Graph</a>
+      </nav>
+      <div class="mc-account" data-sd-id="21">
+        <span class="mc-account-email" data-sd-id="22">design-preview@example.test</span>
+        <button type="button" class="mc-btn-ghost" data-sd-id="23">Log out</button>
+      </div>
+    </aside>
+    <main id="main-content" class="mc-main" tabindex="-1" data-sd-id="24">
+      <div class="mc-world-overview mc-world-directory" data-sd-id="25">
+        <p class="mc-eyebrow" data-sd-id="26">World directory</p>
+        <header class="mc-page-header" data-sd-id="27">
+          <div data-sd-id="28">
+            <h1 class="mc-page-title mc-display-title" data-sd-id="29">World</h1>
+            <p class="mc-page-description" data-sd-id="30">Every person, place, and faction in Greymarch.</p>
+          </div>
+          <div class="mc-page-actions" data-sd-id="31">
+            <a href="#" class="mc-btn mc-btn-secondary" data-sd-id="32">Export Markdown</a>
+            <a href="#" class="mc-btn mc-btn-secondary" data-sd-id="33">Export HTML</a>
+          </div>
+        </header>
+
+        <p class="mc-overview-counts" data-sd-id="34">
+          <span class="mc-badge mc-badge-canon" data-sd-id="35">7 entities</span>
+          <span class="mc-badge mc-badge-neutral" data-sd-id="36">0 relationships</span>
+        </p>
+
+        <div class="mc-overview-layout mc-overview-layout-directory" data-sd-id="37">
+          <div class="mc-overview-main" data-sd-id="38">
+            <label class="mc-directory-search" data-sd-id="39">
+              <span data-sd-id="40">Find an entity</span>
+              <input type="search" placeholder="Search names, kinds, or descriptions" data-sd-id="41">
+            </label>
+
+            <section id="section-characters" data-sd-id="42">
+              <div class="mc-section-header" data-sd-id="43">
+                <div data-sd-id="44">
+                  <h2 class="mc-section-title" data-sd-id="45">Characters</h2>
+                  <p class="mc-section-meta" data-sd-id="46">3</p>
+                </div>
+                <div class="mc-section-actions" data-sd-id="47">
+                  <a href="#" class="mc-link mc-muted" data-sd-id="48">Open section →</a>
+                </div>
+              </div>
+              <div class="mc-entity-grid" data-sd-id="49">
+                <!-- Sarella Voss -->
+                <article class="mc-entity-card" data-sd-id="50">
+                  <div class="mc-entity-portrait-fallback" aria-hidden="true" data-sd-id="51">S</div>
+                  <div class="mc-entity-body" data-sd-id="52">
+                    <h3 class="mc-entity-name" data-sd-id="53">Sarella Voss</h3>
+                    <p class="mc-entity-meta" data-sd-id="54">CHARACTER · NPC</p>
+                    <p class="mc-entity-description" data-sd-id="55">A tavern keeper with a patient smile and a debt she cannot repay.</p>
+                    <p class="mc-entity-relations" data-sd-id="56">0 relationships</p>
+                    <div class="mc-entity-footer" data-sd-id="57">
+                      <span class="mc-entity-primary" data-sd-id="58">
+                        <a href="#" class="mc-link" data-sd-id="59">Open →</a>
+                      </span>
+                    </div>
+                  </div>
+                </article>
+                <!-- Blaise Thorn -->
+                <article class="mc-entity-card" data-sd-id="60">
+                  <div class="mc-entity-portrait-fallback" aria-hidden="true" data-sd-id="61">B</div>
+                  <div class="mc-entity-body" data-sd-id="62">
+                    <h3 class="mc-entity-name" data-sd-id="63">Blaise Thorn</h3>
+                    <p class="mc-entity-meta" data-sd-id="64">CHARACTER · NPC</p>
+                    <p class="mc-entity-description" data-sd-id="65">The city watch captain, loyal to a promise rather than a crown.</p>
+                    <p class="mc-entity-relations" data-sd-id="66">0 relationships</p>
+                    <div class="mc-entity-footer" data-sd-id="67">
+                      <span class="mc-entity-primary" data-sd-id="68">
+                        <a href="#" class="mc-link" data-sd-id="69">Open →</a>
+                      </span>
+                    </div>
+                  </div>
+                </article>
+                <!-- Mara Vale -->
+                <article class="mc-entity-card" data-sd-id="70">
+                  <div class="mc-entity-portrait-fallback" aria-hidden="true" data-sd-id="71">M</div>
+                  <div class="mc-entity-body" data-sd-id="72">
+                    <h3 class="mc-entity-name" data-sd-id="73">Mara Vale</h3>
+                    <p class="mc-entity-meta" data-sd-id="74">CHARACTER · NPC</p>
+                    <p class="mc-entity-description" data-sd-id="75">A cartographer who maps the passages below the harbor.</p>
+                    <p class="mc-entity-relations" data-sd-id="76">0 relationships</p>
+                    <div class="mc-entity-footer" data-sd-id="77">
+                      <span class="mc-entity-primary" data-sd-id="78">
+                        <a href="#" class="mc-link" data-sd-id="79">Open →</a>
+                      </span>
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section id="section-places" data-sd-id="80">
+              <div class="mc-section-header" data-sd-id="81">
+                <div data-sd-id="82">
+                  <h2 class="mc-section-title" data-sd-id="83">Places</h2>
+                  <p class="mc-section-meta" data-sd-id="84">2</p>
+                </div>
+                <div class="mc-section-actions" data-sd-id="85">
+                  <a href="#" class="mc-link mc-muted" data-sd-id="86">Open section →</a>
+                </div>
+              </div>
+              <div class="mc-entity-grid" data-sd-id="87">
+                <!-- Keeper's Fall -->
+                <article class="mc-entity-card" data-sd-id="88">
+                  <div class="mc-entity-portrait-fallback" aria-hidden="true" data-sd-id="89">K</div>
+                  <div class="mc-entity-body" data-sd-id="90">
+                    <h3 class="mc-entity-name" data-sd-id="91">Keeper's Fall</h3>
+                    <p class="mc-entity-meta" data-sd-id="92">PLACE</p>
+                    <p class="mc-entity-description" data-sd-id="93">A harbor district where old houses lean over dark canals.</p>
+                    <p class="mc-entity-relations" data-sd-id="94">0 relationships</p>
+                    <div class="mc-entity-footer" data-sd-id="95">
+                      <span class="mc-entity-primary" data-sd-id="96">
+                        <a href="#" class="mc-link" data-sd-id="97">Open →</a>
+                      </span>
+                    </div>
+                  </div>
+                </article>
+                <!-- The Censer -->
+                <article class="mc-entity-card" data-sd-id="98">
+                  <div class="mc-entity-portrait-fallback" aria-hidden="true" data-sd-id="99">T</div>
+                  <div class="mc-entity-body" data-sd-id="100">
+                    <h3 class="mc-entity-name" data-sd-id="101">The Censer</h3>
+                    <p class="mc-entity-meta" data-sd-id="102">PLACE</p>
+                    <p class="mc-entity-description" data-sd-id="103">A warm, crowded tavern where every favor has a price.</p>
+                    <p class="mc-entity-relations" data-sd-id="104">0 relationships</p>
+                    <div class="mc-entity-footer" data-sd-id="105">
+                      <span class="mc-entity-primary" data-sd-id="106">
+                        <a href="#" class="mc-link" data-sd-id="107">Open →</a>
+                      </span>
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section id="section-factions" data-sd-id="108">
+              <div class="mc-section-header" data-sd-id="109">
+                <div data-sd-id="110">
+                  <h2 class="mc-section-title" data-sd-id="111">Factions</h2>
+                  <p class="mc-section-meta" data-sd-id="112">2</p>
+                </div>
+                <div class="mc-section-actions" data-sd-id="113">
+                  <a href="#" class="mc-link mc-muted" data-sd-id="114">Open section →</a>
+                </div>
+              </div>
+              <div class="mc-entity-grid" data-sd-id="115">
+                <!-- The Ash Cult -->
+                <article class="mc-entity-card" data-sd-id="116">
+                  <div class="mc-entity-portrait-fallback" aria-hidden="true" data-sd-id="117">T</div>
+                  <div class="mc-entity-body" data-sd-id="118">
+                    <h3 class="mc-entity-name" data-sd-id="119">The Ash Cult</h3>
+                    <p class="mc-entity-meta" data-sd-id="120">FACTION</p>
+                    <p class="mc-entity-description" data-sd-id="121">An old fellowship collecting debts before the next eclipse.</p>
+                    <p class="mc-entity-relations" data-sd-id="122">0 relationships</p>
+                    <div class="mc-entity-footer" data-sd-id="123">
+                      <span class="mc-entity-primary" data-sd-id="124">
+                        <a href="#" class="mc-link" data-sd-id="125">Open →</a>
+                      </span>
+                    </div>
+                  </div>
+                </article>
+                <!-- The Ledger -->
+                <article class="mc-entity-card" data-sd-id="126">
+                  <div class="mc-entity-portrait-fallback" aria-hidden="true" data-sd-id="127">T</div>
+                  <div class="mc-entity-body" data-sd-id="128">
+                    <h3 class="mc-entity-name" data-sd-id="129">The Ledger</h3>
+                    <p class="mc-entity-meta" data-sd-id="130">FACTION</p>
+                    <p class="mc-entity-description" data-sd-id="131">Merchant families holding the keys to the city's prosperity.</p>
+                    <p class="mc-entity-relations" data-sd-id="132">0 relationships</p>
+                    <div class="mc-entity-footer" data-sd-id="133">
+                      <span class="mc-entity-primary" data-sd-id="134">
+                        <a href="#" class="mc-link" data-sd-id="135">Open →</a>
+                      </span>
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // Simple client-side search filtering
+    const searchInput = document.querySelector('.mc-directory-search input');
+    const sections = document.querySelectorAll('.mc-overview-main > section');
+    
+    searchInput.addEventListener('input', (e) => {
+      const term = e.target.value.toLowerCase();
+      
+      sections.forEach(section => {
+        const cards = section.querySelectorAll('.mc-entity-card');
+        let sectionHasMatches = false;
+        
+        cards.forEach(card => {
+          const name = card.querySelector('.mc-entity-name').textContent.toLowerCase();
+          const meta = card.querySelector('.mc-entity-meta').textContent.toLowerCase();
+          const desc = card.querySelector('.mc-entity-description').textContent.toLowerCase();
+          
+          if (name.includes(term) || meta.includes(term) || desc.includes(term)) {
+            card.style.display = 'flex';
+            sectionHasMatches = true;
+          } else {
+            card.style.display = 'none';
+          }
+        });
+        
+        section.style.display = sectionHasMatches ? 'block' : 'none';
+      });
+    });
+  </script>
+
+</body></html>

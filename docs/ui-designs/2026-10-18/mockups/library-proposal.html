@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en" style="color-scheme: dark; background: #080d16;">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="view-transition" content="same-origin">
+  <title>Library - mythosCircle</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
+  <style>
+    :root {
+      --mc-app-bg: #080d16;
+      --mc-app-bg-raised: #0b1320;
+      --mc-surface: #0e1724;
+      --mc-surface-raised: #131e2e;
+      --mc-surface-hover: #17253a;
+      --mc-input: #0a1421;
+      --mc-border: #24344a;
+      --mc-border-bright: #334966;
+      --mc-glow-violet: rgba(125, 92, 255, 0.24);
+      --mc-glow-cyan: rgba(53, 190, 205, 0.18);
+      --mc-text-primary: #eef1fb;
+      --mc-text-secondary: #b2bdd0;
+      --mc-text-muted: #74839a;
+      --mc-interactive: #8b6cff;
+      --mc-interactive-bright: #a994ff;
+      --mc-canonical: #5ed0c1;
+      --mc-display-font: Georgia, 'Times New Roman', serif;
+      --mc-body-font: 'Avenir Next', 'Segoe UI', sans-serif;
+      --mc-radius: 12px;
+      --mc-radius-sm: 7px;
+      --mc-sidebar-width: 236px;
+    }
+    body {
+      margin: 0;
+      min-width: 320px;
+      font-family: var(--mc-body-font);
+      background: radial-gradient(circle at 85% -10%, rgba(117, 83, 255, 0.13), transparent 34rem), radial-gradient(circle at 10% 40%, rgba(40, 160, 190, 0.06), transparent 28rem), var(--mc-app-bg);
+      color: var(--mc-text-primary);
+      line-height: 1.5;
+    }
+    
+    /* View Transitions */
+    html { background-color: var(--mc-app-bg); }
+    @view-transition { navigation: auto; }
+    ::view-transition { background-color: var(--mc-app-bg); }
+    
+    ::view-transition-old(sidebar),
+    ::view-transition-new(sidebar) {
+        animation: none;
+        mix-blend-mode: normal;
+    }
+    
+    ::view-transition-old(main-content) {
+        animation: 0.25s ease-out both fade-out;
+    }
+    ::view-transition-new(main-content) {
+        animation: 0.25s ease-in 0.1s both fade-in;
+    }
+    
+    @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+    @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+    
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+        animation: none;
+        mix-blend-mode: normal;
+    }
+
+    /* Base Components */
+    .mc-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      white-space: nowrap;
+      padding: 0.55rem 0.9rem;
+      border-radius: var(--mc-radius-sm);
+      background: linear-gradient(135deg, var(--mc-interactive-bright), var(--mc-interactive));
+      color: #fff;
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid transparent;
+      cursor: pointer;
+      box-shadow: 0 8px 22px var(--mc-glow-violet);
+      transition: filter 0.2s ease, transform 0.2s ease;
+    }
+    .mc-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+    .mc-btn-secondary {
+      background: rgba(19, 30, 46, 0.72);
+      border-color: var(--mc-border);
+      color: var(--mc-text-secondary);
+      font-weight: 500;
+      box-shadow: none;
+    }
+    .mc-btn-secondary:hover {
+      color: var(--mc-text-primary);
+      border-color: var(--mc-border-bright);
+    }
+    .mc-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+      filter: grayscale(1);
+    }
+    
+    .mc-input {
+      width: 100%;
+      padding: 0.6rem 0.8rem;
+      background: var(--mc-input);
+      border: 1px solid var(--mc-border);
+      border-radius: var(--mc-radius-sm);
+      color: var(--mc-text-primary);
+      font-family: inherit;
+    }
+    .mc-input:focus {
+      outline: none;
+      border-color: var(--mc-interactive-bright);
+      box-shadow: 0 0 0 2px rgba(139, 108, 255, 0.2);
+    }
+    .mc-input::placeholder {
+      color: var(--mc-text-muted);
+    }
+
+    /* Layout */
+    .mc-shell {
+      display: flex;
+      min-height: 100vh;
+      width: 100%;
+      background: linear-gradient(90deg, rgba(13, 23, 36, 0.92), transparent 45%);
+    }
+    .mc-sidebar {
+      width: var(--mc-sidebar-width);
+      flex: none;
+      border-right: 1px solid var(--mc-border);
+      padding: 1.5rem 1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      background: rgba(10, 18, 30, 0.8);
+      backdrop-filter: blur(18px);
+    }
+    .mc-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: var(--mc-text-primary);
+      text-decoration: none;
+      letter-spacing: 0.01em;
+    }
+    .mc-brand > span:last-child {
+      font-family: var(--mc-display-font);
+      font-size: 1.25rem;
+    }
+    .mc-brand > span:last-child span {
+      color: var(--mc-interactive-bright);
+    }
+    .mc-brand-mark {
+      display: grid;
+      width: 1.9rem;
+      height: 1.9rem;
+      place-items: center;
+      border: 1px solid rgba(169, 148, 255, 0.7);
+      border-radius: 8px;
+      background: linear-gradient(145deg, rgba(139, 108, 255, 0.35), rgba(33, 188, 205, 0.16));
+      color: var(--mc-interactive-bright);
+      box-shadow: 0 0 24px var(--mc-glow-violet);
+    }
+    .mc-nav-group { display: flex; flex-direction: column; gap: 0.25rem; }
+    .mc-nav-title {
+      margin: 0 0 0.25rem;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--mc-text-muted);
+    }
+    .mc-nav-link {
+      color: var(--mc-text-secondary);
+      text-decoration: none;
+      padding: 0.35rem 0.5rem;
+      border-radius: var(--mc-radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .mc-nav-link:hover {
+      color: var(--mc-text-primary);
+      background: var(--mc-surface-hover);
+    }
+    .mc-nav-link.router-link-active {
+      color: var(--mc-text-primary);
+      background: linear-gradient(90deg, rgba(139, 108, 255, 0.25), rgba(139, 108, 255, 0.06));
+      box-shadow: inset 2px 0 0 var(--mc-interactive);
+    }
+    .mc-account { margin-top: auto; display: flex; flex-direction: column; gap: 0.5rem; }
+    .mc-account-email { font-size: 0.85rem; color: var(--mc-text-muted); overflow: hidden; text-overflow: ellipsis; }
+    .mc-btn-ghost {
+      background: transparent;
+      border: 1px solid var(--mc-border);
+      color: var(--mc-text-secondary);
+      border-radius: var(--mc-radius-sm);
+      padding: 0.4rem 0.6rem;
+      cursor: pointer;
+    }
+    .mc-main { flex: 1; min-width: 0; padding: clamp(1.25rem, 3vw, 2.5rem); }
+
+    /* Header */
+    .mc-page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      margin-bottom: 2rem;
+      padding-bottom: 1.25rem;
+      border-bottom: 1px solid var(--mc-border);
+    }
+    .mc-page-title { margin: 0; font-size: clamp(2rem, 4vw, 3rem); font-family: var(--mc-display-font); font-weight: 700; line-height: 1.05; }
+    .mc-page-description { margin: 0.5rem 0 0; color: var(--mc-text-secondary); font-size: 0.95rem; }
+
+    /* Search */
+    .mc-search-bar {
+      position: relative;
+      margin-bottom: 2rem;
+      max-width: 400px;
+    }
+    .mc-search-icon {
+      position: absolute;
+      left: 0.8rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--mc-text-muted);
+    }
+    .mc-search-input {
+      padding-left: 2.5rem;
+    }
+
+    /* Cards */
+    .mc-entity-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1.25rem; }
+    .mc-entity-card {
+      position: relative;
+      background: linear-gradient(160deg, rgba(19, 30, 46, 0.96), rgba(10, 18, 30, 0.96));
+      border: 1px solid var(--mc-border);
+      border-radius: var(--mc-radius);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 16px 30px rgba(0, 0, 0, 0.14);
+      transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+    }
+    .mc-entity-card:hover {
+      border-color: var(--mc-border-bright);
+      transform: translateY(-2px);
+      box-shadow: 0 18px 36px rgba(0, 0, 0, 0.25), 0 0 28px rgba(139, 108, 255, 0.08);
+    }
+    .mc-entity-portrait-fallback {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--mc-interactive-bright);
+      background: radial-gradient(circle at 50% 50%, rgba(139, 108, 255, 0.15), transparent 60%), linear-gradient(145deg, #17253a, #0b1320);
+      font-family: var(--mc-display-font);
+      font-size: 2.5rem;
+      border-bottom: 1px solid var(--mc-border);
+    }
+    .mc-entity-body { padding: 1.25rem; display: flex; flex-direction: column; gap: 0.5rem; flex-grow: 1; }
+    .mc-entity-name { margin: 0; font-size: 1.1rem; font-weight: 650; color: var(--mc-text-primary); font-family: var(--mc-display-font); }
+    .mc-entity-meta { margin: 0; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--mc-text-muted); }
+    .mc-entity-description { 
+      margin: 0; 
+      font-size: 0.9rem; 
+      color: var(--mc-text-secondary); 
+      display: -webkit-box; 
+      -webkit-line-clamp: 3; 
+      -webkit-box-orient: vertical; 
+      overflow: hidden; 
+      line-height: 1.4;
+    }
+    .mc-entity-footer { 
+      margin-top: auto; 
+      padding-top: 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .mc-link { color: var(--mc-interactive-bright); text-decoration: none; font-size: 0.85rem; font-weight: 500; transition: color 0.2s; }
+    .mc-link:hover { color: #fff; }
+
+    /* Dialog */
+    .mc-dialog-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(8, 13, 22, 0.85);
+      backdrop-filter: blur(4px);
+      z-index: 50;
+      display: none;
+      place-items: center;
+      padding: 1rem;
+    }
+    .mc-dialog-backdrop[aria-hidden="false"] {
+      display: grid;
+    }
+    .mc-dialog {
+      background: var(--mc-surface-raised);
+      border: 1px solid var(--mc-border-bright);
+      border-radius: var(--mc-radius);
+      width: 100%;
+      max-width: 480px;
+      padding: 1.5rem;
+      box-shadow: 0 24px 48px rgba(0,0,0,0.4), 0 0 40px var(--mc-glow-violet);
+    }
+    .mc-dialog-header {
+      margin-bottom: 1.5rem;
+    }
+    .mc-dialog-title {
+      margin: 0 0 0.5rem;
+      font-size: 1.25rem;
+      font-family: var(--mc-display-font);
+    }
+    .mc-dialog-desc {
+      margin: 0;
+      color: var(--mc-text-secondary);
+      font-size: 0.9rem;
+    }
+    .mc-dialog-content {
+      margin-bottom: 1.5rem;
+    }
+    .mc-select-wrapper {
+      position: relative;
+    }
+    .mc-select {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      background: var(--mc-input);
+      border: 1px solid var(--mc-border-bright);
+      border-radius: var(--mc-radius-sm);
+      color: var(--mc-text-primary);
+      appearance: none;
+      cursor: pointer;
+    }
+    .mc-select:focus {
+      outline: none;
+      border-color: var(--mc-interactive-bright);
+    }
+    .mc-select-arrow {
+      position: absolute;
+      right: 1rem;
+      top: 50%;
+      transform: translateY(-50%);
+      pointer-events: none;
+      color: var(--mc-text-muted);
+    }
+    .mc-dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+    }
+    .mc-notice {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      background: rgba(14, 23, 36, 0.5);
+      border-radius: var(--mc-radius-sm);
+      font-size: 0.85rem;
+      color: var(--mc-text-secondary);
+      display: flex;
+      gap: 0.5rem;
+      align-items: flex-start;
+    }
+    .mc-notice-icon {
+      color: var(--mc-interactive-bright);
+      margin-top: 0.1rem;
+    }
+
+    /* Empty State */
+    .mc-empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 4rem 2rem;
+      background: rgba(14, 23, 36, 0.4);
+      border: 1px dashed var(--mc-border);
+      border-radius: var(--mc-radius);
+      max-width: 600px;
+      margin: 0 auto;
+      display: none;
+    }
+    .mc-empty-state.active {
+      display: flex;
+    }
+    .mc-empty-icon {
+      font-size: 2.5rem;
+      color: var(--mc-text-muted);
+      margin-bottom: 1rem;
+    }
+    .mc-empty-title {
+      font-family: var(--mc-display-font);
+      font-size: 1.25rem;
+      margin: 0 0 0.5rem;
+    }
+    .mc-empty-desc {
+      color: var(--mc-text-secondary);
+      margin: 0 0 1.5rem;
+      max-width: 400px;
+    }
+
+    /* Responsive */
+    @media (max-width: 800px) {
+      .mc-shell {
+        flex-direction: column;
+        background: none;
+      }
+      .mc-sidebar {
+        width: auto;
+        display: block;
+        padding: 1rem;
+        border-right: none;
+        border-bottom: 1px solid var(--mc-border);
+        backdrop-filter: none;
+      }
+      .mc-brand {
+        margin-bottom: 1rem;
+      }
+      .mc-nav-group {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.25rem;
+        margin-top: 0.5rem;
+      }
+      .mc-nav-title {
+        width: 100%;
+        margin-bottom: 0;
+      }
+      .mc-nav-link {
+        padding: 0.38rem 0.55rem;
+      }
+      .mc-account {
+        margin-top: 1rem;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+      }
+      .mc-account .mc-btn-ghost {
+        width: auto;
+      }
+      .mc-main {
+        padding: 1.25rem 1rem 2rem;
+      }
+    }
+    @media (max-width: 620px) {
+      .mc-page-header {
+        flex-direction: column;
+      }
+      .mc-page-actions {
+        width: 100%;
+        margin-top: 1rem;
+      }
+      .mc-entity-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--mc-interactive-bright);
+      outline-offset: 3px;
+    }
+  [hidden]{display:none!important}:focus-visible{outline:2px solid var(--mc-interactive-bright);outline-offset:3px}.mc-input,.mc-select{border-color:var(--mc-text-muted)}.mc-entity-meta,.mc-entity-description{color:var(--mc-text-secondary)}.mc-btn{min-height:44px}dialog::backdrop{background:rgba(0,0,0,.7)}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}</style>
+</head>
+<body><div id="prototype-root">
+  <div class="mc-shell">
+    <!-- Persistent Sidebar -->
+    <aside aria-label="Navigation" class="mc-sidebar" style="view-transition-name: sidebar;">
+      <a href="#dashboard" class="mc-brand" id="preview-link-1">
+        <span aria-hidden="true" class="mc-brand-mark">✦</span>
+        <span>mythos<span>Circle</span></span>
+      </a>
+      <nav class="mc-nav-group mt-4">
+        <p class="mc-nav-title">Collections</p>
+        <a href="#campaigns" class="mc-nav-link" id="preview-link-2">Your Worlds</a>
+        <a href="https://p.superdesign.dev/draft/8f36f0b8-c14f-4edb-9aff-d21497256b77" class="mc-nav-link router-link-active" id="preview-link-3">
+          <span>Library</span>
+          <iconify-icon icon="lucide:library" class="text-gray-400"></iconify-icon>
+        </a>
+      </nav>
+      <nav class="mc-nav-group mt-2">
+        <p class="mc-nav-title">Create</p>
+        <a href="#forge" class="mc-nav-link" id="preview-link-4">
+          <span>Forge</span>
+          <iconify-icon icon="lucide:hammer" class="text-gray-400"></iconify-icon>
+        </a>
+      </nav>
+      <div class="mc-account">
+        <span class="mc-account-email">design-preview@example.test</span>
+        <button type="button" class="mc-btn-ghost">Log out</button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main-content" tabindex="-1" class="mc-main" style="view-transition-name: main-content;">
+      <header class="mc-page-header">
+        <div>
+          <h1 class="mc-page-title">Library</h1>
+          <p class="mc-page-description">Characters ready for a world of their own.</p>
+        </div>
+        <div class="mc-page-actions flex flex-wrap gap-2">
+          <a href="#forge" class="mc-btn" id="preview-link-5">
+            <iconify-icon icon="lucide:plus" class="mr-2"></iconify-icon>
+            Create character
+          </a>
+        </div>
+      </header>
+
+      <div class="mc-search-bar">
+        <iconify-icon icon="lucide:search" class="mc-search-icon"></iconify-icon>
+        <input 
+          type="text" 
+          id="library-search"
+          class="mc-input mc-search-input" 
+          placeholder="Search library characters..."
+          aria-label="Search characters"
+        >
+      </div>
+
+      <!-- Character Grid -->
+      <div class="mc-entity-grid" id="character-grid">
+        <!-- Card 1 -->
+        <article class="mc-entity-card character-item" data-name="elara vance">
+          <div aria-hidden="true" class="mc-entity-portrait-fallback">E</div>
+          <div class="mc-entity-body">
+            <div>
+              <h3 class="mc-entity-name">Elara Vance</h3>
+              <p class="mc-entity-meta mt-1">Human Rogue (Thief) • Level 3</p>
+            </div>
+            <p class="mc-entity-description">A pragmatic fence who operates out of a supposedly abandoned clocktower. Knows the value of a secret better than gold.</p>
+            <div class="mc-entity-footer">
+              <button type="button" class="mc-link flex items-center gap-1">
+                Open details <iconify-icon icon="lucide:arrow-right" class="text-[10px]"></iconify-icon>
+              </button>
+              <button type="button" class="mc-btn mc-btn-secondary !py-1 !px-2 !text-xs" onclick="openMoveDialog('Elara Vance')">
+                Move to world
+              </button>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 2 -->
+        <article class="mc-entity-card character-item" data-name="kaelen brightwood">
+          <div aria-hidden="true" class="mc-entity-portrait-fallback">K</div>
+          <div class="mc-entity-body">
+            <div>
+              <h3 class="mc-entity-name">Kaelen Brightwood</h3>
+              <p class="mc-entity-meta mt-1">Half-Elf Paladin • Level 1</p>
+            </div>
+            <p class="mc-entity-description">An idealistic squire searching for a lost relic of their order. Prone to grand speeches and rushing into danger unprepared.</p>
+            <div class="mc-entity-footer">
+              <button type="button" class="mc-link flex items-center gap-1">
+                Open details <iconify-icon icon="lucide:arrow-right" class="text-[10px]"></iconify-icon>
+              </button>
+              <button type="button" class="mc-btn mc-btn-secondary !py-1 !px-2 !text-xs" onclick="openMoveDialog('Kaelen Brightwood')">
+                Move to world
+              </button>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 3 -->
+        <article class="mc-entity-card character-item" data-name="varis">
+          <div aria-hidden="true" class="mc-entity-portrait-fallback">V</div>
+          <div class="mc-entity-body">
+            <div>
+              <h3 class="mc-entity-name">Varis</h3>
+              <p class="mc-entity-meta mt-1">Tiefling Warlock • Level 5</p>
+            </div>
+            <p class="mc-entity-description">Bound to a mysterious patron from the depths. Collects peculiar maps and refuses to explain why they glow in moonlight.</p>
+            <div class="mc-entity-footer">
+              <button type="button" class="mc-link flex items-center gap-1">
+                Open details <iconify-icon icon="lucide:arrow-right" class="text-[10px]"></iconify-icon>
+              </button>
+              <button type="button" class="mc-btn mc-btn-secondary !py-1 !px-2 !text-xs" onclick="openMoveDialog('Varis')">
+                Move to world
+              </button>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <!-- Empty State -->
+      <div class="mc-empty-state" id="empty-state">
+        <iconify-icon icon="lucide:users" class="mc-empty-icon"></iconify-icon>
+        <h2 class="mc-empty-title">No characters found</h2>
+        <p class="mc-empty-desc" id="empty-desc">Your library is empty. Create generic characters here before assigning them to a specific world.</p>
+        <a href="#forge" class="mc-btn" id="preview-link-6">
+          <iconify-icon icon="lucide:hammer" class="mr-2"></iconify-icon>
+          Go to Forge
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <!-- Move to World Dialog -->
+  <div class="mc-dialog-backdrop" id="move-dialog" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <div class="mc-dialog">
+      <div class="mc-dialog-header">
+        <h2 class="mc-dialog-title" id="dialog-title">Move to world</h2>
+        <p class="mc-dialog-desc">Transfer <strong id="dialog-char-name" class="text-white">Character</strong> to an active campaign.</p>
+      </div>
+      
+      <div class="mc-dialog-content">
+        <label for="world-select" class="block text-sm text-[var(--mc-text-secondary)] mb-2 font-medium">Destination World</label>
+        <div class="mc-select-wrapper">
+          <select id="world-select" class="mc-select" aria-label="Select destination world" onchange="validateDialog()">
+            <option value="">Select a campaign...</option>
+            <option value="greymarch">Greymarch</option>
+            <option value="sunken-valleys">The Sunken Valleys</option>
+            <option value="iron-spire">Iron Spire Ascendant</option>
+          </select>
+          <iconify-icon icon="lucide:chevron-down" class="mc-select-arrow"></iconify-icon>
+        </div>
+
+        <div class="mc-notice">
+          <iconify-icon icon="lucide:info" class="mc-notice-icon"></iconify-icon>
+          <div>
+            <strong>One-way transfer</strong><br>
+            Upon successful transfer, this character will leave your private Library and become part of the destination world.
+          </div>
+        </div>
+      </div>
+
+      <div class="mc-dialog-actions">
+        <button type="button" class="mc-btn mc-btn-secondary" onclick="closeDialog()">Cancel</button>
+        <button type="button" class="mc-btn" id="dialog-confirm-btn" disabled onclick="confirmMove()">Move Character</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+const $=id=>document.getElementById(id);const searchInput=$('library-search'),grid=$('character-grid'),empty=$('empty-state'),emptyDesc=$('empty-desc'),dialog=$('move-dialog'),worldSelect=$('world-select'),confirmBtn=$('dialog-confirm-btn');let currentCard=null,trigger=null;
+const status=document.createElement('p');status.id='library-status';status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.style='color:var(--mc-text-secondary);margin-top:1rem';document.querySelector('main').append(status);
+function search(){const term=searchInput.value.toLowerCase().trim();let count=0;document.querySelectorAll('.character-item').forEach(card=>{const match=(card.dataset.name+' '+card.querySelector('.mc-entity-description').textContent).toLowerCase().includes(term);card.style.display=match?'flex':'none';if(match)count++;});grid.style.display=count?'grid':'none';empty.classList.toggle('active',!count);emptyDesc.textContent=term?'No characters match “'+searchInput.value+'”. Clear the search to see your collection.':'Your Library is empty. Create a character in Forge to begin.';}
+searchInput.addEventListener('input',search);
+function openMoveDialog(name){trigger=document.activeElement;currentCard=[...document.querySelectorAll('.character-item')].find(c=>c.querySelector('.mc-entity-name').textContent===name);$('dialog-char-name').textContent=name;worldSelect.value='';validateDialog();dialog.setAttribute('aria-hidden','false');document.querySelector('.mc-shell').inert=true;worldSelect.focus();}
+function closeDialog(){dialog.setAttribute('aria-hidden','true');document.querySelector('.mc-shell').inert=false;currentCard=null;if(trigger?.isConnected)trigger.focus();else searchInput.focus();}
+function validateDialog(){confirmBtn.disabled=!worldSelect.value;}
+function confirmMove(){if(!worldSelect.value||!currentCard)return;const name=currentCard.querySelector('.mc-entity-name').textContent,destination=worldSelect.selectedOptions[0].textContent,moved=currentCard;closeDialog();moved.remove();search();searchInput.focus();status.textContent='Prototype only: moved '+name+' to '+destination+' in this sample. No stored character was transferred.';}
+document.addEventListener('keydown',e=>{if(dialog.getAttribute('aria-hidden')==='false'){if(e.key==='Escape'){e.preventDefault();closeDialog();}if(e.key==='Tab'){const focus=[...dialog.querySelectorAll('button:not(:disabled),select,input,a[href]')];const first=focus[0],last=focus[focus.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}}});
+const detail=document.createElement('dialog');detail.id='character-detail';detail.setAttribute('aria-labelledby','character-detail-name');detail.style='max-width:520px;width:calc(100vw - 2rem);background:var(--mc-surface-raised);color:var(--mc-text-primary);border:1px solid var(--mc-border-bright);border-radius:12px;padding:1.5rem';document.querySelector('.mc-shell').append(detail);
+document.querySelectorAll('.character-item').forEach(card=>{const b=card.querySelector('.mc-link');b.onclick=()=>{detail.replaceChildren();const h=document.createElement('h2');h.id='character-detail-name';h.textContent=card.querySelector('.mc-entity-name').textContent;const meta=document.createElement('p');meta.textContent=card.querySelector('.mc-entity-meta').textContent;const body=document.createElement('p');body.textContent=card.querySelector('.mc-entity-description').textContent;const note=document.createElement('p');note.textContent='Private Library character · Sample content';note.style='color:var(--mc-text-secondary)';const close=document.createElement('button');close.className='mc-btn mc-btn-secondary';close.textContent='Close details';close.onclick=()=>detail.close();detail.append(h,meta,body,note,close);detail.showModal();};});
+search();
+</script>
+</div></body>
+</html>

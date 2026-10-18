@@ -1,0 +1,519 @@
+<!DOCTYPE html><html lang="en" style="color-scheme: dark; background: #080d16;"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Overview - mythosCircle</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --mc-app-bg: #080d16;
+      --mc-app-bg-raised: #0b1320;
+      --mc-surface: #0e1724;
+      --mc-surface-raised: #131e2e;
+      --mc-surface-hover: #17253a;
+      --mc-input: #0a1421;
+      --mc-border: #24344a;
+      --mc-border-bright: #334966;
+      --mc-glow-violet: rgba(125, 92, 255, 0.24);
+      --mc-glow-cyan: rgba(53, 190, 205, 0.18);
+      --mc-text-primary: #eef1fb;
+      --mc-text-secondary: #b2bdd0;
+      --mc-text-muted: #74839a;
+      --mc-interactive: #8b6cff;
+      --mc-interactive-bright: #a994ff;
+      --mc-canonical: #5ed0c1;
+      --mc-display-font: Georgia, 'Times New Roman', serif;
+      --mc-body-font: 'Avenir Next', 'Segoe UI', sans-serif;
+      --mc-radius: 12px;
+      --mc-radius-sm: 7px;
+      --mc-sidebar-width: 236px;
+    }
+    body {
+      margin: 0;
+      min-width: 320px;
+      font-family: var(--mc-body-font);
+      background: radial-gradient(circle at 85% -10%, rgba(117, 83, 255, 0.13), transparent 34rem), radial-gradient(circle at 10% 40%, rgba(40, 160, 190, 0.06), transparent 28rem), var(--mc-app-bg);
+      color: var(--mc-text-primary);
+      line-height: 1.5;
+    }
+    .mc-btn {
+      display: inline-block;
+      white-space: nowrap;
+      padding: 0.55rem 0.9rem;
+      border-radius: var(--mc-radius-sm);
+      background: linear-gradient(135deg, var(--mc-interactive-bright), var(--mc-interactive));
+      color: #fff;
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid transparent;
+      cursor: pointer;
+      box-shadow: 0 8px 22px var(--mc-glow-violet);
+    }
+    .mc-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+    .mc-btn-secondary {
+      background: rgba(19, 30, 46, 0.72);
+      border-color: var(--mc-border);
+      color: var(--mc-text-secondary);
+      font-weight: 500;
+      box-shadow: none;
+    }
+    .mc-btn-secondary:hover {
+      color: var(--mc-text-primary);
+      border-color: var(--mc-border-bright);
+    }
+    .mc-shell {
+      display: flex;
+      min-height: 100vh;
+      width: 100%;
+      background: linear-gradient(90deg, rgba(13, 23, 36, 0.92), transparent 45%);
+    }
+    .mc-sidebar {
+      width: var(--mc-sidebar-width);
+      flex: none;
+      border-right: 1px solid var(--mc-border);
+      padding: 1.5rem 1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      background: rgba(10, 18, 30, 0.8);
+      backdrop-filter: blur(18px);
+    }
+    .mc-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: var(--mc-text-primary);
+      text-decoration: none;
+      letter-spacing: 0.01em;
+    }
+    .mc-brand > span:last-child {
+      font-family: var(--mc-display-font);
+      font-size: 1.25rem;
+    }
+    .mc-brand > span:last-child span {
+      color: var(--mc-interactive-bright);
+    }
+    .mc-brand-mark {
+      display: grid;
+      width: 1.9rem;
+      height: 1.9rem;
+      place-items: center;
+      border: 1px solid rgba(169, 148, 255, 0.7);
+      border-radius: 8px;
+      background: linear-gradient(145deg, rgba(139, 108, 255, 0.35), rgba(33, 188, 205, 0.16));
+      color: var(--mc-interactive-bright);
+      box-shadow: 0 0 24px var(--mc-glow-violet);
+    }
+    .mc-nav-group { display: flex; flex-direction: column; gap: 0.25rem; }
+    .mc-nav-title {
+      margin: 0 0 0.25rem;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--mc-text-muted);
+    }
+    .mc-nav-link {
+      color: var(--mc-text-secondary);
+      text-decoration: none;
+      padding: 0.35rem 0.5rem;
+      border-radius: var(--mc-radius-sm);
+    }
+    .mc-nav-link:hover {
+      color: var(--mc-text-primary);
+      background: var(--mc-surface-hover);
+    }
+    .mc-nav-link.router-link-active {
+      color: var(--mc-text-primary);
+      background: linear-gradient(90deg, rgba(139, 108, 255, 0.25), rgba(139, 108, 255, 0.06));
+      box-shadow: inset 2px 0 0 var(--mc-interactive);
+    }
+    .mc-account { margin-top: auto; display: flex; flex-direction: column; gap: 0.5rem; }
+    .mc-account-email { font-size: 0.85rem; color: var(--mc-text-muted); overflow: hidden; text-overflow: ellipsis; }
+    .mc-btn-ghost {
+      background: transparent;
+      border: 1px solid var(--mc-border);
+      color: var(--mc-text-secondary);
+      border-radius: var(--mc-radius-sm);
+      padding: 0.4rem 0.6rem;
+      cursor: pointer;
+    }
+    .mc-main { flex: 1; min-width: 0; padding: clamp(1.25rem, 3vw, 2.5rem); }
+    .mc-eyebrow {
+      margin: 0 0 0.5rem;
+      color: var(--mc-interactive-bright);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    .mc-page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      margin-bottom: 2rem;
+      padding-bottom: 1.25rem;
+      border-bottom: 1px solid var(--mc-border);
+    }
+    .mc-page-title { margin: 0; font-size: clamp(2rem, 4vw, 3rem); font-family: var(--mc-display-font); font-weight: 700; line-height: 1.05; }
+    .mc-page-description { margin: 0.5rem 0 0; color: var(--mc-text-secondary); font-size: 0.95rem; }
+    .mc-overview-counts { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 1.75rem; }
+    .mc-badge {
+      display: inline-block;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid var(--mc-border);
+    }
+    .mc-badge-canon { border-color: var(--mc-canonical); color: var(--mc-canonical); background: rgba(94, 208, 193, 0.08); }
+    .mc-badge-neutral { color: var(--mc-text-muted); background: rgba(14, 23, 36, 0.72); }
+    .mc-overview-layout { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(300px, 0.8fr); align-items: start; gap: 1.5rem; }
+    .mc-section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      margin: 1.5rem 0 0.75rem;
+      padding-bottom: 0.45rem;
+      border-bottom: 1px solid rgba(36, 52, 74, 0.72);
+    }
+    .mc-section-title { margin: 0; font-size: 1.125rem; font-weight: 600; }
+    .mc-section-meta { margin: 0.25rem 0 0; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--mc-text-muted); }
+    .mc-kind-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 0.75rem; }
+    .mc-kind-tile {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: end;
+      gap: 0.15rem;
+      min-height: 105px;
+      padding: 1rem;
+      border: 1px solid var(--mc-border);
+      border-radius: var(--mc-radius);
+      background: var(--mc-surface-raised);
+      color: var(--mc-text-secondary);
+      text-decoration: none;
+    }
+    .mc-kind-count { grid-column: 1 / -1; color: var(--mc-text-primary); font-family: var(--mc-display-font); font-size: 2rem; line-height: 1; }
+    .mc-kind-arrow { color: var(--mc-interactive-bright); }
+    .mc-entity-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+    .mc-entity-card {
+      position: relative;
+      background: linear-gradient(160deg, rgba(19, 30, 46, 0.96), rgba(10, 18, 30, 0.96));
+      border: 1px solid var(--mc-border);
+      border-radius: var(--mc-radius);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 16px 30px rgba(0, 0, 0, 0.14);
+    }
+    .mc-entity-portrait-fallback {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--mc-interactive-bright);
+      background: radial-gradient(circle at 50% 50%, rgba(139, 108, 255, 0.25), transparent 32%), linear-gradient(145deg, #17253a, #0b1320);
+      font-family: var(--mc-display-font);
+      font-size: 3rem;
+    }
+    .mc-entity-body { padding: 0.9rem 1rem 1rem; display: flex; flex-direction: column; gap: 0.35rem; }
+    .mc-entity-name { margin: 0; font-size: 1rem; font-weight: 650; }
+    .mc-entity-meta { margin: 0; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--mc-text-muted); }
+    .mc-entity-description { margin: 0.25rem 0 0; font-size: 0.95rem; color: var(--mc-text-secondary); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+    .mc-entity-relations { margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--mc-text-muted); }
+    .mc-entity-footer { margin-top: 0.6rem; }
+    .mc-link { color: var(--mc-interactive-bright); text-decoration: none; }
+    .mc-overview-rail { display: grid; gap: 1rem; position: sticky; top: 1.5rem; }
+    .mc-rail-card {
+      padding: 1.1rem;
+      border: 1px solid var(--mc-border);
+      border-radius: var(--mc-radius);
+      background: radial-gradient(circle at 100% 0%, rgba(139, 108, 255, 0.14), transparent 13rem), var(--mc-surface);
+    }
+    .mc-rail-kicker { margin: 0 0 0.4rem; color: var(--mc-interactive-bright); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+    .mc-rail-card h2 { margin: 0; font-family: var(--mc-display-font); font-size: 1.35rem; }
+    .mc-pulse-list { display: grid; gap: 0.65rem; margin: 1rem 0 0; }
+    .mc-pulse-list div { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding-bottom: 0.55rem; border-bottom: 1px solid var(--mc-border); }
+    .mc-pulse-list dt { color: var(--mc-text-secondary); text-transform: capitalize; }
+    .mc-pulse-list dd { margin: 0; color: var(--mc-text-primary); font-weight: 700; }
+    .mc-rail-actions { display: grid; gap: 0.35rem; margin-top: 1rem; }
+    .mc-rail-actions a {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.65rem 0.7rem;
+      border: 1px solid transparent;
+      border-radius: var(--mc-radius-sm);
+      color: var(--mc-text-secondary);
+      text-decoration: none;
+    }
+    .mc-export-copy { margin: 0.55rem 0 0.9rem; color: var(--mc-text-secondary); }
+    .mc-export-actions { display: flex; gap: 0.5rem; }
+  
+/* Restored unchanged source responsive and keyboard behavior. */
+@media (max-width: 800px) {
+  .mc-shell {
+    flex-direction: column;
+    background: none;
+  }
+  .mc-sidebar {
+    width: auto;
+    display: block;
+    padding: 1rem;
+    border-right: none;
+    border-bottom: 1px solid var(--mc-border);
+    backdrop-filter: none;
+  }
+  .mc-brand {
+    margin-bottom: 1rem;
+  }
+  .mc-nav-group {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+  }
+  .mc-nav-title {
+    width: 100%;
+    margin-bottom: 0;
+  }
+  .mc-nav-link {
+    padding: 0.38rem 0.55rem;
+  }
+  .mc-account {
+    margin-top: 1rem;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+  }
+  .mc-account .mc-btn-ghost {
+    width: auto;
+  }
+  .mc-main {
+    padding: 1.25rem 1rem 2rem;
+  }
+}
+
+@media (max-width: 900px) {
+  .mc-overview-layout {
+    grid-template-columns: 1fr;
+  }
+  .mc-overview-rail {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .mc-overview-rail {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .mc-page-header {
+    flex-direction: column;
+  }
+  .mc-page-actions {
+    width: 100%;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--mc-interactive-bright);
+  outline-offset: 3px;
+}
+
+
+.mc-skip-link {
+  position: fixed;
+  z-index: 20;
+  top: 0.75rem;
+  left: 0.75rem;
+  transform: translateY(-160%);
+  padding: 0.65rem 0.9rem;
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-interactive);
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform 160ms ease;
+}
+
+.mc-skip-link:focus {
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+</style>
+</head>
+<body>
+  <div class="mc-shell" data-sd-id="1">
+    <a id="overview-preview-link-1" href="#main-content" class="mc-skip-link">Skip to content</a>
+    <aside aria-label="Campaign workspace" class="mc-sidebar" data-sd-id="2">
+      <a id="overview-preview-link-3" href="#" class="mc-brand" data-sd-id="3">
+        <span aria-hidden="true" class="mc-brand-mark" data-sd-id="4">✦</span>
+        <span data-sd-id="5">mythos<span data-sd-id="6">Circle</span></span>
+      </a>
+      <nav class="mc-nav-group" data-sd-id="7">
+        <p class="mc-nav-title" data-sd-id="8">Campaign</p>
+        <a id="overview-preview-link-4" href="#" class="mc-nav-link router-link-active" data-sd-id="9">Overview</a>
+        <a id="overview-preview-link-5" href="#" class="mc-nav-link" data-sd-id="10">Tonight</a>
+        <a id="overview-preview-link-6" href="#" class="mc-nav-link" data-sd-id="11">World</a>
+      </nav>
+      <nav class="mc-nav-group" data-sd-id="12">
+        <p class="mc-nav-title" data-sd-id="13">Create</p>
+        <a id="overview-preview-link-7" href="#" class="mc-nav-link" data-sd-id="14">Ask the World</a>
+        <a id="overview-preview-link-8" href="#" class="mc-nav-link" data-sd-id="15">Add character</a>
+        <a id="overview-preview-link-9" href="#" class="mc-nav-link" data-sd-id="16">Guided Build</a>
+      </nav>
+      <nav class="mc-nav-group" data-sd-id="17">
+        <p class="mc-nav-title" data-sd-id="18">Tools</p>
+        <a id="overview-preview-link-10" href="#" class="mc-nav-link" data-sd-id="19">Graph</a>
+      </nav>
+      <div class="mc-account" data-sd-id="20">
+        <span class="mc-account-email" data-sd-id="21">design-preview@example.test</span>
+        <button type="button" class="mc-btn-ghost" data-sd-id="22">Log out</button>
+      </div>
+    </aside>
+    <main id="main-content" tabindex="-1" class="mc-main" data-sd-id="23">
+      <p class="mc-eyebrow" data-sd-id="24">Campaign atlas</p>
+      <header class="mc-page-header" data-sd-id="25">
+        <div data-sd-id="26">
+          <h1 class="mc-page-title" data-sd-id="27">Greymarch</h1>
+          <p class="mc-page-description" data-sd-id="28">A coastal world of rival houses and hidden debts.</p>
+        </div>
+        <div class="mc-page-actions flex flex-wrap gap-2" data-sd-id="29">
+          <a id="overview-preview-link-11" href="#" class="mc-btn" data-sd-id="30">Ask the world…</a>
+          <a id="overview-preview-link-12" href="#" class="mc-btn mc-btn-secondary" data-sd-id="31">+ Create</a>
+        </div>
+      </header>
+      <p class="mc-overview-counts" data-sd-id="32">
+        <span class="mc-badge mc-badge-canon" data-sd-id="33">7 entities</span>
+        <span class="mc-badge mc-badge-neutral" data-sd-id="34">0 relationships</span>
+      </p>
+      <div class="mc-overview-layout" data-sd-id="35">
+        <div class="mc-overview-main" data-sd-id="36">
+          <section class="mb-9" data-sd-id="37">
+            <div class="mc-section-header" data-sd-id="38">
+              <div data-sd-id="39">
+                <h2 class="mc-section-title" data-sd-id="40">Explore the world</h2>
+                <p class="mc-section-meta" data-sd-id="41">Browse by kind</p>
+              </div>
+            </div>
+            <div class="mc-kind-grid" data-sd-id="42">
+              <a id="overview-preview-link-13" href="#" class="mc-kind-tile" data-sd-id="43">
+                <span class="mc-kind-count" data-sd-id="44">3</span>
+                <span data-sd-id="45">Characters</span>
+                <span class="mc-kind-arrow" data-sd-id="46">↗</span>
+              </a>
+              <a id="overview-preview-link-14" href="#" class="mc-kind-tile" data-sd-id="47">
+                <span class="mc-kind-count" data-sd-id="48">2</span>
+                <span data-sd-id="49">Places</span>
+                <span class="mc-kind-arrow" data-sd-id="50">↗</span>
+              </a>
+              <a id="overview-preview-link-15" href="#" class="mc-kind-tile" data-sd-id="51">
+                <span class="mc-kind-count" data-sd-id="52">2</span>
+                <span data-sd-id="53">Factions</span>
+                <span class="mc-kind-arrow" data-sd-id="54">↗</span>
+              </a>
+            </div>
+          </section>
+          <section data-sd-id="55">
+            <div class="mc-section-header" data-sd-id="56">
+              <div data-sd-id="57">
+                <h2 class="mc-section-title" data-sd-id="58">Recently added</h2>
+                <p class="mc-section-meta" data-sd-id="59">3 shown</p>
+              </div>
+              <a id="overview-preview-link-16" href="#" class="mc-link text-[var(--mc-text-muted)] text-sm" data-sd-id="60">Browse all →</a>
+            </div>
+            <div class="mc-entity-grid" data-sd-id="61">
+              <article class="mc-entity-card" data-sd-id="62">
+                <div aria-hidden="true" class="mc-entity-portrait-fallback" data-sd-id="63">T</div>
+                <div class="mc-entity-body" data-sd-id="64">
+                  <h3 class="mc-entity-name" data-sd-id="65">The Ledger</h3>
+                  <p class="mc-entity-meta" data-sd-id="66">Faction</p>
+                  <p class="mc-entity-description" data-sd-id="67">Merchant families holding the keys to the city's prosperity.</p>
+                  <p class="mc-entity-relations" data-sd-id="68">0 relationships</p>
+                  <div class="mc-entity-footer" data-sd-id="69">
+                    <a id="overview-preview-link-18" href="#" class="mc-link text-sm" data-sd-id="70">Open →</a>
+                  </div>
+                </div>
+              </article>
+              <article class="mc-entity-card" data-sd-id="71">
+                <div aria-hidden="true" class="mc-entity-portrait-fallback" data-sd-id="72">T</div>
+                <div class="mc-entity-body" data-sd-id="73">
+                  <h3 class="mc-entity-name" data-sd-id="74">The Ash Cult</h3>
+                  <p class="mc-entity-meta" data-sd-id="75">Faction</p>
+                  <p class="mc-entity-description" data-sd-id="76">An old fellowship collecting debts before the next eclipse.</p>
+                  <p class="mc-entity-relations" data-sd-id="77">0 relationships</p>
+                  <div class="mc-entity-footer" data-sd-id="78">
+                    <a id="overview-preview-link-20" href="#" class="mc-link text-sm" data-sd-id="79">Open →</a>
+                  </div>
+                </div>
+              </article>
+              <article class="mc-entity-card" data-sd-id="80">
+                <div aria-hidden="true" class="mc-entity-portrait-fallback" data-sd-id="81">T</div>
+                <div class="mc-entity-body" data-sd-id="82">
+                  <h3 class="mc-entity-name" data-sd-id="83">The Censer</h3>
+                  <p class="mc-entity-meta" data-sd-id="84">Place</p>
+                  <p class="mc-entity-description" data-sd-id="85">A warm, crowded tavern where every favor has a price.</p>
+                  <p class="mc-entity-relations" data-sd-id="86">0 relationships</p>
+                  <div class="mc-entity-footer" data-sd-id="87">
+                    <a id="overview-preview-link-22" href="#" class="mc-link text-sm" data-sd-id="88">Open →</a>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+        <aside aria-label="World context" class="mc-overview-rail" data-sd-id="89">
+          <section class="mc-rail-card" data-sd-id="90">
+            <p class="mc-rail-kicker" data-sd-id="91">World pulse</p>
+            <h2 data-sd-id="92">At a glance</h2>
+            <dl class="mc-pulse-list" data-sd-id="93">
+              <div data-sd-id="94"><dt data-sd-id="95">Entities</dt><dd data-sd-id="96">7</dd></div>
+              <div data-sd-id="97"><dt data-sd-id="98">Relationships</dt><dd data-sd-id="99">0</dd></div>
+              <div data-sd-id="100"><dt data-sd-id="101">Character</dt><dd data-sd-id="102">3</dd></div>
+              <div data-sd-id="103"><dt data-sd-id="104">Place</dt><dd data-sd-id="105">2</dd></div>
+              <div data-sd-id="106"><dt data-sd-id="107">Faction</dt><dd data-sd-id="108">2</dd></div>
+            </dl>
+          </section>
+          <section class="mc-rail-card" data-sd-id="109">
+            <p class="mc-rail-kicker" data-sd-id="110">Keep shaping</p>
+            <h2 data-sd-id="111">Next move</h2>
+            <nav class="mc-rail-actions" data-sd-id="112">
+              <a id="overview-preview-link-24" href="#" data-sd-id="113"><span data-sd-id="114">Guided build</span><span data-sd-id="115">→</span></a>
+              <a id="overview-preview-link-25" href="#" data-sd-id="116"><span data-sd-id="117">Ask the world</span><span data-sd-id="118">→</span></a>
+              <a id="overview-preview-link-26" href="#" data-sd-id="119"><span data-sd-id="120">Open relationship graph</span><span data-sd-id="121">→</span></a>
+            </nav>
+          </section>
+          <section class="mc-rail-card" data-sd-id="122">
+            <p class="mc-rail-kicker" data-sd-id="123">Take it with you</p>
+            <h2 data-sd-id="124">Export world</h2>
+            <p class="mc-export-copy" data-sd-id="125">Download the complete current world as a document.</p>
+            <div class="mc-export-actions" data-sd-id="126">
+              <a id="overview-preview-link-27" href="#" class="mc-btn mc-btn-secondary" data-sd-id="127">Markdown</a>
+              <a id="overview-preview-link-28" href="#" class="mc-btn mc-btn-secondary" data-sd-id="128">HTML</a>
+            </div>
+          </section>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+</body></html>

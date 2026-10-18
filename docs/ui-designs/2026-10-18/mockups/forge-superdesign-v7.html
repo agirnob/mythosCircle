@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+
+<html lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><title>mythosCircle — Character forge preview</title><script src="https://cdn.tailwindcss.com"></script><style>
+/**
+ * Design tokens — mythosCircle frontend rebuild (§9).
+ */
+:root {
+  color-scheme: dark;
+
+  /* Atmospheric navy foundation with a violet creative accent. */
+  --mc-app-bg: #080d16;
+  --mc-app-bg-raised: #0b1320;
+  --mc-surface: #0e1724;
+  --mc-surface-raised: #131e2e;
+  --mc-surface-hover: #17253a;
+  --mc-input: #0a1421;
+  --mc-border: #24344a;
+  --mc-border-bright: #334966;
+  --mc-glow-violet: rgba(125, 92, 255, 0.24);
+  --mc-glow-cyan: rgba(53, 190, 205, 0.18);
+
+  /* Text (§9) */
+  --mc-text-primary: #eef1fb;
+  --mc-text-secondary: #b2bdd0;
+  --mc-text-muted: #74839a;
+  --mc-text-faint: #52627a;
+
+  /* Semantic accents: creation, canon, importance, danger. */
+  --mc-interactive: #8b6cff;
+  --mc-interactive-bright: #a994ff;
+  --mc-canonical: #5ed0c1;
+  --mc-proposal: #c09cff;
+  --mc-warning: #e7b866;
+  --mc-danger: #ed777d;
+  --mc-success: #75d39e;
+
+  /* Type scale (§10) */
+  --mc-page-title-size: clamp(2rem, 4vw, 3rem);
+  --mc-section-title-size: 1.125rem;
+  --mc-entity-name-size: 1rem;
+  --mc-meta-size: 0.72rem;
+  --mc-body-size: 0.95rem;
+  --mc-display-font: Georgia, 'Times New Roman', serif;
+  --mc-body-font: 'Avenir Next', 'Segoe UI', sans-serif;
+
+  /* Shape + spacing */
+  --mc-radius: 12px;
+  --mc-radius-sm: 7px;
+  --mc-gap: 1rem;
+  --mc-gap-sm: 0.5rem;
+  --mc-shell-width: 1440px;
+  --mc-sidebar-width: 236px;
+}
+* { box-sizing: border-box; }
+html { min-width: 320px; background: var(--mc-app-bg); }
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: var(--mc-body-font);
+  background: radial-gradient(circle at 85% -10%, rgba(117, 83, 255, 0.13), transparent 34rem),
+              radial-gradient(circle at 10% 40%, rgba(40, 160, 190, 0.06), transparent 28rem),
+              var(--mc-app-bg);
+  color: var(--mc-text-primary);
+  line-height: 1.5;
+}
+:focus-visible { outline: 2px solid var(--mc-interactive-bright); outline-offset: 3px; }
+button, input, textarea, select { font: inherit; color-scheme: dark; }
+::selection { background: rgba(139, 108, 255, 0.4); color: var(--mc-text-primary); }
+.mc-display-title { font-family: var(--mc-display-font); letter-spacing: -0.025em; }
+.mc-skip-link { position: fixed; z-index: 20; top: 0.75rem; left: 0.75rem; transform: translateY(-160%); padding: 0.65rem 0.9rem; border-radius: var(--mc-radius-sm); background: var(--mc-interactive); color: #fff; font-weight: 700; text-decoration: none; transition: transform 160ms ease; }
+.mc-skip-link:focus { transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
+.forge-input, .forge-select, .forge-textarea { width: 100%; background: var(--mc-input); border: 1px solid var(--mc-border-bright); border-radius: 7px; color: var(--mc-text-primary); padding: 0.6rem 0.75rem; font-family: inherit; font-size: 0.95rem; transition: border-color 0.15s, box-shadow 0.15s; }
+.forge-input:focus, .forge-select:focus, .forge-textarea:focus { border-color: var(--mc-interactive); box-shadow: 0 0 0 3px var(--mc-glow-violet); outline: none; }
+.forge-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; white-space: nowrap; padding: 0.55rem 1.25rem; border-radius: 7px; background: linear-gradient(135deg, var(--mc-interactive-bright), var(--mc-interactive)); color: #fff; font-weight: 600; border: 1px solid transparent; cursor: pointer; box-shadow: 0 8px 22px var(--mc-glow-violet); transition: transform 150ms, filter 150ms; }
+.forge-btn-primary:hover { filter: brightness(1.1); transform: translateY(-1px); }
+.forge-btn-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; background: rgba(19, 30, 46, 0.72); border: 1px solid var(--mc-border); color: var(--mc-text-secondary); border-radius: 7px; padding: 0.55rem 1rem; font-weight: 500; cursor: pointer; transition: color 150ms, border-color 150ms; }
+.forge-btn-secondary:hover { color: var(--mc-text-primary); border-color: var(--mc-border-bright); }
+.forge-card { background: var(--mc-surface); border: 1px solid var(--mc-border); border-radius: 12px; padding: 1.5rem; }
+.role-card { border: 1px solid var(--mc-border); border-radius: 7px; padding: 1rem; background: var(--mc-surface); cursor: pointer; transition: all 150ms ease; height: 100%; text-align: left; font: inherit; color: inherit; position: relative; }
+.role-card:hover { border-color: var(--mc-border-bright); background: var(--mc-surface-hover); }
+.role-card.selected { border-color: var(--mc-interactive); background: rgba(139, 108, 255, 0.08); box-shadow: 0 0 0 1px var(--mc-interactive); }
+.role-card strong { display: block; font-weight: 500; margin-bottom: .25rem; }
+.role-card small { display: block; font-size: .75rem; line-height: 1.5; color: var(--mc-text-secondary); }
+.role-card.selected strong:after { content: '✓'; color: var(--mc-interactive-bright); position: absolute; right: 1rem; }
+.mc-shell { display: flex; min-height: 100vh; width: 100%; max-width: none; margin: 0 auto; background: linear-gradient(90deg, rgba(13, 23, 36, 0.92), transparent 45%); }
+.mc-sidebar { width: var(--mc-sidebar-width); flex: none; border-right: 1px solid var(--mc-border); padding: 1.5rem 1rem 1.25rem; display: flex; flex-direction: column; gap: 1.25rem; background: rgba(10, 18, 30, 0.8); backdrop-filter: blur(18px); }
+.mc-brand { display: flex; align-items: center; gap: 0.55rem; font-weight: 700; font-size: 1.1rem; color: var(--mc-text-primary); text-decoration: none; letter-spacing: 0.01em; }
+.mc-brand > span:last-child { font-family: var(--mc-display-font); font-size: 1.25rem; }
+.mc-brand > span:last-child span { color: var(--mc-interactive-bright); }
+.mc-brand-mark { display: grid; width: 1.9rem; height: 1.9rem; place-items: center; border: 1px solid rgba(169, 148, 255, 0.7); border-radius: 8px; background: linear-gradient(145deg, rgba(139, 108, 255, 0.35), rgba(33, 188, 205, 0.16)); color: var(--mc-interactive-bright); box-shadow: 0 0 24px var(--mc-glow-violet); }
+.mc-nav-group { display: flex; flex-direction: column; gap: 0.25rem; }
+.mc-nav-title { margin: 0 0 0.25rem; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--mc-text-muted); }
+.mc-nav-link { color: var(--mc-text-secondary); text-decoration: none; padding: 0.35rem 0.5rem; border-radius: var(--mc-radius-sm); }
+.mc-nav-link:hover { color: var(--mc-text-primary); background: var(--mc-surface-hover); }
+.mc-nav-link.router-link-active { color: var(--mc-text-primary); background: linear-gradient(90deg, rgba(139, 108, 255, 0.25), rgba(139, 108, 255, 0.06)); box-shadow: inset 2px 0 0 var(--mc-interactive); }
+.mc-account { margin-top: auto; display: flex; flex-direction: column; gap: 0.5rem; }
+.mc-account-email { font-size: 0.85rem; color: var(--mc-text-muted); overflow: hidden; text-overflow: ellipsis; }
+.mc-btn-ghost { background: transparent; border: 1px solid var(--mc-border); color: var(--mc-text-secondary); border-radius: var(--mc-radius-sm); padding: 0.4rem 0.6rem; cursor: pointer; }
+.mc-btn-ghost:hover { color: var(--mc-text-primary); border-color: var(--mc-border-bright); background: var(--mc-surface-raised); }
+.mc-main { flex: 1; min-width: 0; padding: clamp(1.25rem, 3vw, 2.5rem); overflow: visible; }
+[hidden] { display: none !important; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+a { color: var(--mc-interactive-bright); }
+.workspace { min-width: 0; }
+.workspace h1, .workspace h2, .workspace h3, .workspace p { margin-top: 0; }
+.page-heading { display: flex; justify-content: space-between; gap: 1rem; align-items: center; border-bottom: 1px solid var(--mc-border); padding-bottom: 1rem; margin-bottom: 1.5rem; }
+.page-heading h1 { font-size: 1.5rem; margin-bottom: .25rem; }
+.support { color: var(--mc-text-muted); font-size: .875rem; margin-bottom: 0; }
+.destination-strip { padding: .75rem; background: var(--mc-surface-raised); border: 1px solid var(--mc-border); border-radius: 12px; margin-bottom: 1.5rem; }
+.destination-heading { display: flex; gap: 1rem; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+.eyebrow { font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; color: var(--mc-text-muted); font-weight: 600; }
+.destination-heading strong { margin-left: .75rem; font-weight: 500; }
+.link-button { background: none; border: 0; padding: .25rem; color: var(--mc-interactive-bright); cursor: pointer; }
+.destination-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; }
+.tabs { display: flex; border-bottom: 1px solid var(--mc-border); margin-bottom: 1.5rem; }
+.tab { border: 0; border-bottom: 2px solid transparent; background: none; padding: .75rem 1rem; color: var(--mc-text-secondary); cursor: pointer; }
+.tab[aria-selected=true] { border-bottom-color: var(--mc-interactive); color: var(--mc-text-primary); font-weight: 600; }
+.workbench { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 1.5rem; align-items: start; }
+.editor { min-width: 0; }
+.section-space { margin-bottom: 2rem; }
+.section-title { font-size: 1.125rem; font-weight: 600; margin-bottom: 1rem; }
+.role-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+.fields-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+.field { display: block; min-width: 0; }
+.field-label { display: block; font-size: .875rem; margin-bottom: .5rem; }
+.optional { color: var(--mc-text-muted); }
+.field-help { color: var(--mc-text-muted); font-size: .75rem; margin: 0 0 .75rem; display: block; }
+.forge-input, .forge-select { min-height: 44px; }
+.forge-textarea { display: block; min-height: 88px; resize: vertical; }
+.concept { min-height: 128px; }
+.desc-hint { font-size: 0.8rem; color: var(--mc-text-muted); margin-top: 0.25rem; }
+.summary { border-left: 1px solid var(--mc-border); padding-left: 1.5rem; min-width: 0; }
+.summary h2 { font-size: 1.125rem; font-weight: 600; margin-bottom: 1rem; }
+.summary .forge-card { padding: 1rem; background: var(--mc-input); }
+.summary ul { list-style: none; padding: 0; margin: .5rem 0 1rem; display: grid; gap: .5rem; font-size: .875rem; color: var(--mc-text-secondary); overflow-wrap: anywhere; }
+.summary .generated { color: var(--mc-text-muted); }
+.summary-destination { border-bottom: 1px solid var(--mc-border); margin: .5rem 0 1rem; padding-bottom: 1rem; font-size: .875rem; overflow-wrap: anywhere; }
+.generate-action { width: 100%; margin-top: 1.5rem; min-height: 44px; }
+.destination-copy { font-size: .75rem; color: var(--mc-text-muted); text-align: center; margin-top: .75rem; }
+.section-tabs { display: flex; gap: .25rem; overflow-x: auto; padding-bottom: .5rem; margin-bottom: 1.5rem; max-width: 100%; }
+.section-tabs .tab { padding: .65rem .75rem; white-space: nowrap; border-radius: 7px; border: 1px solid transparent; }
+.section-tabs .tab[aria-selected=true] { border-color: var(--mc-interactive); background: rgba(139, 108, 255, .08); }
+.detailed-panel .forge-card { padding: 1.25rem; }
+.detailed-panel h2 { font-size: 1.125rem; }
+.detailed-panel h3 { font-size: 1rem; }
+.char-layout { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 1.5rem; align-items: start; }
+.chip-grid { display: flex; flex-direction: column; gap: 0.5rem; }
+.char-chip { display: flex; justify-content: space-between; align-items: center; width: 100%; background: var(--mc-input); border: 1px solid var(--mc-border); padding: 0.6rem 0.75rem; border-radius: 7px; color: var(--mc-text-secondary); cursor: pointer; text-align: left; transition: border-color 0.15s; font-size: 0.875rem; }
+.char-chip:hover { border-color: var(--mc-border-bright); }
+.char-chip.active { border-color: var(--mc-interactive); color: var(--mc-text-primary); }
+.char-chip-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: transparent; }
+.char-chip.has-content .char-chip-indicator { background: var(--mc-interactive); }
+.chip-panel { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--mc-border); }
+.toggle-section { border: 1px solid var(--mc-border); border-radius: 7px; padding: 1rem; margin-bottom: 1rem; }
+.toggle-label { display: flex; align-items: center; gap: .6rem; font-weight: 500; cursor: pointer; }
+.toggle-label input { accent-color: var(--mc-interactive); width: 18px; height: 18px; }
+.toggle-content { padding-top: 1rem; }
+.dice-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; }
+.list-row { border-top: 1px solid var(--mc-border); padding-top: 1rem; margin: 1rem 0; }
+.list-row .fields-grid { gap: .75rem; }
+.row-action { display: flex; justify-content: flex-end; margin-top: .5rem; }
+.relation-row { border-top: 1px solid var(--mc-border); padding-top: 1rem; margin-top: 1rem; }
+.relation-row .fields-grid { gap: .75rem; }
+.notice { padding: .85rem 1rem; margin-top: 1rem; border: 1px solid var(--mc-border-bright); border-radius: 7px; color: var(--mc-text-secondary); font-size: .875rem; overflow-wrap: anywhere; }
+.review-list { display: grid; grid-template-columns: minmax(80px, auto) 1fr; gap: .6rem 1rem; overflow-wrap: anywhere; }
+.review-list dt { color: var(--mc-text-muted); }
+.review-list dd { margin: 0; white-space: pre-wrap; }
+.preview-notice { font-size: .75rem; color: var(--mc-text-muted); margin-top: 1rem; }
+.history-dialog { margin: auto 0 auto auto; position: fixed; inset: 0; width: min(460px, 100%); height: 100dvh; max-height: none; max-width: 100%; background: var(--mc-app-bg-raised); color: var(--mc-text-primary); border: 0; border-left: 1px solid var(--mc-border); padding: 1.5rem; overflow-y: auto; }
+.history-dialog::backdrop { background: rgba(0, 0, 0, .6); }
+.dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.dialog-heading h2 { margin: 0; }
+.history-job { margin: 1rem 0; }
+.history-job h3 { font-family: var(--mc-display-font); font-size: 1.2rem; margin-top: 0; }
+.job-status { display: inline-block; font-size: .75rem; border: 1px solid currentColor; border-radius: 999px; padding: .15rem .5rem; }
+.status-queued { color: var(--mc-warning); }
+.status-failed { color: var(--mc-danger); }
+.status-succeeded { color: var(--mc-canonical); }
+.history-job progress { width: 100%; accent-color: var(--mc-interactive); }
+.history-job p { font-size: .875rem; color: var(--mc-text-secondary); }
+.fixture-note { color: var(--mc-text-muted); font-size: .75rem; }
+.section-panel:focus { outline: none; }
+.empty-relations { color: var(--mc-text-muted); font-size: .875rem; }
+@media(max-width:1100px) {
+  .workbench { grid-template-columns: minmax(0, 1fr) 280px; }
+  .summary { padding-left: 1rem; }
+  .role-grid { gap: .6rem; }
+  .role-card { padding: .75rem; }
+  .char-layout { grid-template-columns: 1fr; }
+  .chip-grid { flex-direction: row; flex-wrap: wrap; }
+  .char-chip { width: auto; flex: 1 1 calc(33.333% - 0.5rem); }
+}
+@media(max-width:960px) {
+  .workbench { grid-template-columns: minmax(0, 1fr); }
+  .summary { border-left: 0; border-top: 1px solid var(--mc-border); padding: 1.5rem 0 0; }
+  .summary .forge-card { max-width: none; }
+}
+@media(max-width:800px) {
+  .mc-shell { flex-direction: column; background: none; }
+  .mc-sidebar { width: auto; display: block; padding: 1rem; border-right: none; border-bottom: 1px solid var(--mc-border); backdrop-filter: none; }
+  .mc-brand { margin-bottom: 1rem; }
+  .mc-nav-group { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin-top: 0.5rem; }
+  .mc-nav-title { width: 100%; margin-bottom: 0; }
+  .mc-nav-link { padding: 0.38rem 0.55rem; }
+  .mc-account { margin-top: 1rem; display: grid; grid-template-columns: 1fr auto; align-items: center; }
+  .mc-account .mc-btn-ghost { width: auto; }
+  .mc-main { padding: 1.25rem 1rem 2rem; }
+}
+@media(max-width:560px) {
+  .fields-grid, .destination-fields { grid-template-columns: 1fr; gap: 1rem; }
+  .role-grid { grid-template-columns: 1fr; }
+  .page-heading { align-items: flex-start; }
+  .page-heading h1 { font-size: 1.4rem; }
+  .page-heading .forge-btn-secondary { padding: .5rem .75rem; }
+  .destination-heading strong { display: block; margin: .25rem 0 0; }
+  .tabs .tab { padding: .75rem .6rem; font-size: .875rem; }
+  .forge-card { padding: 1rem; }
+  .char-chip { flex: 1 1 100%; }
+  .review-list { grid-template-columns: 1fr; gap: .3rem; }
+  .review-list dd { margin-bottom: .65rem; }
+  .history-dialog { padding: 1rem; }
+  .section-tabs { gap: 0; }
+}
+
+.identity-explore{font-size:.8rem;margin-top:.25rem}.choice-dialog{width:min(720px,calc(100vw - 32px));max-height:85dvh;padding:1.5rem;border:1px solid var(--mc-border-bright);border-radius:12px;background:var(--mc-app-bg-raised);color:var(--mc-text-primary)}.choice-dialog::backdrop{background:rgba(0,0,0,.6)}.choice-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem;margin-top:1rem}.identity-choice{text-align:left;padding:1rem;border:1px solid var(--mc-border);border-radius:7px;background:var(--mc-surface);color:var(--mc-text-primary);cursor:pointer}.identity-choice strong,.identity-choice small{display:block}.identity-choice small{font-size:.8rem;color:var(--mc-text-secondary);margin-top:.35rem;line-height:1.5}.identity-choice[aria-pressed=true]{border-color:var(--mc-interactive);background:rgba(139,108,255,.08)}.mechanics-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}.mechanics-choices>.toggle-section{margin:0;min-width:0}.mechanics-choices>.toggle-section.is-open{grid-column:1/-1;border-color:var(--mc-interactive)}.mechanics-choices>[data-boss-wrap]{display:contents}.mechanic-heading{display:flex;flex:1;min-width:0;flex-direction:column;gap:.2rem}.mechanic-heading small{font-size:.75rem;font-weight:400;color:var(--mc-text-muted)}.mechanic-count,.detail-filled{font-size:.7rem;font-weight:400;color:var(--mc-text-secondary);margin-left:auto}.detail-filled:empty{display:none}.char-chip{gap:.5rem}.char-chip-indicator{display:none}
+@media(max-width:560px){.choice-grid,.mechanics-choices{grid-template-columns:minmax(0,1fr)}.choice-dialog{padding:1rem}.mechanic-count{font-size:.65rem}}
+
+.score-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.75rem}.score-field{padding:.75rem;border:1px solid var(--mc-border);border-radius:8px;background:var(--mc-surface)}.score-field .field-label{font-size:.72rem;font-weight:700;letter-spacing:.08em;color:var(--mc-text-secondary)}.score-field .forge-input{text-align:center;font-size:1.1rem;font-weight:600}.combat-stat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}.combat-metric,.hit-dice-card{padding:.85rem;border:1px solid var(--mc-border);border-radius:8px;background:var(--mc-surface)}.combat-metric .field-label,.hit-dice-title{font-size:.75rem;font-weight:700;letter-spacing:.06em;color:var(--mc-text-secondary)}.hit-dice-card{margin-top:.75rem}.hit-dice-title{margin:0 0 .65rem}.hit-dice-card .dice-fields{gap:.65rem}.spell-fields{grid-template-columns:minmax(0,.8fr) minmax(0,1.5fr)!important}.spell-fields .forge-textarea{min-height:76px}.spell-prompt{margin:.2rem 0 .75rem}.mechanics-choices .toggle-content{padding:.85rem;border-top:1px solid var(--mc-border);margin-top:.75rem}.toggle-section.is-open .toggle-label{padding-bottom:.2rem}
+@media(max-width:560px){.score-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.combat-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.spell-fields{grid-template-columns:1fr!important}}
+
+#f-background-detail{min-height:clamp(15rem,34vh,22rem)}
+@media(max-width:560px){.chip-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}.char-chip{width:auto;min-width:0;min-height:44px;flex:none;gap:.3rem;padding:.6rem;font-size:.8rem}.section-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));overflow:visible;gap:.35rem}.section-tabs .tab{padding:.55rem .25rem;font-size:.8rem}}
+</style></head><body>
+<div id="forge-prototype-root">
+<div class="mc-shell">
+<a class="mc-skip-link" href="#main-content" id="skip-to-main-content">Skip to content</a>
+<aside aria-label="Campaign workspace" class="mc-sidebar">
+<a class="mc-brand" href="#your-worlds" id="nav-your-worlds">
+<span aria-hidden="true" class="mc-brand-mark">✦</span>
+<span>mythos<span>Circle</span></span>
+</a>
+<nav aria-label="Create" class="mc-nav-group">
+<p class="mc-nav-title">Create</p>
+<a aria-current="page" class="mc-nav-link router-link-active" href="#forge" id="nav-global-forge">Forge</a>
+</nav>
+<div class="mc-account">
+<span class="mc-account-email">dm@example.com</span>
+<button class="mc-btn-ghost" id="preview-logout" type="button">Log out</button>
+<p class="fixture-note" hidden="" id="logout-status" role="status">Preview only — no session is changed.</p>
+</div>
+</aside>
+<main class="mc-main" id="main-content" tabindex="-1">
+<div class="workspace">
+<header class="page-heading">
+<div>
+<h1 class="mc-display-title">Character forge</h1>
+<p class="support">Create a new character. Fields you leave blank will be generated.</p>
+</div>
+<button aria-controls="history-dialog" aria-haspopup="dialog" class="forge-btn-secondary" id="history-btn" type="button">History</button>
+</header>
+<div class="destination-strip">
+<div class="destination-heading">
+<div><span class="eyebrow">Destination</span><strong data-destination-name="">The Reapened Coast</strong></div>
+<button aria-controls="destination-picker" aria-expanded="false" class="link-button" id="change-dest-btn" type="button">Change destination</button>
+</div>
+<div class="destination-fields" hidden="" id="destination-picker">
+<label class="field" for="destination-select">
+<span class="field-label">Preview destination</span>
+<select class="forge-select" id="destination-select">
+<option value="C1">The Reapened Coast</option>
+<option value="C2">The Ember Marches</option>
+<option value="Generic">Generic library</option>
+</select>
+</label>
+<button class="forge-btn-secondary" id="destination-done" type="button">Done</button>
+</div>
+<div hidden="" id="theme-control" style="margin-top:1rem">
+<label class="field" for="theme-select">
+<span class="field-label">Theme (the generation seed)</span>
+<select class="forge-select" id="theme-select">
+<option>High fantasy</option>
+<option>Dark fantasy</option>
+<option>Science fantasy</option>
+</select>
+</label>
+<p class="fixture-note">Example themes for this local preview.</p>
+</div>
+</div>
+<div aria-label="Creation mode" class="tabs" role="tablist">
+<button aria-controls="panel-quick" aria-selected="true" class="tab" data-mode="quick" id="tab-quick" role="tab" tabindex="0" type="button">Quick generate</button>
+<button aria-controls="panel-detailed" aria-selected="false" class="tab" data-mode="detailed" id="tab-detailed" role="tab" tabindex="-1" type="button">Detailed builder</button>
+</div>
+<div class="workbench">
+<div class="editor">
+<section aria-labelledby="tab-quick" id="panel-quick" role="tabpanel">
+<div class="section-space">
+<h2 class="section-title">Role</h2>
+<div aria-label="Character role" class="role-grid" role="group">
+<button aria-pressed="true" class="role-card selected" data-role="NPC" type="button">
+<strong>NPC</strong><small>A supporting character in the world.</small>
+</button>
+<button aria-pressed="false" class="role-card" data-role="BBEG" type="button">
+<strong>BBEG</strong><small>A major antagonist with boss mechanics.</small>
+</button>
+<button aria-pressed="false" class="role-card" data-role="Monster" type="button">
+<strong>Monster</strong><small>A creature or generic foe.</small>
+</button>
+</div>
+</div>
+<div class="section-space">
+<label class="field" for="f-name-quick" style="margin-bottom: 1.5rem">
+<span class="field-label">Name <span class="optional">(Optional)</span></span>
+<input class="forge-input" data-field="name" id="f-name-quick" placeholder="Leave blank for a generated name" type="text"/>
+</label>
+<div class="fields-grid">
+<div class="identity-field"><label class="field" for="f-species-quick">
+<span class="field-label">Species <span class="optional">(Optional)</span></span>
+<select aria-describedby="species-description-0" aria-label="Species (Optional)" class="forge-select" data-field="species" id="f-species-quick">
+<option value="">Let the model choose</option>
+<option value="Dragonborn">Dragonborn</option>
+<option value="Dwarf">Dwarf</option>
+<option value="Elf">Elf</option>
+<option value="Gnome">Gnome</option>
+<option value="Half-Elf">Half-Elf</option>
+<option value="Half-Orc">Half-Orc</option>
+<option value="Halfling">Halfling</option>
+<option value="Human">Human</option>
+<option value="Tiefling">Tiefling</option>
+</select>
+<p class="desc-hint" data-choice-hint="species" id="species-description-0">Suggests appearance, heritage and perspective; leave open for generation.</p>
+</label><button aria-controls="identity-choice-dialog" aria-haspopup="dialog" class="link-button identity-explore" data-explore="species" type="button">Explore species</button></div>
+<div class="identity-field"><label class="field" for="f-class-quick">
+<span class="field-label">Class <span class="optional">(Optional)</span></span>
+<select aria-describedby="class-description-0" aria-label="Class (Optional)" class="forge-select" data-field="class" id="f-class-quick">
+<option value="">Let the model choose</option>
+<option value="Barbarian">Barbarian</option>
+<option value="Bard">Bard</option>
+<option value="Cleric">Cleric</option>
+<option value="Druid">Druid</option>
+<option value="Fighter">Fighter</option>
+<option value="Monk">Monk</option>
+<option value="Paladin">Paladin</option>
+<option value="Ranger">Ranger</option>
+<option value="Rogue">Rogue</option>
+<option value="Sorcerer">Sorcerer</option>
+<option value="Warlock">Warlock</option>
+<option value="Wizard">Wizard</option>
+</select>
+<p class="desc-hint" data-choice-hint="class" id="class-description-0">Guides training, combat style, skills and spellcasting; leave open for generation.</p>
+</label><button aria-controls="identity-choice-dialog" aria-haspopup="dialog" class="link-button identity-explore" data-explore="class" type="button">Explore classes</button></div>
+<div class="field">
+<span class="field-label">Power <span class="optional">(Optional)</span></span>
+<div class="fields-grid" style="gap:.5rem">
+<label class="field" for="f-powerSlot-quick">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">Measure</span>
+<select class="forge-select" data-field="powerSlot" id="f-powerSlot-quick">
+<option value="level">Level</option>
+<option value="cr">CR</option>
+</select>
+</label>
+<div data-power="level">
+<label class="field" for="f-level-quick">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">Level (1–20)</span>
+<input class="forge-input" data-field="level" id="f-level-quick" max="20" min="1" placeholder="1-20" type="number"/>
+</label>
+</div>
+<div data-power="cr" hidden="">
+<label class="field" for="f-cr-quick">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">CR</span>
+<input class="forge-input" data-field="cr" id="f-cr-quick" placeholder="e.g. 1/2" type="text"/>
+</label>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="section-space">
+<label class="field" for="f-concept-quick">
+<span class="field-label">Character concept</span>
+<span class="field-help">Describe the core idea. The generator will expand this into a full sheet.</span>
+<textarea class="forge-textarea concept" data-field="concept" id="f-concept-quick" placeholder="e.g., A disgraced knight who sells protection to ghosts" rows="4"></textarea>
+</label>
+</div>
+</section>
+<section aria-labelledby="tab-detailed" hidden="" id="panel-detailed" role="tabpanel">
+<div aria-label="Detailed builder sections" class="section-tabs" role="tablist">
+<button aria-controls="detail-identity" aria-selected="true" class="tab" data-section="identity" id="section-identity" role="tab" tabindex="0" type="button">Identity</button>
+<button aria-controls="detail-character" aria-selected="false" class="tab" data-section="character" id="section-character" role="tab" tabindex="-1" type="button">Character</button>
+<button aria-controls="detail-mechanics" aria-selected="false" class="tab" data-section="mechanics" id="section-mechanics" role="tab" tabindex="-1" type="button">Mechanics</button>
+<button aria-controls="detail-connections" aria-selected="false" class="tab" data-section="connections" id="section-connections" role="tab" tabindex="-1" type="button">Connections</button>
+<button aria-controls="detail-review" aria-selected="false" class="tab" data-section="review" id="section-review" role="tab" tabindex="-1" type="button">Review</button>
+</div>
+<section aria-labelledby="section-identity" class="section-panel detailed-panel" id="detail-identity" role="tabpanel" tabindex="0">
+<div class="forge-card">
+<h2>Identity</h2>
+<p class="field-help">Start anywhere. Blank optional fields are generated; your authored fields stay yours.</p>
+<div class="fields-grid section-space">
+<label class="field" for="f-name-detail">
+<span class="field-label">Name <span class="optional">(Optional)</span></span>
+<input class="forge-input" data-field="name" id="f-name-detail" placeholder="Leave blank for a generated name" type="text"/>
+</label>
+<label class="field" for="f-role-detail">
+<span class="field-label">Role</span>
+<select class="forge-select" data-field="role" id="f-role-detail">
+<option value="NPC">NPC</option>
+<option value="BBEG">BBEG</option>
+<option value="Monster">Monster</option>
+</select>
+</label>
+<div class="identity-field"><label class="field" for="f-species-detail">
+<span class="field-label">Species <span class="optional">(Optional)</span></span>
+<select aria-describedby="species-description-1" aria-label="Species (Optional)" class="forge-select" data-field="species" id="f-species-detail">
+<option value="">Let the model choose</option>
+<option value="Dragonborn">Dragonborn</option>
+<option value="Dwarf">Dwarf</option>
+<option value="Elf">Elf</option>
+<option value="Gnome">Gnome</option>
+<option value="Half-Elf">Half-Elf</option>
+<option value="Half-Orc">Half-Orc</option>
+<option value="Halfling">Halfling</option>
+<option value="Human">Human</option>
+<option value="Tiefling">Tiefling</option>
+</select>
+<p class="desc-hint" data-choice-hint="species" id="species-description-1">Suggests appearance, heritage and perspective; leave open for generation.</p></label><button aria-controls="identity-choice-dialog" aria-haspopup="dialog" class="link-button identity-explore" data-explore="species" type="button">Explore species</button></div>
+<div class="identity-field"><label class="field" for="f-class-detail">
+<span class="field-label">Class <span class="optional">(Optional)</span></span>
+<select aria-describedby="class-description-1" aria-label="Class (Optional)" class="forge-select" data-field="class" id="f-class-detail">
+<option value="">Let the model choose</option>
+<option value="Barbarian">Barbarian</option>
+<option value="Bard">Bard</option>
+<option value="Cleric">Cleric</option>
+<option value="Druid">Druid</option>
+<option value="Fighter">Fighter</option>
+<option value="Monk">Monk</option>
+<option value="Paladin">Paladin</option>
+<option value="Ranger">Ranger</option>
+<option value="Rogue">Rogue</option>
+<option value="Sorcerer">Sorcerer</option>
+<option value="Warlock">Warlock</option>
+<option value="Wizard">Wizard</option>
+</select>
+<p class="desc-hint" data-choice-hint="class" id="class-description-1">Guides training, combat style, skills and spellcasting; leave open for generation.</p></label><button aria-controls="identity-choice-dialog" aria-haspopup="dialog" class="link-button identity-explore" data-explore="class" type="button">Explore classes</button></div>
+<div class="field">
+<span class="field-label">Power <span class="optional">(Optional)</span></span>
+<div class="fields-grid" style="gap:.5rem">
+<label class="field" for="f-powerSlot-detail">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">Measure</span>
+<select class="forge-select" data-field="powerSlot" id="f-powerSlot-detail">
+<option value="level">Level</option>
+<option value="cr">CR</option>
+</select>
+</label>
+<div data-power="level">
+<label class="field" for="f-level-detail">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">Level</span>
+<input class="forge-input" data-field="level" id="f-level-detail" max="20" min="1" type="number"/>
+</label>
+</div>
+<div data-power="cr" hidden="">
+<label class="field" for="f-cr-detail">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">CR</span>
+<input class="forge-input" data-field="cr" id="f-cr-detail" type="text"/>
+</label>
+</div>
+</div>
+</div>
+<label class="field" for="f-alignment-detail">
+<span class="field-label">Alignment <span class="optional">(Optional)</span></span>
+<select class="forge-select" data-field="alignment" id="f-alignment-detail">
+<option value="">Let the model choose</option>
+<option value="LG">LG</option>
+<option value="NG">NG</option>
+<option value="CG">CG</option>
+<option value="LN">LN</option>
+<option value="N">N</option>
+<option value="CN">CN</option>
+<option value="LE">LE</option>
+<option value="NE">NE</option>
+<option value="CE">CE</option>
+<option value="unaligned">unaligned</option>
+</select>
+</label>
+</div>
+</div>
+</section>
+<section aria-labelledby="section-character" class="section-panel detailed-panel" hidden="" id="detail-character" role="tabpanel" tabindex="0">
+<div class="forge-card">
+<h2>Character</h2>
+<div class="char-layout">
+<div class="char-main">
+<label class="field" for="f-background-detail">
+<span class="field-label" style="font-size: 1rem; font-weight: 500;">Background</span>
+<span class="field-help">Authored story of the character's past. Saved exactly as written.</span>
+<textarea class="forge-textarea concept" data-field="background" id="f-background-detail" placeholder="e.g. Raised in the lower rings of Cinderwatch, she learned early that..." rows="6"></textarea>
+</label>
+<div id="char-chip-panels">
+<div class="chip-panel" hidden="" id="panel-concept"><p class="field-help">A direction for generation, kept separate from authored Background.</p>
+<label class="field" for="f-concept-detail">
+<span class="field-label">Character concept guidance</span>
+<textarea class="forge-textarea" data-field="concept" id="f-concept-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-personality"><p class="field-help">How the character behaves and responds under pressure.</p>
+<label class="field" for="f-personality-detail">
+<span class="field-label">Personality</span>
+<textarea class="forge-textarea" data-field="personality" id="f-personality-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-appearance"><p class="field-help">Visible features, clothing and mannerisms.</p>
+<label class="field" for="f-appearance-detail">
+<span class="field-label">Appearance</span>
+<textarea class="forge-textarea" data-field="appearance" id="f-appearance-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-goals"><p class="field-help">What the character wants to achieve.</p>
+<label class="field" for="f-goals-detail">
+<span class="field-label">Goals</span>
+<textarea class="forge-textarea" data-field="goals" id="f-goals-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-secret"><p class="field-help">Something the character keeps hidden.</p>
+<label class="field" for="f-secret-detail">
+<span class="field-label">Secret</span>
+<textarea class="forge-textarea" data-field="secret" id="f-secret-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-rumor"><p class="field-help">What others say about the character.</p>
+<label class="field" for="f-rumor-detail">
+<span class="field-label">Rumor</span>
+<textarea class="forge-textarea" data-field="rumor" id="f-rumor-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-partyHook"><p class="field-help">Why the adventuring party might care.</p>
+<label class="field" for="f-partyHook-detail">
+<span class="field-label">Party hook</span>
+<textarea class="forge-textarea" data-field="partyHook" id="f-partyHook-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-relationships"><p class="field-help">People and groups that matter in the character’s story.</p>
+<label class="field" for="f-relationships-detail">
+<span class="field-label">Relationships (Lore)</span>
+<textarea class="forge-textarea" data-field="relationships" id="f-relationships-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-voiceStyle"><p class="field-help">How the character sounds when speaking.</p>
+<label class="field" for="f-voiceStyle-detail">
+<span class="field-label">Voice style</span>
+<textarea class="forge-textarea" data-field="voiceStyle" id="f-voiceStyle-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-catchphrases"><p class="field-help">Distinctive words or phrases they repeat.</p>
+<label class="field" for="f-catchphrases-detail">
+<span class="field-label">Catchphrases</span>
+<textarea class="forge-textarea" data-field="catchphrases" id="f-catchphrases-detail" rows="3"></textarea>
+</label>
+</div>
+</div>
+</div>
+<div class="char-sidebar">
+<span class="field-label" style="margin-bottom: 0.75rem;">Optional Details</span>
+<div class="chip-grid">
+<button aria-controls="panel-concept" aria-expanded="false" class="char-chip" data-chip="concept" title="A direction for generation, kept separate from authored Background." type="button">
+                        Concept guidance <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="concept"></span></button>
+<button aria-controls="panel-personality" aria-expanded="false" class="char-chip" data-chip="personality" title="How the character behaves and responds under pressure." type="button">
+                        Personality <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="personality"></span></button>
+<button aria-controls="panel-appearance" aria-expanded="false" class="char-chip" data-chip="appearance" title="Visible features, clothing and mannerisms." type="button">
+                        Appearance <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="appearance"></span></button>
+<button aria-controls="panel-goals" aria-expanded="false" class="char-chip" data-chip="goals" title="What the character wants to achieve." type="button">
+                        Goals <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="goals"></span></button>
+<button aria-controls="panel-secret" aria-expanded="false" class="char-chip" data-chip="secret" title="Something the character keeps hidden." type="button">
+                        Secret <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="secret"></span></button>
+<button aria-controls="panel-rumor" aria-expanded="false" class="char-chip" data-chip="rumor" title="What others say about the character." type="button">
+                        Rumor <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="rumor"></span></button>
+<button aria-controls="panel-partyHook" aria-expanded="false" class="char-chip" data-chip="partyHook" title="Why the adventuring party might care." type="button">
+                        Party hook <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="partyHook"></span></button>
+<button aria-controls="panel-relationships" aria-expanded="false" class="char-chip" data-chip="relationships" title="People and groups that matter in the character’s story." type="button">
+                        Relationships <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="relationships"></span></button>
+<button aria-controls="panel-voiceStyle" aria-expanded="false" class="char-chip" data-chip="voiceStyle" title="How the character sounds when speaking." type="button">
+                        Voice style <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="voiceStyle"></span></button>
+<button aria-controls="panel-catchphrases" aria-expanded="false" class="char-chip" data-chip="catchphrases" title="Distinctive words or phrases they repeat." type="button">
+                        Catchphrases <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="catchphrases"></span></button>
+</div>
+</div>
+</div>
+</div>
+</section>
+<section aria-labelledby="section-mechanics" class="section-panel detailed-panel" hidden="" id="detail-mechanics" role="tabpanel" tabindex="0">
+<div class="forge-card">
+<h2>Mechanics</h2>
+<p class="field-help">Author each section independently, or leave it to generation.</p>
+<div class="mechanics-choices"><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-attributes" aria-label="Author Attributes" data-toggle="attributes" type="checkbox"/><span class="mechanic-heading"><span>Attributes</span><small>Six ability scores</small></span><span class="mechanic-count" data-mechanic-count="attributes">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-attributes">
+<div class="score-grid">
+<label class="field score-field" for="f-str-26"><span class="field-label">STR</span><input class="forge-input" data-field="str" id="f-str-26" type="number"/></label>
+<label class="field score-field" for="f-dex-27"><span class="field-label">DEX</span><input class="forge-input" data-field="dex" id="f-dex-27" type="number"/></label>
+<label class="field score-field" for="f-con-28"><span class="field-label">CON</span><input class="forge-input" data-field="con" id="f-con-28" type="number"/></label>
+<label class="field score-field" for="f-int-29"><span class="field-label">INT</span><input class="forge-input" data-field="int" id="f-int-29" type="number"/></label>
+<label class="field score-field" for="f-wis-30"><span class="field-label">WIS</span><input class="forge-input" data-field="wis" id="f-wis-30" type="number"/></label>
+<label class="field score-field" for="f-cha-31"><span class="field-label">CHA</span><input class="forge-input" data-field="cha" id="f-cha-31" type="number"/></label>
+</div>
+</div>
+</section><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-combat" aria-label="Author Combat" data-toggle="combat" type="checkbox"/><span class="mechanic-heading"><span>Combat</span><small>Armor, health and hit dice</small></span><span class="mechanic-count" data-mechanic-count="combat">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-combat">
+<div class="combat-stat-grid"><label class="field combat-metric" for="f-ac-32"><span class="field-label">AC</span><input class="forge-input" data-field="ac" id="f-ac-32" type="number"/></label><label class="field combat-metric" for="f-hp-33"><span class="field-label">HP</span><input class="forge-input" data-field="hp" id="f-hp-33" type="number"/></label></div>
+<div class="hit-dice-card"><p class="hit-dice-title" style="margin-top:1rem">HIT DICE</p><div class="dice-fields">
+<label class="field" for="f-hitDiceCount-34"><span class="field-label">Count</span><input class="forge-input" data-field="hitDiceCount" id="f-hitDiceCount-34" type="number"/></label>
+<label class="field" for="f-hitDiceSides-35"><span class="field-label">Sides</span><input class="forge-input" data-field="hitDiceSides" id="f-hitDiceSides-35" type="number"/></label>
+<label class="field" for="f-hitDiceMod-36"><span class="field-label">Modifier</span><input class="forge-input" data-field="hitDiceMod" id="f-hitDiceMod-36" type="text"/></label>
+</div></div>
+
+</div>
+</section><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-skills" aria-label="Author Skills" data-toggle="skills" type="checkbox"/><span class="mechanic-heading"><span>Skills</span><small>Training and bonuses</small></span><span class="mechanic-count" data-mechanic-count="skills">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-skills">
+<div id="rows-skills"></div>
+<button class="forge-btn-secondary" data-add="skills" type="button">Add skill</button>
+</div>
+</section><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-actions" aria-label="Author Actions" data-toggle="actions" type="checkbox"/><span class="mechanic-heading"><span>Actions</span><small>Attacks and active abilities</small></span><span class="mechanic-count" data-mechanic-count="actions">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-actions">
+<div id="rows-actions"></div>
+<button class="forge-btn-secondary" data-add="actions" type="button">Add action</button>
+</div>
+</section><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-traits" aria-label="Author Traits" data-toggle="traits" type="checkbox"/><span class="mechanic-heading"><span>Traits</span><small>Distinctive special features</small></span><span class="mechanic-count" data-mechanic-count="traits">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-traits">
+<div id="rows-traits"></div>
+<button class="forge-btn-secondary" data-add="traits" type="button">Add trait</button>
+</div>
+</section><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-spells" aria-label="Author Spells" data-toggle="spells" type="checkbox"/><span class="mechanic-heading"><span>Spells</span><small>Add a spell name and description</small></span><span class="mechanic-count" data-mechanic-count="spells">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-spells">
+<p class="field-help spell-prompt">Add each spell by name and give it a short description. Leave either blank for the model to fill.</p>
+<div id="rows-spells"></div>
+<button class="forge-btn-secondary" data-add="spells" type="button">Add spell</button>
+</div>
+</section><div data-boss-wrap="" hidden="">
+<section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-boss" aria-label="Author Boss section" data-toggle="boss" type="checkbox"/><span class="mechanic-heading"><span>Boss section</span><small>Lair and legendary features</small></span><span class="mechanic-count" data-mechanic-count="boss">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-boss">
+<div class="fields-grid">
+<label class="field" for="f-lairActions-38"><span class="field-label">Lair actions</span><textarea class="forge-textarea" data-field="lairActions" id="f-lairActions-38" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-legendaryActions-39"><span class="field-label">Legendary actions</span><textarea class="forge-textarea" data-field="legendaryActions" id="f-legendaryActions-39" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-immunities-40"><span class="field-label">Immunities</span><textarea class="forge-textarea" data-field="immunities" id="f-immunities-40" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-vulnerabilities-41"><span class="field-label">Vulnerabilities</span><textarea class="forge-textarea" data-field="vulnerabilities" id="f-vulnerabilities-41" placeholder="Leave blank to generate" rows="2"></textarea></label>
+</div>
+</div>
+</section>
+</div></div>
+
+
+
+
+
+
+<p class="field-help" data-boss-note="">Boss mechanics apply to BBEG and Monster roles.</p>
+</div>
+</section>
+<section aria-labelledby="section-connections" class="section-panel detailed-panel" hidden="" id="detail-connections" role="tabpanel" tabindex="0">
+<div class="forge-card">
+<h2>Connections</h2>
+<h3>World integration</h3>
+<div class="fields-grid">
+<label class="field" for="f-reputation-42"><span class="field-label">Reputation</span><textarea class="forge-textarea" data-field="reputation" id="f-reputation-42" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-factions-43"><span class="field-label">Factions</span><textarea class="forge-textarea" data-field="factions" id="f-factions-43" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-currentLocation-44"><span class="field-label">Current location</span><textarea class="forge-textarea" data-field="currentLocation" id="f-currentLocation-44" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-reactionMatrix-45"><span class="field-label">Reaction matrix</span><textarea class="forge-textarea" data-field="reactionMatrix" id="f-reactionMatrix-45" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-onDefeat-46"><span class="field-label">On defeat</span><textarea class="forge-textarea" data-field="onDefeat" id="f-onDefeat-46" placeholder="Leave blank to generate" rows="2"></textarea></label>
+</div>
+<div data-world-relations="" style="margin-top:1.5rem">
+<h3>Relations</h3>
+<p class="field-help">Link a committed entity or name a new one. These drafts stay with this world when you change destination.</p>
+<p class="fixture-note">The entity names below are local preview fixtures.</p>
+<div id="relation-rows"></div>
+<button class="forge-btn-secondary" id="add-relation" type="button">Add relation</button>
+</div>
+<p class="notice" data-generic-relations="" hidden="">Generic library characters are isolated. Pick a world to author graph relations; your world relation drafts will be preserved.</p>
+</div>
+</section>
+<section aria-labelledby="section-review" class="section-panel detailed-panel" hidden="" id="detail-review" role="tabpanel" tabindex="0">
+<div class="forge-card">
+<h2>Review</h2>
+<p class="field-help">Review your inputs before generation. You can revisit every section without losing values.</p>
+<dl class="review-list" id="review-list"></dl>
+<p class="notice">Blank fields will be generated. Authored fields remain yours. This is a local design preview, not a saved character.</p>
+</div>
+</section>
+</section>
+</div>
+<aside aria-labelledby="summary-title" class="summary">
+<h2 id="summary-title">Live Summary</h2>
+<div class="forge-card">
+<div class="eyebrow">Destination</div>
+<div class="summary-destination" data-destination-name="">The Reapened Coast</div>
+<div class="eyebrow">You Supplied</div>
+<ul id="summary-supplied"></ul>
+<div class="eyebrow">Will Generate</div>
+<ul class="generated" id="summary-generated"></ul>
+</div>
+<button class="forge-btn-primary generate-action" id="generate-btn" type="button">Generate Character</button>
+<p class="destination-copy" id="generate-destination"></p>
+<p aria-live="polite" class="notice" hidden="" id="generate-status" role="status"></p>
+<p class="preview-notice">Interactive design preview. No character is generated or saved.</p>
+</aside>
+</div>
+</div>
+</main>
+</div>
+<dialog aria-labelledby="history-title" class="history-dialog" id="history-dialog">
+<div class="dialog-heading">
+<h2 id="history-title">Build history</h2>
+<button aria-label="Close build history" class="forge-btn-secondary" id="close-history" type="button">Close</button>
+</div>
+<p class="fixture-note">Example jobs for this design preview. These are not real builds.</p>
+<article class="forge-card history-job">
+<span class="job-status status-queued">Generating · Example</span>
+<h3>Maelin, the tidekeeper</h3>
+<p>Checking names and connections</p>
+<progress aria-label="Example generation progress" max="100" value="35">35%</progress>
+<p>35% · Elapsed 2m 14s</p>
+<button class="forge-btn-secondary" id="example-cancel" type="button">Cancel example generation</button>
+<p hidden="" id="cancel-status" role="status">Example cancelled. No real generation was affected.</p>
+</article>
+<article class="forge-card history-job">
+<span class="job-status status-queued">Queued · Example</span>
+<h3>Ashfen sentinel</h3>
+<p>Queue position: 1 · Waiting to start</p>
+</article>
+<article class="forge-card history-job">
+<span class="job-status status-succeeded">Succeeded · Example</span>
+<h3>Captain Ilyra Voss</h3>
+<p>Built into The Reapened Coast.</p>
+</article>
+<article class="forge-card history-job">
+<span class="job-status status-failed">Failed · Example</span>
+<h3>The hollow prince</h3>
+<p>The example build failed. Your authored draft is preserved.</p>
+</article>
+</dialog>
+<script>
+'use strict';
+const state = { mode: 'quick', section: 'identity', destination: 'C1', theme: 'High fantasy', name: '', role: 'NPC', species: '', class: '', powerSlot: 'level', level: '', cr: '', concept: '', background: '', personality: '', secret: '', rumor: '', partyHook: '', appearance: '', goals: '', relationships: '', voiceStyle: '', catchphrases: '', toggles: {}, skills: [], actions: [], traits: [], spells: [], relations: { C1: [], C2: [] }, activeChip: null };
+const destinationNames = { C1: 'The Reapened Coast', C2: 'The Ember Marches', Generic: 'Generic library' };
+const entities = { C1: ['Saltmere (place)', 'Tidekeepers (faction)', 'Ilyra Voss (character)'], C2: ['Cinderwatch (place)', 'Ember Covenant (faction)', 'Tovan Ash (character)'] };
+const fieldLabels = { name: 'Name', role: 'Role', species: 'Species', class: 'Class', alignment: 'Alignment', concept: 'Concept', background: 'Background', personality: 'Personality', secret: 'Secret', rumor: 'Rumor', partyHook: 'Party hook', appearance: 'Appearance', goals: 'Goals', relationships: 'Relationships', voiceStyle: 'Voice style', catchphrases: 'Catchphrases', reputation: 'Reputation', factions: 'Factions', currentLocation: 'Current location', reactionMatrix: 'Reaction matrix', onDefeat: 'On defeat' };
+const $ = id => document.getElementById(id);
+function put(el, text) { el.textContent = text; return el; }
+function node(tag, text, cls) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; }
+function authoredEntries() {
+  const entries = Object.entries(fieldLabels).filter(([k]) => String(state[k] || '').trim()).map(([k, l]) => [l, state[k]]);
+  if (state.powerSlot === 'level' && state.level) entries.push(['Level', state.level]);
+  if (state.powerSlot === 'cr' && state.cr) entries.push(['CR', state.cr]);
+  const groups = { attributes: ['str', 'dex', 'con', 'int', 'wis', 'cha'], combat: ['ac', 'hp', 'hitDiceCount', 'hitDiceSides', 'hitDiceMod'], boss: ['lairActions', 'legendaryActions', 'immunities', 'vulnerabilities'] };
+  for (const [group, keys] of Object.entries(groups)) if (state.toggles[group] && (group !== 'boss' || state.role !== 'NPC')) for (const key of keys) if (String(state[key] || '').trim()) entries.push([key.replace(/([A-Z])/g, ' $1'), state[key]]);
+  for (const key of ['skills', 'actions', 'traits', 'spells']) if (state.toggles[key]) for (const row of state[key]) if (Object.values(row).some(v => String(v ?? '').trim())) entries.push([key[0].toUpperCase() + key.slice(1), Object.entries(row).filter(([, v]) => String(v ?? '').trim()).map(([k, v]) => k === 'name' ? v : `${k}: ${v}`).join(' · ')]);
+  if (state.destination !== 'Generic') for (const rel of state.relations[state.destination]) if (rel.target) entries.push(['Relation', `${rel.type.replaceAll('_', ' ')} → ${rel.target} (${rel.mode})`]);
+  return entries;
+}
+function updateSummary() {
+  document.querySelectorAll('[data-destination-name]').forEach(el => put(el, destinationNames[state.destination]));
+  $('theme-control').hidden = state.destination !== 'Generic';
+  document.querySelector('[data-world-relations]').hidden = state.destination === 'Generic';
+  document.querySelector('[data-generic-relations]').hidden = state.destination !== 'Generic';
+  document.querySelector('[data-boss-wrap]').hidden = state.role === 'NPC';
+  document.querySelector('[data-boss-note]').hidden = state.role !== 'NPC';
+  document.querySelectorAll('[data-power]').forEach(el => el.hidden = el.dataset.power !== state.powerSlot);
+  document.querySelectorAll('[data-role]').forEach(el => {
+    const selected = el.dataset.role === state.role; el.classList.toggle('selected', selected); el.setAttribute('aria-pressed', String(selected));
+  });
+  const supplied = $('summary-supplied'); supplied.replaceChildren();
+  for (const [label, value] of authoredEntries()) supplied.append(node('li', `${label}: ${value}`));
+  const generated = $('summary-generated'); generated.replaceChildren();
+  const missing = [];
+  for (const [key, label] of [['name', 'Name'], ['species', 'Species'], ['class', 'Class'], [state.powerSlot, 'Level / CR'], ['background', 'Background'], ['appearance', 'Appearance']]) if (!String(state[key] || '').trim()) missing.push(label);
+  if (!['attributes', 'combat', 'skills', 'actions', 'traits', 'spells'].some(k => state.toggles[k])) missing.push('Full stat block'); else missing.push('Remaining unspecified mechanics');
+  if (!state.concept && !state.background) missing.push('Unspecified character details');
+  missing.forEach(label => generated.append(node('li', '• ' + label)));
+  put($('generate-destination'), `Builds a new character into ${destinationNames[state.destination]}.`);
+  $('generate-btn').disabled = !state.name.trim() && !state.concept.trim() && !state.background.trim();
+  const review = $('review-list'); review.replaceChildren(node('dt', 'Destination'), node('dd', destinationNames[state.destination]));
+  if (state.destination === 'Generic') review.append(node('dt', 'Theme'), node('dd', state.theme));
+  for (const [label, value] of authoredEntries()) review.append(node('dt', label), node('dd', String(value)));
+  if ($('generate-btn').disabled) put($('generate-destination'), `Add a name, concept or authored background to preview generation into ${destinationNames[state.destination]}.`);
+  
+  document.querySelectorAll('.char-chip').forEach(chip => {
+    const key = chip.dataset.chip;
+    const hasContent = String(state[key] || '').trim().length > 0;
+    chip.classList.toggle('has-content', hasContent);
+    chip.classList.toggle('active', state.activeChip === key);
+  });
+  document.querySelectorAll('.chip-panel').forEach(panel => {
+    panel.hidden = panel.id !== `panel-${state.activeChip}`;
+  });
+}
+function syncFields(key) {
+  document.querySelectorAll('[data-field]').forEach(el => {
+    if (el.dataset.field === key && el !== document.activeElement) el.value = state[key] || '';
+  });
+}
+function activateMode(mode, focus = false) {
+  state.mode = mode;
+  document.querySelectorAll('[data-mode]').forEach(tab => {
+    const on = tab.dataset.mode === mode;
+    tab.setAttribute('aria-selected', String(on));
+    tab.tabIndex = on ? 0 : -1;
+    if (on && focus) tab.focus();
+  });
+  $('panel-quick').hidden = mode !== 'quick';
+  $('panel-detailed').hidden = mode !== 'detailed';
+}
+function activateSection(section, focus = false) {
+  state.section = section;
+  document.querySelectorAll('[data-section]').forEach(tab => {
+    const on = tab.dataset.section === section;
+    tab.setAttribute('aria-selected', String(on));
+    tab.tabIndex = on ? 0 : -1;
+    $('detail-' + tab.dataset.section).hidden = !on;
+    if (on && focus) tab.focus();
+  });
+  updateSummary();
+}
+function setupTabs(selector, activate, key) {
+  const tabs = [...document.querySelectorAll(selector)];
+  tabs.forEach((tab, i) => {
+    tab.addEventListener('click', () => activate(tab.dataset[key]));
+    tab.addEventListener('keydown', event => {
+      let index;
+      if (event.key === 'ArrowRight') index = (i + 1) % tabs.length;
+      else if (event.key === 'ArrowLeft') index = (i + tabs.length - 1) % tabs.length;
+      else if (event.key === 'Home') index = 0;
+      else if (event.key === 'End') index = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      activate(tabs[index].dataset[key], true);
+    });
+  });
+}
+setupTabs('[data-mode]', activateMode, 'mode'); setupTabs('[data-section]', activateSection, 'section');
+
+document.querySelectorAll('.char-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const key = chip.dataset.chip;
+    if (state.activeChip === key) {
+      state.activeChip = null;
+    } else {
+      state.activeChip = key;
+    }
+    updateSummary();
+    if (state.activeChip) {
+      const input = document.querySelector(`#panel-${state.activeChip} [data-field]`);
+      if (input) input.focus();
+    }
+  });
+});
+
+document.addEventListener('input', event => {
+  const el = event.target;
+  if (el.dataset.field) {
+    state[el.dataset.field] = el.value;
+    syncFields(el.dataset.field);
+    $('generate-status').hidden = true;
+    updateSummary();
+  }
+});
+document.addEventListener('change', event => {
+  const el = event.target;
+  if (el.dataset.field) {
+    state[el.dataset.field] = el.value;
+    syncFields(el.dataset.field);
+    updateSummary();
+  }
+  if (el.dataset.toggle) {
+    state.toggles[el.dataset.toggle] = el.checked;
+    $('optional-' + el.dataset.toggle).hidden = !el.checked;
+    updateSummary();
+  }
+});
+document.querySelectorAll('[data-role]').forEach(el => el.addEventListener('click', () => { state.role = el.dataset.role; syncFields('role'); updateSummary(); }));
+function rowField(label, value, onChange, options) {
+  const wrap = node('label', undefined, 'field');
+  wrap.append(node('span', label, 'field-label'));
+  const multiline = label === 'Description'; const input = node(options ? 'select' : multiline ? 'textarea' : 'input', undefined, options ? 'forge-select' : multiline ? 'forge-textarea' : 'forge-input');
+  if (multiline) input.rows = 3;
+  if (!options && !multiline) input.type = 'text';
+  if (options) for (const [val, text] of options) { const option = node('option', text); option.value = val; input.append(option); }
+  input.value = value || '';
+  input.addEventListener(options ? 'change' : 'input', () => { onChange(input.value); updateSummary(); });
+  wrap.append(input);
+  return wrap;
+}
+function renderList(key, focusNew = false) {
+  const host = $('rows-' + key); host.replaceChildren();
+  state[key].forEach((row, i) => {
+    const wrap = node('div', undefined, 'list-row');
+    const grid = node('div', undefined, 'fields-grid');
+    const fields = key === 'skills' ? ['name', 'bonus', 'description'] : key === 'actions' ? ['name', 'description', 'damageCount', 'damageSides', 'damageMod'] : key === 'spells' ? ['name', 'description'] : ['name', 'description'];
+    if(key === 'spells') { grid.classList.add('spell-fields'); wrap.classList.add('spell-row'); }
+    for (const name of fields) grid.append(rowField(key === 'spells' && name === 'name' ? 'Spell name' : name.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()), row[name], v => row[name] = v));
+    wrap.append(grid);
+    const actions = node('div', undefined, 'row-action');
+    const remove = node('button', 'Remove ' + key.slice(0, -1), 'link-button');
+    remove.type = 'button'; remove.setAttribute('aria-label', 'Remove ' + key.slice(0, -1) + ' ' + (i + 1));
+    remove.addEventListener('click', () => { state[key].splice(i, 1); renderList(key); updateSummary(); document.querySelector('[data-add="' + key + '"]').focus(); });
+    actions.append(remove);
+    wrap.append(actions);
+    host.append(wrap);
+  });
+  if (focusNew) host.lastElementChild?.querySelector('input')?.focus();
+}
+document.querySelectorAll('[data-add]').forEach(button => button.addEventListener('click', () => { state[button.dataset.add].push({}); renderList(button.dataset.add, true); }));
+const edgeTypes = ['relationship', 'debt', 'grudge', 'loyalty', 'member_of', 'located_in', 'rival_of', 'kin_of', 'ally_of', 'enemy_of', 'bases_at', 'controls', 'employs', 'worships', 'hails_from', 'protects'];
+function renderRelations(focusNew = false) {
+  const host = $('relation-rows'); host.replaceChildren(); if (state.destination === 'Generic') return;
+  const rows = state.relations[state.destination];
+  if (!rows.length) host.append(node('p', 'No relations authored for this world.', 'empty-relations'));
+  rows.forEach((row, i) => {
+    const wrap = node('div', undefined, 'relation-row');
+    const grid = node('div', undefined, 'fields-grid');
+    grid.append(rowField('Relation type', row.type, v => row.type = v, edgeTypes.map(x => [x, x.replaceAll('_', ' ')])));
+    grid.append(rowField('Target mode', row.mode, v => { row.mode = v; row.target = ''; renderRelations(); updateSummary(); host.children[i]?.querySelectorAll('select')[1]?.focus(); }, [['existing', 'Existing entity'], ['new', 'Create new']]));
+    grid.append(rowField(row.mode === 'existing' ? 'Committed entity' : 'New target name', row.target, v => row.target = v, row.mode === 'existing' ? [['', 'Choose an entity'], ...entities[state.destination].map(x => [x, x])] : null));
+    wrap.append(grid);
+    const remove = node('button', 'Remove relation', 'link-button');
+    remove.type = 'button';
+    remove.addEventListener('click', () => { rows.splice(i, 1); renderRelations(); updateSummary(); $('add-relation').focus(); });
+    wrap.append(remove);
+    host.append(wrap);
+  });
+  if (focusNew) host.lastElementChild?.querySelector('select')?.focus();
+}
+$('add-relation').addEventListener('click', () => { if (state.destination === 'Generic') return; state.relations[state.destination].push({ type: 'located_in', mode: 'existing', target: '' }); renderRelations(true); updateSummary(); });
+$('change-dest-btn').addEventListener('click', () => { const open = $('destination-picker').hidden; $('destination-picker').hidden = !open; $('change-dest-btn').setAttribute('aria-expanded', String(open)); if (open) $('destination-select').focus(); });
+function closeDestination() { $('destination-picker').hidden = true; $('change-dest-btn').setAttribute('aria-expanded', 'false'); $('change-dest-btn').focus(); }
+$('destination-done').addEventListener('click', closeDestination);
+$('destination-picker').addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); closeDestination(); } });
+$('destination-select').addEventListener('change', e => { state.destination = e.target.value; $('generate-status').hidden = true; renderRelations(); updateSummary(); });
+$('theme-select').addEventListener('change', e => { state.theme = e.target.value; updateSummary(); });
+const history = $('history-dialog'); $('history-btn').addEventListener('click', () => history.showModal()); $('close-history').addEventListener('click', () => history.close()); history.addEventListener('close', () => $('history-btn').focus());
+$('example-cancel').addEventListener('click', () => { $('cancel-status').hidden = false; $('example-cancel').disabled = true; put($('example-cancel'), 'Example cancelled'); });
+$('generate-btn').addEventListener('click', () => { if (!state.name.trim() && !state.concept.trim() && !state.background.trim()) return; $('generate-status').hidden = false; put($('generate-status'), `Preview ready for ${state.name.trim() || 'your character'} in ${destinationNames[state.destination]}. This demonstration sends no request and saves nothing.`); });
+$('preview-logout').addEventListener('click', () => { $('logout-status').hidden = false; });
+renderRelations(); updateSummary();
+</script><dialog aria-labelledby="identity-choice-title" class="choice-dialog" id="identity-choice-dialog"><div class="dialog-heading"><h2 id="identity-choice-title">Choose a species</h2><button class="forge-btn-secondary" id="close-identity-choice" type="button">Close</button></div><p class="field-help">Choose the direction you want generation to follow.</p><div class="choice-grid" id="identity-choice-grid"></div></dialog><script>const identityHints = {"species": {"": "Suggests appearance, heritage and perspective; leave open for generation.", "Dragonborn": "Draconic heritage and scaled appearance; guides ancestry and presence.", "Dwarf": "Sturdy build and deep traditions; suggests craft, duty and long-held ties.", "Elf": "A long-lived perspective; suggests grace, keen senses and enduring memories.", "Gnome": "Small, inventive and curious; suggests clever solutions and playful detail.", "Half-Elf": "Elven and human heritage; suggests life between different communities.", "Half-Orc": "Human and orc ancestry; suggests an imposing appearance and questions of belonging.", "Halfling": "Small stature and resourcefulness; suggests close communities and everyday courage.", "Human": "Versatile heritage; leaves room for varied cultures, motives and professions.", "Tiefling": "Infernal ancestry; guides unusual appearance and how others might respond."}, "class": {"": "Guides training, combat style, skills and spellcasting; leave open for generation.", "Barbarian": "Ferocious martial strength; guides resilience, close combat and temperament.", "Bard": "Performance and versatile magic; guides social skills and expressive character details.", "Cleric": "Divine magic and faith; guides beliefs, sacred duties and spell choices.", "Druid": "Nature-focused magic; guides wilderness ties, traditions and spell choices.", "Fighter": "Martial expertise; guides weapon tactics, training and combat background.", "Monk": "Disciplined martial training; guides movement, unarmed fighting and outlook.", "Paladin": "An oath-driven warrior; guides martial abilities, divine magic and ideals.", "Ranger": "Wilderness expertise and martial training; guides survival skills and tactics.", "Rogue": "Skill, stealth and precision; guides expertise, tactics and secrets.", "Sorcerer": "Innate arcane power; guides spellcasting and the source of the character’s magic.", "Warlock": "Magic linked to a patron; guides the pact, powers and obligations.", "Wizard": "Study-driven arcane magic; guides spell choices, lore and preparation."}};
+let identityChoiceKey = 'species';
+let identityChoiceTrigger = null;
+const originalUpdateSummary = updateSummary;
+function refinementUpdate() {
+ document.querySelectorAll('[data-choice-hint]').forEach(el => {const key=el.dataset.choiceHint;el.textContent=identityHints[key][state[key] || ''];});
+ document.querySelectorAll('[data-chip]').forEach(chip => {const key=chip.dataset.chip;chip.setAttribute('aria-expanded',String(state.activeChip===key));chip.querySelector('[data-detail-filled]').textContent=String(state[key] || '').trim()?'Filled':'';});
+ const groups={attributes:['str','dex','con','int','wis','cha'],combat:['ac','hp','hitDiceCount','hitDiceSides','hitDiceMod'],boss:['lairActions','legendaryActions','immunities','vulnerabilities']};
+ document.querySelectorAll('[data-mechanic-count]').forEach(el=>{const key=el.dataset.mechanicCount;const count=groups[key]?groups[key].filter(k=>String(state[k] || '').trim()).length:(state[key] || []).filter(row=>Object.values(row).some(v=>String(v ?? '').trim())).length;el.textContent=state.toggles[key]?(count?count+' authored':'Ready to author'):(count?count+' saved':'Will generate');el.closest('.toggle-section').classList.toggle('is-open',!!state.toggles[key]);});
+}
+updateSummary = function(){originalUpdateSummary();refinementUpdate();};
+const identityDialog=document.getElementById('identity-choice-dialog');
+document.querySelectorAll('[data-explore]').forEach(button=>button.addEventListener('click',()=>{
+ identityChoiceKey=button.dataset.explore;identityChoiceTrigger=button;
+ document.getElementById('identity-choice-title').textContent=identityChoiceKey==='species'?'Choose a species':'Choose a class';
+ const host=document.getElementById('identity-choice-grid');host.replaceChildren();
+ for(const [value,description] of Object.entries(identityHints[identityChoiceKey])){const choice=node('button',undefined,'identity-choice');choice.type='button';choice.dataset.choiceValue=value;choice.setAttribute('aria-pressed',String(state[identityChoiceKey]===value));choice.append(node('strong',value || 'Let the model choose'),node('small',description));choice.addEventListener('click',()=>{state[identityChoiceKey]=value;syncFields(identityChoiceKey);updateSummary();identityDialog.close();});host.append(choice);}
+ identityDialog.showModal();
+}));
+document.getElementById('close-identity-choice').addEventListener('click',()=>identityDialog.close());
+identityDialog.addEventListener('close',()=>identityChoiceTrigger?.focus());
+updateSummary();
+</script></div></body></html>

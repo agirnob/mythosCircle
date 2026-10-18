@@ -1,0 +1,169 @@
+<div id="prototype-root">
+  <div class="mc-shell">
+    <!-- Persistent Sidebar -->
+    <aside aria-label="Navigation" class="mc-sidebar" style="view-transition-name: sidebar;">
+      <a href="#dashboard" class="mc-brand" id="preview-link-1">
+        <span aria-hidden="true" class="mc-brand-mark">✦</span>
+        <span>mythos<span>Circle</span></span>
+      </a>
+      <nav class="mc-nav-group mt-4">
+        <p class="mc-nav-title">Collections</p>
+        <a href="#campaigns" class="mc-nav-link" id="preview-link-2">Your Worlds</a>
+        <a href="https://p.superdesign.dev/draft/8f36f0b8-c14f-4edb-9aff-d21497256b77" class="mc-nav-link router-link-active" id="preview-link-3">
+          <span>Library</span>
+          <iconify-icon icon="lucide:library" class="text-gray-400"></iconify-icon>
+        </a>
+      </nav>
+      <nav class="mc-nav-group mt-2">
+        <p class="mc-nav-title">Create</p>
+        <a href="#forge" class="mc-nav-link" id="preview-link-4">
+          <span>Forge</span>
+          <iconify-icon icon="lucide:hammer" class="text-gray-400"></iconify-icon>
+        </a>
+      </nav>
+      <div class="mc-account">
+        <span class="mc-account-email">design-preview@example.test</span>
+        <button type="button" class="mc-btn-ghost">Log out</button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main-content" tabindex="-1" class="mc-main" style="view-transition-name: main-content;">
+      <header class="mc-page-header">
+        <div>
+          <h1 class="mc-page-title">Library</h1>
+          <p class="mc-page-description">Characters ready for a world of their own.</p>
+        </div>
+        <div class="mc-page-actions flex flex-wrap gap-2">
+          <a href="#forge" class="mc-btn" id="preview-link-5">
+            <iconify-icon icon="lucide:plus" class="mr-2"></iconify-icon>
+            Create character
+          </a>
+        </div>
+      </header>
+
+      <div class="mc-search-bar">
+        <iconify-icon icon="lucide:search" class="mc-search-icon"></iconify-icon>
+        <input 
+          type="text" 
+          id="library-search"
+          class="mc-input mc-search-input" 
+          placeholder="Search library characters..."
+          aria-label="Search characters"
+        >
+      </div>
+
+      <!-- Character Grid -->
+      <div class="mc-entity-grid" id="character-grid">
+        <!-- Card 1 -->
+        <article class="mc-entity-card character-item" data-name="elara vance">
+          <div aria-hidden="true" class="mc-entity-portrait-fallback">E</div>
+          <div class="mc-entity-body">
+            <div>
+              <h3 class="mc-entity-name">Elara Vance</h3>
+              <p class="mc-entity-meta mt-1">Human Rogue (Thief) • Level 3</p>
+            </div>
+            <p class="mc-entity-description">A pragmatic fence who operates out of a supposedly abandoned clocktower. Knows the value of a secret better than gold.</p>
+            <div class="mc-entity-footer">
+              <button type="button" class="mc-link flex items-center gap-1">
+                Open details <iconify-icon icon="lucide:arrow-right" class="text-[10px]"></iconify-icon>
+              </button>
+              <button type="button" class="mc-btn mc-btn-secondary !py-1 !px-2 !text-xs" onclick="openMoveDialog('Elara Vance')">
+                Move to world
+              </button>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 2 -->
+        <article class="mc-entity-card character-item" data-name="kaelen brightwood">
+          <div aria-hidden="true" class="mc-entity-portrait-fallback">K</div>
+          <div class="mc-entity-body">
+            <div>
+              <h3 class="mc-entity-name">Kaelen Brightwood</h3>
+              <p class="mc-entity-meta mt-1">Half-Elf Paladin • Level 1</p>
+            </div>
+            <p class="mc-entity-description">An idealistic squire searching for a lost relic of their order. Prone to grand speeches and rushing into danger unprepared.</p>
+            <div class="mc-entity-footer">
+              <button type="button" class="mc-link flex items-center gap-1">
+                Open details <iconify-icon icon="lucide:arrow-right" class="text-[10px]"></iconify-icon>
+              </button>
+              <button type="button" class="mc-btn mc-btn-secondary !py-1 !px-2 !text-xs" onclick="openMoveDialog('Kaelen Brightwood')">
+                Move to world
+              </button>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 3 -->
+        <article class="mc-entity-card character-item" data-name="varis">
+          <div aria-hidden="true" class="mc-entity-portrait-fallback">V</div>
+          <div class="mc-entity-body">
+            <div>
+              <h3 class="mc-entity-name">Varis</h3>
+              <p class="mc-entity-meta mt-1">Tiefling Warlock • Level 5</p>
+            </div>
+            <p class="mc-entity-description">Bound to a mysterious patron from the depths. Collects peculiar maps and refuses to explain why they glow in moonlight.</p>
+            <div class="mc-entity-footer">
+              <button type="button" class="mc-link flex items-center gap-1">
+                Open details <iconify-icon icon="lucide:arrow-right" class="text-[10px]"></iconify-icon>
+              </button>
+              <button type="button" class="mc-btn mc-btn-secondary !py-1 !px-2 !text-xs" onclick="openMoveDialog('Varis')">
+                Move to world
+              </button>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <!-- Empty State -->
+      <div class="mc-empty-state" id="empty-state">
+        <iconify-icon icon="lucide:users" class="mc-empty-icon"></iconify-icon>
+        <h2 class="mc-empty-title">No characters found</h2>
+        <p class="mc-empty-desc" id="empty-desc">Your library is empty. Create generic characters here before assigning them to a specific world.</p>
+        <a href="#forge" class="mc-btn" id="preview-link-6">
+          <iconify-icon icon="lucide:hammer" class="mr-2"></iconify-icon>
+          Go to Forge
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <!-- Move to World Dialog -->
+  <div class="mc-dialog-backdrop" id="move-dialog" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <div class="mc-dialog">
+      <div class="mc-dialog-header">
+        <h2 class="mc-dialog-title" id="dialog-title">Move to world</h2>
+        <p class="mc-dialog-desc">Transfer <strong id="dialog-char-name" class="text-white">Character</strong> to an active campaign.</p>
+      </div>
+      
+      <div class="mc-dialog-content">
+        <label for="world-select" class="block text-sm text-[var(--mc-text-secondary)] mb-2 font-medium">Destination World</label>
+        <div class="mc-select-wrapper">
+          <select id="world-select" class="mc-select" aria-label="Select destination world" onchange="validateDialog()">
+            <option value="">Select a campaign...</option>
+            <option value="greymarch">Greymarch</option>
+            <option value="sunken-valleys">The Sunken Valleys</option>
+            <option value="iron-spire">Iron Spire Ascendant</option>
+          </select>
+          <iconify-icon icon="lucide:chevron-down" class="mc-select-arrow"></iconify-icon>
+        </div>
+
+        <div class="mc-notice">
+          <iconify-icon icon="lucide:info" class="mc-notice-icon"></iconify-icon>
+          <div>
+            <strong>One-way transfer</strong><br>
+            Upon successful transfer, this character will leave your private Library and become part of the destination world.
+          </div>
+        </div>
+      </div>
+
+      <div class="mc-dialog-actions">
+        <button type="button" class="mc-btn mc-btn-secondary" onclick="closeDialog()">Cancel</button>
+        <button type="button" class="mc-btn" id="dialog-confirm-btn" disabled onclick="confirmMove()">Move Character</button>
+      </div>
+    </div>
+  </div>
+
+  
+</div>

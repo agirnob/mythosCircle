@@ -1,0 +1,520 @@
+
+<div id="forge-prototype-root">
+<div class="mc-shell">
+<a class="mc-skip-link" href="#main-content" id="skip-to-main-content">Skip to content</a>
+<aside aria-label="Campaign workspace" class="mc-sidebar">
+<a class="mc-brand" href="#your-worlds" id="nav-your-worlds">
+<span aria-hidden="true" class="mc-brand-mark">✦</span>
+<span>mythos<span>Circle</span></span>
+</a>
+<nav aria-label="Create" class="mc-nav-group">
+<p class="mc-nav-title">Create</p>
+<a aria-current="page" class="mc-nav-link router-link-active" href="#forge" id="nav-global-forge">Forge</a>
+</nav>
+<div class="mc-account">
+<span class="mc-account-email">dm@example.com</span>
+<button class="mc-btn-ghost" id="preview-logout" type="button">Log out</button>
+<p class="fixture-note" hidden="" id="logout-status" role="status">Preview only — no session is changed.</p>
+</div>
+</aside>
+<main class="mc-main" id="main-content" tabindex="-1">
+<div class="workspace">
+<header class="page-heading">
+<div>
+<h1 class="mc-display-title">Character forge</h1>
+<p class="support">Create a new character. Fields you leave blank will be generated.</p>
+</div>
+<button aria-controls="history-dialog" aria-haspopup="dialog" class="forge-btn-secondary" id="history-btn" type="button">History</button>
+</header>
+<div class="destination-strip">
+<div class="destination-heading">
+<div><span class="eyebrow">Destination</span><strong data-destination-name="">The Reapened Coast</strong></div>
+<button aria-controls="destination-picker" aria-expanded="false" class="link-button" id="change-dest-btn" type="button">Change destination</button>
+</div>
+<div class="destination-fields" hidden="" id="destination-picker">
+<label class="field" for="destination-select">
+<span class="field-label">Preview destination</span>
+<select class="forge-select" id="destination-select">
+<option value="C1">The Reapened Coast</option>
+<option value="C2">The Ember Marches</option>
+<option value="Generic">Generic library</option>
+</select>
+</label>
+<button class="forge-btn-secondary" id="destination-done" type="button">Done</button>
+</div>
+<div hidden="" id="theme-control" style="margin-top:1rem">
+<label class="field" for="theme-select">
+<span class="field-label">Theme (the generation seed)</span>
+<select class="forge-select" id="theme-select">
+<option>High fantasy</option>
+<option>Dark fantasy</option>
+<option>Science fantasy</option>
+</select>
+</label>
+<p class="fixture-note">Example themes for this local preview.</p>
+</div>
+</div>
+<div aria-label="Creation mode" class="tabs" role="tablist">
+<button aria-controls="panel-quick" aria-selected="true" class="tab" data-mode="quick" id="tab-quick" role="tab" tabindex="0" type="button">Quick generate</button>
+<button aria-controls="panel-detailed" aria-selected="false" class="tab" data-mode="detailed" id="tab-detailed" role="tab" tabindex="-1" type="button">Detailed builder</button>
+</div>
+<div class="workbench">
+<div class="editor">
+<section aria-labelledby="tab-quick" id="panel-quick" role="tabpanel">
+<div class="section-space">
+<h2 class="section-title">Role</h2>
+<div aria-label="Character role" class="role-grid" role="group">
+<button aria-pressed="true" class="role-card selected" data-role="NPC" type="button">
+<strong>NPC</strong><small>A supporting character in the world.</small>
+</button>
+<button aria-pressed="false" class="role-card" data-role="BBEG" type="button">
+<strong>BBEG</strong><small>A major antagonist with boss mechanics.</small>
+</button>
+<button aria-pressed="false" class="role-card" data-role="Monster" type="button">
+<strong>Monster</strong><small>A creature or generic foe.</small>
+</button>
+</div>
+</div>
+<div class="section-space">
+<label class="field" for="f-name-quick" style="margin-bottom: 1.5rem">
+<span class="field-label">Name <span class="optional">(Optional)</span></span>
+<input class="forge-input" data-field="name" id="f-name-quick" placeholder="Leave blank for a generated name" type="text"/>
+</label>
+<div class="fields-grid">
+<div class="identity-field"><label class="field" for="f-species-quick">
+<span class="field-label">Species <span class="optional">(Optional)</span></span>
+<select aria-describedby="species-description-0" aria-label="Species (Optional)" class="forge-select" data-field="species" id="f-species-quick">
+<option value="">Let the model choose</option>
+<option value="Dragonborn">Dragonborn</option>
+<option value="Dwarf">Dwarf</option>
+<option value="Elf">Elf</option>
+<option value="Gnome">Gnome</option>
+<option value="Half-Elf">Half-Elf</option>
+<option value="Half-Orc">Half-Orc</option>
+<option value="Halfling">Halfling</option>
+<option value="Human">Human</option>
+<option value="Tiefling">Tiefling</option>
+</select>
+<p class="desc-hint" data-choice-hint="species" id="species-description-0">Suggests appearance, heritage and perspective; leave open for generation.</p>
+</label><button aria-controls="identity-choice-dialog" aria-haspopup="dialog" class="link-button identity-explore" data-explore="species" type="button">Explore species</button></div>
+<div class="identity-field"><label class="field" for="f-class-quick">
+<span class="field-label">Class <span class="optional">(Optional)</span></span>
+<select aria-describedby="class-description-0" aria-label="Class (Optional)" class="forge-select" data-field="class" id="f-class-quick">
+<option value="">Let the model choose</option>
+<option value="Barbarian">Barbarian</option>
+<option value="Bard">Bard</option>
+<option value="Cleric">Cleric</option>
+<option value="Druid">Druid</option>
+<option value="Fighter">Fighter</option>
+<option value="Monk">Monk</option>
+<option value="Paladin">Paladin</option>
+<option value="Ranger">Ranger</option>
+<option value="Rogue">Rogue</option>
+<option value="Sorcerer">Sorcerer</option>
+<option value="Warlock">Warlock</option>
+<option value="Wizard">Wizard</option>
+</select>
+<p class="desc-hint" data-choice-hint="class" id="class-description-0">Guides training, combat style, skills and spellcasting; leave open for generation.</p>
+</label><button aria-controls="identity-choice-dialog" aria-haspopup="dialog" class="link-button identity-explore" data-explore="class" type="button">Explore classes</button></div>
+<div class="field">
+<span class="field-label">Power <span class="optional">(Optional)</span></span>
+<div class="fields-grid" style="gap:.5rem">
+<label class="field" for="f-powerSlot-quick">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">Measure</span>
+<select class="forge-select" data-field="powerSlot" id="f-powerSlot-quick">
+<option value="level">Level</option>
+<option value="cr">CR</option>
+</select>
+</label>
+<div data-power="level">
+<label class="field" for="f-level-quick">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">Level (1–20)</span>
+<input class="forge-input" data-field="level" id="f-level-quick" max="20" min="1" placeholder="1-20" type="number"/>
+</label>
+</div>
+<div data-power="cr" hidden="">
+<label class="field" for="f-cr-quick">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">CR</span>
+<input class="forge-input" data-field="cr" id="f-cr-quick" placeholder="e.g. 1/2" type="text"/>
+</label>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="section-space">
+<label class="field" for="f-concept-quick">
+<span class="field-label">Character concept</span>
+<span class="field-help">Describe the core idea. The generator will expand this into a full sheet.</span>
+<textarea class="forge-textarea concept" data-field="concept" id="f-concept-quick" placeholder="e.g., A disgraced knight who sells protection to ghosts" rows="4"></textarea>
+</label>
+</div>
+</section>
+<section aria-labelledby="tab-detailed" hidden="" id="panel-detailed" role="tabpanel">
+<div aria-label="Detailed builder sections" class="section-tabs" role="tablist">
+<button aria-controls="detail-identity" aria-selected="true" class="tab" data-section="identity" id="section-identity" role="tab" tabindex="0" type="button">Identity</button>
+<button aria-controls="detail-character" aria-selected="false" class="tab" data-section="character" id="section-character" role="tab" tabindex="-1" type="button">Character</button>
+<button aria-controls="detail-mechanics" aria-selected="false" class="tab" data-section="mechanics" id="section-mechanics" role="tab" tabindex="-1" type="button">Mechanics</button>
+<button aria-controls="detail-connections" aria-selected="false" class="tab" data-section="connections" id="section-connections" role="tab" tabindex="-1" type="button">Connections</button>
+<button aria-controls="detail-review" aria-selected="false" class="tab" data-section="review" id="section-review" role="tab" tabindex="-1" type="button">Review</button>
+</div>
+<section aria-labelledby="section-identity" class="section-panel detailed-panel" id="detail-identity" role="tabpanel" tabindex="0">
+<div class="forge-card">
+<h2>Identity</h2>
+<p class="field-help">Start anywhere. Blank optional fields are generated; your authored fields stay yours.</p>
+<div class="fields-grid section-space">
+<label class="field" for="f-name-detail">
+<span class="field-label">Name <span class="optional">(Optional)</span></span>
+<input class="forge-input" data-field="name" id="f-name-detail" placeholder="Leave blank for a generated name" type="text"/>
+</label>
+<label class="field" for="f-role-detail">
+<span class="field-label">Role</span>
+<select class="forge-select" data-field="role" id="f-role-detail">
+<option value="NPC">NPC</option>
+<option value="BBEG">BBEG</option>
+<option value="Monster">Monster</option>
+</select>
+</label>
+<div class="identity-field"><label class="field" for="f-species-detail">
+<span class="field-label">Species <span class="optional">(Optional)</span></span>
+<select aria-describedby="species-description-1" aria-label="Species (Optional)" class="forge-select" data-field="species" id="f-species-detail">
+<option value="">Let the model choose</option>
+<option value="Dragonborn">Dragonborn</option>
+<option value="Dwarf">Dwarf</option>
+<option value="Elf">Elf</option>
+<option value="Gnome">Gnome</option>
+<option value="Half-Elf">Half-Elf</option>
+<option value="Half-Orc">Half-Orc</option>
+<option value="Halfling">Halfling</option>
+<option value="Human">Human</option>
+<option value="Tiefling">Tiefling</option>
+</select>
+<p class="desc-hint" data-choice-hint="species" id="species-description-1">Suggests appearance, heritage and perspective; leave open for generation.</p></label><button aria-controls="identity-choice-dialog" aria-haspopup="dialog" class="link-button identity-explore" data-explore="species" type="button">Explore species</button></div>
+<div class="identity-field"><label class="field" for="f-class-detail">
+<span class="field-label">Class <span class="optional">(Optional)</span></span>
+<select aria-describedby="class-description-1" aria-label="Class (Optional)" class="forge-select" data-field="class" id="f-class-detail">
+<option value="">Let the model choose</option>
+<option value="Barbarian">Barbarian</option>
+<option value="Bard">Bard</option>
+<option value="Cleric">Cleric</option>
+<option value="Druid">Druid</option>
+<option value="Fighter">Fighter</option>
+<option value="Monk">Monk</option>
+<option value="Paladin">Paladin</option>
+<option value="Ranger">Ranger</option>
+<option value="Rogue">Rogue</option>
+<option value="Sorcerer">Sorcerer</option>
+<option value="Warlock">Warlock</option>
+<option value="Wizard">Wizard</option>
+</select>
+<p class="desc-hint" data-choice-hint="class" id="class-description-1">Guides training, combat style, skills and spellcasting; leave open for generation.</p></label><button aria-controls="identity-choice-dialog" aria-haspopup="dialog" class="link-button identity-explore" data-explore="class" type="button">Explore classes</button></div>
+<div class="field">
+<span class="field-label">Power <span class="optional">(Optional)</span></span>
+<div class="fields-grid" style="gap:.5rem">
+<label class="field" for="f-powerSlot-detail">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">Measure</span>
+<select class="forge-select" data-field="powerSlot" id="f-powerSlot-detail">
+<option value="level">Level</option>
+<option value="cr">CR</option>
+</select>
+</label>
+<div data-power="level">
+<label class="field" for="f-level-detail">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">Level</span>
+<input class="forge-input" data-field="level" id="f-level-detail" max="20" min="1" type="number"/>
+</label>
+</div>
+<div data-power="cr" hidden="">
+<label class="field" for="f-cr-detail">
+<span class="field-label" style="font-size:0;height:0;margin:0;display:block">CR</span>
+<input class="forge-input" data-field="cr" id="f-cr-detail" type="text"/>
+</label>
+</div>
+</div>
+</div>
+<label class="field" for="f-alignment-detail">
+<span class="field-label">Alignment <span class="optional">(Optional)</span></span>
+<select class="forge-select" data-field="alignment" id="f-alignment-detail">
+<option value="">Let the model choose</option>
+<option value="LG">LG</option>
+<option value="NG">NG</option>
+<option value="CG">CG</option>
+<option value="LN">LN</option>
+<option value="N">N</option>
+<option value="CN">CN</option>
+<option value="LE">LE</option>
+<option value="NE">NE</option>
+<option value="CE">CE</option>
+<option value="unaligned">unaligned</option>
+</select>
+</label>
+</div>
+</div>
+</section>
+<section aria-labelledby="section-character" class="section-panel detailed-panel" hidden="" id="detail-character" role="tabpanel" tabindex="0">
+<div class="forge-card">
+<h2>Character</h2>
+<div class="char-layout">
+<div class="char-main">
+<label class="field" for="f-background-detail">
+<span class="field-label" style="font-size: 1rem; font-weight: 500;">Background</span>
+<span class="field-help">Authored story of the character's past. Saved exactly as written.</span>
+<textarea class="forge-textarea concept" data-field="background" id="f-background-detail" placeholder="e.g. Raised in the lower rings of Cinderwatch, she learned early that..." rows="6"></textarea>
+</label>
+<div id="char-chip-panels">
+<div class="chip-panel" hidden="" id="panel-concept"><p class="field-help">A direction for generation, kept separate from authored Background.</p>
+<label class="field" for="f-concept-detail">
+<span class="field-label">Character concept guidance</span>
+<textarea class="forge-textarea" data-field="concept" id="f-concept-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-personality"><p class="field-help">How the character behaves and responds under pressure.</p>
+<label class="field" for="f-personality-detail">
+<span class="field-label">Personality</span>
+<textarea class="forge-textarea" data-field="personality" id="f-personality-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-appearance"><p class="field-help">Visible features, clothing and mannerisms.</p>
+<label class="field" for="f-appearance-detail">
+<span class="field-label">Appearance</span>
+<textarea class="forge-textarea" data-field="appearance" id="f-appearance-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-goals"><p class="field-help">What the character wants to achieve.</p>
+<label class="field" for="f-goals-detail">
+<span class="field-label">Goals</span>
+<textarea class="forge-textarea" data-field="goals" id="f-goals-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-secret"><p class="field-help">Something the character keeps hidden.</p>
+<label class="field" for="f-secret-detail">
+<span class="field-label">Secret</span>
+<textarea class="forge-textarea" data-field="secret" id="f-secret-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-rumor"><p class="field-help">What others say about the character.</p>
+<label class="field" for="f-rumor-detail">
+<span class="field-label">Rumor</span>
+<textarea class="forge-textarea" data-field="rumor" id="f-rumor-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-partyHook"><p class="field-help">Why the adventuring party might care.</p>
+<label class="field" for="f-partyHook-detail">
+<span class="field-label">Party hook</span>
+<textarea class="forge-textarea" data-field="partyHook" id="f-partyHook-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-relationships"><p class="field-help">People and groups that matter in the character’s story.</p>
+<label class="field" for="f-relationships-detail">
+<span class="field-label">Relationships (Lore)</span>
+<textarea class="forge-textarea" data-field="relationships" id="f-relationships-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-voiceStyle"><p class="field-help">How the character sounds when speaking.</p>
+<label class="field" for="f-voiceStyle-detail">
+<span class="field-label">Voice style</span>
+<textarea class="forge-textarea" data-field="voiceStyle" id="f-voiceStyle-detail" rows="3"></textarea>
+</label>
+</div>
+<div class="chip-panel" hidden="" id="panel-catchphrases"><p class="field-help">Distinctive words or phrases they repeat.</p>
+<label class="field" for="f-catchphrases-detail">
+<span class="field-label">Catchphrases</span>
+<textarea class="forge-textarea" data-field="catchphrases" id="f-catchphrases-detail" rows="3"></textarea>
+</label>
+</div>
+</div>
+</div>
+<div class="char-sidebar">
+<span class="field-label" style="margin-bottom: 0.75rem;">Optional Details</span>
+<div class="chip-grid">
+<button aria-controls="panel-concept" aria-expanded="false" class="char-chip" data-chip="concept" title="A direction for generation, kept separate from authored Background." type="button">
+                        Concept guidance <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="concept"></span></button>
+<button aria-controls="panel-personality" aria-expanded="false" class="char-chip" data-chip="personality" title="How the character behaves and responds under pressure." type="button">
+                        Personality <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="personality"></span></button>
+<button aria-controls="panel-appearance" aria-expanded="false" class="char-chip" data-chip="appearance" title="Visible features, clothing and mannerisms." type="button">
+                        Appearance <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="appearance"></span></button>
+<button aria-controls="panel-goals" aria-expanded="false" class="char-chip" data-chip="goals" title="What the character wants to achieve." type="button">
+                        Goals <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="goals"></span></button>
+<button aria-controls="panel-secret" aria-expanded="false" class="char-chip" data-chip="secret" title="Something the character keeps hidden." type="button">
+                        Secret <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="secret"></span></button>
+<button aria-controls="panel-rumor" aria-expanded="false" class="char-chip" data-chip="rumor" title="What others say about the character." type="button">
+                        Rumor <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="rumor"></span></button>
+<button aria-controls="panel-partyHook" aria-expanded="false" class="char-chip" data-chip="partyHook" title="Why the adventuring party might care." type="button">
+                        Party hook <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="partyHook"></span></button>
+<button aria-controls="panel-relationships" aria-expanded="false" class="char-chip" data-chip="relationships" title="People and groups that matter in the character’s story." type="button">
+                        Relationships <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="relationships"></span></button>
+<button aria-controls="panel-voiceStyle" aria-expanded="false" class="char-chip" data-chip="voiceStyle" title="How the character sounds when speaking." type="button">
+                        Voice style <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="voiceStyle"></span></button>
+<button aria-controls="panel-catchphrases" aria-expanded="false" class="char-chip" data-chip="catchphrases" title="Distinctive words or phrases they repeat." type="button">
+                        Catchphrases <span class="char-chip-indicator"></span>
+<span class="detail-filled" data-detail-filled="catchphrases"></span></button>
+</div>
+</div>
+</div>
+</div>
+</section>
+<section aria-labelledby="section-mechanics" class="section-panel detailed-panel" hidden="" id="detail-mechanics" role="tabpanel" tabindex="0">
+<div class="forge-card">
+<h2>Mechanics</h2>
+<p class="field-help">Author each section independently, or leave it to generation.</p>
+<div class="mechanics-choices"><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-attributes" aria-label="Author Attributes" data-toggle="attributes" type="checkbox"/><span class="mechanic-heading"><span>Attributes</span><small>Six ability scores</small></span><span class="mechanic-count" data-mechanic-count="attributes">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-attributes">
+<div class="score-grid">
+<label class="field score-field" for="f-str-26"><span class="field-label">STR</span><input class="forge-input" data-field="str" id="f-str-26" type="number"/></label>
+<label class="field score-field" for="f-dex-27"><span class="field-label">DEX</span><input class="forge-input" data-field="dex" id="f-dex-27" type="number"/></label>
+<label class="field score-field" for="f-con-28"><span class="field-label">CON</span><input class="forge-input" data-field="con" id="f-con-28" type="number"/></label>
+<label class="field score-field" for="f-int-29"><span class="field-label">INT</span><input class="forge-input" data-field="int" id="f-int-29" type="number"/></label>
+<label class="field score-field" for="f-wis-30"><span class="field-label">WIS</span><input class="forge-input" data-field="wis" id="f-wis-30" type="number"/></label>
+<label class="field score-field" for="f-cha-31"><span class="field-label">CHA</span><input class="forge-input" data-field="cha" id="f-cha-31" type="number"/></label>
+</div>
+</div>
+</section><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-combat" aria-label="Author Combat" data-toggle="combat" type="checkbox"/><span class="mechanic-heading"><span>Combat</span><small>Armor, health and hit dice</small></span><span class="mechanic-count" data-mechanic-count="combat">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-combat">
+<div class="combat-stat-grid"><label class="field combat-metric" for="f-ac-32"><span class="field-label">AC</span><input class="forge-input" data-field="ac" id="f-ac-32" type="number"/></label><label class="field combat-metric" for="f-hp-33"><span class="field-label">HP</span><input class="forge-input" data-field="hp" id="f-hp-33" type="number"/></label></div>
+<div class="hit-dice-card"><p class="hit-dice-title" style="margin-top:1rem">HIT DICE</p><div class="dice-fields">
+<label class="field" for="f-hitDiceCount-34"><span class="field-label">Count</span><input class="forge-input" data-field="hitDiceCount" id="f-hitDiceCount-34" type="number"/></label>
+<label class="field" for="f-hitDiceSides-35"><span class="field-label">Sides</span><input class="forge-input" data-field="hitDiceSides" id="f-hitDiceSides-35" type="number"/></label>
+<label class="field" for="f-hitDiceMod-36"><span class="field-label">Modifier</span><input class="forge-input" data-field="hitDiceMod" id="f-hitDiceMod-36" type="text"/></label>
+</div></div>
+
+</div>
+</section><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-skills" aria-label="Author Skills" data-toggle="skills" type="checkbox"/><span class="mechanic-heading"><span>Skills</span><small>Training and bonuses</small></span><span class="mechanic-count" data-mechanic-count="skills">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-skills">
+<div id="rows-skills"></div>
+<button class="forge-btn-secondary" data-add="skills" type="button">Add skill</button>
+</div>
+</section><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-actions" aria-label="Author Actions" data-toggle="actions" type="checkbox"/><span class="mechanic-heading"><span>Actions</span><small>Attacks and active abilities</small></span><span class="mechanic-count" data-mechanic-count="actions">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-actions">
+<div id="rows-actions"></div>
+<button class="forge-btn-secondary" data-add="actions" type="button">Add action</button>
+</div>
+</section><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-traits" aria-label="Author Traits" data-toggle="traits" type="checkbox"/><span class="mechanic-heading"><span>Traits</span><small>Distinctive special features</small></span><span class="mechanic-count" data-mechanic-count="traits">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-traits">
+<div id="rows-traits"></div>
+<button class="forge-btn-secondary" data-add="traits" type="button">Add trait</button>
+</div>
+</section><section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-spells" aria-label="Author Spells" data-toggle="spells" type="checkbox"/><span class="mechanic-heading"><span>Spells</span><small>Add a spell name and description</small></span><span class="mechanic-count" data-mechanic-count="spells">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-spells">
+<p class="field-help spell-prompt">Add each spell by name and give it a short description. Leave either blank for the model to fill.</p>
+<div id="rows-spells"></div>
+<button class="forge-btn-secondary" data-add="spells" type="button">Add spell</button>
+</div>
+</section><div data-boss-wrap="" hidden="">
+<section class="toggle-section">
+<label class="toggle-label"><input aria-controls="optional-boss" aria-label="Author Boss section" data-toggle="boss" type="checkbox"/><span class="mechanic-heading"><span>Boss section</span><small>Lair and legendary features</small></span><span class="mechanic-count" data-mechanic-count="boss">Will generate</span></label>
+<div class="toggle-content" hidden="" id="optional-boss">
+<div class="fields-grid">
+<label class="field" for="f-lairActions-38"><span class="field-label">Lair actions</span><textarea class="forge-textarea" data-field="lairActions" id="f-lairActions-38" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-legendaryActions-39"><span class="field-label">Legendary actions</span><textarea class="forge-textarea" data-field="legendaryActions" id="f-legendaryActions-39" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-immunities-40"><span class="field-label">Immunities</span><textarea class="forge-textarea" data-field="immunities" id="f-immunities-40" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-vulnerabilities-41"><span class="field-label">Vulnerabilities</span><textarea class="forge-textarea" data-field="vulnerabilities" id="f-vulnerabilities-41" placeholder="Leave blank to generate" rows="2"></textarea></label>
+</div>
+</div>
+</section>
+</div></div>
+
+
+
+
+
+
+<p class="field-help" data-boss-note="">Boss mechanics apply to BBEG and Monster roles.</p>
+</div>
+</section>
+<section aria-labelledby="section-connections" class="section-panel detailed-panel" hidden="" id="detail-connections" role="tabpanel" tabindex="0">
+<div class="forge-card">
+<h2>Connections</h2>
+<h3>World integration</h3>
+<div class="fields-grid">
+<label class="field" for="f-reputation-42"><span class="field-label">Reputation</span><textarea class="forge-textarea" data-field="reputation" id="f-reputation-42" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-factions-43"><span class="field-label">Factions</span><textarea class="forge-textarea" data-field="factions" id="f-factions-43" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-currentLocation-44"><span class="field-label">Current location</span><textarea class="forge-textarea" data-field="currentLocation" id="f-currentLocation-44" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-reactionMatrix-45"><span class="field-label">Reaction matrix</span><textarea class="forge-textarea" data-field="reactionMatrix" id="f-reactionMatrix-45" placeholder="Leave blank to generate" rows="2"></textarea></label>
+<label class="field" for="f-onDefeat-46"><span class="field-label">On defeat</span><textarea class="forge-textarea" data-field="onDefeat" id="f-onDefeat-46" placeholder="Leave blank to generate" rows="2"></textarea></label>
+</div>
+<div data-world-relations="" style="margin-top:1.5rem">
+<h3>Relations</h3>
+<p class="field-help">Link a committed entity or name a new one. These drafts stay with this world when you change destination.</p>
+<p class="fixture-note">The entity names below are local preview fixtures.</p>
+<div id="relation-rows"></div>
+<button class="forge-btn-secondary" id="add-relation" type="button">Add relation</button>
+</div>
+<p class="notice" data-generic-relations="" hidden="">Generic library characters are isolated. Pick a world to author graph relations; your world relation drafts will be preserved.</p>
+</div>
+</section>
+<section aria-labelledby="section-review" class="section-panel detailed-panel" hidden="" id="detail-review" role="tabpanel" tabindex="0">
+<div class="forge-card">
+<h2>Review</h2>
+<p class="field-help">Review your inputs before generation. You can revisit every section without losing values.</p>
+<dl class="review-list" id="review-list"></dl>
+<p class="notice">Blank fields will be generated. Authored fields remain yours. This is a local design preview, not a saved character.</p>
+</div>
+</section>
+</section>
+</div>
+<aside aria-labelledby="summary-title" class="summary">
+<h2 id="summary-title">Live Summary</h2>
+<div class="forge-card">
+<div class="eyebrow">Destination</div>
+<div class="summary-destination" data-destination-name="">The Reapened Coast</div>
+<div class="eyebrow">You Supplied</div>
+<ul id="summary-supplied"></ul>
+<div class="eyebrow">Will Generate</div>
+<ul class="generated" id="summary-generated"></ul>
+</div>
+<button class="forge-btn-primary generate-action" id="generate-btn" type="button">Generate Character</button>
+<p class="destination-copy" id="generate-destination"></p>
+<p aria-live="polite" class="notice" hidden="" id="generate-status" role="status"></p>
+<p class="preview-notice">Interactive design preview. No character is generated or saved.</p>
+</aside>
+</div>
+</div>
+</main>
+</div>
+<dialog aria-labelledby="history-title" class="history-dialog" id="history-dialog">
+<div class="dialog-heading">
+<h2 id="history-title">Build history</h2>
+<button aria-label="Close build history" class="forge-btn-secondary" id="close-history" type="button">Close</button>
+</div>
+<p class="fixture-note">Example jobs for this design preview. These are not real builds.</p>
+<article class="forge-card history-job">
+<span class="job-status status-queued">Generating · Example</span>
+<h3>Maelin, the tidekeeper</h3>
+<p>Checking names and connections</p>
+<progress aria-label="Example generation progress" max="100" value="35">35%</progress>
+<p>35% · Elapsed 2m 14s</p>
+<button class="forge-btn-secondary" id="example-cancel" type="button">Cancel example generation</button>
+<p hidden="" id="cancel-status" role="status">Example cancelled. No real generation was affected.</p>
+</article>
+<article class="forge-card history-job">
+<span class="job-status status-queued">Queued · Example</span>
+<h3>Ashfen sentinel</h3>
+<p>Queue position: 1 · Waiting to start</p>
+</article>
+<article class="forge-card history-job">
+<span class="job-status status-succeeded">Succeeded · Example</span>
+<h3>Captain Ilyra Voss</h3>
+<p>Built into The Reapened Coast.</p>
+</article>
+<article class="forge-card history-job">
+<span class="job-status status-failed">Failed · Example</span>
+<h3>The hollow prince</h3>
+<p>The example build failed. Your authored draft is preserved.</p>
+</article>
+</dialog>
+<dialog aria-labelledby="identity-choice-title" class="choice-dialog" id="identity-choice-dialog"><div class="dialog-heading"><h2 id="identity-choice-title">Choose a species</h2><button class="forge-btn-secondary" id="close-identity-choice" type="button">Close</button></div><p class="field-help">Choose the direction you want generation to follow.</p><div class="choice-grid" id="identity-choice-grid"></div></dialog></div>
