@@ -37,3 +37,5 @@ The literal prototypes retain their original Tailwind CDN and, where present, Ic
 These files are frozen references. Implement application changes in frontend/backend source; create another dated design snapshot when the design changes. Do not silently edit the frozen source or update hashes to conceal divergence.
 
 Archived guide links were relocated for this tracked directory. Unavailable older references are marked as historical plain text; literal prototype HTML was not rewritten.
+
+Original export whitespace is intentional. Bundle-local Git attributes exempt only frozen HTML/extracted code from trailing-whitespace checks so the reviewed source hashes stay exact. Documentation and application files retain normal checks.
