@@ -1,4 +1,5 @@
 {
+  ".gitattributes": "33d2466530bf20a202603375b83dcc9ebdd57e9cb857f86742833789ff762f6c",
   ".working/archetype-templates.md": "8d2ebb003d71657f6b3cb0f8f69bdf9dae41eacad9bde3f234910d35d7698485",
   ".working/history/DESIGN-2026-09-25.md": "9c150c14beb9b865fcbe5f2994c4268200f37584de52e1b16fabb21271563fe5",
   ".working/history/EXPERIENCE-2026-09-25.md": "1796e0d48cd7c0ec25a05f9f89993a7814aa6c4be96c1b806daea70291c3664c",
@@ -10,7 +11,7 @@
   "HANDOVER-REPORT.md": "60c2009d2e8c9dcf9afe8a7af3de94008f8a96e9b68d5ff91ef7fc5dffb0e8d7",
   "IMPLEMENTATION-PARITY.md": "e18e677035944c3b5816df79be8c4016e00bcc8b9b0b3c4a42ba51a27cdf3564",
   "NEW-REDESIGN-BRIEF.md": "69d939dca4eda88c5423a91effdce68e6abf8af33da3141f58aaad4082c874b9",
-  "README.md": "e8f172bf809b69a8a268609dfccfe547b107dbd5ca8aaf3ca009051eeff003a0",
+  "README.md": "8cb36f6babda80ee993311598e071672077085a3978e79ebd3f30d66374273c5",
   "REFERENCE-PATTERNS.md": "4ae66d19ae300bfa20ce86dd6d398291bc8b18398476efb35508b2178ad773f2",
   "app-tokens.css": "0b3866ae013189b5197df408b53b3a4a579a626d066d2a7bc18477d3486aed54",
   "code/add-character/interactions.js": "9661d386793f2aa273537a0479162d466b039019d4f0c77f256a4fcb6bf02b4e",
