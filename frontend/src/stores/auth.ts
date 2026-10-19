@@ -8,6 +8,7 @@ import { useCandidatesStore } from './candidates'
 import { useJobsStore } from './jobs'
 import { useWorldStore } from './world'
 import { useTonightStore } from './tonight'
+import { useWorkspaceStore } from './workspace'
 
 type Account = components['schemas']['AccountResponse']
 export const useAuthStore = defineStore('auth', () => {
@@ -26,6 +27,7 @@ export const useAuthStore = defineStore('auth', () => {
     useJobsStore(),
     useWorldStore(),
     useTonightStore(),
+    useWorkspaceStore(),
   ]
   watch(
     () => account.value?.id,

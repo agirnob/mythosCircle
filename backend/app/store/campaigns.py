@@ -202,6 +202,10 @@ def delete_campaign(owner_id: str, campaign_id: str) -> bool:
                 models.ProposedCandidate.campaign_id == campaign_id
             )
         )
+        for workspace_model in (models.WorkspaceReceipt, models.WorkspaceRequest, models.Workspace):
+            session.execute(
+                delete(workspace_model).where(workspace_model.campaign_id == campaign_id)
+            )
         session.execute(delete(models.Job).where(models.Job.campaign_id == campaign_id))
         session.execute(delete(models.Media).where(models.Media.campaign_id == campaign_id))
         session.delete(row)

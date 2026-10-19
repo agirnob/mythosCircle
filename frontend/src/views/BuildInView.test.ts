@@ -141,6 +141,24 @@ describe('BuildInView seed form', () => {
     vi.unstubAllGlobals()
   })
 
+  it('recovers exact authored editor fields after reload', async () => {
+    const saved = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value), removeItem: (key: string) => saved.delete(key) })
+    mockApi()
+    useAuthStore().account = { id: 'A', email: 'a@example.com', is_admin: false }
+    const first = await mountView()
+    await first.findAll('button').find(button => button.text() === '+ authored figure')!.trigger('click')
+    const editor = first.findComponent(CharacterSheetEditor)
+    await editor.get('input[placeholder="May be named from your Background"]').setValue('  Ilyra  ')
+    await flushPromises()
+    first.unmount()
+    const restored = await mountView()
+    const recovered = restored.findComponent(CharacterSheetEditor)
+    expect((recovered.get('input[placeholder="May be named from your Background"]').element as HTMLInputElement).value).toBe('  Ilyra  ')
+    restored.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it('sends a requested count as model-generated entities, without numbered placeholders', async () => {
     mockApi({ created: job() })
     const wrapper = await mountView()

@@ -34,3 +34,39 @@ def client() -> Iterator[TestClient]:
     application = create_app()
     with TestClient(application) as test_client:
         yield test_client
+
+
+@pytest.fixture()
+def workspace_world(tmp_path):
+    from app.core import ids
+    from app.store import (
+        app_db_url,
+        commit_subgraph,
+        create_campaign,
+        init_db,
+        models,
+        register_account,
+    )
+
+    previous = app_db_url()
+    init_db(f"sqlite:///{tmp_path / 'workspace-store.db'}")
+    owner = register_account(f"workspace-{ids.new_id()}@example.com", "password123")
+    campaign = create_campaign(
+        owner.id,
+        title="Arlea",
+        description="River city",
+        theme="High Fantasy",
+        custom_lore="Keep the ferrymen's oath.",
+    )
+    harbor = ids.new_id()
+    commit_subgraph(
+        campaign.id,
+        [models.EntityInput(id=harbor, kind="place", name="Harbor", text="Old quays")],
+        [],
+        base_revision=None,
+        allow_orphans=True,
+    )
+    try:
+        yield owner.id, campaign.id, harbor
+    finally:
+        init_db(previous)

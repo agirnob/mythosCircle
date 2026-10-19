@@ -298,7 +298,8 @@ class Job(Base):
             name="ck_job_state",
         ),
         CheckConstraint(
-            "kind IN ('text','image','video','build_in','generate','regenerate')",
+            "kind IN ('text','image','video','build_in','generate','regenerate','add_character',"
+            "'video_prompt','plan_expansion','expand_world')",
             name="ck_job_kind",
         ),
         CheckConstraint("progress >= 0.0 AND progress <= 1.0", name="ck_job_progress"),
@@ -517,3 +518,29 @@ class AdminLLMSettings(Base):
     __table_args__ = (CheckConstraint("id = 1", name="ck_admin_llm_singleton"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     settings: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
+class Workspace(Base):
+    """Server-owned optimistic draft, independent of world revisions."""
+
+    __tablename__ = "workspace"
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaign.id"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    draft: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class WorkspaceRequest(Base):
+    __tablename__ = "workspace_request"
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaign.id"), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    job_id: Mapped[str] = mapped_column(ForeignKey("job.id"))
+
+
+class WorkspaceReceipt(Base):
+    __tablename__ = "workspace_receipt"
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaign.id"), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String(26))
+    job_id: Mapped[str] = mapped_column(ForeignKey("job.id"))
+    result: Mapped[dict[str, Any]] = mapped_column(JSON)

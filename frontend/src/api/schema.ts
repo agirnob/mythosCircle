@@ -496,6 +496,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/workspace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get */
+        get: operations["get_api_campaigns__campaign_id__workspace_get"];
+        /** Put */
+        put: operations["put_api_campaigns__campaign_id__workspace_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/workspace/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Plan */
+        post: operations["plan_api_campaigns__campaign_id__workspace_plan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/workspace/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Generate */
+        post: operations["generate_api_campaigns__campaign_id__workspace_generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/entities/{entity_id}": {
         parameters: {
             query?: never;
@@ -1811,6 +1863,73 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** WorkspaceDraft */
+        WorkspaceDraft: {
+            /** Nodes */
+            nodes?: components["schemas"]["WorkspaceNode"][];
+        };
+        /** WorkspaceNode */
+        WorkspaceNode: {
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "place" | "faction" | "character";
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /** Parent Id */
+            parent_id?: string | null;
+            /** Faction Id */
+            faction_id?: string | null;
+            /**
+             * Guidance
+             * @default
+             */
+            guidance: string;
+        };
+        /** WorkspaceResponse */
+        WorkspaceResponse: {
+            /** Draft Version */
+            draft_version: number;
+            /** World Version */
+            world_version: string | null;
+            draft: components["schemas"]["WorkspaceDraft"];
+            /** Receipts */
+            receipts: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** WorkspaceSave */
+        WorkspaceSave: {
+            /** Expected Draft Version */
+            expected_draft_version: number;
+            /** Expected World Version */
+            expected_world_version: string | null;
+            draft: components["schemas"]["WorkspaceDraft"];
+        };
+        /** WorkspaceSubmit */
+        WorkspaceSubmit: {
+            /** Request Id */
+            request_id: string;
+            /** Expected Draft Version */
+            expected_draft_version: number;
+            /** Expected World Version */
+            expected_world_version: string | null;
+            /** Selected Ids */
+            selected_ids?: string[];
+            /**
+             * Guidance
+             * @default
+             */
+            guidance: string;
+            /** Scope Id */
+            scope_id?: string | null;
+        };
         /** WorldExport */
         WorldExport: {
             campaign: components["schemas"]["CampaignMeta"];
@@ -2671,6 +2790,150 @@ export interface operations {
             };
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_api_campaigns__campaign_id__workspace_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_api_campaigns__campaign_id__workspace_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceSave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plan_api_campaigns__campaign_id__workspace_plan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceSubmit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_api_campaigns__campaign_id__workspace_generate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: {
+                mythoscircle_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceSubmit"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

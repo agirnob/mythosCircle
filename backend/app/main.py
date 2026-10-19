@@ -26,6 +26,7 @@ from app.api import (
     jobs,
     journal,
     media,
+    workspace,
     ws,
 )
 from app.core.errors import register_error_handlers
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
     application.include_router(health.router)
     application.include_router(jobs.router)
     application.include_router(ws.router)
+    application.include_router(workspace.router)
     application.include_router(entities.router)
     application.include_router(journal.router)
     application.include_router(edges.router)

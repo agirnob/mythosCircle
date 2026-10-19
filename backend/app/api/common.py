@@ -56,6 +56,7 @@ from app.store.journal import (
     JournalNotFoundError,
     JournalUnicodeError,
 )
+from app.store.workspace import WorkspaceConflict
 
 __all__ = ["StoreHTTPException", "store_error_as_http"]
 
@@ -101,6 +102,7 @@ def store_error_as_http(exc: Exception) -> NoReturn:
             LiveEdgesError,
             EntityEditConflictError,
             JournalConflictError,
+            WorkspaceConflict,
         ),
     ):
         if isinstance(exc, LiveEdgesError):

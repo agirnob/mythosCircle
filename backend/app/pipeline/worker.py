@@ -134,7 +134,16 @@ def run_next_job(
     try:
         settings = settings or (
             resolve_job_settings()
-            if job.kind in {"text", "build_in", "generate", "regenerate", "video_prompt"}
+            if job.kind
+            in {
+                "text",
+                "build_in",
+                "generate",
+                "regenerate",
+                "video_prompt",
+                "plan_expansion",
+                "expand_world",
+            }
             else LLMSettings()
         )
         # The per-job LLM call journal (owner note 7): every provider
@@ -196,6 +205,11 @@ def _run_job(
     comfyui_video_provider: ComfyUIVideoGeneration | None = None,
     comfyui_video_settings: ComfyUIVideoSettings | None = None,
 ) -> None:
+    if job.kind in {"plan_expansion", "expand_world"}:
+        from app.pipeline.workspace import run_workspace
+
+        run_workspace(job, provider, settings)
+        return
     if job.kind == "build_in":
         # Lazy import: ``build_in`` imports ``JobPayloadError`` from this
         # module, so a module-level import here would be circular.

@@ -5,13 +5,17 @@
 // generator's job. The relation block renders only when a campaign is
 // bound (a draft in the Generic library stores characters alone).
 import { computed, onUnmounted, ref, watch } from 'vue'
+import type { Ref } from 'vue'
 
 import { apiFetch } from '../api/client'
 import type { AuthoredFigureSeed, AuthoredRelationSeed } from '../stores/jobs'
 
-const props = withDefaults(defineProps<{ campaignId: string; forgeWorkspace?: boolean }>(), {
+const props = withDefaults(defineProps<{ campaignId: string; forgeWorkspace?: boolean; initialDraft?: Record<string, unknown>; initialSeed?: AuthoredFigureSeed }>(), {
   forgeWorkspace: false,
+  initialDraft: undefined,
+  initialSeed: undefined,
 })
+const emit = defineEmits<{ draft: [snapshot: Record<string, unknown>] }>()
 const mode = ref<'quick' | 'detailed'>(props.forgeWorkspace ? 'quick' : 'detailed')
 const section = ref<'identity' | 'character' | 'mechanics' | 'connections' | 'review'>('identity')
 const concept = ref('')
@@ -112,6 +116,9 @@ const EDGE_TYPES = [
 // --- Form state -------------------------------------------------------------
 
 const name = ref('')
+const seedKey = ref<string | undefined>(undefined)
+const preservedIdentity = ref<Record<string, string>>({})
+const identityOverrides = ref<Record<string, boolean>>({})
 const role = ref<'NPC' | 'BBEG' | 'Monster'>('NPC')
 const recordText = ref<Record<RecordTextField, string>>({
   personality: '',
@@ -207,9 +214,10 @@ function composeDice(count: number | null, sides: number | null, mod: string): s
 
 interface RelationDraft {
   type: string
-  mode: 'existing' | 'new'
+  mode: 'existing' | 'new' | 'key'
   target_id: string
   target_name: string
+  target_key?: string
   counter: string
 }
 
@@ -265,7 +273,7 @@ const hasContent = computed(() => Boolean(
 function blankFree(values: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(values)) {
-    if (value.trim()) out[key] = value.trim()
+    if (value.trim()) out[key] = props.forgeWorkspace ? value.trim() : value
   }
   return out
 }
@@ -273,11 +281,12 @@ function blankFree(values: Record<string, string>): Record<string, string> {
 /** The seed entry: filled fields only — blanks are the generator's job. */
 function buildFigure(): AuthoredFigureSeed {
   const entry: AuthoredFigureSeed = { name: name.value.trim(), role: role.value }
+  if (seedKey.value !== undefined) entry.key = seedKey.value
 
-  const record: Record<string, unknown> = blankFree({
+  const record: Record<string, unknown> = { ...preservedIdentity.value, ...blankFree({
     ...recordText.value,
     background: '',
-  })
+  }) }
   if (recordText.value.background.trim()) record.background = recordText.value.background
   const integration = blankFree(worldIntegration.value)
   if (Object.keys(integration).length > 0) record.world_integration = integration
@@ -295,16 +304,16 @@ function buildFigure(): AuthoredFigureSeed {
       block.identity = identity
       // ONE fact in two slots: the canonical identity the gates check AND
       // the record's display text — both derived from these dropdowns.
-      record.race_type = identityRace.value
-      record.class_profession = identityClass.value
-      record.alignment = identityAlignment.value
+      for (const [key, value] of [['race_type', identityRace.value], ['class_profession', identityClass.value], ['alignment', identityAlignment.value]] as const) {
+        if (identityOverrides.value[key] || !(key in preservedIdentity.value)) record[key] = value
+      }
       const levelCrText =
         powerSlot.value === 'level' && levelValue.value !== null
           ? `level ${levelValue.value}`
           : identity.cr
           ? `CR ${identity.cr}`
           : ''
-      if (levelCrText) record.level_cr = levelCrText
+      if (levelCrText && (identityOverrides.value.level_cr || !('level_cr' in preservedIdentity.value))) record.level_cr = levelCrText
       for (const key of ['race_type', 'class_profession', 'alignment'] as const) {
         const value = record[key]
         if (typeof value === 'string' && !value.trim()) delete record[key]
@@ -333,7 +342,7 @@ function buildFigure(): AuthoredFigureSeed {
       .map((s) => {
         const skill: Record<string, unknown> = { name: s.name.trim() }
         if (s.bonus.trim()) skill.bonus = Number.parseInt(s.bonus, 10)
-        if (s.description.trim()) skill.description = s.description.trim()
+        if (s.description.trim()) skill.description = props.forgeWorkspace ? s.description.trim() : s.description
         return skill
       })
     if (skills.length > 0) block.skills = skills
@@ -344,7 +353,7 @@ function buildFigure(): AuthoredFigureSeed {
       .map((a) => {
         const action: Record<string, unknown> = {
           name: a.name.trim(),
-          description: a.description.trim(),
+          description: props.forgeWorkspace ? a.description.trim() : a.description,
         }
         const damage = composeDice(a.damageCount, a.damageSides, a.damageMod)
         if (damage) action.damage = damage
@@ -355,7 +364,7 @@ function buildFigure(): AuthoredFigureSeed {
   if (traitDrafts.value.length > 0) {
     const traits = traitDrafts.value
       .filter((t) => t.name.trim() && t.description.trim())
-      .map((t) => ({ name: t.name.trim(), description: t.description.trim() }))
+      .map((t) => ({ name: t.name.trim(), description: props.forgeWorkspace ? t.description.trim() : t.description }))
     if (traits.length > 0) block.traits = traits
   }
   if (spellDrafts.value.length > 0) {
@@ -363,7 +372,7 @@ function buildFigure(): AuthoredFigureSeed {
       .filter((spell) => spell.name.trim())
       .map((spell) => ({
         name: spell.name.trim(),
-        ...(spell.description.trim() ? { description: spell.description.trim() } : {}),
+        ...(spell.description.trim() ? { description: props.forgeWorkspace ? spell.description.trim() : spell.description } : {}),
       }))
     if (spells.length > 0) block.spells = spells
   }
@@ -379,12 +388,12 @@ function buildFigure(): AuthoredFigureSeed {
   if (props.campaignId) {
     const relations: AuthoredRelationSeed[] = []
     for (const draft of relationDrafts.value) {
-      const target = draft.mode === 'existing' ? draft.target_id.trim() : draft.target_name.trim()
+      const target = draft.mode === 'existing' ? draft.target_id.trim() : draft.mode === 'key' ? (draft.target_key ?? '').trim() : draft.target_name.trim()
       if (!target) continue
       const relation: AuthoredRelationSeed =
         draft.mode === 'existing'
           ? { type: draft.type, target_id: target }
-          : { type: draft.type, target_name: target }
+          : draft.mode === 'key' ? { type: draft.type, target_key: target } : { type: draft.type, target_name: target }
       const counter = Number.parseInt(draft.counter, 10)
       if (draft.counter.trim() && Number.isFinite(counter)) relation.counter = counter
       relations.push(relation)
@@ -423,7 +432,7 @@ const inputSummary = computed(() => {
     if (!worldIntegration.value[field.key].trim()) generated.push(field.label)
   }
   for (const relation of relationDrafts.value) {
-    const target = relation.mode === 'existing' ? worldEntities.value.find((entity) => entity.id === relation.target_id)?.name : relation.target_name
+    const target = relation.mode === 'existing' ? worldEntities.value.find((entity) => entity.id === relation.target_id)?.name : relation.mode === 'key' ? `Planned seed ${relation.target_key ?? ''}` : relation.target_name
     if (target?.trim()) authored.push(`Relation: ${relation.type.replaceAll('_', ' ')} → ${target.trim()}`)
   }
   if (relationDrafts.value.length === 0) generated.push('Relations')
@@ -461,7 +470,143 @@ function labelPlural(label: string): string {
   return label === 'Spell' ? 'Spells' : `${label}s`
 }
 
-defineExpose({ buildFigure, hasContent, mode, concept })
+// Raw snapshots preserve incomplete controls and exact authored prose.
+const draftFields: Record<string, Ref<unknown>> = {
+  seedKey,
+  preservedIdentity,
+  identityOverrides,
+  mode,
+  section,
+  concept,
+  optionalOpen,
+  name,
+  role,
+  recordText,
+  worldIntegration,
+  identityRace,
+  levelValue,
+  crValue,
+  identityClass,
+  identityAlignment,
+  authorAttributes,
+  attributes,
+  authorCombat,
+  ac,
+  hp,
+  hitDiceCount,
+  hitDiceSides,
+  hitDiceMod,
+  authorSkills,
+  skillDrafts,
+  authorActions,
+  actionDrafts,
+  authorTraits,
+  traitDrafts,
+  authorSpells,
+  spellDrafts,
+  authorBoss,
+  bossFields,
+  relationsByCampaign,
+}
+function snapshotDraft(): Record<string, unknown> {
+  return JSON.parse(
+    JSON.stringify(
+      Object.fromEntries(Object.entries(draftFields).map(([key, value]) => [key, value.value])),
+    ),
+  ) as Record<string, unknown>
+}
+if (props.initialDraft) {
+  for (const [key, value] of Object.entries(props.initialDraft)) {
+    if (draftFields[key]) draftFields[key].value = JSON.parse(JSON.stringify(value)) as unknown
+  }
+} else if (props.initialSeed) {
+  const seed = props.initialSeed
+  seedKey.value = seed.key
+  name.value = seed.name ?? ''
+  concept.value = ''
+  const record = seed.record ?? {}
+  preservedIdentity.value = Object.fromEntries(['race_type', 'class_profession', 'alignment', 'level_cr'].flatMap(key => typeof record[key] === 'string' ? [[key, record[key]]] : []))
+  if (['NPC', 'BBEG', 'Monster'].includes(String(seed.role ?? record.role)))
+    role.value = (seed.role ?? record.role) as typeof role.value
+  for (const field of RECORD_FIELDS)
+    if (typeof record[field.key] === 'string')
+      recordText.value[field.key] = record[field.key] as string
+  if (record.world_integration && typeof record.world_integration === 'object')
+    Object.assign(worldIntegration.value, record.world_integration)
+  const block = (record.stat_block ?? {}) as Record<string, unknown>
+  const identity = (block.identity ?? {}) as Record<string, unknown>
+  identityRace.value = String(identity.race ?? '')
+  identityClass.value = String(identity.class ?? '')
+  identityAlignment.value = String(identity.alignment ?? '')
+  if (typeof identity.level === 'number') levelValue.value = identity.level
+  crValue.value = identity.cr === undefined ? '' : String(identity.cr)
+  if (block.attributes) {
+    Object.assign(attributes.value, block.attributes)
+    authorAttributes.value = true
+  }
+  const combat = (block.combat ?? {}) as Record<string, unknown>
+  if (typeof combat.ac === 'number') ac.value = combat.ac
+  if (typeof combat.hp === 'number') hp.value = combat.hp
+  function dice(value: unknown) {
+    const match = /^(\d+)d(\d+)([+-]\d+)?$/.exec(String(value ?? ''))
+    return {
+      count: match ? Number(match[1]) : null,
+      sides: match ? Number(match[2]) : null,
+      mod: match?.[3] ?? '',
+    }
+  }
+  const hitDice = dice(combat.hit_dice)
+  hitDiceCount.value = hitDice.count
+  hitDiceSides.value = hitDice.sides
+  hitDiceMod.value = hitDice.mod
+  authorCombat.value = Object.keys(combat).length > 0
+  const rows = (key: string) =>
+    Array.isArray(block[key]) ? (block[key] as Record<string, unknown>[]) : []
+  skillDrafts.value = rows('skills').map((r) => ({
+    name: String(r.name ?? ''),
+    bonus: r.bonus === undefined ? '' : String(r.bonus),
+    description: String(r.description ?? ''),
+  }))
+  actionDrafts.value = rows('actions').map((r) => {
+    const d = dice(r.damage)
+    return {
+      name: String(r.name ?? ''),
+      description: String(r.description ?? ''),
+      damageCount: d.count,
+      damageSides: d.sides,
+      damageMod: d.mod,
+    }
+  })
+  traitDrafts.value = rows('traits').map((r) => ({
+    name: String(r.name ?? ''),
+    description: String(r.description ?? ''),
+  }))
+  spellDrafts.value = rows('spells').map((r) => ({
+    name: String(r.name ?? ''),
+    description: String(r.description ?? ''),
+  }))
+  authorSkills.value = skillDrafts.value.length > 0
+  authorActions.value = actionDrafts.value.length > 0
+  authorTraits.value = traitDrafts.value.length > 0
+  authorSpells.value = spellDrafts.value.length > 0
+  if (record.boss && typeof record.boss === 'object') {
+    Object.assign(bossFields.value, record.boss)
+    authorBoss.value = true
+  }
+  relationsByCampaign.value[props.campaignId] = (seed.relations ?? []).map((r) => ({
+    type: r.type,
+    mode: r.target_id ? 'existing' : r.target_key ? 'key' : 'new',
+    ...(r.target_key ? { target_key: r.target_key } : {}),
+    target_id: r.target_id ?? '',
+    target_name: r.target_name ?? '',
+    counter: r.counter === undefined ? '' : String(r.counter),
+  }))
+}
+for (const [key, value] of [['race_type', identityRace], ['class_profession', identityClass], ['alignment', identityAlignment], ['level_cr', levelValue], ['level_cr', crValue]] as const) {
+  watch(value, () => { identityOverrides.value[key] = true; delete preservedIdentity.value[key] })
+}
+watch(Object.values(draftFields), () => emit('draft', snapshotDraft()), { deep: true })
+defineExpose({ buildFigure, hasContent, mode, concept, snapshotDraft })
 </script>
 
 <template>
@@ -549,7 +694,7 @@ defineExpose({ buildFigure, hasContent, mode, concept })
         <section v-show="section === 'connections'" class="section-content">
           <h2>Connections</h2><h3>World integration</h3><div class="grid"><label v-for="field in WORLD_INTEGRATION_FIELDS" :key="field.key">{{ field.label }}<textarea v-model="worldIntegration[field.key]" rows="2" placeholder="Leave blank to generate"></textarea></label></div>
           <template v-if="campaignId"><h3>Relations</h3><p class="muted small">Relations stay with this world when you change destination.</p>
-            <div v-for="(relation, i) in relationDrafts" :key="`r${i}`" class="relation-block"><div class="row four"><label>Type<select v-model="relation.type"><option v-for="edgeType in EDGE_TYPES" :key="edgeType" :value="edgeType">{{ edgeType.replaceAll('_', ' ') }}</option></select></label><label>Target<select v-model="relation.mode"><option value="existing">Existing</option><option value="new">Create new</option></select></label><select v-if="relation.mode === 'existing'" v-model="relation.target_id" aria-label="Related world entity"><option value="" disabled>Choose entity</option><option v-if="relation.target_id && !worldEntities.some((entity) => entity.id === relation.target_id)" :value="relation.target_id" disabled>Selected target unavailable ({{ relation.target_id }}) — reload or choose another target</option><option v-for="entity in worldEntities" :key="entity.id" :value="entity.id">{{ entity.name }} ({{ entity.kind }})</option></select><input v-else v-model="relation.target_name" aria-label="New relation target" placeholder="New entity name" /><button type="button" @click="relationDrafts.splice(i, 1)">Remove</button></div></div><button type="button" class="link" @click="addRelation">Add relation</button>
+            <div v-for="(relation, i) in relationDrafts" :key="`r${i}`" class="relation-block"><div class="row four"><label>Type<select v-model="relation.type"><option v-for="edgeType in EDGE_TYPES" :key="edgeType" :value="edgeType">{{ edgeType.replaceAll('_', ' ') }}</option></select></label><label>Target<select v-model="relation.mode"><option value="existing">Existing</option><option value="new">Create new</option><option v-if="relation.target_key" value="key">Planned seed key</option></select></label><select v-if="relation.mode === 'existing'" v-model="relation.target_id" aria-label="Related world entity"><option value="" disabled>Choose entity</option><option v-if="relation.target_id && !worldEntities.some((entity) => entity.id === relation.target_id)" :value="relation.target_id" disabled>Selected target unavailable ({{ relation.target_id }}) — reload or choose another target</option><option v-for="entity in worldEntities" :key="entity.id" :value="entity.id">{{ entity.name }} ({{ entity.kind }})</option></select><input v-else-if="relation.mode === 'key'" v-model="relation.target_key" aria-label="Planned relation target key" /><input v-else v-model="relation.target_name" aria-label="New relation target" placeholder="New entity name" /><button type="button" @click="relationDrafts.splice(i, 1)">Remove</button></div></div><button type="button" class="link" @click="addRelation">Add relation</button>
           </template>
         </section>
         <section v-show="section === 'review'" class="section-content"><h2>Review</h2><p><strong>{{ name.trim() || (concept.trim() || recordText.background.trim() ? 'Name will be generated' : 'Name needed') }}</strong> · {{ role }}</p><p>{{ concept.trim() ? 'Concept supplied' : 'No concept supplied' }}</p><div class="review-summary"><h3>Authored</h3><p v-for="item in inputSummary.authored" :key="`authored-${item}`">{{ item }}</p><p v-if="inputSummary.authored.length === 0">Nothing authored yet.</p><h3>Will generate</h3><p>{{ inputSummary.generated.join(' · ') || 'No blank fields' }}</p></div><p class="muted small">Only fields you supplied are sent as authored input. Generated fields remain the model’s work.</p></section>

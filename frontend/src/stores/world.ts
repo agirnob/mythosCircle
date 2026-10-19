@@ -374,7 +374,7 @@ export const useWorldStore = defineStore('world', {
       const job = jobs.byId[message.job_id]
       if (job) {
         if (job.campaign_id !== campaignId) return
-        if (job.kind === 'build_in') {
+        if (job.kind === 'build_in' || job.kind === 'expand_world') {
           // Build-in: refetch on a wave-1 commit progress frame and on
           // any terminal frame (wave 1 may be committed).
           const qualifies =

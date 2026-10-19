@@ -11,6 +11,8 @@ import type { BuildInPayload } from '../stores/jobs'
 import type { AuthoredFigureSeed } from '../stores/jobs'
 import type { FlatSeedEntry } from '../stores/jobs'
 import CharacterSheetEditor from '../components/CharacterSheetEditor.vue'
+import WorldWorkspace from '../components/build/WorldWorkspace.vue'
+import { useWorkspaceStore } from '../stores/workspace'
 import EntityPicker from '../components/ui/EntityPicker.vue'
 import type { EntityPickerOption } from '../components/ui/EntityPicker.vue'
 import { useTonightStore } from '../stores/tonight'
@@ -31,6 +33,13 @@ const jobs = useJobsStore()
 const tonight = useTonightStore()
 const world = useWorldStore()
 const loadError = ref<string | null>(null)
+const workspaceOpen = ref(false)
+const workspace = useWorkspaceStore()
+async function switchPhase(open: boolean) {
+  workspaceOpen.value = open
+  await nextTick()
+  globalThis.document.getElementById(open ? 'workspace-tab' : 'guided-build-tab')?.focus()
+}
 
 const sections: Array<{ key: SectionKey; label: string; hint: string }> = [
   { key: 'places', label: 'Key places', hint: 'The Saltglass Harbor' },
@@ -111,6 +120,8 @@ let flatSeedSeq = 0
  * relations with existing/new target modes. */
 interface FigureEditor {
   id: number
+  draft?: Record<string, unknown>
+  seed?: AuthoredFigureSeed
 }
 let figureEditorSeq = 0
 const figureEditors = ref<FigureEditor[]>([])
@@ -151,6 +162,7 @@ onMounted(async () => {
       return
     }
     restoreDraft()
+    workspaceOpen.value = (world.entry(campaignId).world?.entities.length ?? 0) > 0
     draftReady.value = true
   } catch (err) {
     loadError.value = err instanceof ApiError ? err.message : 'Could not load the world.'
@@ -181,6 +193,7 @@ interface StoredBuildDraft {
   generateCounts?: Partial<Record<SectionKey, number>>
   flatSeedDrafts?: Array<Omit<FlatSeedDraft, 'id'> & { id?: number }>
   notes?: string
+  figures?: Array<{ draft?: Record<string, unknown>; seed?: AuthoredFigureSeed }>
 }
 
 function restoreDraft() {
@@ -208,6 +221,10 @@ function restoreDraft() {
     flatSeedDrafts.value = (stored.flatSeedDrafts ?? []).map((draft) => ({
       ...draft,
       id: ++flatSeedSeq,
+    }))
+    figureEditors.value = (stored.figures ?? []).map((figure) => ({
+      ...figure,
+      id: ++figureEditorSeq,
     }))
     notes.value = stored.notes ?? ''
     return
@@ -240,6 +257,9 @@ function hydrateFromSeed(seed: BuildInPayload) {
     ...structured(seed.places, 'place'),
     ...structured(seed.factions, 'faction'),
   ]
+  figureEditors.value = (seed.key_figures ?? [])
+    .filter((entry): entry is AuthoredFigureSeed => typeof entry === 'object' && entry !== null)
+    .map((seed) => ({ id: ++figureEditorSeq, seed }))
   notes.value = seed.notes ?? ''
 }
 
@@ -254,6 +274,7 @@ function saveDraft() {
         generateCounts: generateCounts.value,
         flatSeedDrafts: flatSeedDrafts.value,
         notes: notes.value,
+        figures: figureEditors.value.map((figure) => ({ draft: figure.draft, seed: figure.seed })),
       } satisfies StoredBuildDraft),
     )
   } catch {
@@ -270,7 +291,9 @@ function clearDraft() {
   }
 }
 
-watch([sectionText, quickSlots, generateCounts, flatSeedDrafts, notes], saveDraft, { deep: true })
+watch([sectionText, quickSlots, generateCounts, flatSeedDrafts, figureEditors, notes], saveDraft, {
+  deep: true,
+})
 
 onUnmounted(() => {
   disconnectSocket?.()
@@ -283,6 +306,14 @@ const statusJob = computed(() =>
   submittedJobId.value
     ? (jobs.byId[submittedJobId.value] ?? null)
     : (recentJobs.value.find((job) => job.state === 'queued' || job.state === 'running') ?? null),
+)
+watch(
+  () => statusJob.value?.state,
+  async (state) => {
+    if (state !== 'succeeded') return
+    await world.load(campaignId)
+    workspaceOpen.value = true
+  },
 )
 const statusElapsed = computed(() => {
   const started = statusJob.value?.started_at ?? statusJob.value?.created_at
@@ -604,9 +635,17 @@ function sameSeed(a: BuildInPayload, b: BuildInPayload): boolean {
  */
 async function onJobMessage(message: WsMessage) {
   await jobs.handleWsMessage(campaignId, message)
+  await world.handleJobMessage(campaignId, message)
+  if (['job_done', 'job_failed', 'job_cancelled'].includes(message.type)) {
+    const terminal = jobs.byId[message.job_id]
+    if (terminal && ['expand_world', 'plan_expansion'].includes(terminal.kind))
+      await workspace.reconcile(campaignId, terminal)
+  }
   if (message.type !== 'job_done') return
   const job = jobs.byId[message.job_id]
   if (!job || job.kind !== 'build_in') return
+  await world.load(campaignId)
+  workspaceOpen.value = true
   const built = jobSeed(job.payload)
   if (built && sameSeed(built, formSeed())) {
     figureEditors.value = []
@@ -710,406 +749,481 @@ function mergeLines(result: unknown): string[] {
       </p>
     </header>
 
-    <ol class="mc-build-stepper" aria-label="Build stages">
-      <li class="mc-build-step-active"><span>1</span> Seed the world</li>
-      <li><span>2</span> Shape entities</li>
-      <li><span>3</span> Review the build</li>
-    </ol>
-
-    <div v-if="loadError" class="card">
-      <p class="error">{{ loadError }}</p>
-      <RouterLink :to="{ name: 'campaigns' }" class="back">Back to your worlds</RouterLink>
+    <div class="phase-nav" role="tablist" aria-label="Worldbuilding sections">
+      <button
+        id="guided-build-tab"
+        role="tab"
+        :aria-selected="!workspaceOpen"
+        aria-controls="guided-build-panel"
+        :tabindex="workspaceOpen ? -1 : 0"
+        @click="workspaceOpen = false"
+        @keydown.right.prevent="switchPhase(true)"
+      >
+        01 · Guided Build
+      </button>
+      <button
+        id="workspace-tab"
+        role="tab"
+        :aria-selected="workspaceOpen"
+        aria-controls="workspace-panel"
+        :tabindex="workspaceOpen ? 0 : -1"
+        @click="workspaceOpen = true"
+        @keydown.left.prevent="switchPhase(false)"
+      >
+        02 · World workspace
+      </button>
     </div>
-    <p v-else-if="campaigns.loading || !campaigns.current" class="muted">Loading world seed…</p>
-    <template v-else>
-      <div class="mc-build-layout">
-        <div class="mc-build-main">
-          <div class="card seed">
-            <h2>{{ campaigns.current.title }}</h2>
-            <p class="muted">{{ campaigns.current.description || 'No description.' }}</p>
-            <p>
-              <RouterLink
-                :to="{ name: 'overview', params: { id: campaignId } }"
-                class="mc-btn mc-btn-secondary"
-                >Open overview</RouterLink
-              >
-            </p>
-            <p class="muted">
-              Theme: <strong>{{ campaigns.current.theme }}</strong>
-            </p>
-            <p v-if="campaigns.current.custom_lore" class="lore">
-              {{ campaigns.current.custom_lore }}
-            </p>
-            <p class="muted small">
-              The world seed is read from your campaign — it flows into generation.
-            </p>
-          </div>
+    <div
+      v-if="workspaceOpen && campaigns.current && !loadError"
+      id="workspace-panel"
+      role="tabpanel"
+      aria-labelledby="workspace-tab"
+    >
+      <WorldWorkspace :campaign-id="campaignId" @initial="workspaceOpen = false" />
+    </div>
+    <div
+      v-show="!workspaceOpen"
+      id="guided-build-panel"
+      role="tabpanel"
+      aria-labelledby="guided-build-tab"
+    >
+      <ol class="mc-build-stepper" aria-label="Build stages">
+        <li class="mc-build-step-active"><span>1</span> Seed the world</li>
+        <li><span>2</span> Shape entities</li>
+        <li><span>3</span> Review the build</li>
+      </ol>
 
-          <form class="card mc-build-form" @submit.prevent="submit">
-            <div v-for="section in sections" :key="section.key" class="mc-build-section">
-              <div class="mc-quick-heading">
-                <div>
-                  <h2>{{ section.label }}</h2>
-                  <p>Let the model invent names, or add your own anchors below.</p>
-                </div>
-                <label class="mc-slot-count">
-                  <span>Generate how many?</span>
-                  <input
-                    v-model.number="generateCounts[section.key]"
-                    type="number"
-                    min="0"
-                    :max="MAX_QUICK_SLOTS"
-                    :aria-label="`Generate ${section.label.toLowerCase()}`"
-                    @change="onGenerateCountChange(section.key)"
-                  />
-                </label>
-              </div>
-              <p v-if="generateCounts[section.key]" class="mc-generated-hint">
-                The model will invent {{ generateCounts[section.key] }}
-                {{ section.key === 'key_figures' ? 'figures' : section.key }} and build full records
-                for them.
-              </p>
-              <div v-if="slotCount(section.key)" class="mc-quick-rows">
-                <div
-                  v-for="index in slotCount(section.key)"
-                  :key="`${section.key}-${index}`"
-                  class="mc-quick-row"
-                >
-                  <label :for="`quick-${section.key}-${index}`" class="sr-only"
-                    ><span>{{ section.label }} {{ index }}</span></label
-                  >
-                  <input
-                    :id="`quick-${section.key}-${index}`"
-                    type="text"
-                    class="mc-seed-input"
-                    :value="quickLines(section.key)[index - 1] ?? ''"
-                    :placeholder="section.hint"
-                    @input="
-                      setQuickName(
-                        section.key,
-                        index - 1,
-                        ($event.target as HTMLInputElement).value,
-                      )
-                    "
-                  />
-                  <button
-                    type="button"
-                    class="mc-quick-remove"
-                    :aria-label="`Remove ${section.label} ${index}`"
-                    @click="removeQuickName(section.key, index - 1)"
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
-              <div class="mc-quick-tools">
-                <button
-                  type="button"
+      <div v-if="loadError" class="card">
+        <p class="error">{{ loadError }}</p>
+        <RouterLink :to="{ name: 'campaigns' }" class="back">Back to your worlds</RouterLink>
+      </div>
+      <p v-else-if="campaigns.loading || !campaigns.current" class="muted">Loading world seed…</p>
+      <template v-else>
+        <div class="mc-build-layout">
+          <div class="mc-build-main">
+            <div class="card seed">
+              <h2>{{ campaigns.current.title }}</h2>
+              <p class="muted">{{ campaigns.current.description || 'No description.' }}</p>
+              <p>
+                <RouterLink
+                  :to="{ name: 'overview', params: { id: campaignId } }"
                   class="mc-btn mc-btn-secondary"
-                  :disabled="slotCount(section.key) >= MAX_QUICK_SLOTS"
-                  @click="setSlotCount(section.key, slotCount(section.key) + 1)"
+                  >Open overview</RouterLink
                 >
-                  + Add a named
-                  {{
-                    section.key === 'key_figures'
-                      ? 'figure'
-                      : section.key === 'places'
-                        ? 'place'
-                        : 'faction'
-                  }}
-                </button>
-                <details class="mc-paste-list">
-                  <summary>Paste a list instead</summary>
-                  <label
-                    ><span>{{ section.label }}</span>
-                    <textarea
-                      v-model="sectionText[section.key]"
-                      :placeholder="`One ${section.key === 'key_figures' ? 'figure' : section.key === 'places' ? 'place' : 'faction'} per line`"
-                      rows="3"
-                      @input="syncPastedNames(section.key)"
+              </p>
+              <p class="muted">
+                Theme: <strong>{{ campaigns.current.theme }}</strong>
+              </p>
+              <p v-if="campaigns.current.custom_lore" class="lore">
+                {{ campaigns.current.custom_lore }}
+              </p>
+              <p class="muted small">
+                The world seed is read from your campaign — it flows into generation.
+              </p>
+            </div>
+
+            <form class="card mc-build-form" @submit.prevent="submit">
+              <div v-for="section in sections" :key="section.key" class="mc-build-section">
+                <div class="mc-quick-heading">
+                  <div>
+                    <h2>{{ section.label }}</h2>
+                    <p>Let the model invent names, or add your own anchors below.</p>
+                  </div>
+                  <label class="mc-slot-count">
+                    <span>Generate how many?</span>
+                    <input
+                      v-model.number="generateCounts[section.key]"
+                      type="number"
+                      min="0"
+                      :max="MAX_QUICK_SLOTS"
+                      :aria-label="`Generate ${section.label.toLowerCase()}`"
+                      @change="onGenerateCountChange(section.key)"
                     />
                   </label>
-                </details>
-              </div>
-              <p
-                v-if="section.key === 'places' || section.key === 'factions'"
-                class="mc-build-section-help"
-              >
-                Want to direct the details? Add a shaped entry with an archetype, dial, and
-                relations.
-              </p>
-              <div
-                v-if="section.key === 'places' || section.key === 'factions'"
-                class="mc-flat-seeds"
-              >
-                <article
-                  v-for="draft in flatDraftsFor(section.key === 'places' ? 'place' : 'faction')"
-                  :key="draft.id"
-                  class="mc-flat-seed"
-                >
-                  <div class="mc-flat-seed-heading">
-                    <span class="mc-card-kicker">{{ draft.kind }}</span>
-                    <button type="button" class="link" @click="removeFlatSeed(draft.id)">
+                </div>
+                <p v-if="generateCounts[section.key]" class="mc-generated-hint">
+                  The model will invent {{ generateCounts[section.key] }}
+                  {{ section.key === 'key_figures' ? 'figures' : section.key }} and build full
+                  records for them.
+                </p>
+                <div v-if="slotCount(section.key)" class="mc-quick-rows">
+                  <div
+                    v-for="index in slotCount(section.key)"
+                    :key="`${section.key}-${index}`"
+                    class="mc-quick-row"
+                  >
+                    <label :for="`quick-${section.key}-${index}`" class="sr-only"
+                      ><span>{{ section.label }} {{ index }}</span></label
+                    >
+                    <input
+                      :id="`quick-${section.key}-${index}`"
+                      type="text"
+                      class="mc-seed-input"
+                      :value="quickLines(section.key)[index - 1] ?? ''"
+                      :placeholder="section.hint"
+                      @input="
+                        setQuickName(
+                          section.key,
+                          index - 1,
+                          ($event.target as HTMLInputElement).value,
+                        )
+                      "
+                    />
+                    <button
+                      type="button"
+                      class="mc-quick-remove"
+                      :aria-label="`Remove ${section.label} ${index}`"
+                      @click="removeQuickName(section.key, index - 1)"
+                    >
                       Remove
                     </button>
                   </div>
-                  <div class="mc-flat-seed-grid">
-                    <label>
-                      <span>Name</span>
-                      <EntityPicker
-                        v-model="draft.name"
-                        :options="pickerOptionsFor(draft.kind)"
-                        placeholder="Choose or type a name"
-                      />
-                    </label>
-                    <label>
-                      <span>Archetype</span>
-                      <select v-model="draft.archetype" class="mc-seed-input">
-                        <option
-                          v-for="entry in archetypesFor(draft.kind)"
-                          :key="entry.name"
-                          :value="entry.name"
-                        >
-                          {{ entry.name }}
-                        </option>
-                      </select>
-                    </label>
-                    <label class="mc-flat-seed-description">
-                      <span>Description</span>
+                </div>
+                <div class="mc-quick-tools">
+                  <button
+                    type="button"
+                    class="mc-btn mc-btn-secondary"
+                    :disabled="slotCount(section.key) >= MAX_QUICK_SLOTS"
+                    @click="setSlotCount(section.key, slotCount(section.key) + 1)"
+                  >
+                    + Add a named
+                    {{
+                      section.key === 'key_figures'
+                        ? 'figure'
+                        : section.key === 'places'
+                          ? 'place'
+                          : 'faction'
+                    }}
+                  </button>
+                  <details class="mc-paste-list">
+                    <summary>Paste a list instead</summary>
+                    <label
+                      ><span>{{ section.label }}</span>
                       <textarea
-                        v-model="draft.description"
-                        class="mc-seed-input"
-                        rows="2"
-                        placeholder="What makes it matter?"
+                        v-model="sectionText[section.key]"
+                        :placeholder="`One ${section.key === 'key_figures' ? 'figure' : section.key === 'places' ? 'place' : 'faction'} per line`"
+                        rows="3"
+                        @input="syncPastedNames(section.key)"
                       />
                     </label>
-                    <label>
-                      <span>Dial</span>
-                      <select v-model="draft.dial" class="mc-seed-input">
-                        <option v-for="level in dialLevels" :key="level" :value="level">
-                          {{ level }}
-                        </option>
-                      </select>
-                    </label>
-                  </div>
-                  <div class="mc-flat-relations">
-                    <div class="mc-flat-relations-heading">
-                      <span>Relations</span>
-                      <button type="button" class="link" @click="addFlatRelation(draft)">
-                        + add relation
-                      </button>
-                    </div>
-                    <div
-                      v-for="(relation, relationIndex) in draft.relations ?? []"
-                      :key="relationIndex"
-                      class="mc-flat-relation"
-                    >
-                      <select
-                        v-model="relation.type"
-                        class="mc-seed-input"
-                        aria-label="Relation type"
-                      >
-                        <option
-                          v-for="type in relationTypesFor(draft, relation.target_name)"
-                          :key="type"
-                          :value="type"
-                        >
-                          {{ type }}
-                        </option>
-                      </select>
-                      <EntityPicker
-                        :model-value="relation.target_name ?? ''"
-                        :options="pickerOptionsFor()"
-                        aria-label="Relation target"
-                        placeholder="Choose or type a target"
-                        @update:model-value="relation.target_name = $event"
-                      />
-                      <input
-                        v-model.number="relation.counter"
-                        class="mc-seed-input mc-relation-counter"
-                        type="number"
-                        aria-label="Relation counter"
-                        placeholder="Counter"
-                      />
-                      <button
-                        type="button"
-                        class="link"
-                        :aria-label="`Remove relation ${relationIndex + 1}`"
-                        @click="removeFlatRelation(draft, relationIndex)"
-                      >
+                  </details>
+                </div>
+                <p
+                  v-if="section.key === 'places' || section.key === 'factions'"
+                  class="mc-build-section-help"
+                >
+                  Want to direct the details? Add a shaped entry with an archetype, dial, and
+                  relations.
+                </p>
+                <div
+                  v-if="section.key === 'places' || section.key === 'factions'"
+                  class="mc-flat-seeds"
+                >
+                  <article
+                    v-for="draft in flatDraftsFor(section.key === 'places' ? 'place' : 'faction')"
+                    :key="draft.id"
+                    class="mc-flat-seed"
+                  >
+                    <div class="mc-flat-seed-heading">
+                      <span class="mc-card-kicker">{{ draft.kind }}</span>
+                      <button type="button" class="link" @click="removeFlatSeed(draft.id)">
                         Remove
                       </button>
                     </div>
+                    <div class="mc-flat-seed-grid">
+                      <label>
+                        <span>Name</span>
+                        <EntityPicker
+                          v-model="draft.name"
+                          :options="pickerOptionsFor(draft.kind)"
+                          placeholder="Choose or type a name"
+                        />
+                      </label>
+                      <label>
+                        <span>Archetype</span>
+                        <select v-model="draft.archetype" class="mc-seed-input">
+                          <option
+                            v-for="entry in archetypesFor(draft.kind)"
+                            :key="entry.name"
+                            :value="entry.name"
+                          >
+                            {{ entry.name }}
+                          </option>
+                        </select>
+                      </label>
+                      <label class="mc-flat-seed-description">
+                        <span>Description</span>
+                        <textarea
+                          v-model="draft.description"
+                          class="mc-seed-input"
+                          rows="2"
+                          placeholder="What makes it matter?"
+                        />
+                      </label>
+                      <label>
+                        <span>Dial</span>
+                        <select v-model="draft.dial" class="mc-seed-input">
+                          <option v-for="level in dialLevels" :key="level" :value="level">
+                            {{ level }}
+                          </option>
+                        </select>
+                      </label>
+                    </div>
+                    <div class="mc-flat-relations">
+                      <div class="mc-flat-relations-heading">
+                        <span>Relations</span>
+                        <button type="button" class="link" @click="addFlatRelation(draft)">
+                          + add relation
+                        </button>
+                      </div>
+                      <div
+                        v-for="(relation, relationIndex) in draft.relations ?? []"
+                        :key="relationIndex"
+                        class="mc-flat-relation"
+                      >
+                        <select
+                          v-model="relation.type"
+                          class="mc-seed-input"
+                          aria-label="Relation type"
+                        >
+                          <option
+                            v-for="type in relationTypesFor(draft, relation.target_name)"
+                            :key="type"
+                            :value="type"
+                          >
+                            {{ type }}
+                          </option>
+                        </select>
+                        <EntityPicker
+                          :model-value="relation.target_name ?? ''"
+                          :options="pickerOptionsFor()"
+                          aria-label="Relation target"
+                          placeholder="Choose or type a target"
+                          @update:model-value="relation.target_name = $event"
+                        />
+                        <input
+                          v-model.number="relation.counter"
+                          class="mc-seed-input mc-relation-counter"
+                          type="number"
+                          aria-label="Relation counter"
+                          placeholder="Counter"
+                        />
+                        <button
+                          type="button"
+                          class="link"
+                          :aria-label="`Remove relation ${relationIndex + 1}`"
+                          @click="removeFlatRelation(draft, relationIndex)"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+                <button
+                  v-if="section.key === 'places' || section.key === 'factions'"
+                  type="button"
+                  class="mc-btn mc-btn-secondary mc-add-flat-seed"
+                  @click="addFlatSeed(section.key === 'places' ? 'place' : 'faction')"
+                >
+                  + shaped {{ section.key === 'places' ? 'place' : 'faction' }}
+                </button>
+              </div>
+              <div class="authored">
+                <h2>Authored key figures</h2>
+                <p class="muted small">
+                  Optional. A figure here is YOUR fact — the model builds the rest of the world
+                  around it and your text commits verbatim. A relation naming someone who does not
+                  exist yet (a city, a cult) makes the build create them; the relation's type
+                  decides what (located in → a place). Plain lines in Key figures above stay
+                  free-form.
+                </p>
+                <article v-for="(figure, index) in figureEditors" :key="figure.id" class="figure">
+                  <div class="figure-head">
+                    <span class="muted small">Authored figure {{ index + 1 }}</span>
+                    <button type="button" class="link" @click="removeFigure(index)">
+                      ✕ remove figure
+                    </button>
                   </div>
+                  <CharacterSheetEditor
+                    :ref="
+                      (el) => (editorRefs[index] = el as InstanceType<typeof CharacterSheetEditor>)
+                    "
+                    :campaign-id="campaignId"
+                    :initial-draft="figure.draft"
+                    :initial-seed="figure.seed"
+                    @draft="figure.draft = $event"
+                  />
                 </article>
+                <button type="button" class="link" @click="addFigure">+ authored figure</button>
               </div>
-              <button
-                v-if="section.key === 'places' || section.key === 'factions'"
-                type="button"
-                class="mc-btn mc-btn-secondary mc-add-flat-seed"
-                @click="addFlatSeed(section.key === 'places' ? 'place' : 'faction')"
-              >
-                + shaped {{ section.key === 'places' ? 'place' : 'faction' }}
-              </button>
-            </div>
-            <div class="authored">
-              <h2>Authored key figures</h2>
-              <p class="muted small">
-                Optional. A figure here is YOUR fact — the model builds the rest of the world around
-                it and your text commits verbatim. A relation naming someone who does not exist yet
-                (a city, a cult) makes the build create them; the relation's type decides what
-                (located in → a place). Plain lines in Key figures above stay free-form.
-              </p>
-              <article v-for="(figure, index) in figureEditors" :key="figure.id" class="figure">
-                <div class="figure-head">
-                  <span class="muted small">Authored figure {{ index + 1 }}</span>
-                  <button type="button" class="link" @click="removeFigure(index)">
-                    ✕ remove figure
-                  </button>
-                </div>
-                <CharacterSheetEditor
-                  :ref="
-                    (el) => (editorRefs[index] = el as InstanceType<typeof CharacterSheetEditor>)
-                  "
-                  :campaign-id="campaignId"
+              <label>
+                <span>Free-form notes</span>
+                <textarea
+                  v-model="notes"
+                  maxlength="2000"
+                  placeholder="Custom lore, rumors, history, anything in your head — one note per line is fine."
+                  rows="5"
                 />
-              </article>
-              <button type="button" class="link" @click="addFigure">+ authored figure</button>
-            </div>
-            <label>
-              <span>Free-form notes</span>
-              <textarea
-                v-model="notes"
-                maxlength="2000"
-                placeholder="Custom lore, rumors, history, anything in your head — one note per line is fine."
-                rows="5"
-              />
-              <span class="muted small counter">{{ notes.length }}/2000</span>
-            </label>
-            <div class="mc-build-summary" aria-live="polite">
-              <div>
-                <p class="mc-card-kicker">Ready to build</p>
-                <strong
-                  >{{ buildPreview.places + buildPreview.factions + buildPreview.figures }} entities
-                  requested</strong
-                >
-                <p>
-                  {{ buildPreview.generated }} invented by the model; your named anchors and
-                  campaign seed shape the rest{{ buildPreview.hasNotes ? ' with your notes' : '' }}.
-                </p>
-              </div>
-              <ul>
-                <li>{{ buildPreview.places }} places</li>
-                <li>{{ buildPreview.factions }} factions</li>
-                <li>{{ buildPreview.figures }} figures</li>
-              </ul>
-            </div>
-            <p v-if="overLimit.length" class="error">
-              Keep each group to 100 or fewer, including your named entries:
-              {{ overLimit.join(', ') }}.
-            </p>
-            <p v-if="error" class="error">{{ error }}</p>
-            <button
-              type="submit"
-              class="mc-btn mc-build-submit"
-              :disabled="submitting || inFlight || !hasContent || overLimit.length > 0"
-            >
-              {{ submitting ? 'Enqueuing…' : inFlight ? 'Building…' : 'Build my world' }}
-            </button>
-            <section
-              v-if="statusJob"
-              id="mc-build-status"
-              class="mc-build-status"
-              aria-live="polite"
-              aria-label="Build status"
-            >
-              <div class="mc-build-status-head">
+                <span class="muted small counter">{{ notes.length }}/2000</span>
+              </label>
+              <div class="mc-build-summary" aria-live="polite">
                 <div>
-                  <p class="mc-card-kicker">Build status</p>
-                  <h2>{{ statusHeadline(statusJob) }}</h2>
+                  <p class="mc-card-kicker">Ready to build</p>
+                  <strong
+                    >{{
+                      buildPreview.places + buildPreview.factions + buildPreview.figures
+                    }}
+                    entities requested</strong
+                  >
+                  <p>
+                    {{ buildPreview.generated }} invented by the model; your named anchors and
+                    campaign seed shape the rest{{
+                      buildPreview.hasNotes ? ' with your notes' : ''
+                    }}.
+                  </p>
                 </div>
-                <span class="mc-build-status-time">{{ statusElapsed }}s elapsed</span>
+                <ul>
+                  <li>{{ buildPreview.places }} places</li>
+                  <li>{{ buildPreview.factions }} factions</li>
+                  <li>{{ buildPreview.figures }} figures</li>
+                </ul>
               </div>
-              <template v-if="statusJob.state === 'queued' || statusJob.state === 'running'">
-                <p v-if="statusJob.state === 'queued'" class="muted small">
-                  Queue position {{ statusJob.queue_position ?? 'pending' }}. Your entries are saved
-                  while this runs.
-                </p>
-                <p v-else class="muted small">
-                  {{ statusPercent(statusJob) }}% through the build stages. Larger requests can take
-                  a few minutes; this status refreshes automatically.
-                </p>
-                <div
-                  class="mc-build-progress"
-                  role="progressbar"
-                  :aria-valuenow="statusPercent(statusJob)"
-                  aria-valuemin="0"
-                  aria-valuemax="100"
-                  aria-label="Build progress"
-                >
-                  <span :style="{ width: `${statusPercent(statusJob)}%` }" />
-                </div>
-              </template>
-              <p v-else-if="statusJob.state === 'succeeded'" class="mc-build-status-success">
-                <template v-if="completedCount(statusJob) !== null"
-                  >{{ completedCount(statusJob) }}
-                  {{ completedCount(statusJob) === 1 ? 'entity was' : 'entities were' }} added to
-                  the world.</template
-                >
-                <template v-else>The build was added to the world.</template>
-                <RouterLink :to="{ name: 'world', params: { id: campaignId } }"
-                  >View world →</RouterLink
-                >
+              <p v-if="overLimit.length" class="error">
+                Keep each group to 100 or fewer, including your named entries:
+                {{ overLimit.join(', ') }}.
               </p>
-              <p v-else-if="statusJob.error" class="error">{{ statusJob.error }}</p>
-              <p v-if="statusJob.state === 'failed'" class="muted small">
-                Your entries are still here, so you can retry.
-              </p>
-            </section>
-          </form>
-        </div>
-      </div>
-    </template>
-
-    <div v-if="recentJobs.length > 0" class="card job">
-      <h2>Build-in jobs</h2>
-      <article v-for="job in recentJobs" :key="job.id" class="job-row">
-        <dl>
-          <dt>Job id</dt>
-          <dd class="mono">{{ job.id }}</dd>
-          <dt>State</dt>
-          <dd>{{ stateLabel(job) }}</dd>
-          <dt v-if="job.queue_position !== null">Queue position</dt>
-          <dd v-if="job.queue_position !== null">{{ job.queue_position }}</dd>
-          <dt v-if="job.state === 'running'">Progress</dt>
-          <dd v-if="job.state === 'running'">{{ Math.round(job.progress * 100) }}%</dd>
-          <dt v-if="job.error">Error</dt>
-          <dd v-if="job.error" class="error">{{ job.error }}</dd>
-          <template v-if="job.state === 'succeeded' && job.result">
-            <dt>World at build</dt>
-            <dd v-if="contextLabel(job.result)">{{ contextLabel(job.result) }}</dd>
-            <dt v-if="mergeLines(job.result).length > 0">What changed</dt>
-            <dd v-if="mergeLines(job.result).length > 0">
-              <span v-for="line in mergeLines(job.result)" :key="line">{{ line }}<br /></span>
-              <span class="muted small"
-                >Places and factions merge into the existing world — nothing is duplicated.
-                Characters never merge: every build commits them as new entries (regenerate or edit
-                an existing character to change it).</span
+              <p v-if="error" class="error">{{ error }}</p>
+              <button
+                type="submit"
+                class="mc-btn mc-build-submit"
+                :disabled="submitting || inFlight || !hasContent || overLimit.length > 0"
               >
-            </dd>
-          </template>
-        </dl>
-      </article>
-      <p class="muted small">
-        The screen is not blocked — the job runs in the background and updates live.
-      </p>
+                {{ submitting ? 'Enqueuing…' : inFlight ? 'Building…' : 'Build my world' }}
+              </button>
+              <section
+                v-if="statusJob"
+                id="mc-build-status"
+                class="mc-build-status"
+                aria-live="polite"
+                aria-label="Build status"
+              >
+                <div class="mc-build-status-head">
+                  <div>
+                    <p class="mc-card-kicker">Build status</p>
+                    <h2>{{ statusHeadline(statusJob) }}</h2>
+                  </div>
+                  <span class="mc-build-status-time">{{ statusElapsed }}s elapsed</span>
+                </div>
+                <template v-if="statusJob.state === 'queued' || statusJob.state === 'running'">
+                  <p v-if="statusJob.state === 'queued'" class="muted small">
+                    Queue position {{ statusJob.queue_position ?? 'pending' }}. Your entries are
+                    saved while this runs.
+                  </p>
+                  <p v-else class="muted small">
+                    {{ statusPercent(statusJob) }}% through the build stages. Larger requests can
+                    take a few minutes; this status refreshes automatically.
+                  </p>
+                  <div
+                    class="mc-build-progress"
+                    role="progressbar"
+                    :aria-valuenow="statusPercent(statusJob)"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-label="Build progress"
+                  >
+                    <span :style="{ width: `${statusPercent(statusJob)}%` }" />
+                  </div>
+                </template>
+                <p v-else-if="statusJob.state === 'succeeded'" class="mc-build-status-success">
+                  <template v-if="completedCount(statusJob) !== null"
+                    >{{ completedCount(statusJob) }}
+                    {{ completedCount(statusJob) === 1 ? 'entity was' : 'entities were' }} added to
+                    the world.</template
+                  >
+                  <template v-else>The build was added to the world.</template>
+                  <RouterLink :to="{ name: 'world', params: { id: campaignId } }"
+                    >View world →</RouterLink
+                  >
+                </p>
+                <p v-else-if="statusJob.error" class="error">{{ statusJob.error }}</p>
+                <p v-if="statusJob.state === 'failed'" class="muted small">
+                  Your entries are still here, so you can retry.
+                </p>
+              </section>
+            </form>
+          </div>
+        </div>
+      </template>
+
+      <div v-if="recentJobs.length > 0" class="card job">
+        <h2>Build-in jobs</h2>
+        <article v-for="job in recentJobs" :key="job.id" class="job-row">
+          <dl>
+            <dt>Job id</dt>
+            <dd class="mono">{{ job.id }}</dd>
+            <dt>State</dt>
+            <dd>{{ stateLabel(job) }}</dd>
+            <dt v-if="job.queue_position !== null">Queue position</dt>
+            <dd v-if="job.queue_position !== null">{{ job.queue_position }}</dd>
+            <dt v-if="job.state === 'running'">Progress</dt>
+            <dd v-if="job.state === 'running'">{{ Math.round(job.progress * 100) }}%</dd>
+            <dt v-if="job.error">Error</dt>
+            <dd v-if="job.error" class="error">{{ job.error }}</dd>
+            <template v-if="job.state === 'succeeded' && job.result">
+              <dt>World at build</dt>
+              <dd v-if="contextLabel(job.result)">{{ contextLabel(job.result) }}</dd>
+              <dt v-if="mergeLines(job.result).length > 0">What changed</dt>
+              <dd v-if="mergeLines(job.result).length > 0">
+                <span v-for="line in mergeLines(job.result)" :key="line">{{ line }}<br /></span>
+                <span class="muted small"
+                  >Places and factions merge into the existing world — nothing is duplicated.
+                  Characters never merge: every build commits them as new entries (regenerate or
+                  edit an existing character to change it).</span
+                >
+              </dd>
+            </template>
+          </dl>
+        </article>
+        <p class="muted small">
+          The screen is not blocked — the job runs in the background and updates live.
+        </p>
+      </div>
     </div>
   </section>
 </template>
 
 <style scoped>
+.phase-nav {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.4rem;
+  border: 1px solid var(--mc-border);
+  border-radius: 10px;
+  width: fit-content;
+  margin: 1.4rem 0;
+  max-width: 100%;
+}
+.phase-nav button {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border: 0;
+  border-radius: 7px;
+  padding: 0.7rem 1rem;
+  background: transparent;
+  color: var(--mc-text-secondary);
+  min-height: 44px;
+  font: inherit;
+  cursor: pointer;
+}
+.phase-nav button[aria-selected='true'] {
+  background: var(--mc-surface-hover);
+  color: var(--mc-text-primary);
+  box-shadow: inset 0 -2px var(--mc-interactive);
+}
 .mc-build-page {
-  max-width: 980px;
+  max-width: 1520px;
 }
 .seed,
 .mc-build-form,

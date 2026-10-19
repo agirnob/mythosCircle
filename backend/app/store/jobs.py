@@ -53,6 +53,8 @@ JOB_KINDS: frozenset[str] = frozenset(
         "video",
         "video_prompt",
         "build_in",
+        "plan_expansion",
+        "expand_world",
         "generate",
         "regenerate",
         "add_character",
@@ -229,6 +231,8 @@ def enqueue_job(
     when the caller supplies none (improvement plan D,
     ``_build_in_budget``); enforcement is Story 1.4 (AR21).
     """
+    if kind in {"plan_expansion", "expand_world"}:
+        raise InvalidJobInputError("Submit workspace jobs through the private workspace endpoints")
     with session_scope() as session:
         job = _enqueue(session, campaign_id, kind, payload, job_id, max_llm_calls, max_media_calls)
         position = _queue_position(session, job)
@@ -450,6 +454,8 @@ def _enqueue(
     campaign = session.get(models.Campaign, campaign_id)
     if campaign is None:
         raise UnknownCampaignError(campaign_id)
+    if kind in {"plan_expansion", "expand_world"} and payload.get("workspace_request") is not True:
+        raise InvalidJobInputError("Submit workspace jobs through the private workspace endpoints")
     if kind == "build_in":
         _validate_build_in_payload(payload)
         if campaign.is_generic:
