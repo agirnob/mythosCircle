@@ -787,12 +787,6 @@ function mergeLines(result: unknown): string[] {
       role="tabpanel"
       aria-labelledby="guided-build-tab"
     >
-      <ol class="mc-build-stepper" aria-label="Build stages">
-        <li class="mc-build-step-active"><span>1</span> Seed the world</li>
-        <li><span>2</span> Shape entities</li>
-        <li><span>3</span> Review the build</li>
-      </ol>
-
       <div v-if="loadError" class="card">
         <p class="error">{{ loadError }}</p>
         <RouterLink :to="{ name: 'campaigns' }" class="back">Back to your worlds</RouterLink>
@@ -1324,45 +1318,6 @@ function mergeLines(result: unknown): string[] {
   margin: 0.65rem 0 0;
   color: var(--mc-text-secondary);
   font-size: 1.05rem;
-}
-.mc-build-stepper {
-  display: flex;
-  gap: 0;
-  margin: 0 0 1.5rem;
-  padding: 0.45rem;
-  list-style: none;
-  border: 1px solid var(--mc-border);
-  border-radius: var(--mc-radius);
-  background: rgba(14, 23, 36, 0.72);
-  overflow-x: auto;
-}
-.mc-build-stepper li {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: max-content;
-  padding: 0.55rem 0.8rem;
-  color: var(--mc-text-muted);
-  font-size: 0.85rem;
-}
-.mc-build-stepper span {
-  display: grid;
-  width: 1.45rem;
-  height: 1.45rem;
-  place-items: center;
-  border: 1px solid var(--mc-border-bright);
-  border-radius: 50%;
-  font-size: 0.75rem;
-}
-.mc-build-stepper .mc-build-step-active {
-  color: var(--mc-text-primary);
-  border-radius: var(--mc-radius-sm);
-  background: rgba(139, 108, 255, 0.14);
-}
-.mc-build-stepper .mc-build-step-active span {
-  border-color: var(--mc-interactive);
-  background: var(--mc-interactive);
-  color: #fff;
 }
 .mc-build-layout {
   display: grid;
