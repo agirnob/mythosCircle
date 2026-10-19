@@ -381,6 +381,7 @@ defineExpose({ zoomIn, zoomOut, fitView, resetView, panBy })
         >
           <path
             :d="edgePath(p)"
+            :stroke-dasharray="(p.data as { edge: GraphRenderEdge }).edge.planned ? '6 4' : undefined"
             :marker-end="(p.data as { active: boolean }).active ? `url(#${markerIdActive})` : `url(#${markerId})`"
           />
           <title>{{ tooltipText(p) }}</title>

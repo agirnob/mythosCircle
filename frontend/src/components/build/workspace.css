@@ -184,13 +184,6 @@
   font-size: 0.85rem;
   color: var(--mc-text-secondary);
 }
-.world-workspace .graph-surface {
-  margin-top: 1rem;
-  padding: 1rem;
-  border: 1px solid var(--mc-border);
-  border-radius: 10px;
-  background: var(--mc-app-bg-raised);
-}
 .world-workspace .world-empty {
   text-align: center;
   padding: 4rem 1rem;
@@ -238,13 +231,6 @@
 }
 .world-workspace .world-focus p {
   overflow-wrap: anywhere;
-}
-.world-workspace .graph-key {
-  display: flex;
-  gap: 1rem;
-  font-size: 0.8rem;
-  color: var(--mc-text-secondary);
-  margin: 0.5rem 0;
 }
 .world-workspace .row-btn {
   border-color: var(--mc-text-muted);
@@ -591,20 +577,4 @@
     animation: none !important;
     transition: none !important;
   }
-}
-
-.world-workspace .workspace-graph-canvas {
-  overflow: auto;
-  max-width: 100%;
-}
-.world-workspace .workspace-graph-canvas svg {
-  display: block;
-  min-width: 900px;
-}
-.world-workspace .workspace-graph-canvas g[role='button'] {
-  cursor: pointer;
-}
-.world-workspace .workspace-graph-canvas g:focus-visible rect {
-  stroke: var(--mc-interactive-bright);
-  stroke-width: 3;
 }

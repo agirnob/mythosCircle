@@ -558,8 +558,7 @@ const orderedOutline = computed(() => {
       </div>
       <WorkspaceGraph
         v-if="graphOpen"
-        :existing="existing"
-        :edges="world.entry(campaignId).world?.edges ?? []"
+        :campaign-id="campaignId"
         :nodes="entry.nodes"
         :selected-id="selectedId"
         @select="selectedId = $event"

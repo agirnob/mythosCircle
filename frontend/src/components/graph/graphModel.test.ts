@@ -17,12 +17,7 @@ import {
   parallelSlots,
   vueFlowCurvature,
 } from './graphModel'
-import {
-  DENSE_CAMPAIGN_ID,
-  DENSE_FOCUS_ID,
-  denseFocusId,
-  denseWorld,
-} from './denseFixture'
+import { DENSE_CAMPAIGN_ID, DENSE_FOCUS_ID, denseFocusId, denseWorld } from './denseFixture'
 
 type WorldExport = components['schemas']['WorldExport']
 
@@ -370,5 +365,72 @@ describe('labels + parallel-edge machinery (preserved rows)', () => {
     expect(avatarInitial('   ')).toBe('?')
     expect(kindStyle('character').color).toBe('#1d4ed8')
     expect(kindStyle('nonsense').color).toBe('#6b7280') // fallback
+  })
+})
+describe('workspace graph overlays', () => {
+  it('keeps canonical identities intact while including planned relationships in focus', () => {
+    const source = world()
+    source.edges.push({
+      id: 'uncommitted-target',
+      src: 'C',
+      dst: 'plan-place',
+      type: 'part_of',
+      counter: 0,
+    })
+    const before = JSON.stringify(source)
+    const graph = buildWorldGraph(source, 'plan-place', {
+      nodes: [
+        { id: 'plan-place', name: 'Market', kind: 'place', hasPortrait: false, planned: true },
+        { id: 'plan-person', name: 'Edda', kind: 'character', hasPortrait: false, planned: true },
+        { id: 'A', name: 'Overwrite attempt', kind: 'place', hasPortrait: false, planned: true },
+      ],
+      edges: [
+        {
+          id: 'plan-parent',
+          src: 'plan-place',
+          dst: 'C',
+          type: 'part_of',
+          counter: 0,
+          label: 'part of',
+          planned: true,
+        },
+        {
+          id: 'plan-child',
+          src: 'plan-person',
+          dst: 'plan-place',
+          type: 'located_in',
+          counter: 0,
+          label: 'located in',
+          planned: true,
+        },
+        {
+          id: 'e1',
+          src: 'plan-place',
+          dst: 'C',
+          type: 'part_of',
+          counter: 0,
+          label: 'Overwrite attempt',
+          planned: true,
+        },
+        {
+          id: 'bad-target',
+          src: 'plan-person',
+          dst: 'absent',
+          type: 'member_of',
+          counter: 0,
+          label: 'member of',
+          planned: true,
+        },
+      ],
+    })
+    expect(graph.nodes).toHaveLength(6)
+    expect(graph.edges).toHaveLength(6)
+    expect(graph.nodes.find((node) => node.id === 'A')?.name).toBe('Aldous')
+    expect(graph.edges.find((edge) => edge.id === 'e1')?.type).toBe('employs')
+    expect(graph.nodes.find((node) => node.id === 'plan-place')?.planned).toBe(true)
+    expect(graph.oneHop?.nodeIds).toEqual(new Set(['plan-place', 'plan-person', 'C']))
+    expect(graph.oneHop?.edgeIds).toEqual(new Set(['plan-parent', 'plan-child']))
+    expect(graph.focusMissing).toBe(false)
+    expect(JSON.stringify(source)).toBe(before)
   })
 })

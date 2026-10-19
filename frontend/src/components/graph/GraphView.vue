@@ -37,6 +37,7 @@ import {
   type GraphRenderEdge,
   type GraphRenderNode,
   type OneHop,
+  type GraphOverlay,
 } from './graphModel'
 import VueFlowGraph from './VueFlowGraph.vue'
 
@@ -52,7 +53,14 @@ type CandidateApi = {
 
 const route = useRoute()
 const router = useRouter()
-const campaignId = route.params.id as string
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+  campaignId?: string
+  selectedId?: string | null
+  overlay?: GraphOverlay
+}>(), { embedded: false, campaignId: undefined, selectedId: null, overlay: undefined })
+const emit = defineEmits<{ select: [id: string | null] }>()
+const campaignId = computed(() => props.campaignId ?? route.params.id as string)
 
 const world = useWorldStore()
 
@@ -63,11 +71,12 @@ const rendererKey = ref(0)
 const rendererError = ref(false)
 const candidateRef = ref<CandidateApi | null>(null)
 
-const entry = computed(() => world.entry(campaignId))
+const entry = computed(() => world.entry(campaignId.value))
 const exportData = computed<WorldExport | null>(() => entry.value.world)
 
 /** ?focus= is the only focus channel (back/forward + direct nav restore it). */
 const requestedFocus = computed<string | null>(() => {
+  if (props.embedded) return props.selectedId ?? null
   const focus = route.query.focus
   return typeof focus === 'string' && focus.length > 0 ? focus : null
 })
@@ -79,7 +88,7 @@ const requestedFocus = computed<string | null>(() => {
  * would relayout + re-fit and discard the user's camera.
  */
 const baseGraph = computed(() =>
-  exportData.value ? buildWorldGraph(exportData.value, null) : null,
+  exportData.value ? buildWorldGraph(exportData.value, null, props.overlay) : null,
 )
 
 /** The focus's 1-hop incidence — the ONLY focus-dependent recomputation
@@ -88,14 +97,14 @@ const baseGraph = computed(() =>
 const oneHopOf = computed<OneHop | null>(() => {
   const worldData = exportData.value
   const focus = requestedFocus.value
-  return worldData && focus !== null ? buildWorldGraph(worldData, focus).oneHop : null
+  return worldData && focus !== null ? buildWorldGraph(worldData, focus, props.overlay).oneHop : null
 })
 
 /** The focus identity + presence — resolved against the world. */
 const focusGraph = computed(() => {
   const worldData = exportData.value
   const focus = requestedFocus.value
-  return worldData && focus !== null ? buildWorldGraph(worldData, focus) : null
+  return worldData && focus !== null ? buildWorldGraph(worldData, focus, props.overlay) : null
 })
 
 onMounted(() => {
@@ -104,20 +113,22 @@ onMounted(() => {
   // changes are then free of network churn). The async-load path re-applies
   // an ALREADY-present ?focus= automatically once the model lands (the
   // computed above) — no URL writes for an absent focus.
-  if (!world.entry(campaignId).world) {
-    void world.load(campaignId)
+  if (!world.entry(campaignId.value).world) {
+    void world.load(campaignId.value)
   }
-  if (world.mediaByCampaign[campaignId] === undefined && world.mediaErrorByCampaign[campaignId] === undefined) {
-    void world.fetchMedia(campaignId)
+  if (world.mediaByCampaign[campaignId.value] === undefined && world.mediaErrorByCampaign[campaignId.value] === undefined) {
+    void world.fetchMedia(campaignId.value)
   }
 })
 
 function onRefocus(id: string) {
+  if (props.embedded) { emit('select', id); return }
   void router.replace({ query: { ...route.query, focus: id } })
 }
 
 /** Empty-space click / Clear-focus control: drop `?focus=` entirely. */
 function onClearFocus() {
+  if (props.embedded) { emit('select', null); return }
   const query = { ...route.query }
   delete query.focus
   void router.replace({ query })
@@ -205,7 +216,7 @@ const renderNodes = computed<GraphRenderNode[]>(() => {
   }
   return kept.map((node) => ({
     ...node,
-    portraitUrl: node.hasPortrait ? world.portraitSrc(campaignId, node.id) : null,
+    portraitUrl: node.hasPortrait ? world.portraitSrc(campaignId.value, node.id) : null,
     initial: avatarInitial(node.name),
   }))
 })
@@ -236,7 +247,7 @@ function clearFilters() {
 const filtersActive = computed(() => kindFilter.value !== '' || edgeTypeFilter.value !== '')
 
 function retryStore() {
-  void world.load(campaignId)
+  void world.load(campaignId.value)
 }
 function retryRenderer() {
   rendererKey.value += 1
@@ -291,8 +302,8 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
 </script>
 
 <template>
-  <section class="graph-view">
-    <nav class="crumbs" aria-label="Breadcrumb">
+  <section class="graph-view" :class="{ embedded }">
+    <nav v-if="!embedded" class="crumbs" aria-label="Breadcrumb">
       <RouterLink :to="{ name: 'campaigns' }">Campaigns</RouterLink>
       <span class="sep" aria-hidden="true">/</span>
       <RouterLink :to="{ name: 'world', params: { id: campaignId } }">
@@ -346,6 +357,7 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
               {{ item.kind }} <b>{{ item.count }}</b>
             </button>
           </div>
+          <p v-if="embedded" class="draft-legend">● Existing content · ◇ Planned addition (dashed)</p>
           <div v-if="edgeLegend.length" class="edge-legend" aria-label="Relationship groups">
             <span class="legend-label">Relationships</span>
             <button
@@ -468,6 +480,16 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
           <span class="hint">drag to pan · scroll or pinch to zoom</span>
         </div>
       </div>
+      <details v-if="embedded" class="readable-relationships">
+        <summary>Read relationships</summary>
+        <ul>
+          <li v-for="edge in renderEdges" :key="edge.id">
+            {{ nodeNameById[edge.src] }} {{ edge.label }} {{ nodeNameById[edge.dst] }}
+            <span v-if="edge.planned"> · Planned</span>
+          </li>
+        </ul>
+        <p v-if="!renderEdges.length" class="muted">No relationships to show.</p>
+      </details>
     </template>
     <p v-else class="muted">Loading the world…</p>
   </section>
@@ -484,6 +506,26 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
   height: 64vh;
   height: clamp(320px, 64dvh, 780px);
   min-height: 320px;
+}
+.graph-view.embedded {
+  height: auto;
+  min-width: 0;
+}
+.graph-view.embedded .graph-shell {
+  flex: none;
+}
+.graph-view.embedded .canvas {
+  flex: none;
+  height: clamp(320px, 55dvh, 680px);
+}
+.draft-legend {
+  margin: 0;
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+}
+.readable-relationships {
+  color: var(--mc-text-secondary);
+  overflow-wrap: anywhere;
 }
 .crumbs {
   display: flex;
@@ -622,6 +664,8 @@ function onCanvasKeydown(event: { key: string; preventDefault(): void }) {
   cursor: pointer;
 }
 .lbl-toggle input {
+  min-height: 0;
+  padding: 0;
   accent-color: var(--mc-interactive);
   margin: 0;
 }

@@ -45,7 +45,7 @@ function activate() {
     class="graph-node"
     :class="[
       `kind-${card.node.kind}`,
-      { focus: card.focused, dim: card.dimmed, selected: props.selected, dragging: props.dragging },
+      { focus: card.focused, dim: card.dimmed, selected: props.selected, dragging: props.dragging, planned: card.node.planned },
     ]"
     :style="{
       width: `${GRAPH_NODE_WIDTH}px`,
@@ -55,7 +55,7 @@ function activate() {
     }"
     role="button"
     tabindex="0"
-    :aria-label="`${card.node.name}, ${card.node.kind}${card.focused ? ', focused' : ''}; click to refocus its web`"
+    :aria-label="`${card.node.name}, ${card.node.planned ? 'planned ' : ''}${card.node.kind}${card.focused ? ', focused' : ''}; click to refocus its web`"
     :title="card.node.name"
     @keydown.enter.prevent="activate"
     @keydown.space.prevent="activate"
@@ -72,7 +72,7 @@ function activate() {
     </span>
     <span class="name" aria-hidden="true">{{ card.node.name }}</span>
     <span class="chip" :style="{ backgroundColor: style.background, color: style.color }" aria-hidden="true">
-      {{ card.node.kind }}
+      {{ card.node.planned ? `Planned ${card.node.kind}` : card.node.kind }}
     </span>
     <Handle
       v-for="h in card.outHandles"
@@ -116,6 +116,9 @@ function activate() {
 /* Whole-world dimming: non-1-hop cards under an active focus (grey, visible). */
 .graph-node.dim {
   opacity: 0.25;
+}
+.graph-node.planned {
+  border-style: dashed;
 }
 .graph-node.focus {
   border-width: 2.6px;

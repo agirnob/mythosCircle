@@ -27,6 +27,8 @@ export interface GraphNode {
   order: number
   /** True when the entity's export carries an available image ref. */
   hasPortrait: boolean
+  /** A local workspace addition, never a committed world entity. */
+  planned?: boolean
 }
 
 /** One committed typed edge (both endpoints always in the node set). */
@@ -38,6 +40,13 @@ export interface GraphEdge {
   counter: number
   /** edgeLabel(type, counter) — the committed label, never remapped. */
   label: string
+  planned?: boolean
+}
+
+/** Read-only additions supplied by the workspace; the canonical export stays untouched. */
+export interface GraphOverlay {
+  nodes: Omit<GraphNode, 'order'>[]
+  edges: GraphEdge[]
 }
 
 /** The focus's 1-hop incidence (both directions) — drives highlight/dim. */
@@ -71,7 +80,11 @@ export interface WorldGraph {
  *   focus, plus every such edge's id (both directions, committed src/dst —
  *   the same set WorldView's relation list projects).
  */
-export function buildWorldGraph(world: WorldExport, focusId: string | null): WorldGraph {
+export function buildWorldGraph(
+  world: WorldExport,
+  focusId: string | null,
+  overlay?: GraphOverlay,
+): WorldGraph {
   const nodes: GraphNode[] = world.entities.map((entity, order) => ({
     id: entity.id,
     name: entity.name,
@@ -79,12 +92,19 @@ export function buildWorldGraph(world: WorldExport, focusId: string | null): Wor
     order,
     hasPortrait: entity.media.some((ref) => ref.kind === 'image' && ref.available),
   }))
+  const canonicalIds = new Set(nodes.map((node) => node.id))
+  const seenIds = new Set(canonicalIds)
+  for (const node of overlay?.nodes ?? []) {
+    if (seenIds.has(node.id)) continue
+    seenIds.add(node.id)
+    nodes.push({ ...node, order: nodes.length })
+  }
   // Dangling-edge exclusion: an edge whose src or dst is NOT a committed
   // entity never enters the model (Vue Flow misbehaves with unknown endpoint
   // ids; a committed world cannot produce one, but exports can).
-  const entityIds = new Set(world.entities.map((entity) => entity.id))
+  const entityIds = new Set(nodes.map((node) => node.id))
   const edges: GraphEdge[] = world.edges
-    .filter((edge) => entityIds.has(edge.src) && entityIds.has(edge.dst))
+    .filter((edge) => canonicalIds.has(edge.src) && canonicalIds.has(edge.dst))
     .map((edge) => ({
       id: edge.id,
       src: edge.src,
@@ -93,6 +113,12 @@ export function buildWorldGraph(world: WorldExport, focusId: string | null): Wor
       counter: edge.counter,
       label: edgeLabel(edge.type, edge.counter),
     }))
+  const edgeIds = new Set(edges.map((edge) => edge.id))
+  for (const edge of overlay?.edges ?? []) {
+    if (edgeIds.has(edge.id) || !entityIds.has(edge.src) || !entityIds.has(edge.dst)) continue
+    edgeIds.add(edge.id)
+    edges.push({ ...edge })
+  }
 
   let focusMissing = false
   let oneHop: OneHop | null = null

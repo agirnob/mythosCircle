@@ -213,3 +213,16 @@ describe('VueFlowGraph (the chosen candidate, whole world)', () => {
     wrapper.unmount()
   })
 })
+describe('workspace status in the shared renderer', () => {
+  it('labels planned cards and draws planned relationships with dashed lines', async () => {
+    const props = worldProps(null, false)
+    props.nodes[0] = { ...props.nodes[0]!, planned: true }
+    props.edges[0] = { ...props.edges[0]!, planned: true }
+    const wrapper = await mountGraph(props)
+    expect(wrapper.findAll('.graph-node.planned')).toHaveLength(1)
+    expect(wrapper.find('.graph-node.planned .chip').text()).toBe(`Planned ${props.nodes[0]!.kind}`)
+    expect(wrapper.find('.graph-node.planned').attributes('aria-label')).toContain('planned')
+    expect(wrapper.findAll('.graph-edge > path[stroke-dasharray="6 4"]')).toHaveLength(1)
+    wrapper.unmount()
+  })
+})
