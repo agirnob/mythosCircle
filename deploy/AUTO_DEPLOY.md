@@ -214,3 +214,56 @@ Publish through a feature PR into `develop` with the required **CI gate**, then
 release through the normal `develop` → `main` PR. Production activation uses the
 operator-managed secret and normal release process; never deploy a development
 branch or bypass the checks.
+
+### FastVideo FastH3 image-to-video workflow
+
+`deploy/workflows/video_fastvideo_fasth3_i2v.json` preserves the supplied FastVideo
+FastH3 workflow. It uses the 8-step v2 INT8 diffusion model, a 15-second duration,
+24 fps and a 0.4-megapixel scaled portrait. The existing ComfyUI provider supports
+it through configuration; no adapter change or production backend switch is required.
+
+For a local development API, set these environment variables before starting it:
+
+```bash
+export MYTHOSCIRCLE_VIDEO_BACKEND=comfyui
+export MYTHOSCIRCLE_COMFYUI_VIDEO_ENDPOINT=http://127.0.0.1:7896
+export MYTHOSCIRCLE_COMFYUI_VIDEO_WORKFLOW_PATH=/absolute/path/to/mythosCircle/deploy/workflows/video_fastvideo_fasth3_i2v.json
+export MYTHOSCIRCLE_COMFYUI_VIDEO_PROMPT_NODE_ID=105:104
+export MYTHOSCIRCLE_COMFYUI_VIDEO_FIRST_FRAME_NODE_ID=136
+export MYTHOSCIRCLE_COMFYUI_VIDEO_INPUT_DIR=/absolute/path/to/ComfyUI/input
+```
+
+The actual local ComfyUI instance uses `/home/main/ComfyUI-Shared/input`.
+The provider replaces the demonstration prompt and source image with the reviewed
+reveal prompt and portrait, stages a temporary first frame, fetches the saved MP4,
+and removes its staged input afterwards. Node `92` saves video. Leave the other
+workflow settings intact. Both endpoints and input paths must be reachable from
+the API process; containers require their own mounted input directory and host URL.
+Do not copy this workstation's absolute paths into a production stack.
+
+The former MiniMax workflow remains available. To select it again, restore its
+workflow path and first-frame node `114` together. These overrides affect only
+new video calls after the API restarts; image and text routing are independent.
+Release this artifact through the normal checked `develop` → `main` process
+before activating it in production.
+
+### Portrait composition correction
+
+The portrait/headshot directives now describe one continuous composition rather
+than assigning the face to an upper image region. The previous headshot wording
+led the ComfyUI prompt refiner to place the background in a separate lower half,
+producing stacked, misaligned crops in a cartoon render. Both Krea2 workflows
+now explicitly preserve a single composition and continuous background during
+refinement. Appearance text, style choice, sampler settings and seed are retained.
+When running from a separate checkout, point both image workflow overrides at
+that checkout's files so the API does not keep reading an older operator config's
+workflow directory:
+
+```bash
+export MYTHOSCIRCLE_COMFYUI_IMAGE_WORKFLOW_PATH='/absolute/path/to/mythosCircle/deploy/workflows/image_krea2_turbo_t2i_int8 (2).json'
+export MYTHOSCIRCLE_COMFYUI_IMAGE_REMBG_WORKFLOW_PATH=/absolute/path/to/mythosCircle/deploy/workflows/image_krea2_turbo_t2i_int8_with_background_removal.json
+```
+
+The reported cartoon portrait was verified with the same appearance, style,
+headshot/scene options and workflow seed. A new campaign image completed through
+the running queue with a continuous composition; previous media remain in history.

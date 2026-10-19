@@ -275,9 +275,9 @@ def test_portrait_prompt_composes_directives() -> None:
         background="transparent",
     )
     assert prompt == (
-        "head-and-shoulders portrait: the face filling the upper half of the frame, "
-        "both eyes clearly visible, the head inside with slight air above the hair, "
-        "single subject, the head never cropped\n"
+        "single continuous head-and-shoulders portrait of one character: the complete "
+        "head and hair comfortably inside the frame, both eyes clearly visible, "
+        "face, neck and shoulders in natural proportions in one uninterrupted composition\n"
         "face: sharp\n"
         "style: photorealistic — photographic realism, natural skin and lighting\n"
         "background: none — the lone subject only, isolated, no environment"
@@ -483,7 +483,7 @@ def test_run_portrait_options_compose_prompt_and_use_rembg(world: str, tmp_path:
     assert len(seen) == 1
     prompt, use_rembg = seen[0]
     assert use_rembg is True
-    assert prompt.startswith("head-and-shoulders portrait:")
+    assert prompt.startswith("single continuous head-and-shoulders portrait")
     assert "styling: art nouveau" in prompt
     assert "sharp\n" in prompt  # the verbatim appearance still joins complete
     assert "background: none" in prompt

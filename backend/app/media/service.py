@@ -164,15 +164,15 @@ _STYLE_DIRECTIVES: dict[str, str] = {
 }
 _FRAMING_DIRECTIVES: dict[str, str] = {
     "portrait": (
-        "portrait of the character's face, straight at the viewer: the entire head "
-        "and hair inside the frame with air above the hair, both eyes clearly "
-        "visible, face centered in the upper third; waist-up body below, belt near "
-        "the bottom edge, single subject, the head never cropped"
+        "single continuous waist-up portrait of one character facing the viewer: "
+        "the complete head and hair inside the frame with comfortable headroom, "
+        "both eyes clearly visible, face, neck, shoulders and torso naturally connected "
+        "in one uninterrupted composition, belt near the bottom edge"
     ),
     "headshot": (
-        "head-and-shoulders portrait: the face filling the upper half of the frame, "
-        "both eyes clearly visible, the head inside with slight air above the hair, "
-        "single subject, the head never cropped"
+        "single continuous head-and-shoulders portrait of one character: the complete "
+        "head and hair comfortably inside the frame, both eyes clearly visible, "
+        "face, neck and shoulders in natural proportions in one uninterrupted composition"
     ),
     "full_body": (
         "full-body portrait: the entire body inside the frame, the head and face "
@@ -194,7 +194,9 @@ _FRAMING_DIRECTIVES: dict[str, str] = {
     ),
 }
 _BACKGROUND_DIRECTIVES: dict[str, str] = {
-    "scene": "background: a detailed surrounding scene",
+    "scene": (
+        "background: a detailed surrounding scene behind the subject in continuous perspective"
+    ),
     "plain": "background: a plain, clean, uncluttered light backdrop",
     "dark": "background: a plain dark backdrop, moody",
     "transparent": "background: none — the lone subject only, isolated, no environment",
