@@ -230,7 +230,7 @@ def test_post_video_prompt_draft_201_with_supplied_prompt_render(
     """Spec-4.6 wire contract: a valid ``video_prompt`` draft enqueues
     201, and a ``video`` payload carrying the DM's approved prompt
     enqueues 201 (the prompt rides the payload dict, no wire change)."""
-    from app.store import commit_subgraph, models
+    from app.store import add_media, commit_subgraph, models
 
     campaign_id = job_api()
     entity_id, anchor_id = ids.new_id(), ids.new_id()
@@ -255,12 +255,13 @@ def test_post_video_prompt_draft_201_with_supplied_prompt_render(
             )
         ],
     )
+    image = add_media(campaign_id, entity_id, f"{ids.new_id()}.png")
     draft = client.post(
         "/api/jobs",
         json={
             "campaign_id": campaign_id,
             "kind": "video_prompt",
-            "payload": {"entity_id": entity_id},
+            "payload": {"entity_id": entity_id, "image_id": image.id, "prompt": "Turn slowly."},
         },
     )
     assert draft.status_code == 201

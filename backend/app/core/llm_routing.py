@@ -194,7 +194,12 @@ class LLMRouting:
                 "seed",
             )
         }
-        return replace(self.backup, response_format=actual.response_format, **changes)
+        return replace(
+            self.backup,
+            response_format=actual.response_format,
+            image_data_url=actual.image_data_url,
+            **changes,
+        )
 
 
 AdditionalAttempt = Callable[[Callable[[], str]], str]

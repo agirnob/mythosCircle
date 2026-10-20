@@ -363,7 +363,7 @@ function portraitDraft(entityId: string): PortraitDraft {
   if (existing) return existing
   const entity = entities.value.find((candidate) => candidate.id === entityId)
   const choices = entity ? artworkFramings(entity) : ARTWORK_FRAMINGS.character!
-  const framing = choices.includes('headshot') ? 'headshot' : choices[0] ?? 'headshot'
+  const framing = choices.includes('headshot') ? 'headshot' : (choices[0] ?? 'headshot')
   const draft = { ...PORTRAIT_DRAFT_DEFAULTS, framing }
   portraitDrafts.value[entityId] = draft
   return draft
@@ -474,8 +474,10 @@ function entityHasAppearance(entity: EntityExport): boolean {
 function entityHasArtworkSource(entity: EntityExport): boolean {
   if (entity.kind === 'character') return entityHasAppearance(entity)
   const description = entity.data['description']
-  return (typeof description === 'string' && !!description.trim()) ||
+  return (
+    (typeof description === 'string' && !!description.trim()) ||
     (typeof entity.text === 'string' && !!entity.text.trim())
+  )
 }
 
 function artworkFramings(entity: EntityExport): readonly PortraitFraming[] {
@@ -483,7 +485,11 @@ function artworkFramings(entity: EntityExport): readonly PortraitFraming[] {
 }
 
 function artworkLabel(entity: EntityExport): string {
-  return entity.kind === 'place' ? 'Place artwork' : entity.kind === 'faction' ? 'Faction artwork' : 'Portrait'
+  return entity.kind === 'place'
+    ? 'Place artwork'
+    : entity.kind === 'faction'
+      ? 'Faction artwork'
+      : 'Portrait'
 }
 
 /** The latest image job for this entity (newest first) — status source. */
@@ -507,13 +513,17 @@ function portraitJobFor(entityId: string) {
 function portraitStatus(entity: EntityExport): string | null {
   const job = portraitJobFor(entity.id)
   if (!job) {
-    return entityHasArtworkSource(entity) ? null : entity.kind === 'character'
-      ? 'Add an appearance to generate a portrait.'
-      : 'Add a description to generate artwork.'
+    return entityHasArtworkSource(entity)
+      ? null
+      : entity.kind === 'character'
+        ? 'Add an appearance to generate a portrait.'
+        : 'Add a description to generate artwork.'
   }
-  if (job.state === 'queued') return `${artworkLabel(entity)} queued — position ${job.queue_position ?? '…'}`
+  if (job.state === 'queued')
+    return `${artworkLabel(entity)} queued — position ${job.queue_position ?? '…'}`
   if (job.state === 'running') return `Generating ${artworkLabel(entity).toLowerCase()}…`
-  if (job.state === 'failed') return `${artworkLabel(entity)} failed: ${job.error ?? 'unknown error'}`
+  if (job.state === 'failed')
+    return `${artworkLabel(entity)} failed: ${job.error ?? 'unknown error'}`
   return null
 }
 
@@ -561,30 +571,181 @@ const videoErrors = ref<Record<string, string>>({})
  * has hand-edited it (draftPromptTexts wins while non-empty); a fresh
  * draft clears the local edit so the new draft shows. */
 const draftPromptErrors = ref<Record<string, string>>({})
+type RevealEdit = {
+  prompt?: string
+  direction: string
+  imageId?: string
+  jobId?: string
+  baseline?: string
+  submittedDirection?: string
+  candidate?: string
+  requestId?: string
+  submitting?: boolean
+  dismissed?: string[]
+  pendingImageId?: string
+}
+const revealEdits = ref<Record<string, RevealEdit>>({})
+const pendingRevealPosts = ref<Record<string, number>>({})
 const draftPromptTexts = ref<Record<string, string>>({})
+function revealEdit(entityId: string): RevealEdit {
+  if (!revealEdits.value[entityId]) {
+    try {
+      const stored = JSON.parse(
+        globalThis.localStorage.getItem(`mythoscircle:world-reveal:${campaignId}:${entityId}`) ??
+          'null',
+      ) as Record<string, unknown> | null
+      const restored: RevealEdit = {
+        direction: typeof stored?.direction === 'string' ? stored.direction : '',
+      }
+      for (const key of [
+        'prompt',
+        'imageId',
+        'jobId',
+        'baseline',
+        'submittedDirection',
+        'candidate',
+        'requestId',
+        'pendingImageId',
+      ] as const) {
+        if (typeof stored?.[key] === 'string') restored[key] = stored[key]
+      }
+      restored.dismissed = Array.isArray(stored?.dismissed)
+        ? stored.dismissed.filter((id): id is string => typeof id === 'string')
+        : []
+      revealEdits.value[entityId] = restored
+    } catch {
+      revealEdits.value[entityId] = { direction: '' }
+    }
+    const edit = revealEdits.value[entityId]!
+    if (edit.prompt === undefined && !edit.jobId) {
+      const completed = jobs
+        .forCampaign(campaignId)
+        .filter(
+          (job) =>
+            job.kind === 'video_prompt' &&
+            job.state === 'succeeded' &&
+            job.payload?.['entity_id'] === entityId,
+        )
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
+      if (typeof completed?.result?.['prompt'] === 'string') {
+        edit.prompt = completed.result['prompt']
+        edit.dismissed = [...(edit.dismissed ?? []), completed.id]
+        if (typeof completed.result['image_id'] === 'string')
+          edit.imageId = completed.result['image_id']
+      }
+    }
+    const prompt = revealEdits.value[entityId]!.prompt
+    if (prompt !== undefined) draftPromptTexts.value[entityId] = prompt
+  }
+  return revealEdits.value[entityId]!
+}
+function persistRevealEdit(entityId: string) {
+  if (socketGeneration !== sessionGeneration()) return
+  try {
+    globalThis.localStorage.setItem(
+      `mythoscircle:world-reveal:${campaignId}:${entityId}`,
+      JSON.stringify(revealEdit(entityId)),
+    )
+  } catch {
+    /* Editing still works. */
+  }
+}
+function editRevealPrompt(entity: EntityExport, value: string) {
+  draftPromptTexts.value[entity.id] = value
+  revealEdit(entity.id).prompt = value
+  persistRevealEdit(entity.id)
+}
+function editRevealDirection(entity: EntityExport, value: string) {
+  revealEdit(entity.id).direction = value
+  persistRevealEdit(entity.id)
+}
+function revealSource(entity: EntityExport) {
+  const edit = revealEdit(entity.id)
+  const tracked = jobs.forCampaign(campaignId).find((job) => job.id === edit.jobId)?.payload?.[
+    'image_id'
+  ]
+  const imageId =
+    edit.pendingImageId ?? (typeof tracked === 'string' ? tracked : undefined) ?? edit.imageId
+  return imageId
+    ? (world
+        .mediaFor(campaignId)
+        .find((row) => row.id === imageId && row.kind === 'image' && row.entity_id === entity.id) ??
+        null)
+    : portraitFor(entity)
+}
+function applyWorldEnhancement(entityId: string) {
+  const edit = revealEdit(entityId)
+  const job = jobs.forCampaign(campaignId).find((job) => job.id === edit.jobId)
+  if (!edit.candidate || typeof job?.result?.['image_id'] !== 'string') return
+  edit.dismissed = [...(edit.dismissed ?? []), job.id]
+  edit.prompt = edit.candidate
+  edit.imageId = job.result['image_id']
+  draftPromptTexts.value[entityId] = edit.candidate
+  delete edit.candidate
+  delete edit.jobId
+  delete edit.pendingImageId
+  persistRevealEdit(entityId)
+}
+watch(
+  [
+    () => jobs.forCampaign(campaignId),
+    () => Object.keys(revealEdits.value).join(','),
+    pendingRevealPosts,
+  ],
+  () => {
+    if (socketGeneration !== sessionGeneration()) return
+    for (const [entityId, edit] of Object.entries(revealEdits.value)) {
+      if (!edit.jobId && !edit.submitting && !pendingRevealPosts.value[entityId]) {
+        const recovered = jobs
+          .forCampaign(campaignId)
+          .filter((job) => job.kind === 'video_prompt' && job.payload?.['entity_id'] === entityId)
+          .sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
+        if (recovered && !(edit.dismissed ?? []).includes(recovered.id)) {
+          edit.jobId = recovered.id
+          if (edit.prompt === undefined) {
+            edit.baseline = ''
+            edit.prompt = ''
+            const direction = recovered.payload?.['prompt']
+            if (typeof direction === 'string' && !edit.direction) edit.direction = direction
+            edit.submittedDirection = typeof direction === 'string' ? direction : edit.direction
+          }
+        }
+      }
+      const job = jobs.forCampaign(campaignId).find((job) => job.id === edit.jobId)
+      const prompt = job?.result?.['prompt']
+      if (job?.state !== 'succeeded' || typeof prompt !== 'string') continue
+      edit.candidate = prompt
+      if (edit.prompt === edit.baseline && edit.direction === edit.submittedDirection)
+        applyWorldEnhancement(entityId)
+      else persistRevealEdit(entityId)
+    }
+  },
+  { deep: true },
+)
 
 /** The textarea's current value for this entity: the DM's local edit
  * when present (hand-written or edited), else the latest succeeded
  * draft, else empty. Never a media row (spec-4.6: a draft is a job
  * result; session-only durability). */
 function revealPromptText(entity: EntityExport): string {
+  revealEdit(entity.id)
   const local = draftPromptTexts.value[entity.id]
   if (local !== undefined) return local
-  return jobs.videoPromptFor(campaignId, entity.id) ?? ''
+  return ''
 }
 
 /** The latest video_prompt draft job for this entity — status source. */
 function draftPromptJobFor(entityId: string) {
-  return (
+  const edit = revealEdit(entityId)
+  const latest =
     jobs
       .forCampaign(campaignId)
-      .filter((job) => {
-        if (job.kind !== 'video_prompt') return false
-        const payload = job.payload as { entity_id?: string } | null
-        return payload?.entity_id === entityId
-      })
+      .filter((job) => job.kind === 'video_prompt' && job.payload?.['entity_id'] === entityId)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
-  )
+  const tracked = edit.jobId
+    ? (jobs.forCampaign(campaignId).find((job) => job.id === edit.jobId) ?? null)
+    : latest
+  return tracked && !(edit.dismissed ?? []).includes(tracked.id) ? tracked : null
 }
 
 /** The card's draft status line: queue position while pending, the
@@ -600,7 +761,7 @@ function draftPromptStatus(entity: EntityExport): string | null {
 
 /** True while a draft is pending — the draft button's in-flight gate. */
 function draftPromptInFlight(entity: EntityExport): boolean {
-  return jobs.videoPromptInFlight(campaignId, entity.id)
+  return !!revealEdit(entity.id).submitting || jobs.videoPromptInFlight(campaignId, entity.id)
 }
 
 /** The draft failure line alone — mirroring ``videoFailure``. */
@@ -613,16 +774,66 @@ function draftPromptFailure(entity: EntityExport): string | null {
 async function draftRevealVideoPrompt(entity: EntityExport) {
   if (!isBossTier(entity)) return // the backend gate, mirrored
   if (draftPromptInFlight(entity)) return
-  if (!entityHasAppearance(entity)) return // the backend gate, mirrored
+  const source = revealSource(entity)
+  const edit = revealEdit(entity.id)
+  if (!source || !edit.direction.trim() || edit.direction.length > 8000) return
+  edit.submitting = true
+  pendingRevealPosts.value[entity.id] = (pendingRevealPosts.value[entity.id] ?? 0) + 1
+  const requestId = `${Date.now()}:${Math.random()}`
+  edit.requestId = requestId
+  edit.pendingImageId = source.id
   draftPromptErrors.value[entity.id] = ''
-  delete draftPromptTexts.value[entity.id] // a fresh draft replaces the old text
+  edit.baseline = revealPromptText(entity)
+  edit.prompt = edit.baseline
+  edit.submittedDirection = edit.direction
+  delete edit.candidate
+  persistRevealEdit(entity.id)
   try {
-    await jobs.submitRevealVideoPrompt(campaignId, entity.id)
+    const job = await jobs.submitRevealVideoPrompt(campaignId, entity.id, source.id, edit.direction)
+    if (socketGeneration !== sessionGeneration()) return
+    if (edit.requestId !== requestId) {
+      edit.dismissed = [...(edit.dismissed ?? []), job.id]
+      persistRevealEdit(entity.id)
+      return
+    }
+    edit.jobId = job.id
+    persistRevealEdit(entity.id)
     await jobs.syncList(campaignId)
   } catch (err) {
-    draftPromptErrors.value[entity.id] =
-      err instanceof ApiError ? err.message : 'Could not draft the reveal video prompt.'
+    if (edit.requestId === requestId && socketGeneration === sessionGeneration())
+      draftPromptErrors.value[entity.id] =
+        err instanceof ApiError ? err.message : 'Could not draft the reveal video prompt.'
+  } finally {
+    pendingRevealPosts.value[entity.id] = Math.max(
+      0,
+      (pendingRevealPosts.value[entity.id] ?? 1) - 1,
+    )
+    if (edit.requestId === requestId) {
+      edit.submitting = false
+      persistRevealEdit(entity.id)
+    }
   }
+}
+
+function resetWorldRevealSource(entity: EntityExport) {
+  const edit = revealEdit(entity.id)
+  edit.prompt = revealPromptText(entity)
+  edit.dismissed = [
+    ...new Set([
+      ...(edit.dismissed ?? []),
+      ...jobs
+        .forCampaign(campaignId)
+        .filter((job) => job.kind === 'video_prompt' && job.payload?.['entity_id'] === entity.id)
+        .map((job) => job.id),
+    ]),
+  ]
+  delete edit.requestId
+  edit.submitting = false
+  delete edit.jobId
+  delete edit.imageId
+  delete edit.pendingImageId
+  delete edit.candidate
+  persistRevealEdit(entity.id)
 }
 
 function isBossTier(entity: EntityExport): boolean {
@@ -665,7 +876,9 @@ function videoStatus(entity: EntityExport): string | null {
   const job = videoJobFor(entity.id)
   if (!job) {
     // Both drafting and rendering need a non-blank appearance.
-    return entityHasAppearance(entity) ? null : 'Add an appearance to draft a reveal video prompt.'
+    return revealSource(entity)
+      ? null
+      : 'Generate a portrait and enter video direction to enhance a reveal prompt.'
   }
   if (job.state === 'queued') return `Reveal video queued — position ${job.queue_position ?? '…'}`
   if (job.state === 'running') return 'Generating reveal video…'
@@ -684,11 +897,16 @@ function videoFailure(entity: EntityExport): string | null {
 async function generateRevealVideo(entity: EntityExport) {
   if (!isBossTier(entity)) return // the backend gate, mirrored
   if (jobs.videoInFlight(campaignId, entity.id)) return
-  if (!entityHasAppearance(entity)) return // the backend gate, mirrored
-  const prompt = revealPromptText(entity).trim()
+  if (!revealEdit(entity.id).imageId && !entityHasAppearance(entity)) return
+  const prompt = revealPromptText(entity)
   videoErrors.value[entity.id] = ''
   try {
-    await jobs.submitRevealVideo(campaignId, entity.id, prompt || undefined)
+    await jobs.submitRevealVideo(
+      campaignId,
+      entity.id,
+      prompt || undefined,
+      revealEdit(entity.id).imageId,
+    )
     await jobs.syncList(campaignId)
   } catch (err) {
     videoErrors.value[entity.id] =
@@ -1295,10 +1513,7 @@ function additionalDataBlock(entity: EntityExport): string {
           <RouterLink :to="{ name: 'build-in', params: { id: campaignId } }" class="cta secondary">
             Open build-in
           </RouterLink>
-          <RouterLink
-            :to="{ name: 'ask', params: { id: campaignId } }"
-            class="cta secondary"
-          >
+          <RouterLink :to="{ name: 'ask', params: { id: campaignId } }" class="cta secondary">
             Ask the World
           </RouterLink>
           <RouterLink :to="{ name: 'graph', params: { id: campaignId } }" class="cta secondary">
@@ -1463,7 +1678,9 @@ function additionalDataBlock(entity: EntityExport): string {
               <p v-else-if="world.mediaFetchFailed(campaignId)" class="muted">
                 {{ artworkLabel(entity) }} list unavailable.
               </p>
-              <p v-else class="muted">No {{ entity.kind === 'character' ? 'portrait' : 'artwork' }}.</p>
+              <p v-else class="muted">
+                No {{ entity.kind === 'character' ? 'portrait' : 'artwork' }}.
+              </p>
               <p class="portrait-actions">
                 <button
                   type="button"
@@ -1507,7 +1724,11 @@ function additionalDataBlock(entity: EntityExport): string {
                   :disabled="deletingId !== null"
                   @click="removePortrait(entity)"
                 >
-                  {{ deletingId === entity.id ? 'Deleting…' : `Delete ${entity.kind === 'character' ? 'portrait' : 'artwork'}` }}
+                  {{
+                    deletingId === entity.id
+                      ? 'Deleting…'
+                      : `Delete ${entity.kind === 'character' ? 'portrait' : 'artwork'}`
+                  }}
                 </button>
               </p>
               <p class="portrait-options" :aria-disabled="!entityHasArtworkSource(entity)">
@@ -1578,7 +1799,7 @@ function additionalDataBlock(entity: EntityExport): string {
                  clip renders inline; a failed re-generation renders over
                  an existing clip; queue/running progress renders only
                  while no clip exists yet. Spec-4.6 adds the two-phase
-                 surface: 'Draft reveal prompt' authors a MiniMax-I2VA
+                 surface: 'Enhance with portrait' authors a MiniMax-I2VA
                  draft from the committed character + writing guide, the
                  textarea lets the DM review/edit (or hand-write), and
                  'Render reveal video' sends the approved prompt. -->
@@ -1594,12 +1815,40 @@ function additionalDataBlock(entity: EntityExport): string {
               <p v-else-if="world.mediaFetchFailed(campaignId)" class="muted">
                 Media list unavailable.
               </p>
+              <img
+                v-if="revealSource(entity)"
+                :src="`/api/campaigns/${encodeURIComponent(campaignId)}/media/${encodeURIComponent(entity.id)}/${revealSource(entity)!.filename}`"
+                :alt="`${entity.name} reveal source portrait`"
+                class="entity-portrait reveal-source-portrait"
+              />
+              <button v-if="(revealEdit(entity.id).imageId || revealEdit(entity.id).jobId || revealEdit(entity.id).pendingImageId) && (!portraitFor(entity) || (revealEdit(entity.id).imageId && revealEdit(entity.id).imageId !== portraitFor(entity)?.id) || revealSource(entity)?.id !== portraitFor(entity)?.id)" type="button" class="link" @click="resetWorldRevealSource(entity)">Use latest portrait</button>
+              <label :for="`world-reveal-direction-${entity.id}`">Your video direction</label>
+              <textarea
+                :id="`world-reveal-direction-${entity.id}`"
+                :value="revealEdit(entity.id).direction"
+                maxlength="8000"
+                :aria-label="`${entity.name} video direction`"
+                @input="editRevealDirection(entity, ($event.target as HTMLTextAreaElement).value)"
+              />
+              <p class="muted">
+                Enhance with the portrait, then review image alignment, visual action, soundscape
+                and music before rendering.
+              </p>
+              <div v-if="revealEdit(entity.id).candidate">
+                <pre>{{ revealEdit(entity.id).candidate }}</pre>
+                <button type="button" @click="applyWorldEnhancement(entity.id)">
+                  Use enhanced prompt
+                </button>
+              </div>
               <p class="reveal-video-actions">
                 <button
-                  v-if="entityHasAppearance(entity)"
                   type="button"
                   class="link"
-                  :disabled="draftPromptInFlight(entity)"
+                  :disabled="
+                    draftPromptInFlight(entity) ||
+                    !revealSource(entity) ||
+                    !revealEdit(entity.id).direction.trim()
+                  "
                   @click="draftRevealVideoPrompt(entity)"
                 >
                   {{
@@ -1607,24 +1856,21 @@ function additionalDataBlock(entity: EntityExport): string {
                       ? draftPromptJobFor(entity.id)?.state === 'running'
                         ? 'Drafting reveal prompt…'
                         : 'Reveal prompt queued…'
-                      : 'Draft reveal prompt'
+                      : 'Enhance with portrait'
                   }}
                 </button>
                 <textarea
-                  v-if="entityHasAppearance(entity)"
                   :value="revealPromptText(entity)"
                   :aria-label="`${entity.name} reveal video prompt (optional)`"
                   class="reveal-prompt-textarea"
-                  @input="
-                    draftPromptTexts[entity.id] = ($event.target as HTMLTextAreaElement).value
-                  "
+                  @input="editRevealPrompt(entity, ($event.target as HTMLTextAreaElement).value)"
                 ></textarea>
                 <button
                   type="button"
                   class="link"
                   :disabled="
                     jobs.videoInFlight(campaignId, entity.id) ||
-                    !entityHasAppearance(entity)
+                    (!revealEdit(entity.id).imageId && !entityHasAppearance(entity))
                   "
                   @click="generateRevealVideo(entity)"
                 >
@@ -1921,6 +2167,7 @@ function additionalDataBlock(entity: EntityExport): string {
 </template>
 
 <style scoped>
+.entity-portrait.reveal-source-portrait { object-fit: contain; }
 .boss-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

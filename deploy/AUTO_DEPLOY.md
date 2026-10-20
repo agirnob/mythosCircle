@@ -217,6 +217,17 @@ branch or bypass the checks.
 
 ### FastVideo FastH3 image-to-video workflow
 
+The reveal prompt enhancer follows the [MiniMax H3 image-to-video prompting
+guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/raw/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md).
+It sends the private source portrait and the DM's written direction through the
+normal text-provider routing. Configure a model that accepts image input;
+ComfyUI video availability alone does not supply a vision-language provider.
+Cloud provider keys remain environment-only. A backup model must also accept
+images. Provider failures are shown without substituting an appearance-based
+enhancement. The DM reviews the resulting H3 prompt before rendering; that render
+uses the same portrait ID even when a newer portrait has been generated.
+See [the feature contract](../docs/features/minimax-h3-prompt-enhancer.md).
+
 `deploy/workflows/video_fastvideo_fasth3_i2v.json` preserves the supplied FastVideo
 FastH3 workflow. It uses the 8-step v2 INT8 diffusion model, a 15-second duration,
 24 fps and a 0.4-megapixel scaled portrait. The existing ComfyUI provider supports

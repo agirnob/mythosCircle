@@ -25,13 +25,19 @@ manifest row via ``add_media`` — media is not world graph, no revision,
 no event (AD-10).
 """
 
+import base64
+import io
+import json
 import logging
 import os
 import shutil
+import warnings
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy import literal_column, select
 
 from app.core import ids
@@ -143,10 +149,19 @@ def appearance_prompt(appearance: Any) -> str | None:
 PORTRAIT_STYLES: frozenset[str] = frozenset(
     {"photorealistic", "cartoonish", "illustration", "custom"}
 )
-PORTRAIT_FRAMINGS: frozenset[str] = frozenset({
-    "portrait", "headshot", "full_body", "landscape", "establishing", "detail",
-    "emblem", "banner", "scene",
-})
+PORTRAIT_FRAMINGS: frozenset[str] = frozenset(
+    {
+        "portrait",
+        "headshot",
+        "full_body",
+        "landscape",
+        "establishing",
+        "detail",
+        "emblem",
+        "banner",
+        "scene",
+    }
+)
 ARTWORK_FRAMINGS: dict[str, frozenset[str]] = {
     "character": frozenset({"portrait", "headshot", "full_body"}),
     "place": frozenset({"landscape", "establishing", "detail"}),
@@ -237,9 +252,7 @@ def portrait_options(payload: Any, *, entity_kind: str | None = "character") -> 
             ARTWORK_FRAMINGS[entity_kind] if entity_kind is not None else PORTRAIT_FRAMINGS
         )
         if not isinstance(framing, str) or framing not in allowed_framings:
-            raise ValueError(
-                f"image payload framing must be one of {sorted(allowed_framings)}"
-            )
+            raise ValueError(f"image payload framing must be one of {sorted(allowed_framings)}")
         options["framing"] = framing
     background = payload.get("background")
     if background is not None:
@@ -322,8 +335,11 @@ def entity_artwork_prompt(
         if not isinstance(data, dict):
             return None
         return portrait_prompt(
-            data.get("appearance"), style=style, framing=framing,
-            background=background, custom_style=custom_style,
+            data.get("appearance"),
+            style=style,
+            framing=framing,
+            background=background,
+            custom_style=custom_style,
         )
     if entity_kind not in {"place", "faction"} or not isinstance(data, dict):
         return None
@@ -510,7 +526,7 @@ def run_video(
     payload = job.payload
     if (
         not isinstance(payload, dict)
-        or not set(payload) <= {"entity_id", "prompt"}
+        or not set(payload) <= {"entity_id", "prompt", "image_id"}
         or not isinstance(payload.get("entity_id"), str)
     ):
         raise JobPayloadError(
@@ -520,7 +536,14 @@ def run_video(
     supplied_prompt = payload.get("prompt")
     if supplied_prompt is not None and not isinstance(supplied_prompt, str):
         raise JobPayloadError("video: job payload 'prompt' must be a string when present")
+    pinned_image_id = payload.get("image_id")
+    if "image_id" in payload and (
+        not isinstance(supplied_prompt, str) or not supplied_prompt.strip()
+    ):
+        raise JobPayloadError("image-bound video requires an approved non-blank prompt")
     comfyui = configured_video_backend() == "comfyui"
+    if pinned_image_id is not None and not comfyui:
+        raise JobPayloadError("image-bound video rendering requires the ComfyUI video backend")
 
     # Run-time re-read of the COMMITTED entity: the job may have queued
     # while the DM deleted the entity — ENTITY_MISSING fails cleanly with
@@ -535,7 +558,9 @@ def run_video(
         if entity is None or entity.campaign_id != job.campaign_id:
             raise JobPayloadError(f"video: entity {entity_id} does not exist in this campaign")
         data = entity.data or {}
-        if comfyui:
+        if "image_id" in payload:
+            portrait_filename = _owned_image_filename(session, job, entity_id, pinned_image_id)
+        elif comfyui:
             portrait = session.scalar(
                 select(models.Media)
                 .where(
@@ -561,7 +586,7 @@ def run_video(
             raise JobPayloadError(
                 f"video: entity {entity_id} has a blank 'prompt' — re-draft or drop the prompt"
             )
-        if appearance_prompt(data.get("appearance")) is None:
+        if pinned_image_id is None and appearance_prompt(data.get("appearance")) is None:
             # The source-frame gate still applies with a supplied prompt
             # (spec-4.6 frozen): a reveal clip needs the entity's
             # source-frame appearance even when the DM owns the prompt
@@ -582,7 +607,7 @@ def run_video(
             )
         prompt = built
     first_frame: str | None = None
-    if comfyui:
+    if comfyui or pinned_image_id is not None:
         if portrait_filename is None:
             # The i2v source-frame gate (comfyui backend ONLY — the
             # OpenAI path is text-to-video and never needed a source
@@ -593,7 +618,13 @@ def run_video(
             raise JobPayloadError(
                 f"video: entity {entity_id} has no portrait — the i2v reveal needs a source frame"
             )
-        first_frame = str(Path(media_dir) / job.campaign_id / entity_id / portrait_filename)
+        if pinned_image_id is not None:
+            source_path, _data, _mime = _read_source_image(
+                media_dir, job, entity_id, portrait_filename
+            )
+            first_frame = str(source_path)
+        else:
+            first_frame = str(Path(media_dir) / job.campaign_id / entity_id / portrait_filename)
 
     budget = MediaCallBudget(job)
 
@@ -725,8 +756,13 @@ def run_video_prompt(
     job: models.Job,
     llm: ChatCompletion,
     settings: LLMSettings,
+    media_dir: str | os.PathLike[str] | None = None,
 ) -> None:
-    """Draft a concise reveal prompt for the job's boss entity.
+    """Enhance image-bound direction, or finish a legacy queued draft.
+
+    New payloads carry entity_id, image_id and prompt; only image bytes and
+    direction enter narrative context. The entity-only path below exists solely
+    for jobs queued before image-aware enhancement shipped.
 
     The ``run_portrait`` discipline mirrored, but the prompt IS the
     output: payload contract (``{"entity_id": <ULID>}``) -> run-time
@@ -739,6 +775,9 @@ def run_video_prompt(
     world-state write (AD-1); no file is written.
     """
     payload = job.payload
+    if isinstance(payload, dict) and set(payload) == {"entity_id", "image_id", "prompt"}:
+        _run_image_video_prompt(job, llm, settings, media_dir)
+        return
     if (
         not isinstance(payload, dict)
         or set(payload) != {"entity_id"}
@@ -806,6 +845,153 @@ def run_video_prompt(
         # result — nothing to clean up, and the cancelled job simply
         # never reports the draft.
         raise
+
+
+_H3_ALIGNMENT = (
+    "For the target video, at 0.00 seconds into the target video, "
+    "<Picture 1> (from [Shot 1]) is fully referenced."
+)
+_H3_FIELDS = ("integrated_multimodal_description", "overall_soundscape", "non_diegetic_music")
+_MAX_SOURCE_BYTES = 20 * 1024 * 1024
+
+
+def _owned_image_filename(session: Any, job: models.Job, entity_id: str, image_id: Any) -> str:
+    if not isinstance(image_id, str) or not ids.is_valid_ulid(image_id):
+        raise JobPayloadError("video source image_id must be a ULID")
+    image = session.get(models.Media, image_id)
+    if (
+        image is None
+        or image.campaign_id != job.campaign_id
+        or image.entity_id != entity_id
+        or image.kind != "image"
+    ):
+        raise JobPayloadError("video source image does not exist for this entity in this campaign")
+    return str(image.filename)
+
+
+def _read_source_image(
+    media_dir: str | os.PathLike[str] | None,
+    job: models.Job,
+    entity_id: str,
+    filename: str,
+) -> tuple[Path, bytes, str]:
+    if media_dir is None:
+        raise JobPayloadError("video source image media directory is not configured")
+    try:
+        root = Path(media_dir).resolve(strict=True)
+        expected = root / job.campaign_id / entity_id
+        path = (expected / filename).resolve(strict=True)
+        if (
+            Path(filename).name != filename
+            or not path.is_relative_to(expected)
+            or not path.is_relative_to(root)
+        ):
+            raise JobPayloadError("video source image path is unsafe")
+        with path.open("rb") as source:
+            image_bytes = source.read(_MAX_SOURCE_BYTES + 1)
+        if len(image_bytes) > _MAX_SOURCE_BYTES:
+            raise JobPayloadError("video source image exceeds the 20 MiB limit")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                if image.format not in {"PNG", "JPEG"}:
+                    raise JobPayloadError("video source image must be a valid PNG or JPEG")
+                if image.width * image.height > 16_000_000:
+                    raise JobPayloadError("video source image exceeds the 16 megapixel limit")
+                mime = "image/png" if image.format == "PNG" else "image/jpeg"
+                image.verify()
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                image.load()
+        return path, image_bytes, mime
+    except JobPayloadError:
+        raise
+    except (
+        OSError,
+        ValueError,
+        UnidentifiedImageError,
+        Image.DecompressionBombWarning,
+        Image.DecompressionBombError,
+    ) as exc:
+        raise JobPayloadError("video source image is missing, unreadable or invalid") from exc
+
+
+def _run_image_video_prompt(
+    job: models.Job,
+    llm: ChatCompletion,
+    settings: LLMSettings,
+    media_dir: str | os.PathLike[str] | None,
+) -> None:
+    payload = job.payload
+    assert isinstance(payload, dict)
+    entity_id, direction = payload["entity_id"], payload["prompt"]
+    if not isinstance(entity_id, str) or not ids.is_valid_ulid(entity_id):
+        raise JobPayloadError("video prompt entity_id must be a ULID")
+    if not isinstance(direction, str) or not direction.strip() or len(direction) > 8000:
+        raise JobPayloadError(
+            "video prompt direction must be a non-blank string of at most 8000 characters"
+        )
+    with session_scope() as session:
+        entity = session.get(models.Entity, entity_id)
+        if entity is None or entity.campaign_id != job.campaign_id:
+            raise JobPayloadError("video prompt entity does not exist in this campaign")
+        if (entity.data or {}).get("role") not in BOSS_ROLES:
+            raise JobPayloadError("video prompt entity is no longer boss-tier (BBEG or Monster)")
+        filename = _owned_image_filename(session, job, entity_id, payload["image_id"])
+    _path, source, mime = _read_source_image(media_dir, job, entity_id, filename)
+    instruction = (
+        "Enhance the user's direction for MiniMax H3 image-to-video, lasting 15 seconds. "
+        "Use ONLY the attached image and the user's direction as narrative sources. "
+        "The image is frame zero: anchor [Shot 1] to its actual style, composition, identity, "
+        "clothing, objects and spatial relationships. Describe action onset, continuous "
+        "development, camera motion and a result, preserving image consistency. "
+        "Use one continuous shot by default, no invented lore, dialogue or on-screen text. "
+        "The user's explicit direction controls action and audio. Do not invent dialogue. "
+        "Preserve supplied spoken words and punctuation verbatim inside <d>[Language] ...</d>, "
+        "with stable speaker IDs (S1), (S2). Quote exact on-screen text only when requested. "
+        "If cuts are explicitly requested, use sequential [Shot N] labels and increasing "
+        "cut times within 15 seconds; otherwise keep the single continuous shot. "
+        "Use untimed progression; never exceed 15 seconds. Camera motion should specify "
+        "type, amplitude and speed when meaningful. overall_soundscape describes ambient "
+        "and physical sounds; complete silence means N/A. non_diegetic_music describes "
+        "instrumentation, rhythm and dynamics; requested no music means N/A. Default to "
+        "N/A for music unless requested. Return ONLY a strict JSON object with exactly "
+        "three non-blank string fields: integrated_multimodal_description (begin with "
+        "[Shot 1]), overall_soundscape, non_diegetic_music. No markdown.\n\n"
+        "User direction:\n" + direction
+    )
+    vision_settings = replace(
+        settings, image_data_url=f"data:{mime};base64,{base64.b64encode(source).decode('ascii')}"
+    )
+    if not _job_still_running(job):
+        return
+    budget = CallBudget(job)
+    try:
+        raw = budget.call(lambda: llm(instruction, settings=vision_settings))
+    except ProviderError as exc:
+        raise JobPayloadError(
+            f"image-aware video prompt enhancement failed: {exc}; "
+            "check that the configured model supports vision"
+        ) from exc
+    try:
+        fields = json.loads(raw)
+        if (
+            not isinstance(fields, dict)
+            or set(fields) != set(_H3_FIELDS)
+            or any(not isinstance(fields[k], str) or not fields[k].strip() for k in _H3_FIELDS)
+            or not fields[_H3_FIELDS[0]].strip().startswith("[Shot 1]")
+        ):
+            raise ValueError("invalid H3 fields")
+    except (TypeError, ValueError) as exc:
+        raise JobPayloadError(
+            "video prompt enhancement returned malformed H3 output; "
+            "edit your direction and try again"
+        ) from exc
+    draft = (
+        _H3_ALIGNMENT + "\n\n" + "\n\n".join(f"{key}: {fields[key].strip()}" for key in _H3_FIELDS)
+    )
+    complete_job(
+        job.id, result={"entity_id": entity_id, "image_id": payload["image_id"], "prompt": draft}
+    )
 
 
 def _video_prompt_draft_instruction(appearance: str) -> str:

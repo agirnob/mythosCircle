@@ -114,6 +114,7 @@ class LLMSettings:
     #: JSON-schema generation). Code-built per path only — ``llm_settings()``
     #: never fills it, and there is no config-file/env plumbing for it.
     response_format: dict[str, Any] | None = None
+    image_data_url: str | None = field(default=None, repr=False)
     reasoning_effort: str | None = None
 
 

@@ -326,7 +326,7 @@ def _run_job(
         # — an LLM call, no file, no media row, no world write (AD-1).
         from app.media.service import run_video_prompt
 
-        run_video_prompt(job, provider, settings)
+        run_video_prompt(job, provider, settings, media_dir=configured_media_dir())
         return
     if job.kind != "text":
         raise JobPayloadError(

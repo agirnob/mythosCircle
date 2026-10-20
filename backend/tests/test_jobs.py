@@ -498,11 +498,15 @@ def test_enqueue_video_supplied_prompt_no_appearance_is_422(world: str) -> None:
 def test_enqueue_video_prompt_requires_exact_entity_payload(world: str) -> None:
     """VIDEO_PROMPT_BAD_PAYLOAD: anything but exactly
     ``{"entity_id": <ULID>}`` is a 422, zero rows written."""
-    with pytest.raises(InvalidJobInputError, match="exactly \\{'entity_id'"):
+    with pytest.raises(InvalidJobInputError, match="requires exactly"):
         enqueue_job(world, "video_prompt", {"prompt": "a cinematic reveal"})
-    with pytest.raises(InvalidJobInputError, match="entity_id is not a ULID"):
-        enqueue_job(world, "video_prompt", {"entity_id": "not-a-ulid"})
-    with pytest.raises(InvalidJobInputError, match="exactly \\{'entity_id'"):
+    with pytest.raises(InvalidJobInputError, match="entity_id must be a ULID"):
+        enqueue_job(
+            world,
+            "video_prompt",
+            {"entity_id": "not-a-ulid", "image_id": MISSING_ID, "prompt": "Reveal"},
+        )
+    with pytest.raises(InvalidJobInputError, match="requires exactly"):
         enqueue_job(world, "video_prompt", {"entity_id": "0" * 26, "extra": 1})
     assert _count_jobs() == 0
 
@@ -511,7 +515,11 @@ def test_enqueue_video_prompt_unknown_entity_is_404(world: str) -> None:
     """DRAFT_ENTITY_MISSING at enqueue: a fabricated entity id is an
     ``UnknownEntityError`` (404), zero rows written."""
     with pytest.raises(UnknownEntityError):
-        enqueue_job(world, "video_prompt", {"entity_id": MISSING_ID})
+        enqueue_job(
+            world,
+            "video_prompt",
+            {"entity_id": MISSING_ID, "image_id": MISSING_ID, "prompt": "Reveal"},
+        )
     assert _count_jobs() == 0
 
 
@@ -528,19 +536,27 @@ def test_enqueue_video_prompt_not_boss_is_422(world: str) -> None:
         },
     )
     with pytest.raises(InvalidJobInputError, match="not boss-tier"):
-        enqueue_job(world, "video_prompt", {"entity_id": entity_id})
+        enqueue_job(
+            world,
+            "video_prompt",
+            {"entity_id": entity_id, "image_id": MISSING_ID, "prompt": "Reveal"},
+        )
     assert _count_jobs() == 0
 
 
-def test_enqueue_video_prompt_no_appearance_is_422(world: str) -> None:
+def test_enqueue_video_prompt_missing_image_is_422(world: str) -> None:
     """DRAFT_NO_SOURCE: a boss without a non-blank AR24 appearance is a
     422 — a MiniMax-I2VA draft needs a source-frame description."""
     entity_id = _commit_boss(
         world,
         data={"name": "Vashka", "role": "BBEG", "boss": {"lair_actions": "walls breathe"}},
     )
-    with pytest.raises(InvalidJobInputError, match="no non-blank AR24 appearance"):
-        enqueue_job(world, "video_prompt", {"entity_id": entity_id})
+    with pytest.raises(InvalidJobInputError, match="source image does not exist"):
+        enqueue_job(
+            world,
+            "video_prompt",
+            {"entity_id": entity_id, "image_id": MISSING_ID, "prompt": "Reveal"},
+        )
     assert _count_jobs() == 0
 
 
@@ -552,7 +568,12 @@ def test_enqueue_video_prompt_boss_entity_accepted(world: str) -> None:
         world,
         data={"name": "Vashka", "role": "BBEG", "appearance": {"face": "iron"}},
     )
-    job = enqueue_job(world, "video_prompt", {"entity_id": entity_id})
+    from app.store import add_media
+
+    image = add_media(world, entity_id, kind="image", filename=f"{ids.new_id()}.png")
+    job = enqueue_job(
+        world, "video_prompt", {"entity_id": entity_id, "image_id": image.id, "prompt": "Reveal"}
+    )
     assert job.kind == "video_prompt" and job.state == "queued"
 
 

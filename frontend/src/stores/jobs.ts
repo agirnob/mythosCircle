@@ -266,23 +266,19 @@ export const useJobsStore = defineStore('jobs', {
       this.upsert(job)
       return job
     },
-    /**
-     * Spec-4.6 reveal-video prompt draft: one video_prompt job whose
-     * payload names the committed boss-tier entity (with a non-blank
-     * appearance) — the model drafts a concise reveal from appearance,
-     * with an appearance-based fallback when the text model is offline.
-     * The draft lands as
-     * the job result {entity_id, prompt}; the DM reviews/edits it in
-     * the card before any render (two-phase; the backend validates the
-     * payload + role + appearance at enqueue).
-     */
-    async submitRevealVideoPrompt(campaignId: string, entityId: string) {
+    /** Enhance written direction using the owned portrait; results remain reviewable. */
+    async submitRevealVideoPrompt(
+      campaignId: string,
+      entityId: string,
+      imageId: string,
+      prompt: string,
+    ) {
       const job = await apiFetch<Job>('/api/jobs', {
         method: 'POST',
         body: JSON.stringify({
           campaign_id: campaignId,
           kind: 'video_prompt',
-          payload: { entity_id: entityId },
+          payload: { entity_id: entityId, image_id: imageId, prompt },
         }),
       })
       this.upsert(job)
@@ -297,14 +293,23 @@ export const useJobsStore = defineStore('jobs', {
      * non-blank prompt (spec-4.6) the DM's approved text is used
      * VERBATIM by run_video — the draft-and-edit path's render.
      */
-    async submitRevealVideo(campaignId: string, entityId: string, prompt?: string) {
+    async submitRevealVideo(
+      campaignId: string,
+      entityId: string,
+      prompt?: string,
+      imageId?: string,
+    ) {
       const hasPrompt = typeof prompt === 'string' && Boolean(prompt.trim())
       const job = await apiFetch<Job>('/api/jobs', {
         method: 'POST',
         body: JSON.stringify({
           campaign_id: campaignId,
           kind: 'video',
-          payload: hasPrompt ? { entity_id: entityId, prompt } : { entity_id: entityId },
+          payload: {
+            entity_id: entityId,
+            ...(hasPrompt ? { prompt } : {}),
+            ...(imageId ? { image_id: imageId } : {}),
+          },
         }),
       })
       this.upsert(job)

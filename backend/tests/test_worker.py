@@ -101,6 +101,29 @@ def test_run_text_job_completes_with_result(world: str) -> None:
     assert job.finished_at is not None
 
 
+def _legacy_queued_video_prompt(world: str, entity_id: str) -> str:
+    """Represent an entity-only draft already persisted before the new contract."""
+    from app.core import ids
+    from app.store import session_scope
+
+    job_id = ids.new_id()
+    with session_scope() as session:
+        session.add(
+            models.Job(
+                id=job_id,
+                campaign_id=world,
+                kind="video_prompt",
+                payload={"entity_id": entity_id},
+                state="queued",
+                progress=0.0,
+                max_llm_calls=2,
+                max_media_calls=1,
+                created_at="2026-09-08T00:00:00Z",
+            )
+        )
+    return job_id
+
+
 def test_run_video_prompt_job_runs_the_draft_runner(world: str) -> None:
     """Spec-4.6 video_prompt dispatch: a valid draft job runs the draft
     runner — one LLM call, result {entity_id, prompt}, no media file, no
@@ -140,7 +163,7 @@ def test_run_video_prompt_job_runs_the_draft_runner(world: str) -> None:
         seen.append(prompt)
         return draft
 
-    job_id = enqueue_job(world, "video_prompt", {"entity_id": entity_id}).id
+    job_id = _legacy_queued_video_prompt(world, entity_id)
     processed = run_next_job(provider=draft_provider, settings=SETTINGS)
     assert processed == job_id
     job, _position = job_status(job_id)
@@ -179,7 +202,7 @@ def test_run_video_prompt_job_uses_appearance_when_llm_down(world: str) -> None:
     def down(prompt: str, settings: LLMSettings) -> str:
         raise ProviderError(kind="connection")
 
-    job_id = enqueue_job(world, "video_prompt", {"entity_id": entity_id}).id
+    job_id = _legacy_queued_video_prompt(world, entity_id)
     processed = run_next_job(provider=down, settings=SETTINGS)
     assert processed == job_id
     job, _position = job_status(job_id)
@@ -1291,3 +1314,62 @@ def test_migration_adds_result_column_to_old_db(tmp_path: Path) -> None:
         init_db(f"sqlite:///{db}")  # idempotent — no error on the second init
     finally:
         init_db(previous)
+
+
+def test_worker_dispatches_image_aware_enhancement_with_configured_media_dir(
+    world: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import base64
+
+    from PIL import Image
+
+    from app.core import ids
+    from app.store import commit_subgraph
+
+    entity_id, place_id = ids.new_id(), ids.new_id()
+    commit_subgraph(
+        world,
+        [
+            models.EntityInput(
+                id=entity_id,
+                kind="character",
+                name="Boss",
+                data={"role": "BBEG", "appearance": "Must not enter context"},
+            ),
+            models.EntityInput(id=place_id, kind="place", name="Anchor"),
+        ],
+        [
+            models.EdgeInput(
+                src=entity_id, dst=place_id, type="located_in", counter=1, reason="seeded"
+            )
+        ],
+    )
+    image = add_media(world, entity_id, f"{ids.new_id()}.png")
+    path = tmp_path / world / entity_id / image.filename
+    path.parent.mkdir(parents=True)
+    Image.new("RGB", (2, 2), "blue").save(path)
+    monkeypatch.setattr("app.pipeline.worker.configured_media_dir", lambda: str(tmp_path))
+    job = enqueue_job(
+        world,
+        "video_prompt",
+        {"entity_id": entity_id, "image_id": image.id, "prompt": "Turn slowly."},
+    )
+
+    def provider(prompt: str, settings: LLMSettings) -> str:
+        assert "Turn slowly." in prompt and "Must not enter context" not in prompt
+        assert (
+            settings.image_data_url
+            == "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
+        )
+        return json.dumps(
+            {
+                "integrated_multimodal_description": "[Shot 1] Blue portrait turns.",
+                "overall_soundscape": "N/A",
+                "non_diegetic_music": "N/A",
+            }
+        )
+
+    assert run_next_job(provider=provider, settings=SETTINGS) == job.id
+    state, _ = job_status(job.id)
+    assert state.state == "succeeded"
+    assert state.result is not None and state.result["image_id"] == image.id

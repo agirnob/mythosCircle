@@ -82,6 +82,20 @@ describe('jobs store', () => {
     })
   })
 
+  it('submits enhancement with explicit image and direction', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(job('JP1', { kind: 'video_prompt' })), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+    await useJobsStore().submitRevealVideoPrompt('C1', 'E1', 'M1', '  Turn slowly. No music.  ')
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0]
+    expect(JSON.parse(init?.body as string)).toEqual({ campaign_id: 'C1', kind: 'video_prompt', payload: { entity_id: 'E1', image_id: 'M1', prompt: '  Turn slowly. No music.  ' } })
+  })
+
+  it('submits pinned render with verbatim approved prompt', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(job('JV1', { kind: 'video' })), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+    await useJobsStore().submitRevealVideo('C1', 'E1', '  Approved.\n', 'M1')
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0]
+    expect(JSON.parse(init?.body as string)).toEqual({ campaign_id: 'C1', kind: 'video', payload: { entity_id: 'E1', image_id: 'M1', prompt: '  Approved.\n' } })
+  })
+
   it('WS progress patches the cached row in place without clobbering REST fields', async () => {
     const jobs = useJobsStore()
     jobs.upsert(job('J1'))

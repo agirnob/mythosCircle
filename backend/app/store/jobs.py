@@ -949,6 +949,10 @@ def _validate_image_payload(payload: dict[str, Any], session: Session, campaign_
 def _validate_video_payload(payload: dict[str, Any], session: Session, campaign_id: str) -> None:
     """Enforce the spec-4.2/4.6 video payload contract (422/404, zero rows).
 
+    With image_id, validate the owned portrait and require approved text;
+    that path is independent of appearance and requires ComfyUI. Otherwise
+    preserve the legacy entity/prompt contract.
+
     The payload is ``{"entity_id": <ULID>}``, optionally joined by the
     DM's approved ``prompt`` (spec-4.6). The committed entity must exist
     in this campaign (404 ``UnknownEntityError``) and be BOSS-tier: its
@@ -965,7 +969,7 @@ def _validate_video_payload(payload: dict[str, Any], session: Session, campaign_
     from app.media.service import appearance_prompt, bbeg_video_prompt
     from app.store.candidates import BOSS_ROLES
 
-    if not isinstance(payload, dict) or not set(payload) <= {"entity_id", "prompt"}:
+    if not isinstance(payload, dict) or not set(payload) <= {"entity_id", "prompt", "image_id"}:
         raise InvalidJobInputError(
             "video payload must be {'entity_id': <ULID>}, optionally with a non-blank 'prompt'"
         )
@@ -980,6 +984,17 @@ def _validate_video_payload(payload: dict[str, Any], session: Session, campaign_
         raise InvalidJobInputError(
             f"video payload entity {entity_id} is not boss-tier (BBEG or Monster)"
         )
+    if "image_id" in payload:
+        _validate_video_image(payload["image_id"], session, campaign_id, entity_id)
+        from app.core.settings import configured_video_backend
+
+        if configured_video_backend() != "comfyui":
+            raise InvalidJobInputError(
+                "image-bound video rendering requires the ComfyUI video backend"
+            )
+        if not isinstance(payload.get("prompt"), str) or not payload["prompt"].strip():
+            raise InvalidJobInputError("image-bound video requires an approved non-blank prompt")
+        return
     supplied_prompt = payload.get("prompt")
     if supplied_prompt is not None:
         # The DM's approved prompt is the source of truth (spec-4.6): a
@@ -999,41 +1014,47 @@ def _validate_video_payload(payload: dict[str, Any], session: Session, campaign_
         )
 
 
+def _validate_video_image(
+    image_id: Any, session: Session, campaign_id: str, entity_id: str
+) -> None:
+    if not isinstance(image_id, str) or not ids.is_valid_ulid(image_id):
+        raise InvalidJobInputError("video image_id must be a ULID")
+    image = session.get(models.Media, image_id)
+    if (
+        image is None
+        or image.campaign_id != campaign_id
+        or image.entity_id != entity_id
+        or image.kind != "image"
+    ):
+        raise InvalidJobInputError(
+            "video source image does not exist for this entity in this campaign"
+        )
+
+
 def _validate_video_prompt_payload(
     payload: dict[str, Any], session: Session, campaign_id: str
 ) -> None:
-    """Enforce the spec-4.6 video_prompt payload contract (422/404, zero rows).
-
-    The payload is exactly ``{"entity_id": <ULID>}`` — the committed
-    entity whose AR24 record is the draft source. The entity must exist
-    in this campaign (404 ``UnknownEntityError``), be BOSS-tier (422 —
-    the DRAFT_NO_BOSS matrix row), and carry a non-blank AR24
-    ``appearance`` (422 — the DRAFT_NO_SOURCE matrix row: a MiniMax-I2VA
-    draft needs a source-frame description). The appearance check runs
-    the SAME ``appearance_prompt`` the runner uses, so the enqueue gate
-    and the run-time fail condition can never disagree (function-local
-    import: the media service imports this package).
-    """
-    from app.media.service import appearance_prompt
+    """New enhancement jobs always carry the owned portrait and written direction."""
     from app.store.candidates import BOSS_ROLES
 
-    if not isinstance(payload, dict) or set(payload) != {"entity_id"}:
-        raise InvalidJobInputError("video prompt payload must be exactly {'entity_id': <ULID>}")
+    if not isinstance(payload, dict) or set(payload) != {"entity_id", "image_id", "prompt"}:
+        raise InvalidJobInputError(
+            "video prompt payload requires exactly entity_id, image_id and prompt"
+        )
     entity_id = payload["entity_id"]
     if not isinstance(entity_id, str) or not ids.is_valid_ulid(entity_id):
-        raise InvalidJobInputError(f"video prompt payload entity_id is not a ULID: {entity_id!r}")
+        raise InvalidJobInputError("video prompt entity_id must be a ULID")
+    direction = payload["prompt"]
+    if not isinstance(direction, str) or not direction.strip() or len(direction) > 8000:
+        raise InvalidJobInputError(
+            "video prompt direction must be a non-blank string of at most 8000 characters"
+        )
     entity = session.get(models.Entity, entity_id)
     if entity is None or entity.campaign_id != campaign_id:
         raise UnknownEntityError(entity_id)
-    data = entity.data or {}
-    if data.get("role") not in BOSS_ROLES:
-        raise InvalidJobInputError(
-            f"video prompt payload entity {entity_id} is not boss-tier (BBEG or Monster)"
-        )
-    if appearance_prompt(data.get("appearance")) is None:
-        raise InvalidJobInputError(
-            f"video prompt payload entity {entity_id} has no non-blank AR24 appearance"
-        )
+    if (entity.data or {}).get("role") not in BOSS_ROLES:
+        raise InvalidJobInputError("video prompt entity is not boss-tier (BBEG or Monster)")
+    _validate_video_image(payload["image_id"], session, campaign_id, entity_id)
 
 
 def _validate_regenerate_payload(

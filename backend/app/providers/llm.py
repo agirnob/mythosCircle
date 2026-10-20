@@ -127,7 +127,17 @@ def _complete(
         "max_tokens": settings.max_tokens,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
+            {
+                "role": "user",
+                "content": (
+                    [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": settings.image_data_url}},
+                    ]
+                    if settings.image_data_url is not None
+                    else user_prompt
+                ),
+            },
         ],
     }
     if settings.provider == "openrouter":

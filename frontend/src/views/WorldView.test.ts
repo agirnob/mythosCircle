@@ -60,6 +60,7 @@ import { ApiError } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 import { useJobsStore } from '../stores/jobs'
 import WorldView from './WorldView.vue'
+import { useWorldStore } from '../stores/world'
 
 type Job = components['schemas']['JobResponse']
 
@@ -135,6 +136,7 @@ function mountView() {
 describe('WorldView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    globalThis.localStorage.clear()
     vi.clearAllMocks()
     socketCalls.length = 0
   })
@@ -1543,7 +1545,7 @@ describe('WorldView', () => {
   }
 
   function draftPromptButton(wrapper: VueWrapper) {
-    return wrapper.findAll('button').filter((b) => b.text().startsWith('Draft reveal prompt'))[0]
+    return wrapper.findAll('button').filter((b) => b.text().startsWith('Enhance with portrait'))[0]
   }
 
   function revealPromptTextarea(wrapper: VueWrapper) {
@@ -1629,7 +1631,7 @@ describe('WorldView', () => {
     await flushPromises()
     expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeUndefined()
     // Drafting stays optional when the boss section is incomplete.
-    expect(draftPromptButton(wrapper)?.attributes('disabled')).toBeUndefined()
+    expect(draftPromptButton(wrapper)?.attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 
@@ -1637,11 +1639,11 @@ describe('WorldView', () => {
     stubVideoApi(bossWorld({ appearance: '   ' }), { media: [] })
     const wrapper = mountView()
     await flushPromises()
-    expect(wrapper.text()).toContain('Add an appearance to draft a reveal video prompt.')
+    expect(wrapper.text()).toContain('Generate a portrait and enter video direction to enhance a reveal prompt.')
     // No appearance -> no draft surface and no render (the backend gates
     // both on the source-frame description).
-    expect(draftPromptButton(wrapper)).toBeUndefined()
-    expect(revealPromptTextarea(wrapper).exists()).toBe(false)
+    expect(draftPromptButton(wrapper)?.attributes('disabled')).toBeDefined()
+    expect(revealPromptTextarea(wrapper).exists()).toBe(true)
     expect(revealVideoButton(wrapper)?.attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
@@ -1707,19 +1709,32 @@ describe('WorldView', () => {
         bodies.push(JSON.parse(String(init.body)))
         return promptDraftJob('JP1', 'E1', 'draft', { state: 'queued', queue_position: 1 })
       }
-      if (url.includes('/media')) return { media: [] }
+      if (url.includes('/media'))
+        return {
+          media: [
+            {
+              id: 'M1',
+              entity_id: 'E1',
+              campaign_id: 'C1',
+              filename: 'portrait.png',
+              kind: 'image',
+              created_at: '2026-10-20T00:00:00Z',
+            },
+          ],
+        }
       if (url.includes('/jobs')) return { jobs: [], next_cursor: null }
       return bossWorld()
     })
     const wrapper = mountView()
     await flushPromises()
+    await wrapper.get('textarea[id="world-reveal-direction-E1"]').setValue('Turn slowly, no music.')
     await draftPromptButton(wrapper)!.trigger('click')
     await flushPromises()
     expect(bodies).toHaveLength(1)
     expect(bodies[0]).toMatchObject({
       campaign_id: 'C1',
       kind: 'video_prompt',
-      payload: { entity_id: 'E1' },
+      payload: { entity_id: 'E1', image_id: 'M1', prompt: 'Turn slowly, no music.' },
     })
     wrapper.unmount()
   })
@@ -1786,7 +1801,7 @@ describe('WorldView', () => {
     expect(wrapper.text()).toContain(
       'Reveal prompt failed: video prompt generation failed: provider returned HTTP 502',
     )
-    expect(draftPromptButton(wrapper)?.attributes('disabled')).toBeUndefined()
+    expect(draftPromptButton(wrapper)?.attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
   it('renders export anchors that link the entity/world export endpoints', async () => {
@@ -2457,4 +2472,138 @@ describe('WorldView', () => {
     expect(seeWebTo.query).toEqual({ focus: 'E1' })
     wrapper.unmount()
   })
+  const h3Portrait = { id: 'M1', campaign_id: 'C1', entity_id: 'E1', kind: 'image', filename: 'first.png', created_at: '2026-10-20T00:00:00Z' }
+  const h3Text = '[Shot 1] The blue portrait turns.\n\noverall_soundscape: N/A'
+  function h3Job(state = 'queued', id = 'JH3'): Job {
+    return { ...promptDraftJob(id, 'E1', h3Text, { state, created_at: '2026-10-20T00:00:00Z' }), payload: { entity_id: 'E1', image_id: 'M1', prompt: 'Turn slowly.' }, result: state === 'succeeded' ? { entity_id: 'E1', image_id: 'M1', prompt: h3Text } : null }
+  }
+  function h3Api() {
+    const bodies: Record<string, unknown>[] = []
+    apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === '/api/jobs' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>
+        bodies.push(body)
+        return body.kind === 'video_prompt' ? h3Job() : videoJob('JV1', 'E1', { state: 'queued' })
+      }
+      if (path.includes('/media')) return { media: [h3Portrait] }
+      if (path.includes('/api/jobs')) return { jobs: [], next_cursor: null }
+      return bossWorld()
+    })
+    return bodies
+  }
+  async function startWorldH3(wrapper: VueWrapper) {
+    await flushPromises()
+    await wrapper.get('textarea[id="world-reveal-direction-E1"]').setValue('Turn slowly.')
+    await draftPromptButton(wrapper)!.trigger('click')
+    await flushPromises()
+  }
+
+  it('H3 WorldView hydrates async jobs and renders edited text with its pinned source after newer portrait/remount', async () => {
+    const bodies = h3Api()
+    let wrapper = mountView()
+    await startWorldH3(wrapper)
+    useJobsStore().upsert(h3Job('succeeded'))
+    await flushPromises()
+    expect((revealPromptTextarea(wrapper).element as HTMLTextAreaElement).value).toBe(h3Text)
+    await revealPromptTextarea(wrapper).setValue('  Approved exactly.\n')
+    wrapper.unmount()
+    wrapper = mountView()
+    await flushPromises()
+    useWorldStore().mediaByCampaign['C1']!.push({ ...h3Portrait, id: 'M2', filename: 'new.png', created_at: '2026-10-20T01:00:00Z' })
+    await flushPromises()
+    expect(wrapper.get('img[alt$="reveal source portrait"]').attributes('src')).toContain('first.png')
+    await revealVideoButton(wrapper)!.trigger('click')
+    expect(bodies.at(-1)).toMatchObject({ kind: 'video', payload: { entity_id: 'E1', image_id: 'M1', prompt: '  Approved exactly.\n' } })
+    wrapper.unmount()
+  })
+
+  it('H3 WorldView shows the pending source and blocks duplicate immediate submissions', async () => {
+    h3Api()
+    let finish!: (job: Job) => void
+    const post = new Promise<Job>(resolve => { finish = resolve })
+    const original = apiFetchMock.getMockImplementation()!
+    apiFetchMock.mockImplementation((path: string, init?: RequestInit) => path === '/api/jobs' && init?.method === 'POST' ? post : original(path, init))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('textarea[id="world-reveal-direction-E1"]').setValue('Turn slowly.')
+    const button = draftPromptButton(wrapper)!
+    await button.trigger('click')
+    await button.trigger('click')
+    expect(apiFetchMock.mock.calls.filter(([path, init]) => path === '/api/jobs' && init?.method === 'POST')).toHaveLength(1)
+    useWorldStore().mediaByCampaign['C1']!.push({ ...h3Portrait, id: 'M2', filename: 'new.png', created_at: '2026-10-20T01:00:00Z' })
+    await flushPromises()
+    expect(wrapper.get('img[alt$="reveal source portrait"]').attributes('src')).toContain('first.png')
+    finish(h3Job())
+    await flushPromises()
+    wrapper.unmount()
+  })
+
+  it('H3 WorldView restores completed jobs arriving after initial entity render without overwriting manual edits', async () => {
+    h3Api()
+    const wrapper = mountView()
+    await flushPromises()
+    useJobsStore().upsert(h3Job('succeeded'))
+    await flushPromises()
+    expect((revealPromptTextarea(wrapper).element as HTMLTextAreaElement).value).toBe(h3Text)
+    await revealPromptTextarea(wrapper).setValue('My edit')
+    useJobsStore().upsert({ ...h3Job('succeeded', 'NEW'), created_at: '2026-10-20T02:00:00Z' })
+    await flushPromises()
+    expect((revealPromptTextarea(wrapper).element as HTMLTextAreaElement).value).toBe('My edit')
+    expect(wrapper.text()).toContain('Use enhanced prompt')
+    wrapper.unmount()
+  })
+
+  it('H3 WorldView resets a deleted bound source to the latest portrait and never reconnects discarded results', async () => {
+    const bodies = h3Api()
+    const wrapper = mountView()
+    await startWorldH3(wrapper)
+    useJobsStore().upsert(h3Job('succeeded'))
+    await flushPromises()
+    await revealPromptTextarea(wrapper).setValue('Manual after reset')
+    useWorldStore().mediaByCampaign['C1'] = [{ ...h3Portrait, id: 'M2', filename: 'new.png', created_at: '2026-10-20T01:00:00Z' }]
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === 'Use latest portrait')!.trigger('click')
+    useJobsStore().upsert(h3Job('succeeded'))
+    await flushPromises()
+    expect(wrapper.get('img[alt$="reveal source portrait"]').attributes('src')).toContain('new.png')
+    expect((revealPromptTextarea(wrapper).element as HTMLTextAreaElement).value).toBe('Manual after reset')
+    await revealVideoButton(wrapper)!.trigger('click')
+    expect(bodies.at(-1)).toMatchObject({ kind: 'video', payload: { entity_id: 'E1', prompt: 'Manual after reset' } })
+    expect((bodies.at(-1)?.payload as Record<string, unknown>).image_id).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('H3 WorldView discards late enqueue response after explicit source reset', async () => {
+    h3Api()
+    let finish!: (job: Job) => void
+    vi.spyOn(useJobsStore(), 'submitRevealVideoPrompt').mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = mountView()
+    await flushPromises()
+    await revealPromptTextarea(wrapper).setValue('Manual stays')
+    await startWorldH3(wrapper)
+    useWorldStore().mediaByCampaign['C1']!.push({ ...h3Portrait, id: 'M2', filename: 'new.png', created_at: '2026-10-20T01:00:00Z' })
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === 'Use latest portrait')!.trigger('click')
+    useJobsStore().upsert(h3Job('succeeded'))
+    finish(h3Job('succeeded'))
+    await flushPromises()
+    expect((revealPromptTextarea(wrapper).element as HTMLTextAreaElement).value).toBe('Manual stays')
+    expect(wrapper.get('img[alt$="reveal source portrait"]').attributes('src')).toContain('new.png')
+    expect(wrapper.text()).not.toContain('Use enhanced prompt')
+    wrapper.unmount()
+  })
+
+  it('H3 WorldView never resurrects older completed drafts after the latest is applied', async () => {
+    h3Api()
+    const wrapper = mountView()
+    await flushPromises()
+    useJobsStore().upsert({ ...h3Job('succeeded', 'OLDER'), created_at: '2026-09-01T00:00:00Z' })
+    useJobsStore().upsert(h3Job('succeeded'))
+    await flushPromises()
+    useJobsStore().upsert({ ...h3Job('succeeded', 'OLDER'), created_at: '2026-09-01T00:00:00Z' })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('Use enhanced prompt')
+    wrapper.unmount()
+  })
+
 })

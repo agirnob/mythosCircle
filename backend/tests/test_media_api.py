@@ -824,3 +824,49 @@ def test_suspension_preserves_signed_lifetime_but_blocks_minting(
     assert client.get(signed_path).content == PNG_BYTES
     monkeypatch.setattr(time, "time", lambda: expires + 1)
     assert client.get(signed_path).status_code == 404
+
+
+def test_h3_enhancement_enqueue_requires_direction_and_owned_image(
+    client: TestClient, media_api: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.store import add_media
+
+    campaign_id = media_api()
+    entity_id = _commit_entity(campaign_id, None, role="BBEG")
+    image = add_media(campaign_id, entity_id, f"{ids.new_id()}.png")
+    request = {
+        "campaign_id": campaign_id,
+        "kind": "video_prompt",
+        "payload": {"entity_id": entity_id, "image_id": image.id, "prompt": "Turn. Silence."},
+    }
+    response = client.post("/api/jobs", json=request)
+    assert response.status_code == 201
+    assert response.json()["payload"] == request["payload"]
+    assert (
+        client.post("/api/jobs", json={**request, "payload": {"entity_id": entity_id}}).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/api/jobs", json={**request, "payload": {**request["payload"], "prompt": " "}}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/api/jobs",
+            json={**request, "payload": {**request["payload"], "image_id": ids.new_id()}},
+        ).status_code
+        == 422
+    )
+    monkeypatch.setattr("app.core.settings.configured_video_backend", lambda: "comfyui")
+    approved = "  Edited approved text.\n"
+    render = client.post(
+        "/api/jobs",
+        json={**request, "kind": "video", "payload": {**request["payload"], "prompt": approved}},
+    )
+    assert render.status_code == 201
+    assert render.json()["payload"]["image_id"] == image.id
+    assert render.json()["payload"]["prompt"] == approved
+    client.cookies.clear()
+    assert client.post("/api/jobs", json=request).status_code == 401
